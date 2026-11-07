@@ -950,7 +950,7 @@ mod tests {
             <service><serviceType> urn:schemas-upnp-org:service:WANIPConnection:1 </serviceType><controlURL>/ip</controlURL></service></root>";
         assert_eq!(wan_service(description), Some(("urn:schemas-upnp-org:service:WANIPConnection:1".into(), "/ip")));
         assert_eq!(wan_service("<root><service><serviceType>urn:other</serviceType><controlURL>/x</controlURL></service></root>"), None);
-        assert_eq!(xml_text("<s:Body><m:NewExternalIPAddress>1.2.3.4</m:NewExternalIPAddress></s:Body>", "NewExternalIPAddress"), Some("1.2.3.4"));
+        assert_eq!(xml_text("<s:Body><m:NewExternalIPAddress>203.0.113.4</m:NewExternalIPAddress></s:Body>", "NewExternalIPAddress"), Some("203.0.113.4"));
         assert_eq!(xml_text("<errorCode>718</errorCode>", "errorCode"), Some("718"));
         assert_eq!(xml_text("<a>b</a>", "c"), None);
     }

@@ -1,0 +1,57 @@
+# Known RustSec advisories in transitive dependencies, each with the reason it is accepted for now.
+# OSV-Scanner (and with it OpenSSF Scorecard's Vulnerabilities check) reads this file; cargo-deny
+# keeps its own list in core/deny.toml. None of these is a vulnerability with a known exploit in
+# how hoi uses the crate, and none has a compatible fixed release. Tracked in
+# https://github.com/hoi-project/hoi/issues/11; remove an entry when its crate leaves the lockfiles.
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2023-0126"
+reason = "im (unsound OrdSet insertion) via loro-internal, the community rules and wiki CRDT; hoi#11"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0255"
+reason = "sized-chunks (panic-safety unsoundness) via im via loro-internal; hoi#11"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0247"
+reason = "im is unmaintained; via loro-internal; hoi#11"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0248"
+reason = "sized-chunks is unmaintained; via im via loro-internal; hoi#11"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0251"
+reason = "bitmaps is unmaintained; via im via loro-internal; hoi#11"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0429"
+reason = "glib (unsound VariantStrIter) via gtk-rs in the Linux desktop builds (Tauri, WebKitGTK); hoi code does not use it; hoi#11"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0370"
+reason = "zvariant is unmaintained; via zbus in the Linux desktop builds; hoi#11"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0371"
+reason = "zbus_names is unmaintained; via zbus in the Linux desktop builds; hoi#11"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0372"
+reason = "zvariant_derive is unmaintained; via zbus in the Linux desktop builds; hoi#11"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2023-0089"
+reason = "atomic-polyfill is unmaintained; via heapless 0.7 via postcard; hoi#11"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0436"
+reason = "paste is unmaintained; a build-time macro in iroh's Linux network monitor; hoi#11"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0370"
+reason = "proc-macro-error is unmaintained; a build-time macro via genawaiter via iroh-blobs; hoi#11"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0374"
+reason = "basic-toml is unmaintained; via uniffi build tooling; hoi#11"

@@ -807,7 +807,8 @@ fn a_home_node_that_did_not_answer_says_nothing_about_the_generation() {
 fn a_reader_whose_forwarders_vouch_for_no_holder_still_rebuilds_through_one_hop_more() {
     let mut m = mesh(3, 14);
     join(&mut m, "a", "198.51.100.10:7843", &[0, 1, 2]);
-    // two forwarders linked to the first three, and to no holder
+    // two forwarders linked to the first three, and to no holder. Real public addresses in two
+    // networks of their own: places are counted by network, and documentation ranges are not public.
     m.public("f3", "44.20.1.1:7843");
     m.public("f4", "44.21.1.1:7843");
     for (x, y) in [("f3", "f0"), ("f3", "f1"), ("f4", "f1"), ("f4", "f2")] {
