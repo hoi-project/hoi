@@ -10,7 +10,7 @@ test('release preflight requires updater signing even when OS signing is explici
   const signing = workflow.split('\n  signing:\n')[1].split(/\n  [\w-]+:\n/)[0];
   assert.match(signing, /TAURI_SIGNING_PRIVATE_KEY: \$\{\{ secrets\.TAURI_SIGNING_PRIVATE_KEY \}\}/);
   const script = signing.split('      - name: Refuse to build a release that would ship unsigned\n        run: |\n')[1]
-    .trimEnd().replace(/^          /gm, '');
+    .split(/\n      (?:- |# )/)[0].trimEnd().replace(/^          /gm, '');
   assert.ok(script);
   const osKeys = ['APPLE_CERTIFICATE', 'APPLE_CERTIFICATE_PASSWORD', 'APPLE_SIGNING_IDENTITY', 'APPLE_ID', 'APPLE_PASSWORD', 'APPLE_TEAM_ID', 'WINDOWS_CERTIFICATE', 'WINDOWS_CERTIFICATE_PASSWORD'];
   const run = patch => spawnSync('bash', ['-e', '-c', script], { encoding: 'utf8', env: {

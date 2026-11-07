@@ -2,8 +2,8 @@
   "schema": 1,
   "repository": "https://github.com/hoi-project/hoi",
   "site": "https://hoi.sh",
-  "downloads": "",
+  "downloads": "https://hoi.sh/releases",
   "contact": "hello@hoi.sh",
-  "manifestKey": "",
-  "updaterKey": ""
+  "manifestKey": "RWS8kacl0Pcte9FZRz68EB7UuZvFFVUZup+ZzsLgQFG4ywGvdJ7bizfu",
+  "updaterKey": "RWQzo5Yau6XvPh/5Dalh8TVz82ph1zH9q0g9/6CqAp8enyY7hM0h2Ner"
 }

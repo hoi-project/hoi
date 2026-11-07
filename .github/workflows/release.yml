@@ -84,10 +84,13 @@ jobs:
        (needs.plan.outputs.tier != 'major' && needs.long.result == 'skipped' && needs.security.result == 'skipped' && needs.npm-audit.result == 'skipped'))
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    # Signing secrets live in the release environment (v* tags and main only).
+    environment: release
     env:
       MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
       MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
       APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
       APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
       APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
@@ -133,6 +136,23 @@ jobs:
             fi
             echo "::warning::Releasing unsigned installers (HOI_ALLOW_UNSIGNED_INSTALLERS=true). The release notes say so."
           fi
+      # Before hours of builds: each secret key signs a test file that its public key in
+      # publication.json verifies. A Tauri updater key is a minisign key, base64-wrapped.
+      - name: The signing keys match publication.json
+        run: |
+          sudo apt-get install -y minisign
+          work="$(mktemp -d)"
+          trap 'rm -rf "$work"' EXIT
+          echo hoi > "$work/test"
+          check() {
+            printf '%s' "$1" | base64 -d > "$work/key"
+            echo "$2" | minisign -S -s "$work/key" -m "$work/test" -x "$work/test.sig" > /dev/null
+            rm -f "$work/key"
+            minisign -Vq -m "$work/test" -x "$work/test.sig" -P "$3" || { echo "$4 does not match $5 in publication.json" >&2; exit 1; }
+          }
+          check "$MINISIGN_SECRET_KEY" "$MINISIGN_PASSWORD" "$(node -p "require('./publication.json').manifestKey")" MINISIGN_SECRET_KEY manifestKey
+          [ "$DESKTOP" = "true" ] || exit 0
+          check "$TAURI_SIGNING_PRIVATE_KEY" "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" "$(node -p "require('./publication.json').updaterKey")" TAURI_SIGNING_PRIVATE_KEY updaterKey
 
   security:
     needs: plan
@@ -221,6 +241,7 @@ jobs:
 
   desktop:
     needs: [plan, draft]
+    environment: release
     permissions:
       contents: write
     if: always() && !cancelled() && needs.draft.result == 'success' && (github.event_name != 'workflow_dispatch' || inputs.desktop)
@@ -307,6 +328,7 @@ jobs:
   # The node setup app (apps/setup): the same platforms as the desktop app, the same switch.
   setup:
     needs: [plan, draft]
+    environment: release
     permissions:
       contents: write
     if: always() && !cancelled() && needs.draft.result == 'success' && (github.event_name != 'workflow_dispatch' || inputs.desktop)
@@ -428,6 +450,7 @@ jobs:
 
   manifest:
     needs: [plan, desktop, setup, node]
+    environment: release
     permissions:
       contents: write
       id-token: write

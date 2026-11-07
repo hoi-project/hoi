@@ -29,6 +29,12 @@ const ORIGIN = `http://localhost:${PORT}`;
 // them through a quicker pass (wikiPass, below).
 const WIKI_SAMPLE = ['/wiki/', '/wiki/architecture/', '/wiki/playground/', '/wiki/sbom/', '/wiki/joining/', '/wiki/records/'];
 const PAGES = ['/', '/download/', '/verify/', '/relay/', '/communities/', '/protocol/', '/privacy/', '/404.html', ...WIKI_SAMPLE];
+// The built site reads its release list from publication.json's `downloads` (hoi.sh). The tests
+// stay offline: every browser context gets the site's own placeholder there, as hoi.sh serves it
+// before the first release is published.
+const PUBLISHED = JSON.parse(readFileSync(join(siteDir, '../../publication.json'), 'utf8')).downloads.replace(/\/+$/, '');
+const PUBLISHED_ORIGIN = PUBLISHED ? new URL(PUBLISHED).origin : '';
+const PLACEHOLDER = readFileSync(join(siteDir, 'public/releases/manifest.json'));
 const WIKI_ALL = JSON.parse(readFileSync(join(siteDir, 'wiki/nav.json'), 'utf8')).groups.flatMap((g) => g.pages.map((p) => (p.slug ? `/wiki/${p.slug}/` : '/wiki/')));
 const VIEWPORTS = { desktop: { width: 1280, height: 900 }, mobile: { width: 390, height: 844 }, small: { width: 320, height: 640 } };
 
@@ -60,7 +66,7 @@ function watch(page, where, allowed = []) {
   page.on('request', (r) => {
     const u = new URL(r.url());
     if (u.protocol === 'data:' || u.protocol === 'blob:') return;
-    if (u.origin !== ORIGIN && !allowed.includes(u.origin)) fail(where, `third-party request: ${r.url()}`);
+    if (u.origin !== ORIGIN && u.origin !== PUBLISHED_ORIGIN && !allowed.includes(u.origin)) fail(where, `third-party request: ${r.url()}`);
   });
   page.on('response', (r) => { if (r.status() >= 400) fail(where, `HTTP ${r.status()} ${r.url()}`); });
 }
@@ -444,7 +450,7 @@ const SAMPLE = {
 
 async function download(browser) {
   console.log('• download page');
-  // 1. the shipped (empty) manifest → honest empty state
+  // 1. the site's placeholder list (no release published yet) → honest empty state
   {
     const ctx = await browser.newContext({ viewport: VIEWPORTS.mobile, colorScheme: 'dark' });
     const page = await ctx.newPage();
@@ -527,6 +533,14 @@ let browser;
 try {
   await waitForServer();
   browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH || undefined });
+  if (PUBLISHED) {
+    const newContext = browser.newContext.bind(browser);
+    browser.newContext = async (options) => {
+      const ctx = await newContext(options);
+      await ctx.route(`${PUBLISHED}/manifest.json`, (r) => r.fulfill({ body: PLACEHOLDER, contentType: 'application/json' }));
+      return ctx;
+    };
+  }
   if (args.includes('--playground')) {
     await playgroundPass(browser);
   } else if (!shotsOnly) {
