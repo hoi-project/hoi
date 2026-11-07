@@ -6,7 +6,7 @@
 //   node scripts/serve-static.mjs [--port 8787] [--dir dist]
 import { createServer } from 'node:http';
 import { readFile, stat } from 'node:fs/promises';
-import { extname, join, resolve, sep } from 'node:path';
+import { extname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const TYPES = {
@@ -38,9 +38,14 @@ export async function serveStatic({ root = 'dist', port = 0, host = '127.0.0.1' 
     if (target !== base && !target.startsWith(base + sep)) { res.writeHead(404).end(); return; }
     let found = null;
     if (pathname.endsWith('/')) found = await file(join(target, 'index.html'));
-    // One leading slash: a decoded "%2F" could make "//name/", a protocol-relative URL the browser
-    // would follow to another host.
-    else if (await dir(target)) { res.writeHead(301, { Location: `/${pathname.replace(/^\/+/, '')}/` }).end(); return; }
+    else if (await dir(target)) {
+      // Built from the folder found under base, not from the request: one leading slash and each
+      // segment encoded, so the redirect cannot name another host (a decoded "%2F" once made
+      // "//name/", a protocol-relative URL).
+      const location = `/${relative(base, target).split(sep).filter(Boolean).map(encodeURIComponent).join('/')}/`;
+      res.writeHead(301, { Location: location }).end();
+      return;
+    }
     else found = (await file(target)) ?? (await file(target + '.html'));
     const status = found ? 200 : 404;
     found ??= await file(join(base, '404.html'));

@@ -16,6 +16,7 @@ test('a folder redirects to its own path with a slash, never to another host', a
   const root = mkdtempSync(join(tmpdir(), 'hoi-serve-static-'));
   mkdirSync(join(root, 'assets'));
   writeFileSync(join(root, 'assets', 'index.html'), 'assets');
+  mkdirSync(join(root, 'wiki', 'my page'), { recursive: true });
   const server = await serveStatic({ root });
   try {
     assert.deepEqual(await get(server.origin, '/assets'), { status: 301, location: '/assets/' });
@@ -23,6 +24,8 @@ test('a folder redirects to its own path with a slash, never to another host', a
     // URL: the browser would go to a host named "assets".
     for (const path of ['/%2Fassets', '/%2F%2Fassets']) assert.deepEqual(await get(server.origin, path), { status: 301, location: '/assets/' }, path);
     assert.equal((await get(server.origin, '/assets/')).status, 200);
+    // Nested folders keep their path; names are encoded as they would be in a link.
+    assert.deepEqual(await get(server.origin, '/wiki/my%20page'), { status: 301, location: '/wiki/my%20page/' });
   } finally {
     await server.close();
     rmSync(root, { recursive: true, force: true });
