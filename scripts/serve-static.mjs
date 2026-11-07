@@ -38,7 +38,9 @@ export async function serveStatic({ root = 'dist', port = 0, host = '127.0.0.1' 
     if (target !== base && !target.startsWith(base + sep)) { res.writeHead(404).end(); return; }
     let found = null;
     if (pathname.endsWith('/')) found = await file(join(target, 'index.html'));
-    else if (await dir(target)) { res.writeHead(301, { Location: pathname + '/' }).end(); return; }
+    // One leading slash: a decoded "%2F" could make "//name/", a protocol-relative URL the browser
+    // would follow to another host.
+    else if (await dir(target)) { res.writeHead(301, { Location: `/${pathname.replace(/^\/+/, '')}/` }).end(); return; }
     else found = (await file(target)) ?? (await file(target + '.html'));
     const status = found ? 200 : 404;
     found ??= await file(join(base, '404.html'));

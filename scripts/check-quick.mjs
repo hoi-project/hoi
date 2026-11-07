@@ -21,7 +21,7 @@ for (const args of [
     'scripts/release-plan.test.mjs', 'scripts/release-manifest.test.mjs', 'scripts/build-all.test.mjs',
     'scripts/installer-art.test.mjs',
     'scripts/static-boundaries.test.mjs', 'scripts/public-copy.test.mjs', 'scripts/wiki.test.mjs',
-    'scripts/labels.test.mjs', 'scripts/ci-changes.test.mjs'],
+    'scripts/labels.test.mjs', 'scripts/ci-changes.test.mjs', 'scripts/serve-static.test.mjs'],
 ]) {
   const result = spawnSync(process.execPath, args, { cwd: root, stdio: 'inherit', timeout: 90_000 });
   if (result.error) throw result.error;

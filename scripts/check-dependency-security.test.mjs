@@ -6,7 +6,7 @@ const dependency = (name, version, source = '') => `[[package]]\nname = "${name}
 const patches = ['openmls_rust_crypto', 'openmls_basic_credential', 'dimpl', 'core-models'].map((name) => dependency(name, '0.6.0')).join('\n');
 const safe = dependency('openmls', '0.6.0', 'registry+https://github.com/rust-lang/crates.io-index') + '\n' + patches + '\n' + dependency('crypto-bigint', '0.7.8', 'registry+https://github.com/rust-lang/crates.io-index');
 
-test('every checked-in lockfile passes the security regression gate', () => checkDependencySecurity());
+test('every checked-in lockfile passes the security regression gate', () => assert.doesNotThrow(() => checkDependencySecurity()));
 test('a second vulnerable version cannot hide behind a patched version', () => {
   assert.deepEqual(dependencySecurityErrors(safe), []);
   for (const version of ['0.5.5', '0.7.5', '0.7.6-rc.1']) assert.match(dependencySecurityErrors(safe + '\n' + dependency('crypto-bigint', version)).join('\n'), /RUSTSEC-2026-0387/);
