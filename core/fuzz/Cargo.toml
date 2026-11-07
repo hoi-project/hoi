@@ -94,3 +94,8 @@ path = "fuzz_targets/wiki_update.rs"
 test = false
 doc = false
 bench = false
+
+# The same reviewed patch as core/Cargo.toml: without it the fuzzers build an older hax-lib graph
+# (with the unmaintained proc-macro-error2) that the shipped code does not use.
+[patch.crates-io]
+core-models = { path = "../../vendor/core-models" }

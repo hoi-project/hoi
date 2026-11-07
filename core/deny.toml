@@ -44,6 +44,9 @@ allow = [
   "Unlicense",
   "Zlib",
 ]
+# libfuzzer-sys bundles LLVM's libFuzzer under NCSA (OSI-approved, FSF free). Only the fuzz workspace
+# (core/fuzz) uses it, and nothing built from it ships.
+exceptions = [{ name = "libfuzzer-sys", allow = ["NCSA"] }]
 
 [bans]
 multiple-versions = "allow"
