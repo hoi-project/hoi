@@ -38,3 +38,17 @@ updates:
       default-days: 7
     commit-message:
       prefix: chore(deps)
+
+  # Docker base images are pinned by digest (sandbox/, core/crates/hoi-node/); this keeps the digests
+  # current. Each update is a pull request with the new digest, after the cooldown.
+  - package-ecosystem: docker
+    directories: [/sandbox, /core/crates/hoi-node]
+    schedule:
+      interval: weekly
+    groups:
+      images:
+        patterns: ["*"]
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: chore(deps)
