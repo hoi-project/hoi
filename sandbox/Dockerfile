@@ -2,7 +2,7 @@
 # Build from the core/ directory so the Cargo workspace is the context:
 #     docker build -f sandbox/Dockerfile -t hoi-sandbox core
 # The hoi-sandbox script does this for you.
-FROM rust:1.97-slim-bookworm@sha256:2775a09d208ff0d7c1f50490c45b62db929e87ba1dcbc3f2132ac71a704bcdd3 AS build
+FROM rust:1.98-slim-bookworm@sha256:ff521445a372125ed4f76e1453a1f8098f2d05332d1601d30db1c1f62757e730 AS build
 WORKDIR /src
 COPY . .
 RUN cargo build --release --locked -p hoi-node -p hoi-sim
