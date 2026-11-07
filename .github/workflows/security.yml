@@ -86,7 +86,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        manifest: [core/Cargo.toml, apps/desktop/src-tauri/Cargo.toml, apps/setup/src-tauri/Cargo.toml]
+        # core/fuzz has its own lockfile: the fuzzers' dependencies are audited like the shipped ones.
+        manifest: [core/Cargo.toml, core/fuzz/Cargo.toml, apps/desktop/src-tauri/Cargo.toml, apps/setup/src-tauri/Cargo.toml]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
