@@ -10,8 +10,6 @@
   "scripts": {
     "release:version": "node scripts/release-version.mjs",
     "check:quick": "node scripts/check-quick.mjs",
-    "public:check": "node scripts/export-public.mjs --check",
-    "public:export": "node scripts/export-public.mjs --export",
     "sandbox": "node sandbox/launch.mjs",
     "sandbox:stop": "node sandbox/launch.mjs stop",
     "sandbox:status": "node sandbox/launch.mjs status",

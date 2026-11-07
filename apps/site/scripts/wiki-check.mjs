@@ -57,7 +57,6 @@ for (const p of targets) {
   for (const m of raw.matchAll(/\{\{\s*([\w-]+)\s*\}\}/g)) if (!VARS.has(m[1])) bad(p, `unknown variable {{${m[1]}}}`);
   if (/\{\{(?!\s*(REPO_URL|APP_URL|SITE_URL|WIKI_PAGES|SBOM_PACKAGES)\s*\}\})/.test(raw)) bad(p, 'stray "{{" (write &#123;&#123;)');
   if (/[\w.+-]+@[\w-]+(?:\.[\w-]+)*\.[a-z]{2,}\b/i.test(html.replace(/<script[\s\S]*?<\/script>/g, ''))) bad(p, 'email address');
-  if (/\.private\/|ADR-\d|ROADMAP|HANDOFF/.test(html)) bad(p, 'refers to private maintainer notes');
   // The same rule as scripts/public-copy.test.mjs: public pages carry no deployment-configuration hints.
   const hint = /VITE_HOI_|HOI_REGISTRY_|No registry is configured|Set\s+\w+_URL|this build creates unregistered/i.exec(html.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ''));
   if (hint) bad(p, `deployment-configuration hint "${hint[0]}" (name the setting and link the README instead)`);
