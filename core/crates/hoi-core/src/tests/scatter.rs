@@ -490,7 +490,8 @@ fn a_holder_two_places_vouch_for_counts_at_once_on_a_new_device() {
     let first_introducer = |ep: &str| u64::from_le_bytes(Id::from_hex(ep).unwrap().0[..8].try_into().unwrap());
     assert!([first_introducer(&e[1]), first_introducer(&e[2])].contains(&h0_cand.introducer), "counted against an introducer, not itself");
 
-    // seen from here, h2 is in h1's network: one place vouching is not enough
+    // seen from here, h2 is in h1's network: one place vouching is not enough. A real public
+    // address: places are counted by network, and documentation ranges are not public.
     a.set_peer_meta("h2", PeerMeta { transport: "quic".into(), endpoint: Some(e[2].clone()), addr: Some("45.11.7.99:7843".into()), ..Default::default() });
     assert!(qualified(&a).is_empty());
     a.set_peer_meta("h2", PeerMeta { transport: "quic".into(), endpoint: Some(e[2].clone()), addr: Some(ad[2].clone()), ..Default::default() });
