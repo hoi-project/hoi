@@ -1,0 +1,63 @@
+[package]
+name = "hoi-desktop"
+version = "1.0.0-preview.1"
+description = "hoi desktop companion"
+edition = "2024"
+license = "AGPL-3.0-only"
+repository = "https://github.com/hoi-project/hoi"
+rust-version = "1.94"
+publish = false
+
+# Its own workspace: the core workspace stays buildable without WebKitGTK.
+[workspace]
+
+# Keep the native app on the same security patches as the core workspace.
+[patch.crates-io]
+openmls_rust_crypto = { path = "../../../vendor/openmls_rust_crypto" }
+openmls_basic_credential = { path = "../../../vendor/openmls_basic_credential" }
+dimpl = { path = "../../../vendor/dimpl" }
+core-models = { path = "../../../vendor/core-models" }
+# Keep the same reviewed Darwin compatibility patch as core.
+netdev = { path = "../../../vendor/netdev-0.46.3" }
+
+[lib]
+name = "hoi_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+serde_json = "1"
+
+[dependencies]
+hoi-core = { path = "../../../core/crates/hoi-core", features = ["sqlite"] }
+hoi-store = { path = "../../../core/crates/hoi-store", features = ["sqlite"] }
+hoi-net = { path = "../../../core/crates/hoi-net" }
+hoi-crypto = { path = "../../../core/crates/hoi-crypto" }
+hoi-types = { path = "../../../core/crates/hoi-types" }
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-deep-link = "2"
+tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
+tauri-plugin-opener = "2"
+tauri-plugin-autostart = "2"
+tauri-plugin-updater = "2"
+minisign-verify = "0.3"
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "json", "stream"] }
+semver = "1"
+sha2 = "0.10"
+base64 = "0.23"
+keyring = { version = "3.6", default-features = false, features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
+zeroize = "1"
+serde_json = "1"
+tokio = { version = "1.54", features = ["rt-multi-thread", "net", "sync", "time", "macros"] }
+
+[target.'cfg(windows)'.dependencies]
+# keyring defaults to enterprise-roaming persistence on Windows. Vault unlock keys must
+# stay with this computer, so the write uses CRED_PERSIST_LOCAL_MACHINE explicitly.
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Credentials"] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3
+strip = true

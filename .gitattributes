@@ -1,0 +1,14 @@
+# Text files are checked out with LF everywhere, Windows included: the apps bundle the installer
+# (deploy/install/install.sh, imported with ?raw) and send it to Linux servers, where a CR at the
+# end of a line breaks bash (`set: pipefail\r: invalid option name`). Without this, Git on
+# Windows (and the windows-latest runners that build the release) checks them out with CRLF.
+* text=auto eol=lf
+# cmd.exe misreads labels in LF batch files.
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# Private maintainer material stays in the private repository, not source archives.
+/.private export-ignore
+/.private/** export-ignore
+# Installer artwork must reach the NSIS compiler byte for byte.
+*.bmp binary

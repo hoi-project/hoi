@@ -1,0 +1,20 @@
+// Vendored from str0m-rust-crypto 0.6.0 (MIT OR Apache-2.0, https://github.com/algesten/str0m),
+// unchanged but for this header and rustfmt: see mod.rs for why.
+
+//! RustCrypto SHA-256 implementation.
+
+use sha2::{Digest, Sha256};
+
+use str0m_proto::crypto::Sha256Provider;
+
+/// RustCrypto-based SHA-256 provider.
+#[derive(Debug)]
+pub struct RustCryptoSha256Provider;
+
+impl Sha256Provider for RustCryptoSha256Provider {
+    fn sha256(&self, data: &[u8]) -> [u8; 32] {
+        let mut hasher = Sha256::new();
+        hasher.update(data);
+        hasher.finalize().into()
+    }
+}

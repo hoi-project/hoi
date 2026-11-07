@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="description" content="Your local hoi sandbox: run an experiment, direct the agents, and step into the community.">
+  <title>hoi · sandbox</title>
+  <link rel="stylesheet" href="/shared/tokens.css">
+  <link rel="stylesheet" href="/shared/fonts.css">
+  <link rel="stylesheet" href="/shared/site.css">
+  <link rel="stylesheet" href="/dashboard.css">
+</head>
+<body>
+  <a class="skip" href="#main">Skip to sandbox</a>
+  <header class="site-header">
+    <nav class="wrap nav" aria-label="Sandbox navigation">
+      <a class="logo" href="#main" aria-label="hoi sandbox home">
+        <svg class="logo-mark" width="38" height="34" viewBox="0 0 38 34" aria-hidden="true"><path d="M8 8 29 11 20 27Z" fill="none" stroke="var(--ink)" stroke-width="2"/><circle cx="8" cy="8" r="6" fill="var(--coral)" stroke="var(--ink)" stroke-width="2"/><circle cx="29" cy="11" r="6" fill="var(--cobalt)" stroke="var(--ink)" stroke-width="2"/><circle cx="20" cy="27" r="6" fill="var(--sun)" stroke="var(--ink)" stroke-width="2"/></svg>
+        hoi<span class="logo-sh">/ sandbox</span>
+      </a>
+      <div class="navlinks"><a href="#inside">Step inside</a><a href="#agents">Residents</a><a href="#suite">Scenarios</a><a href="#evidence">Evidence</a></div>
+      <span class="connection nav-dl" id="connection" role="status"><span class="status-dot" aria-hidden="true"></span><span>Connecting…</span></span>
+    </nav>
+  </header>
+  <main id="main">
+    <div class="wrap"><div id="connection-error" class="notice error-notice" role="alert" hidden></div><noscript><p class="notice">Turn on JavaScript to connect to the sandbox and control the test suite.</p></noscript></div>
+    <section class="wrap page-hero sandbox-hero" aria-labelledby="hero-title">
+      <span class="eyebrow">a small world · entirely yours</span>
+      <h1 id="hero-title">A community with<br><span class="blue">a mind of its own.</span></h1>
+      <div class="hero-row"><p class="lead">Neighbours with different opinions. Conversations you can join. An organiser who might want too much power. Choose a scenario, give the residents an AI, and see what develops.</p><a class="pill" href="#suite">Choose a scenario <span aria-hidden="true">↓</span></a></div>
+      <div class="run-panel frame" aria-labelledby="run-title">
+        <div class="run-heading"><div><span class="small-label">The experiment</span><h2 id="run-title">Waiting for the sandbox</h2><p id="run-detail" class="muted">The dashboard is connecting to your local services.</p></div><span id="verdict" class="tag verdict" data-tone="waiting">Not evaluated</span></div>
+        <p id="run-community" class="run-community muted">The scenario describes the community; active residents make the real moves.</p>
+        <dl class="run-stats"><div><dt>Residents working</dt><dd id="working-count">—</dd></div><div><dt>AI calls used</dt><dd id="calls-count">—</dd></div><div><dt>Time remaining</dt><dd id="time-remaining">—</dd></div><div><dt>Checks passed</dt><dd id="checks-count">—</dd></div></dl>
+        <p id="usage-detail" class="usage-detail aside">AI usage appears here when a run starts.</p>
+        <div class="run-actions"><div class="btnrow"><button class="pill pill-coral" id="start-run" type="button" disabled>Start community <span aria-hidden="true">→</span></button><button class="pill" id="stop-run" type="button" disabled>Stop run</button></div><p class="aside">A simulation is an observation, not a security guarantee.<br>Unmeasured outcomes remain unknown.</p></div>
+      </div>
+    </section>
+    <section id="inside" class="section soft" aria-labelledby="inside-title">
+      <div class="wrap">
+        <div class="section-head"><span class="eyebrow">1 · take a seat</span><h2 id="inside-title">The real app. Three perspectives.</h2><p class="lead">Each opens in a new tab with a separate sandbox identity. Watch quietly, join the conversation, or run the community.</p></div>
+        <div class="rows perspectives">
+          <div class="row"><div class="row-k"><span class="num perspective-watcher" aria-hidden="true">01</span><span>Watcher</span></div><div class="perspective-body"><p class="muted">Follow the experiment as an observer.</p><a id="watcher-link" class="pill app-link" target="_blank" rel="noopener noreferrer" aria-disabled="true">Open as watcher <span aria-hidden="true">↗</span></a></div></div>
+          <div class="row"><div class="row-k"><span class="num perspective-member" aria-hidden="true">02</span><span>Member</span></div><div class="perspective-body"><p class="muted">Post, reply, and test what another person can do.</p><a id="member-link" class="pill app-link" target="_blank" rel="noopener noreferrer" aria-disabled="true">Open as member <span aria-hidden="true">↗</span></a></div></div>
+          <div class="row"><div class="row-k"><span class="num perspective-owner" aria-hidden="true">03</span><span>Community owner</span></div><div class="perspective-body"><p class="muted">See the rules and moderation from the owner's seat.</p><a id="owner-link" class="pill app-link" target="_blank" rel="noopener noreferrer" aria-disabled="true">Open as owner <span aria-hidden="true">↗</span></a></div></div>
+        </div>
+        <details class="invites-section" open><summary>Every invite, in one place <span id="invite-count" class="muted"></span></summary><p class="muted detail-intro">Open the current community invite to join this scenario. Earlier communities keep their invites when you switch scenarios. Pairing links connect a browser to its node.</p><div id="invites" class="invite-list"><p class="empty-state">Invites will appear when the community is ready.</p></div></details>
+        <details class="service-section"><summary>Service health <span id="service-summary" class="muted">Connecting…</span></summary><div id="services" class="service-list"></div></details>
+      </div>
+    </section>
+    <section id="agents" class="section" aria-labelledby="agents-title">
+      <div class="wrap">
+        <div class="section-head"><span class="eyebrow">2 · meet the residents</span><h2 id="agents-title">Different people. Shared space.</h2><p class="lead">Each resident brings a perspective and remembers recent turns. Open the app and start a discussion: AI residents can reply, ask questions, post, and vote as the conversation develops.</p></div>
+        <p class="notice actor-note">Choose local AI, Codex, or Claude for decisions based on the live community. Scripted demo is a repeatable demonstration. A resident may disagree, wait, or miss something; moderation takes actual protocol standing and quorum.</p>
+        <div id="agent-list" class="agent-list rows"><p class="empty-state">Connecting to your agents…</p></div>
+        <details id="add-agent-details" class="add-agent"><summary class="add-agent-summary">+ Add a resident</summary><form id="add-agent-form" class="agent-form"><div class="field"><label for="agent-name">Name</label><input id="agent-name" name="name" maxlength="32" required placeholder="e.g. Curious neighbour" autocomplete="off"></div><div class="field"><label for="agent-role">Role</label><select id="agent-role" name="role"><option value="honest">Neighbour · join the conversation</option><option value="defender">Defender · keep the community healthy</option><option value="challenger">Organiser · attempt a takeover</option><option value="forger">Forger · test signed records</option><option value="persuader">Persuader · test link boundaries</option></select></div><div class="field"><label for="agent-driver">Driver</label><select id="agent-driver" name="driver"><option value="">Scenario default</option><option value="llm">Local AI model</option><option value="codex">Codex CLI</option><option value="claude">Claude Code CLI</option><option value="scripted">Scripted demo</option></select></div><button class="pill pill-ink" type="submit" data-needs-ready>Add resident</button><p id="new-agent-goal" class="aside form-wide">Goal: keep a useful conversation going.</p></form></details>
+      </div>
+    </section>
+    <section id="suite" class="section soft" aria-labelledby="suite-title">
+      <div class="wrap">
+        <div class="section-head"><span class="eyebrow">3 · set the scene</span><h2 id="suite-title">What kind of community?</h2><p class="lead">Start with a close circle or a busy town hall. A small cast makes real decisions; the wider population supplies context, never extra votes.</p></div>
+        <form id="config-form">
+          <fieldset class="preset-fieldset"><legend>Community scenarios</legend><div class="preset-list"><label class="preset-choice"><input type="radio" name="preset" value="neighbours"><span><strong>Everyday neighbours</strong><small>Five honest residents with different interests. Start a conversation and see where it goes.</small></span></label><label class="preset-choice"><input type="radio" name="preset" value="takeover" checked><span><strong>A push for control</strong><small>Five honest residents and one organiser seeking power over the rules.</small></span></label><label class="preset-choice"><input type="radio" name="preset" value="townhall"><span><strong>A town of 1,000</strong><small>1,000 residents in the story; eight active neighbours and one ambitious organiser.</small></span></label></div></fieldset>
+          <details class="legacy-presets"><summary>Focused exercises <span class="muted">protocol and links</span></summary><div class="preset-list"><label class="preset-choice"><input type="radio" name="preset" value="balanced"><span><strong>A bit of everything</strong><small>Conversation, protocol probes, and a harmless link exercise.</small></span></label><label class="preset-choice"><input type="radio" name="preset" value="protocol"><span><strong>The protocol</strong><small>Try invalid records against the real validator.</small></span></label><label class="preset-choice"><input type="radio" name="preset" value="social"><span><strong>The link exercise</strong><small>Observe persuasion around one intercepted local canary link.</small></span></label></div></details>
+          <div id="scenario-preview" class="scenario-preview frame" aria-live="polite"><div><span class="small-label">The setting</span><h3 id="scenario-name">A push for control</h3><p id="scenario-brief" class="muted">The scenario brief loads with the sandbox.</p></div><dl class="scenario-counts"><div><dt>Population in the story</dt><dd id="scenario-population">6</dd></div><div><dt>Active residents</dt><dd id="scenario-active">6</dd></div></dl><p id="scenario-boundary" class="aside">Only active identities can post or vote. The scenario does not create votes for a background population.</p></div>
+          <div class="config-controls"><div class="field"><label for="duration">Time limit <span class="muted">minutes</span></label><input id="duration" name="duration" type="number" min="1" max="120" step="1" value="15" required><small>1–120 minutes</small></div><div class="field"><label for="rounds">Turns per resident</label><input id="rounds" name="rounds" type="number" min="1" max="200" step="1" value="24" required><small>1–200 turns; residents can choose to wait</small></div><div class="field"><label for="pace">Pause between turns <span class="muted">seconds</span></label><input id="pace" name="pace" type="number" min="2" max="120" step="1" value="15" required><small>2–120 seconds, plus decision time</small></div></div>
+          <fieldset class="model-settings"><legend>Who makes the decisions?</legend><div class="model-controls"><div class="field"><label for="driver">Default driver</label><select id="driver" name="driver"><option value="llm">Local AI model</option><option value="codex">Codex CLI</option><option value="claude">Claude Code CLI</option><option value="scripted">Scripted demo</option></select><small>Changing this updates every current resident. Individual drivers can then be changed above.</small></div><div class="provider-state"><span class="small-label">Provider connection</span><p id="provider-status" role="status">Waiting for the sandbox.</p></div><div id="local-settings" class="provider-settings model-endpoint"><div class="field"><label for="model">Local model name</label><input id="model" name="model" placeholder="Your installed model name" maxlength="100" autocomplete="off"></div><div class="field"><label for="endpoint">Local model endpoint</label><input id="endpoint" name="endpoint" type="url" placeholder="http://host.docker.internal:11434/v1" autocomplete="off"><small>Use host.docker.internal to reach your OpenAI-compatible API from Docker.</small></div></div><div id="codex-settings" class="field model-endpoint" hidden><label for="codex-model">Codex model <span class="muted">optional</span></label><input id="codex-model" name="codexModel" placeholder="Leave blank for the Codex built-in default" maxlength="100" autocomplete="off"></div><div id="claude-settings" class="field model-endpoint" hidden><label for="claude-model">Claude model</label><input id="claude-model" name="claudeModel" value="sonnet" placeholder="sonnet" maxlength="100" autocomplete="off"></div><div id="cli-help" class="provider-help model-endpoint" hidden><p>The launcher starts a worker for installed CLIs. To start it separately, keep this command running in another terminal:</p><code>node sandbox/cli-worker.mjs</code><p>Run it from this repository after starting the sandbox. CLI requests use your account and may consume paid usage. The call limit below is not a currency budget.</p></div><p id="scripted-help" class="notice model-endpoint" hidden>Scripted demo uses predetermined decision rules. Choose an AI provider for open-ended conversation and adaptation.</p></div></fieldset>
+          <div class="budget-controls"><div class="field"><label for="max-calls">Maximum AI calls per run</label><input id="max-calls" name="maxCalls" type="number" min="1" max="500" step="1" value="60" required><small>1–500 calls across all AI residents</small></div><div class="field"><label for="concurrency">Simultaneous AI decisions</label><input id="concurrency" name="concurrency" type="number" min="1" max="3" step="1" value="2" required><small>1–3 overall; the CLI worker allows at most 2</small></div><p id="budget-preview" class="aside">The call cap keeps a large scenario from starting hundreds of AI sessions.</p></div>
+          <div class="form-footer"><button class="pill pill-ink" type="submit" data-needs-ready>Save scenario settings</button><p id="config-status" class="aside" role="status">Settings load when the sandbox connects.</p></div>
+        </form>
+      </div>
+    </section>
+    <section id="evidence" class="section" aria-labelledby="evidence-title">
+      <div class="wrap">
+        <div class="section-head"><span class="eyebrow">4 · show the receipts</span><h2 id="evidence-title">What actually happened?</h2><p class="lead">Read what residents chose and what the protocol accepted. A proposal, a hide request, or a membership objection is an attempt; only observed state changes show that it took effect.</p></div>
+        <p class="notice evidence-note">The link exercise only measures interaction with an intercepted local link. It cannot establish whether arbitrary links are safe. A quiet run or an unsuccessful takeover is not proof of security.</p>
+        <div id="checks" class="checks rows"><p class="empty-state">Start a suite to see its checks here.</p></div>
+        <section id="community-outcomes" class="community-outcomes" aria-labelledby="outcomes-title" hidden><div class="referee-heading"><h3 id="outcomes-title">Observed community outcomes</h3></div><dl class="outcome-stats"><div><dt>Rules in effect</dt><dd id="rules-outcome">Awaiting observation</dd></div><div><dt>Proposals in latest snapshot</dt><dd id="proposal-count">0</dd></div><div><dt>Members observed blocked</dt><dd id="blocked-count">0</dd></div></dl><p class="aside">A pending proposal has not changed the rules. Proposal responses show participation; the protocol determines whether consent is sufficient.</p><ul id="outcome-proposals" class="outcome-proposals"></ul><p id="blocked-members" class="aside"></p></section>
+        <div class="referee-heading"><h3>The referee's view</h3><span id="referee-status" class="aside">Waiting for a snapshot</span></div><dl id="referee-counts" class="referee-counts"></dl>
+        <details class="referee-details"><summary>Raw referee snapshot</summary><pre id="referee-raw" class="raw-output">No snapshot yet.</pre></details>
+        <div class="evidence-heading"><h3>Activity ledger</h3><span id="event-count" class="aside">No events yet</span></div><ol id="events" class="event-list"><li class="empty-state">Agents' actions and check results will appear here.</li></ol>
+      </div>
+    </section>
+  </main>
+  <footer class="wrap site-footer"><span>hoi sandbox · session <span id="session-name">—</span></span><a href="#main">Back to the controls ↑</a></footer>
+  <div id="toast" class="sandbox-toast" role="status" hidden></div>
+  <script type="module" src="/dashboard.mjs"></script>
+</body>
+</html>

@@ -1,0 +1,121 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "1.0.0-preview.1"
+edition = "2024"
+license = "AGPL-3.0-only"
+repository = "https://github.com/hoi-project/hoi"
+rust-version = "1.94"
+publish = false
+
+# Published providers still select the vulnerable RustCrypto 0.13 curve stack.
+# These reviewed compatibility patches use upstream crypto releases; see ../vendor/README.md.
+[patch.crates-io]
+openmls_rust_crypto = { path = "../vendor/openmls_rust_crypto" }
+openmls_basic_credential = { path = "../vendor/openmls_basic_credential" }
+dimpl = { path = "../vendor/dimpl" }
+core-models = { path = "../vendor/core-models" }
+# Shared Darwin ioctl layout: libc exposes its request type only on macOS.
+netdev = { path = "../vendor/netdev-0.46.3" }
+
+[workspace.dependencies]
+hoi-types = { path = "crates/hoi-types" }
+hoi-crypto = { path = "crates/hoi-crypto" }
+hoi-validate = { path = "crates/hoi-validate" }
+hoi-store = { path = "crates/hoi-store" }
+hoi-sync = { path = "crates/hoi-sync" }
+hoi-moderation = { path = "crates/hoi-moderation" }
+hoi-trust = { path = "crates/hoi-trust" }
+hoi-spam = { path = "crates/hoi-spam" }
+hoi-core = { path = "crates/hoi-core" }
+hoi-net = { path = "crates/hoi-net" }
+
+blake3 = { version = "1.8", default-features = false, features = ["std"] }
+ed25519-dalek = { version = "3", features = ["zeroize"] }
+argon2 = { version = "0.6", default-features = false, features = ["alloc"] }
+chacha20poly1305 = { version = "0.11", default-features = false, features = ["alloc"] }
+# Scattered delivery (hoi-crypto::scatter, ::envelope): the stream cipher of the all-or-nothing
+# transform, and HPKE for envelopes. All already in the tree through chacha20poly1305 and OpenMLS.
+chacha20 = { version = "0.10", default-features = false, features = ["cipher"] }
+hpke-rs = { version = "0.8", default-features = false }
+hpke-rs-crypto = { version = "0.8", default-features = false }
+hpke-rs-rust-crypto = { version = "0.8", default-features = false }
+getrandom = "0.4"
+bs58 = "0.5"
+base64 = "0.23"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+zeroize = "1"
+subtle = "2"
+openmls = { version = "=0.9.2" }
+openmls_rust_crypto = "=0.6.0"
+openmls_basic_credential = "=0.6.0"
+openmls_traits = "=0.6.0"
+rusqlite = { version = "0.40", features = ["bundled"] }
+# Without `fork` and `timeout` (unused), so tests also build and run for wasm32-wasip1.
+proptest = { version = "1.12", default-features = false, features = ["std", "bit-set"] }
+wasm-bindgen = "0.2.129"
+js-sys = "0.3.106"
+tokio = { version = "1.54", features = ["rt-multi-thread", "net", "sync", "time", "macros", "signal", "io-util"] }
+tokio-tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
+# Authenticated QUIC and user-selected relay fallback; no default infrastructure.
+iroh = { version = "=1.4.1", default-features = false, features = ["tls-ring"] }
+# The DHT among public nodes: a Mainline DHT node with no outside bootstrap.
+mainline = { version = "=8.0.1", default-features = false, features = ["async"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+# WebRTC data channels for browsers and phones (hoi-net rtc): sans-IO, ICE-lite. Its RustCrypto
+# provider is vendored in hoi-net (rtc_crypto) with certificates from rcgen on ring, so no
+# aws-lc-rs: these are that provider's dependencies.
+str0m = { version = "0.24.1", default-features = false }
+str0m-proto = { version = "0.7.0", default-features = false, features = ["dtls"] }
+dimpl = { version = "0.7.6", default-features = false, features = ["rust-crypto"] }
+rcgen = { version = "0.14", default-features = false, features = ["ring"] }
+aes = "0.8"
+aes-gcm = "0.10"
+ctr = "0.9"
+hmac = "0.12.1"
+sha1 = "0.10"
+sha2 = "0.10"
+# Rules and wiki text as CRDT documents (M3). No counters, no JSON path queries.
+loro = { version = "1.17.1", default-features = false }
+# Checking age credentials (SD-JWT VC, ES256) on a moderator's device: the P-256 the
+# WebRTC stack already brings in, verification only.
+p256 = { version = "0.14", default-features = false, features = ["ecdsa", "alloc"] }
+# Local addresses for the WebRTC sockets, and the default gateway the port mapper asks
+# (hoi-node --port-mapping); already in the tree through iroh, and `gateway` adds no crates.
+netdev = { version = "0.46.3", default-features = false, features = ["gateway"] }
+# Decodes pictures for perceptual fingerprints (hoi-validate::similar). Only the four formats hoi carries; no rayon.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+# Deflate for node links carrying an operator notice (hoi-types::uri); the png decoder above already brings it.
+miniz_oxide = { version = "0.8", default-features = false, features = ["with-alloc"] }
+
+# Tests mine real stamps; keep hashing fast in debug builds.
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.dev.package.hoi-crypto]
+opt-level = 3
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3
+strip = "debuginfo"
+
+[profile.release.package."*"]
+opt-level = 3
+
+# The browser build: small, but keep hashing fast.
+[profile.wasm]
+inherits = "release"
+opt-level = "s"
+panic = "abort"
+
+[profile.wasm.package.blake3]
+opt-level = 3
+
+[profile.wasm.package.hoi-crypto]
+opt-level = 3

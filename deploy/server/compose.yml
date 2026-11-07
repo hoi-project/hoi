@@ -1,0 +1,63 @@
+name: hoi-server
+
+# Linux VPS/public host deployment: a public node (hoi-node --public). It needs no
+# registry, invite or route copying: it carries open communities connected peers hand it over
+# the link (carry requests, bounded), including a new community straight from its founder's
+# browser, tells whoever connects about the other public nodes it reached and writes
+# a link anyone can open to /data/node-link. It has no person's key. This service never learns
+# the private MLS groups stored in the separate opaque relay. To also mirror and announce to a
+# registry, add "--index" and its URL to the command in a compose.override.yml. To carry the
+# operator's notice (the node warns at start without one), mount the file and add
+# "--notice" and its path to the command there too, for example:
+#   services: { public-carrier: { volumes: ["./notice.json:/etc/hoi-node/notice.json:ro"],
+#               command: [..., "--notice", "/etc/hoi-node/notice.json"] } }
+services:
+  public-carrier:
+    build:
+      context: ../..
+      dockerfile: core/crates/hoi-node/Dockerfile
+    # Set HOI_CARRIER_IMAGE in .env to run a prebuilt image instead of building.
+    image: ${HOI_CARRIER_IMAGE:-hoi-public-carrier:local}
+    entrypoint: ["hoi-node"]
+    command:
+      - --data
+      - /data
+      - --public
+      - --peer-bind
+      - 0.0.0.0:7843
+      - --rtc-port
+      - "7844"
+      - --rtc-advertise
+      - ${HOI_RTC_ADVERTISE:?Set the host public IP and UDP port in deploy/server/.env}
+      - --name
+      - ${HOI_NODE_NAME:-public node}
+      - --carry-limit
+      - ${HOI_CARRY_LIMIT:-256}
+    # Avoid advertising a container-only IP as the node's public route. The host firewall
+    # should expose UDP 7843/7844, and 7846/7847 for the DHT among public nodes. --public runs no paired-device listener; were it dropped,
+    # the node would listen on 127.0.0.1:7842, the host's own loopback in this network mode.
+    # Operator tools run in this same service with the node stopped:
+    #   docker compose ... run --rm --no-deps public-carrier admin --data /data suppressions
+    network_mode: host
+    volumes:
+      - public-carrier-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 1g
+    cpus: 2.0
+    pids_limit: 128
+    restart: unless-stopped
+    # hoi-node's shutdown handler listens for Ctrl-C/SIGINT and commits before exit.
+    stop_signal: SIGINT
+    stop_grace_period: 30s
+    logging:
+      driver: local
+      options:
+        max-size: "1m"
+        max-file: "1"
+
+volumes:
+  public-carrier-data:

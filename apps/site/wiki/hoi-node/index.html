@@ -1,0 +1,725 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <!-- @include head.html title="hoi-node · hoi wiki" description="The headless node: roles, flags, routes, admin and packet relay." -->
+</head>
+<body class="wiki">
+<!-- @include header.html nav="wiki" -->
+<!-- @wiki-open -->
+<article class="wk-doc">
+  <!-- @wiki-crumbs -->
+  <h1>hoi-<span class="acc">node</span></h1>
+  <p class="wk-lead"><code>hoi-node</code> is the hoi core without a window. One binary runs a home node for your phone and browser, a public node that carries open communities for strangers, a registry for public names, a packet relay, or several of these at once. This page lists every flag, every file it writes, every loop it runs, what it prints and what it refuses to print.</p>
+  <p class="wk-src-list">Source <a href="{{REPO_URL}}/blob/main/core/crates/hoi-node/src/main.rs">hoi-node/src/main.rs</a> <a href="{{REPO_URL}}/blob/main/core/crates/hoi-node/src/admin.rs">admin.rs</a> <a href="{{REPO_URL}}/blob/main/core/crates/hoi-node/src/index.rs">index.rs</a> <a href="{{REPO_URL}}/blob/main/core/crates/hoi-node/src/trackers.rs">trackers.rs</a> <a href="{{REPO_URL}}/blob/main/core/crates/hoi-node/src/packet_relay.rs">packet_relay.rs</a> <a href="{{REPO_URL}}/blob/main/core/crates/hoi-node/src/routes.rs">routes.rs</a> <a href="{{REPO_URL}}/blob/main/core/crates/hoi-node/src/http.rs">http.rs</a> <a href="{{REPO_URL}}/tree/main/core/crates/hoi-node/src/registry">registry/</a> <a href="{{REPO_URL}}/blob/main/core/crates/hoi-node/hoi-node.service">hoi-node.service</a> <a href="{{REPO_URL}}/blob/main/core/crates/hoi-node/Dockerfile">Dockerfile</a></p>
+  <div class="wk-head-rule"></div>
+
+  <section class="wk-sec" id="overview">
+    <h2>What it is</h2>
+    <p>The crate <code>hoi-node</code> builds one binary of the same name. It links the Rust core (<code>hoi-core</code> with the <code>sqlite</code> feature), the network layer (<code>hoi-net</code>: iroh QUIC, WebRTC, the WebSocket link, the DHT, LAN beacons, port mapping), the storage layer (<code>hoi-store</code>) and three crates of its own concern: <code>iroh-relay</code> for the packet relay, <code>hyper</code> (server half, HTTP/1.1 only) for the registry, and <code>reqwest</code> on rustls with Mozilla's roots compiled in for talking to registries. The <a href="/wiki/crates/">Crates</a> page places it among the rest.</p>
+    <p>The node is a full participant: it checks every record it receives exactly as the apps do (<a href="/wiki/validation/">Validation pipeline</a>), keeps them in SQLite, syncs them (<a href="/wiki/sync/">Sync &amp; gossip</a>) and lets them go when they expire (<a href="/wiki/expiry/">Expiry &amp; removal</a>). What differs is who it serves and what it carries. That is decided by its <a href="#roles">role flags</a>.</p>
+    <div class="wk-note info"><b>Nothing built in</b><p>The binary names no node, registry or relay to start from. A node finds others through the invites it joins (<code>--join</code>), the node links it is given (<code>--node</code>), the devices that pair with it and the nodes that reach it. A registry is optional and only ever the one you name with <code>--index</code>. See <a href="/wiki/discovery/">Discovery</a>.</p></div>
+    <p>Three facts shape everything below:</p>
+    <ul>
+      <li>It keeps no logs of who connects. It prints its own status and nothing about peers, clients or records (<a href="#logging">Logging</a>).</li>
+      <li>There is no admin endpoint on any port. The operator's tools run from a shell against the data directory (<a href="#admin">hoi-node admin</a>).</li>
+      <li>One node per data directory. A lock file keeps a second node, and the admin tools that change the store, away from a running one (<a href="#storage">Storage</a>).</li>
+    </ul>
+  </section>
+
+  <section class="wk-sec" id="roles">
+    <h2>Roles</h2>
+    <p>The roles compose. The default is a home node that is also a public relay; flags take parts away or add a registry, a packet relay or a carrier for an index. <code>main.rs</code> derives the rest of the behaviour from three booleans: <code>public</code>, <code>public_relay</code> and <code>peer_only</code>.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Roles at a glance">
+      <table>
+        <thead><tr><th>Role</th><th>Started with</th><th>Person's key</th><th>Pairing listener</th><th>Carries for strangers</th><th>Port mapping</th><th>Node link</th></tr></thead>
+        <tbody>
+          <tr><td><b>Home node and public relay</b></td><td>(default)</td><td>made on first start</td><td><code>--listen</code>, 127.0.0.1:7842</td><td><code>--carry any</code></td><td>on</td><td>yes</td></tr>
+          <tr><td><b>Home node, not public</b></td><td><code>--no-public-relay</code></td><td>made on first start</td><td>yes</td><td>no: <code>index</code> with <code>--index</code>, else <code>off</code></td><td>off</td><td>no</td></tr>
+          <tr><td><b>Public node</b></td><td><code>--public</code></td><td>none (a label only)</td><td>none (<code>--peer-only</code>)</td><td><code>--carry any</code></td><td>off unless <code>--port-mapping</code></td><td>yes</td></tr>
+          <tr><td><b>Peer only</b></td><td><code>--peer-only</code></td><td>none</td><td>none</td><td>as the relay flags say</td><td>as the relay flags say</td><td>if public</td></tr>
+          <tr><td><b>Registry</b></td><td><code>--registry ADDR</code> (with any of the above)</td><td>unchanged</td><td>unchanged</td><td>unchanged</td><td>unchanged</td><td>unchanged</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 id="roles-home">Home node (the default)</h3>
+    <p>A home node runs on a spare computer, a Raspberry Pi or a small VPS. On first start it creates an identity named after <code>--name</code> (default <code>home node</code>): it signs as its person's device. It listens for paired devices on <code>--listen</code> (default <code>127.0.0.1:7842</code>), writes its pairing link to <code>DIR/pairing-link</code> and keeps its person's communities warm. Native nodes relay by default (a setting stored with the node, turned off with <code>--no-relay</code>): members' browsers and nodes that dial in may catch up from it, up to <code>--daily-cap-gb</code> (default 5) a day. Pairing and the link itself are described on <a href="/wiki/links/">Links &amp; URIs</a>.</p>
+    <p>Unless started with <code>--no-public-relay</code> it is a <b>public relay</b> too: <code>public_relay</code> defaults to <code>!public</code>. A public relay carries open communities that anyone asks it to (<code>--carry any</code>), asks the router to forward its UDP ports (<code>--port-mapping</code>), tells whoever connects about the other public nodes it reached, holds encrypted pieces for scattered delivery (2 GB by default) and writes a node link anyone may open to <code>DIR/node-link</code>. <code>--public-relay</code> is accepted and changes nothing: it is kept for service files written before it was the default.</p>
+    <h3 id="roles-public">Public node</h3>
+    <p><code>--public</code> sets <code>public</code> and <code>peer_only</code>. A public node has no person behind it: on a fresh data directory no identity is created, only a node label (<code>set_node_name</code>); a key already in the directory from an older carrier is kept. It stores and serves, never signs a community record and cannot vouch anyone in. It runs no pairing listener and writes no pairing file (one left from an earlier run is removed). Relaying is switched on unless <code>--no-relay</code> says otherwise, carrying defaults to <code>any</code>, pieces default to 2 GB. It is not anyone's public relay, so port mapping stays off unless <code>--port-mapping</code> is given (the installers add it). Without <code>--notice</code> it warns at start that people who connect are not told who runs it.</p>
+    <h3 id="roles-registry">Registry role</h3>
+    <p><code>--registry ADDR</code> adds the public-name API on <code>ADDR</code>, kept in <code>DIR/registry.db</code>: the same requests, answers and database shape as the Node service and the Worker in <code>registry/</code>, so a namespace moves between them by copying the file. It composes with any role; the installers pair it with <code>--public</code>. The <a href="#registry">embedded registry</a> section below covers the Rust side; the <a href="/wiki/registry/">Registry</a> page covers the API, the log of names and verification.</p>
+    <h3 id="roles-relay">Packet relay</h3>
+    <p><code>--packet-relay ADDR</code> runs iroh's own relay server beside the node, so two nodes that cannot reach each other directly still connect through a relay their community's node operates. It forwards QUIC packets it cannot read by destination endpoint. See <a href="#packet-relay">Packet relay</a>.</p>
+    <h3 id="roles-carrier">Carrier for an index, and trackers</h3>
+    <p><code>--index URL</code> (repeatable) makes the node a carrier for that registry: it announces its public routes there, carries the open communities it lists and takes a newly published community straight from its founder's browser (<a href="#index">The index loop</a>). Separately, a public node announces itself to the trackers the communities it carries name (<a href="#trackers">Trackers</a>). No registry is needed for any role.</p>
+    <h3 id="roles-pieces">Holder of encrypted pieces</h3>
+    <p><code>--hold-pieces GB</code> keeps up to that many gigabytes of other people's encrypted pieces in <code>DIR/pieces.db</code> and answers sealed requests for them. A node that serves strangers (public or public relay) holds 2 GB unless told otherwise; <code>--hold-pieces 0</code> turns it off. The node can read none of what it holds; <a href="/wiki/scatter/">Scattered delivery</a> explains the pieces.</p>
+    <h3 id="roles-status">The role line</h3>
+    <p>The first status line names the role, from <code>(public, public_relay, peer_only)</code>:</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Role words in the status line">
+      <table>
+        <thead><tr><th><code>public</code></th><th><code>public_relay</code></th><th><code>peer_only</code></th><th>Printed</th></tr></thead>
+        <tbody>
+          <tr><td>true</td><td>any</td><td>any</td><td><code>public node</code></td></tr>
+          <tr><td>false</td><td>true</td><td>true</td><td><code>public relay, peer only</code></td></tr>
+          <tr><td>false</td><td>true</td><td>false</td><td><code>home node and public relay</code></td></tr>
+          <tr><td>false</td><td>false</td><td>true</td><td><code>peer only, not public</code></td></tr>
+          <tr><td>false</td><td>false</td><td>false</td><td><code>home node, not public</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="wk-sec" id="flags">
+    <h2>Every flag</h2>
+    <p>Arguments are parsed by hand in <code>args()</code>, one flag at a time. A flag that needs a value and gets none or a bad one, or any unknown argument, prints the usage text to standard error and exits with code 2. <code>-h</code>/<code>--help</code> does the same; <code>-V</code>/<code>--version</code> prints <code>hoi-node VERSION</code> and exits 0. <code>hoi-node admin …</code> as the first argument runs the <a href="#admin">operator's tools</a> instead. Repeatable flags are marked ×.</p>
+    <h3 id="flags-roles">Roles</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Role flags">
+      <table>
+        <thead><tr><th>Flag</th><th>Value</th><th>Default</th><th>Effect</th></tr></thead>
+        <tbody>
+          <tr><td><code>--public</code></td><td>switch</td><td>off</td><td>A public node: implies <code>--peer-only</code>, relaying on, <code>--carry any</code>, 2 GB of pieces, no person's key.</td></tr>
+          <tr><td><code>--no-public-relay</code></td><td>switch</td><td>off</td><td>Not a public relay: no <code>--carry any</code>, no port mapping, no node link, no pieces by default.</td></tr>
+          <tr><td><code>--public-relay</code></td><td>switch</td><td>on unless <code>--public</code></td><td>A public relay (the default for a home node). With <code>--public</code> it also turns port mapping on.</td></tr>
+          <tr><td><code>--peer-only</code></td><td>switch</td><td>off</td><td>Run only peer transports: no paired-device listener, no pairing links.</td></tr>
+          <tr><td><code>--registry</code></td><td>socket address</td><td>none</td><td>Serve the registry API on this address from <code>DIR/registry.db</code>. Required by the other <code>--registry-*</code> flags.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 id="flags-home">Home node</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Home node flags">
+      <table>
+        <thead><tr><th>Flag</th><th>Value</th><th>Default</th><th>Effect</th></tr></thead>
+        <tbody>
+          <tr><td><code>--listen</code></td><td>socket address</td><td><code>127.0.0.1:7842</code></td><td>Where paired devices connect over WebSocket. A non-loopback address prints two notes (TLS proxy needed for https pages; publish on loopback only in a container).</td></tr>
+          <tr><td><code>--name</code></td><td>text</td><td><code>home node</code></td><td>What your devices call the node; a public node's label. A changed name renames the identity on start.</td></tr>
+          <tr><td><code>--new-pairing</code></td><td>switch</td><td>off</td><td>Issues a new pairing token (<code>rotate_pairing</code>) and prints the links. Every device paired before must pair again.</td></tr>
+          <tr><td><code>--show-pairing</code></td><td>switch</td><td>off</td><td>Prints the pairing links to the terminal (they are always in <code>DIR/pairing-link</code>).</td></tr>
+          <tr><td><code>--public-url</code></td><td><code>wss://</code> URL</td><td>the local <code>ws://</code> address</td><td>Advertise a TLS proxy address in pairing links. Must be <code>wss</code> with a host, and no user, password, query or fragment.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 id="flags-notice">Operator notice</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Notice flag">
+      <table>
+        <thead><tr><th>Flag</th><th>Value</th><th>Default</th><th>Effect</th></tr></thead>
+        <tbody>
+          <tr><td><code>--notice</code></td><td>file (JSON)</td><td>none</td><td>The operator's notice, checked with <code>NodeNotice::validate</code>; a bad file stops the node (exit 1). Carried in every hello to a stranger and, signed, in the node link; re-read when the file changes (polled every 30 s); its hash goes to <code>DIR/notice-hash</code>.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 id="flags-finding">Finding others</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Discovery flags">
+      <table>
+        <thead><tr><th>Flag</th><th>Value</th><th>Default</th><th>Effect</th></tr></thead>
+        <tbody>
+          <tr><td><code>--node</code> ×</td><td>node link</td><td>none</td><td>A public node to look at first: <code>hoi://node?…</code> or <code>…#/node?…</code>, checked with <code>NodeLink::parse</code>. Opened with <code>open_node_link</code> at start.</td></tr>
+          <tr><td><code>--index</code> ×</td><td>registry URL</td><td>none</td><td>Announce this node's public routes to that registry and carry what it lists. <code>https://</code>, or plain <code>http://</code> only on <code>localhost</code>, <code>127.0.0.1</code> or <code>[::1]</code>; no credentials, query or fragment; a trailing slash is dropped; duplicates are dropped.</td></tr>
+          <tr><td><code>--join</code> ×</td><td>invite</td><td>none</td><td>Join a community and keep its routes. A bad invite stops the node (exit 1).</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 id="flags-carry">Carrying</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Carrying flags">
+      <table>
+        <thead><tr><th>Flag</th><th>Value</th><th>Default</th><th>Effect</th></tr></thead>
+        <tbody>
+          <tr><td><code>--carry</code></td><td><code>off</code> | <code>index</code> | <code>any</code></td><td><code>any</code> for a public node or relay; otherwise <code>index</code> with <code>--index</code>, else <code>off</code></td><td><code>off</code>: only communities joined by invite. <code>index</code>: what each <code>--index</code> lists, and what browsers offer under a listed key. <code>any</code>: that, and carry requests from connected peers for open communities (advertised as <code>carry</code> in the hello).</td></tr>
+          <tr><td><code>--carry-limit</code></td><td>integer ≥ 1</td><td>256</td><td>Communities to carry at most, those still waiting for a member included. Requests from peers may fill half (the status line prints <code>limit.div_ceil(2)</code>).</td></tr>
+          <tr><td><code>--carry-mb</code></td><td>integer ≥ 1</td><td>256</td><td>Megabytes the communities carried on peers' requests may hold together; over it, the ones nobody touched for longest are let go.</td></tr>
+          <tr><td><code>--refuse</code> ×</td><td>community key (64 hex)</td><td>none</td><td>Never carry this community, whoever asks or lists it. One carried already is let go and deleted. Lasts as long as the command line keeps it; <code>hoi-node admin suppress community</code> is the stored version.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 id="flags-pieces">Scattered delivery</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Pieces flag">
+      <table>
+        <thead><tr><th>Flag</th><th>Value</th><th>Default</th><th>Effect</th></tr></thead>
+        <tbody>
+          <tr><td><code>--hold-pieces</code></td><td>gigabytes: 0, or 0.1 to 10000</td><td>2 on a node that serves strangers, else none</td><td>Opens <code>DIR/pieces.db</code> with a budget of <code>GB × 10⁹</code> bytes and answers sealed requests for pieces. <code>0</code> is none.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 id="flags-registry">Registry</h3>
+    <p>All of these need <code>--registry ADDR</code>. Given without it, <code>--registry-origin</code>, <code>--registry-public-node</code>, <code>--registry-mirror</code>, <code>--registry-release</code>, <code>--registry-url</code> or <code>--registry-announcer</code> stop the node with <code>--registry-* flags need --registry ADDR</code>.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Registry flags">
+      <table>
+        <thead><tr><th>Flag</th><th>Value</th><th>Default</th><th>Effect</th></tr></thead>
+        <tbody>
+          <tr><td><code>--registry-url</code></td><td>URL</td><td>none</td><td>This registry's public URL as carriers are given it. Announcements must be signed for its origin. Without it, only announcements signed for the loopback address a connection reached are taken.</td></tr>
+          <tr><td><code>--registry-origin</code> ×</td><td>exact origin</td><td>none</td><td>A browser origin allowed to call the API: an exact <code>http(s)</code> origin with no path or trailing slash, or <code>tauri://localhost</code>. <code>null</code> is never allowed. Without any, browsers are refused (non-browser clients still work).</td></tr>
+          <tr><td><code>--registry-public-node</code> ×</td><td>route</td><td>none</td><td>A route listed before any announced node; at most 16, each a valid <a href="#routes">route</a>.</td></tr>
+          <tr><td><code>--registry-no-announcements</code></td><td>switch</td><td>off</td><td>List only the configured routes; <code>PUT /v2/nodes</code> answers 403 <code>announcements-disabled</code>.</td></tr>
+          <tr><td><code>--registry-announcer</code> ×</td><td>endpoint key</td><td>none (any node)</td><td>Allowlist mode: take announcements only from these keys (strong, 64 lowercase hex; at most 1024).</td></tr>
+          <tr><td><code>--registry-mirror</code> ×</td><td>registry URL</td><td>none</td><td>Audit another registry's log and import its verified names when they are free here (same URL rules as <code>--index</code>).</td></tr>
+          <tr><td><code>--registry-release</code></td><td>file</td><td>the compiled <code>release.json</code></td><td>A replacement release manifest, at most 16 KiB, read on every request; invalid at start stops the node.</td></tr>
+          <tr><td><code>--registry-app-url</code></td><td>URL</td><td><code>https://hoi.sh/app/</code></td><td>The app address the metadata points at: HTTPS, or HTTP on loopback; no credentials, query or fragment.</td></tr>
+          <tr><td><code>--registry-limits</code></td><td><code>R,C,A</code></td><td><code>600,30,120</code></td><td>Per-minute budgets for reads, name claims and announcements. Exactly three positive integers.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 id="flags-transport">Transport and storage</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Transport flags">
+      <table>
+        <thead><tr><th>Flag</th><th>Value</th><th>Default</th><th>Effect</th></tr></thead>
+        <tbody>
+          <tr><td><code>--data</code></td><td>directory</td><td><code>./hoi-node-data</code></td><td>Where everything lives (<a href="#storage">Storage</a>). Created if missing.</td></tr>
+          <tr><td><code>--peer-bind</code></td><td>socket address</td><td>automatic</td><td>Bind the iroh UDP transport (ALPNs <code>hoi/sync/1</code> and iroh-blobs) to this address only. The installers and the image use <code>0.0.0.0:7843</code>.</td></tr>
+          <tr><td><code>--relay</code> ×</td><td>URL</td><td>none</td><td>An iroh relay to use: <code>https://</code>, or <code>http://</code> on 127.0.0.1, localhost or [::1]; no <code>@</code>, <code>?</code> or <code>#</code>; at most 2048 characters and 16 relays.</td></tr>
+          <tr><td><code>--packet-relay</code></td><td>TCP socket address</td><td>none</td><td>Run a packet relay here, e.g. <code>127.0.0.1:3340</code> behind a TLS proxy, or <code>0.0.0.0:443</code> with a certificate.</td></tr>
+          <tr><td><code>--packet-relay-url</code></td><td>URL, ≤ 512 chars</td><td><code>http://ADDR</code> for a loopback relay, else none</td><td>The address others reach the relay at; put first into this node's relay list, so invites name it.</td></tr>
+          <tr><td><code>--packet-relay-cert</code>, <code>--packet-relay-key</code></td><td>PEM files</td><td>none</td><td>Do TLS in the relay itself. Both or neither (otherwise exit 2).</td></tr>
+          <tr><td><code>--packet-relay-members</code></td><td>switch</td><td>off</td><td>Only endpoints this node knows as members of what it carries may use the relay.</td></tr>
+          <tr><td><code>--rtc-port</code></td><td>UDP port</td><td>7844 (any free port if taken)</td><td>WebRTC for browsers and phones. <code>0</code> turns it off. An explicit port that is taken is an error (logged; the node goes on without WebRTC).</td></tr>
+          <tr><td><code>--rtc-advertise</code> ×</td><td>socket address</td><td>none</td><td>Also advertise this UDP address (a forwarded port, a public address). With <code>--index</code> this is what is announced.</td></tr>
+          <tr><td><code>--rtc-bind</code> ×</td><td>IP</td><td>every interface</td><td>Serve WebRTC only on these local addresses.</td></tr>
+          <tr><td><code>--dht-port</code></td><td>UDP port ≠ 0</td><td>7846</td><td>The DHT among public nodes.</td></tr>
+          <tr><td><code>--dht-answer-port</code></td><td>UDP port ≠ 0</td><td>7847</td><td>Answers the DHT's hoi queries with signed routes.</td></tr>
+          <tr><td><code>--dht-bootstrap</code> ×</td><td>address, 1–255 chars</td><td>none</td><td>Also start the DHT from this outside node. Without it, public nodes find each other's DHT nodes themselves.</td></tr>
+          <tr><td><code>--no-dht</code></td><td>switch</td><td>DHT on</td><td>Don't run the DHT. It only runs anyway when relaying is on and <code>--carry any</code>.</td></tr>
+          <tr><td><code>--no-lan</code></td><td>switch</td><td>LAN on</td><td>Don't send or listen for beacons on UDP 7848 multicast (group 239.255.70.74). Never on with <code>--vpn-only</code>.</td></tr>
+          <tr><td><code>--no-relay</code> / <code>--relaying</code></td><td>switch</td><td>relaying (native default)</td><td>Whether members' browsers and nodes may connect and catch up. Stored in the node's settings.</td></tr>
+          <tr><td><code>--daily-cap-gb</code></td><td>0.1 to 1000</td><td>5</td><td>Gigabytes a day the node may relay for others; past it, it stops until the next day. Stored in the settings.</td></tr>
+          <tr><td><code>--port-mapping</code> / <code>--no-port-mapping</code></td><td>switch</td><td>on for a public relay, else off</td><td>Ask the router (PCP, NAT-PMP or UPnP) to forward the WebRTC, native IPv4 and DHT UDP ports, and advertise the public address it names.</td></tr>
+          <tr><td><code>--vpn-only</code></td><td>interface, 1–64 chars</td><td>none</td><td>Reach the internet only through this interface: nothing starts until the system routes internet traffic through it, sockets are bound to it, and the node exits (code 3) when it no longer does.</td></tr>
+          <tr><td><code>--no-home-network</code></td><td>switch</td><td>home network allowed</td><td>With <code>--vpn-only</code>: not even the home network directly.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 id="env">Environment</h3>
+    <p>hoi-node's own code reads one environment variable. Everything else is a flag.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Environment variables">
+      <table>
+        <thead><tr><th>Variable</th><th>Type</th><th>Default</th><th>Effect</th></tr></thead>
+        <tbody>
+          <tr><td><code>HOI_ALLOWED_ORIGINS</code></td><td>comma-separated origins</td><td>empty</td><td>Web origins allowed to open the paired-device WebSocket besides the node's own web app (<code>https://hoi.sh</code>, from the web base <code>https://hoi.sh/app/</code>): a self-hosted copy of the app, or a development server. Each must be an <code>http(s)</code> origin, or the listener refuses to start.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="wk-sec" id="startup">
+    <h2>Startup, step by step</h2>
+    <p><code>main()</code> runs on a multi-threaded tokio runtime. Everything that can fail on configuration fails before a socket opens; a failure prints <code>hoi-node: …</code> to standard error and exits 1.</p>
+    <ol class="wk-steps">
+      <li><b>Admin or node</b><p>If the first argument is <code>admin</code>, run the operator's tools and exit with their code. Otherwise parse the flags.</p></li>
+      <li><b>Carry mode</b><p><code>any</code> for a public node or relay; otherwise <code>off</code> without <code>--index</code> and <code>index</code> with it, unless <code>--carry</code> says.</p></li>
+      <li><b>Data directory and lock</b><p>Create <code>DIR</code>, take <code>DIR/hoi-node.lock</code>. A second node on the same directory exits: <code>a hoi-node is running on DIR; stop it first</code>.</p></li>
+      <li><b>Store and core</b><p>Open <code>DIR/hoi.db</code> and <code>Node::open(db, "node", "https://hoi.sh/app/", system clock)</code>.</p></li>
+      <li><b>Identity or label</b><p>No identity yet: a peer-only node gets a label, any other creates an identity named <code>--name</code>. An existing identity with another name is renamed.</p></li>
+      <li><b>Settings</b><p><code>--new-pairing</code> rotates the token. <code>--no-relay</code>/<code>--relaying</code> (on for public nodes and relays unless <code>--no-relay</code>) and <code>--daily-cap-gb</code> are written into the settings.</p></li>
+      <li><b>Policies</b><p>The carry policy and limit, the carry byte budget, the piece store (<code>DIR/pieces.db</code>), the refused keys, then the notice (<code>--notice</code>; without one, a public node or registry warns).</p></li>
+      <li><b>Invites and links</b><p>Each <code>--join</code> is joined and each <code>--node</code> opened; either failing exits.</p></li>
+      <li><b>Registry database</b><p>With <code>--registry</code>: load the release manifest, validate origins, routes, app URL, limits, registry URL and announcers, open <code>DIR/registry.db</code> and its log key. All before any socket.</p></li>
+      <li><b>VPN gate</b><p>With <code>--vpn-only IFACE</code>: wait (checking every 5 s) until the system routes internet traffic through it; bind the native transport and the HTTPS client to its IPv4 address. No IPv4 address exits.</p></li>
+      <li><b>Packet relay</b><p>Started first, so this node's own routes name it: its URL is inserted at the front of the relay list.</p></li>
+      <li><b>Peer transport</b><p><code>start_p2p</code>: the iroh endpoint on <code>--peer-bind</code> with the relays.</p></li>
+      <li><b>Pairing listener</b><p>Unless peer-only: the WebSocket server on <code>--listen</code>, then <code>--public-url</code> as the advertised address.</p></li>
+      <li><b>WebRTC</b><p><code>start_rtc</code> on <code>--rtc-port</code> unless it is 0. A failure is printed and the node goes on without it.</p></li>
+      <li><b>Sweeper and status</b><p>A task ticks every 5 s: scattered-delivery upkeep each tick, the expiry sweep every 36th tick (3 minutes). Then the status lines, the pairing file, the index and tracker loops, the DHT, the node-link, notice and address watchers, LAN beacons, link previews for paired browsers, checks of names that are domains, and the port mapper.</p></li>
+      <li><b>Registry listener and mirrors</b><p>Bind <code>--registry ADDR</code> (failure exits) and start one mirror loop per <code>--registry-mirror</code>.</p></li>
+      <li><b>Run</b><p>Wait for Ctrl-C or SIGTERM, passing router-forwarded public addresses to WebRTC and the native transport as they change.</p></li>
+    </ol>
+    <div class="wk-seq" data-title="Starting a home node that is a public relay">
+lanes: Operator | hoi-node | Data dir | Router | Network
+-- Configuration --
+Operator -> hoi-node: <code>hoi-node --data DIR --name "lena's pi" --peer-bind 0.0.0.0:7843</code>
+hoi-node -> Data dir: take <code>hoi-node.lock</code>, open <code>hoi.db</code>
+Data dir --> hoi-node: store, keys, settings
+hoi-node: create the identity on first start; carry <code>any</code>, pieces 2 GB
+hoi-node -> Data dir: open <code>pieces.db</code>
+-- Sockets --
+hoi-node -> Network: iroh QUIC on UDP 7843
+hoi-node: WebSocket listener on 127.0.0.1:7842
+hoi-node -> Network: WebRTC on UDP 7844
+hoi-node -> Data dir: write <code>pairing-link</code> (mode 0600)
+hoi-node -> Network: DHT on UDP 7846 and 7847, LAN beacons on UDP 7848
+-- Reachability --
+hoi-node -> Router: PCP, NAT-PMP or UPnP: forward UDP 7844, 7843, 7846, 7847
+Router --> hoi-node: public address and external ports
+hoi-node: advertise the forwarded addresses
+hoi-node -> Data dir: write <code>node-link</code> once the link names them
+hoi-node --> Operator: status lines: role, routes, carry policy, node link
+    </div>
+    <h3 id="startup-exit">Exit codes</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Exit codes">
+      <table>
+        <thead><tr><th>Code</th><th>When</th></tr></thead>
+        <tbody>
+          <tr><td>0</td><td>Stopped by Ctrl-C or SIGTERM after committing; <code>--version</code>.</td></tr>
+          <tr><td>1</td><td>The data directory, lock, store, a <code>--join</code>, a <code>--node</code>, the notice, the piece store, the registry, the packet relay, the peer transport, the pairing listener or the registry listener failed.</td></tr>
+          <tr><td>2</td><td>Usage: an unknown flag, a bad value, <code>--help</code>, or a lone <code>--packet-relay-cert</code>/<code>--packet-relay-key</code>.</td></tr>
+          <tr><td>3</td><td><code>--vpn-only</code>: the VPN stopped carrying the computer's traffic (checked every 5 s). The node commits first; a service manager starts it again, and it waits.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 id="startup-stop">Stopping</h3>
+    <p><code>shutdown_signal()</code> waits for Ctrl-C (SIGINT) or, on Unix, SIGTERM, the signal systemd, launchd and Docker stop a service with. Then, in order: the port mapper removes its forwards; the node-link, address, VPN, index, tracker, mirror, pairing and notice tasks are aborted; the registry and WebSocket listeners stop; every <code>client-</code> link is closed; WebRTC and the peer transport shut down; the node commits its state; it prints <code>bye</code>.</p>
+    <div class="wk-code" data-lang="rust" data-title="hoi-node/src/main.rs (trimmed)"><pre><code>/// Ctrl-C, or the SIGTERM a service manager (systemd, launchd, Docker) stops a service with: the
+/// node commits its state and removes its port forwards either way.
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        let Ok(mut term) = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) else {
+            let _ = tokio::signal::ctrl_c().await;
+            return;
+        };
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() =&gt; {}
+            _ = term.recv() =&gt; {}
+        }
+    }
+}</code></pre></div>
+  </section>
+
+  <section class="wk-sec" id="listener">
+    <h2>The paired-device listener</h2>
+    <p>Unless the node is peer-only, <code>hoi_net::serve</code> listens on <code>--listen</code> for WebSocket connections from the person's own devices: a browser on the same machine, the desktop app, or anything behind a TLS proxy named with <code>--public-url</code>. Phones and other browsers on the network usually pair over WebRTC on UDP 7844 instead, with no certificate or domain (<a href="/wiki/transports/">Transports</a>).</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Listener limits">
+      <table>
+        <thead><tr><th>Rule</th><th>Value</th><th>Source</th></tr></thead>
+        <tbody>
+          <tr><td>Connections at once</td><td>32 (<code>MAX_CLIENTS</code>); the 33rd TCP connection is dropped unanswered</td><td><code>hoi-net/src/lib.rs</code></td></tr>
+          <tr><td>WebSocket upgrade</td><td>must finish within 10 s (<code>HANDSHAKE</code>)</td><td><code>lib.rs</code></td></tr>
+          <tr><td>Allowed <code>Origin</code></td><td>none (a native app), the node's web app origin <code>https://hoi.sh</code>, or one in <code>HOI_ALLOWED_ORIGINS</code>; anything else gets 403 at the handshake</td><td><code>OriginCheck</code></td></tr>
+          <tr><td>First message</td><td>must be a binary <code>hello</code> within 15 s (<code>HELLO</code>), or the link is dropped</td><td><code>run_link</code></td></tr>
+          <tr><td>Later silence</td><td>180 s without a message ends the link</td><td><code>run_link</code></td></tr>
+          <tr><td>Heartbeat</td><td>a ping every 30 s; a stalled sync ends the link</td><td><code>run_link</code></td></tr>
+          <tr><td>Writes</td><td>each must finish within 30 s (<code>WRITE_TIMEOUT</code>)</td><td><code>lib.rs</code></td></tr>
+          <tr><td>Message size</td><td>16 MiB + 64 KiB (<code>hoi_sync::MAX_MESSAGE</code>: one media item plus framing), message and frame</td><td><code>ws_config</code></td></tr>
+          <tr><td>Paired devices kept</td><td>32 credentials; the least recently seen goes first</td><td><code>hoi-core/src/net.rs</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>The credential check is the core's. A device that dialed in shows, in its first <code>hello</code>, either its own credential or the pairing link's token. A missing or wrong one ends the link without a word, so a web page cannot even learn that a home node listens there. The token pairs one device: that device gets a credential of its own (32 random bytes, stored only as a digest under the context <code>hoi 2026 pairing credential v1</code>) and the node issues the next token at once. <code>refresh_pairing_file</code> notices within 2 s and rewrites <code>DIR/pairing-link</code>, printing that a device paired, never the link.</p>
+    <p>A connection from loopback counts as local, unless the advertised address is <code>wss://</code>: behind a TLS proxy, loopback is the proxy, not you.</p>
+    <div class="wk-seq" data-title="A browser connecting to its home node">
+lanes: Browser | Listener | Core | Data dir
+-- Connect --
+Browser -> Listener: TCP connect to 127.0.0.1:7842
+Listener: a free slot of 32, else close
+Browser -> Listener: WebSocket upgrade, <code>Origin: https://hoi.sh</code>
+Listener --> Browser: 101, or 403 for another origin (within 10 s)
+-- Credential --
+Browser -> Core: <code>hello</code> with its credential or the link's token (within 15 s)
+Core: compare with every stored digest in constant time
+Core --> Browser: wrong or missing: the link ends, nothing said
+Core --> Browser: <code>hello</code>; a spent token earns a new credential
+Core -> Data dir: next pairing link into <code>pairing-link</code> (within 2 s)
+-- Sync --
+Browser => Core @mint: sync messages, records, media
+Listener -> Browser: ping every 30 s; 180 s of silence ends the link
+    </div>
+    <div class="wk-note warn"><b>Containers</b><p>A loopback address inside a container cannot be published with <code>-p</code>. To pair from the host, listen on the container's interfaces (<code>--listen 0.0.0.0:7842</code>) and publish the port on the host's loopback only (<code>-p 127.0.0.1:7842:7842</code>). Never publish 7842 on every interface (<code>-p 7842:7842</code> or <code>-P</code>): Docker's published ports bypass most host firewalls.</p></div>
+  </section>
+
+  <section class="wk-sec" id="http">
+    <h2>HTTP: the client and the server</h2>
+    <p>hoi-node speaks HTTP in two places. <code>http.rs</code> is its one outbound HTTPS client, used to announce to and mirror an index and to mirror another registry. The registry's HTTP server lives in <code>registry/mod.rs</code> (<a href="#registry">below</a>). Nothing else in the node speaks HTTP; peers use QUIC, WebRTC and the WebSocket link.</p>
+    <h3 id="http-client">The HTTPS client</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="HTTPS client">
+      <table>
+        <thead><tr><th>Property</th><th>Value</th></tr></thead>
+        <tbody>
+          <tr><td>TLS</td><td>rustls on ring, safe default protocol versions, roots from <code>webpki-roots</code> compiled in (no system certificate store needed), no client authentication</td></tr>
+          <tr><td>Features</td><td>reqwest with no default features: no system proxy, no compression, no cookies; JSON only</td></tr>
+          <tr><td>Timeout</td><td>20 s per request (<code>REQUEST_TIMEOUT</code>)</td></tr>
+          <tr><td>Redirects</td><td>never followed</td></tr>
+          <tr><td>User agent</td><td><code>hoi-node/VERSION</code></td></tr>
+          <tr><td>Answer size</td><td>at most 256 KiB (<code>MAX_RESPONSE_BYTES</code>): refused up front when <code>Content-Length</code> says more, cut off when the body grows past it</td></tr>
+          <tr><td>Status handling</td><td><code>get_json</code>: 200 parses JSON, 404 is "none", anything else is an error</td></tr>
+          <tr><td>VPN</td><td>with <code>--vpn-only</code>, requests leave from the VPN's IPv4 address, pinned to its interface on Linux, Android, macOS and iOS</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>A registry URL (<code>valid_index_url</code>) is <code>https://</code>, or <code>http://</code> only when the host is <code>localhost</code>, <code>127.0.0.1</code> or <code>[::1]</code>, with no user, password, query or fragment; a trailing slash is trimmed. A loopback registry also relaxes the address rule for announcements (every route counts, for tests and development).</p>
+  </section>
+
+  <section class="wk-sec" id="routes">
+    <h2>Routes and address rules</h2>
+    <p><code>routes.rs</code> defines the peer routes a node announces and a registry lists, and the address rules that decide which may be announced or stored. The same rules are line for line in <code>registry/protocol.mjs</code>, so a namespace accepts the same routes whichever implementation serves it.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Route shapes">
+      <table>
+        <thead><tr><th>Shape</th><th>For</th><th>Rules</th></tr></thead>
+        <tbody>
+          <tr><td><code>rtc:&lt;fingerprint&gt;@&lt;ip&gt;:&lt;port&gt;</code></td><td>browsers and phones (WebRTC)</td><td>fingerprint: exactly 43 characters of canonical base64url of 32 bytes (the DTLS certificate's SHA-256)</td></tr>
+          <tr><td><code>&lt;endpoint&gt;@&lt;ip&gt;:&lt;port&gt;</code></td><td>native nodes (iroh QUIC)</td><td>endpoint: 64 lowercase hex characters</td></tr>
+          <tr><td><code>&lt;endpoint&gt;</code></td><td>native nodes reached through a relay</td><td>64 lowercase hex characters</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Every route is at most 128 characters. The address is <code>v4:port</code> or <code>[v6]:port</code>, nothing else: no host names, no zone ids, no trailing characters. The port is 1 to 65535. Unspecified and multicast addresses are always refused.</p>
+    <h3 id="routes-rules">The two address rules</h3>
+    <p>The rules are deliberately different. What a node is willing to say about itself is strict; what a registry accepts from a third party is just strict enough that nobody can make every device reading the directory probe addresses on its own network.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Address rules">
+      <table>
+        <thead><tr><th>Range</th><th><code>public_ip</code> (what a node announces)</th><th><code>outside_visitor_networks</code> (what a registry stores)</th></tr></thead>
+        <tbody>
+          <tr><td>Loopback 127/8, ::1</td><td>refused</td><td>refused</td></tr>
+          <tr><td>Private 10/8, 172.16/12, 192.168/16, fc00::/7</td><td>refused</td><td>refused</td></tr>
+          <tr><td>Link-local 169.254/16, fe80::/10</td><td>refused</td><td>refused</td></tr>
+          <tr><td>Carrier-grade NAT 100.64/10</td><td>refused</td><td>refused</td></tr>
+          <tr><td>0/8, 224/4 and above</td><td>refused</td><td>refused</td></tr>
+          <tr><td>192.0.0/24</td><td>allowed</td><td>refused</td></tr>
+          <tr><td>Documentation 192.0.2/24, 198.51.100/24, 203.0.113/24, 2001:db8::/32</td><td>refused</td><td>allowed (keeps the shared test vectors working)</td></tr>
+          <tr><td>Benchmarking 198.18/15</td><td>refused</td><td>allowed</td></tr>
+          <tr><td>IPv4-mapped IPv6</td><td>judged as the IPv4 address</td><td>judged as the IPv4 address</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p><code>announceable(route, dev)</code> applies <code>public_ip</code> to routes with an address (a bare key reaches nobody without a relay and is never announced), unless the registry runs on this machine (<code>dev</code>). <code>loopback_last</code> sorts loopback routes to the end so a visitor on another machine tries the useful ones first. <code>validate_route(route, public_only)</code> is the registry's check; an operator's own <code>--registry-public-node</code> routes may still name loopback.</p>
+  </section>
+
+  <section class="wk-sec" id="index">
+    <h2>The index loop</h2>
+    <p>Each <code>--index URL</code> runs one loop (<code>index::spawn</code>) against that registry's plain HTTPS API. The core decides what to carry and signs what is announced; the loop only talks HTTP on a schedule and prints its own status, never a peer's address. Every status line goes through <code>Once</code>, which prints a line only when it differs from the last, so a flapping connection does not fill the journal.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Index loop constants">
+      <table>
+        <thead><tr><th>Constant</th><th>Value</th><th>Meaning</th></tr></thead>
+        <tbody>
+          <tr><td><code>TICK</code></td><td>5 s</td><td>how often the loop wakes</td></tr>
+          <tr><td><code>ANNOUNCE_EVERY</code></td><td>5 min</td><td>re-announce at least this often (the registry forgets a node after 30 minutes)</td></tr>
+          <tr><td><code>MIRROR_EVERY</code></td><td>5 min</td><td>page through the whole index this often</td></tr>
+          <tr><td><code>PAGE</code> × <code>MAX_PAGES</code></td><td>50 × 40</td><td>2,000 names per pass at most</td></tr>
+          <tr><td><code>LOOKUP_RETRY</code></td><td>15 s</td><td>ask again about a community a browser offers that the index does not list yet</td></tr>
+          <tr><td><code>LOOKUP_MISS_RETRY</code></td><td>10 min</td><td>a key the index did not list is not asked about again for this long</td></tr>
+          <tr><td><code>LOOKUPS_PER_TICK</code></td><td>4</td><td>lookups per tick, whatever peers offer</td></tr>
+          <tr><td><code>CARRY_CHUNK</code></td><td>32</td><td>listings handled per hold of the node's lock</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <ol class="wk-steps">
+      <li><b>Check the service</b><p><code>GET /v1/meta</code> until it answers with <code>registry.apiVersion</code> 2; other versions are refused (<code>the public index speaks API version N, this node version 2</code>).</p></li>
+      <li><b>Announce</b><p>Collect the node's <code>rtc:</code> and native routes, keep the <a href="#routes">announceable</a> ones, loopback last. When the routes or the number of communities changed, or five minutes passed, ask the core to sign a <code>NodeAnnouncement</code> for the registry's origin and <code>PUT /v2/nodes</code>. With no announceable route it says <code>no public route to announce yet (a public address or --rtc-advertise is needed)</code>.</p></li>
+      <li><b>Mirror</b><p>Unless <code>--carry off</code>: every five minutes, page through <code>/v2/communities?prefix=&amp;after=…</code> and carry every carryable listing up to <code>--carry-limit</code>, 32 at a time, yielding the node between chunks so peers and listeners are not kept waiting.</p></li>
+      <li><b>Take what browsers offer</b><p>For communities a connected browser offers that the node does not hold, look up <code>/v2/communities?community=KEY</code>; if listed and carryable, carry it and pull the signed definition and records from that browser. A founder's first post lands here without pairing or an invite.</p></li>
+    </ol>
+    <p>A listing is carryable only if <code>indexed</code> and <code>compatible</code> are true, its <code>protocolVersion</code> and <code>indexVersion</code> equal this build's (<code>hoi_core::release_versions()</code>, from the compiled <code>release.json</code>), and its community key is 64 lowercase hex. Nothing from the registry is trusted beyond the key and name: the signed genesis must still match the name and be open, or the core refuses the community.</p>
+    <h3 id="index-answers">What the announcement answers mean</h3>
+    <p>Only the registry's error code is read, never its free text, because the text is printed and is not the node's own.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Announcement answers">
+      <table>
+        <thead><tr><th>Status and code</th><th>The node says</th></tr></thead>
+        <tbody>
+          <tr><td>200</td><td><code>announced N routes and M communities to URL</code></td></tr>
+          <tr><td>200 with <code>retained: false</code></td><td>the registry is full; the node is not listed yet and keeps trying</td></tr>
+          <tr><td>403 <code>announcer-not-allowed</code></td><td>allowlist mode: give the operator this node's endpoint key (<code>hoi-node admin endpoint</code>)</td></tr>
+          <tr><td>403 <code>announcer-refused</code></td><td>the operator dropped this node</td></tr>
+          <tr><td>403, other</td><td>the registry takes no announcements</td></tr>
+          <tr><td>400 <code>wrong-registry</code></td><td>the registry answers to another address; use the URL its operator publishes</td></tr>
+          <tr><td>anything else</td><td><code>refused the announcement (STATUS)</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="wk-seq" data-title="One pass of the index loop">
+lanes: Browser | hoi-node | Core | Registry
+hoi-node -> Registry: <code>GET /v1/meta</code>
+Registry --> hoi-node: <code>registry.apiVersion: 2</code>
+hoi-node -> Core: sign routes and open communities for the registry's origin
+Core --> hoi-node: <code>{registry, endpoint, routes, communities, issuedAt, signature}</code>
+hoi-node -> Registry: <code>PUT /v2/nodes</code>
+Registry --> hoi-node: 200, what discovery now holds for this node
+hoi-node -> Registry: <code>GET /v2/communities?prefix=</code>, 50 a page
+Registry --> hoi-node: listings with versions and proofs
+hoi-node -> Core: carry carryable listings, 32 at a time
+Browser -> Core: <code>hello</code> offering a community this node lacks
+hoi-node -> Registry: <code>GET /v2/communities?community=KEY</code>
+Registry --> hoi-node: listed and compatible
+Browser => Core @mint: the signed definition and its records
+hoi-node: prints <code>now carrying c/NAME</code>
+    </div>
+    <h3 id="trackers">Trackers</h3>
+    <p>An open community may name up to two trackers in its limits: registries where public nodes that carry it say so, so a device whose invite routes have all gone stale can still find a carrier. <code>trackers::spawn</code> runs while relaying is on. Every 60 s it asks the core for the trackers named by the open communities this node carries (<code>tracker_targets</code>, empty unless the node is a public node: relaying and carrying for others), at most 16 (<code>MAX_TRACKERS</code>), skipping registries already given with <code>--index</code>. For each new tracker it starts the same loop as <code>--index</code> with mirroring off (announcing only); a tracker no carried community names any more is stopped. Which trackers is the communities' choice, never the node's.</p>
+  </section>
+
+  <section class="wk-sec" id="packet-relay">
+    <h2>Packet relay</h2>
+    <p><code>packet_relay.rs</code> wraps <code>iroh-relay</code> 1.4.1 (the version iroh uses, server and <code>tls-ring</code> features). The relay forwards encrypted QUIC packets by destination endpoint and keeps nothing but an in-memory table of who is connected now. It sees endpoint keys, addresses, timing and sizes, never contents. <a href="/wiki/transports/">Transports</a> covers where relays sit in a connection.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Packet relay settings">
+      <table>
+        <thead><tr><th>Setting</th><th>Value</th></tr></thead>
+        <tbody>
+          <tr><td>Listen</td><td><code>--packet-relay ADDR</code> (TCP)</td></tr>
+          <tr><td>Per-client rate</td><td>1 MiB a second received from each client (<code>BYTES_PER_SECOND = 1 &lt;&lt; 20</code>), bursts of 4 MiB (<code>BURST_BYTES</code>)</td></tr>
+          <tr><td>TLS</td><td>none (plain HTTP behind a proxy such as Caddy), or a manual rustls config from <code>--packet-relay-cert</code> and <code>--packet-relay-key</code></td></tr>
+          <tr><td>Plain HTTP port with TLS</td><td>one below the TLS port (<code>port − 1</code>, at least 1), for captive-portal checks: 442 for 443</td></tr>
+          <tr><td>Address in invites</td><td><code>--packet-relay-url</code>, or <code>http://ADDR</code> when <code>ADDR</code> is loopback; without either the node says <code>give --packet-relay-url so invites can name it</code></td></tr>
+          <tr><td>Block list</td><td><code>DIR/packet-relay-blocked.txt</code>, read again every 30 s when its modification time changed</td></tr>
+          <tr><td>Logs</td><td>none: the node installs no tracing subscriber</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 id="packet-relay-gate">Who may use it</h3>
+    <p>The <code>Gate</code> implements iroh-relay's <code>AccessControl</code>. On each connection it denies an endpoint on the block list (<code>this relay's operator refuses this endpoint</code>); with <code>--packet-relay-members</code> it also denies an endpoint the core does not know as a member of a community it carries (<code>relay_member</code>; <code>this relay serves the members of the communities its node carries</code>). Everyone else is allowed. iroh's clients send no token of their own, so the member gate stands in for a bearer token.</p>
+    <p>The block list is one 64-hex endpoint key at the start of each line; <code>#</code> lines and blank lines are skipped, anything after the key on a line is ignored, keys are read case-insensitively. <code>hoi-node admin relay block|unblock|list</code> edits it.</p>
+    <div class="wk-code" data-lang="text" data-title="DIR/packet-relay-blocked.txt, as hoi-node admin relay writes it"><pre><code># Endpoints this node's packet relay refuses (hoi-node admin relay block|unblock).
+abababababababababababababababababababababababababababababababab</code></pre></div>
+    <div class="wk-code" data-lang="sh" data-title="hoi-node/README.md: behind Caddy, which holds the certificate"><pre><code>hoi-node --data ~/hoi-public --public --packet-relay 127.0.0.1:3340 --packet-relay-url https://relay.example/</code></pre></div>
+  </section>
+
+  <section class="wk-sec" id="registry">
+    <h2>The embedded registry</h2>
+    <p><code>--registry ADDR</code> serves the public-name API from <code>src/registry/</code>. It is request for request the Node service and the Worker in <code>registry/</code>, on the same database shape; <code>scripts/e2e-registry-node.mjs</code> runs the shared conformance suite against it and then opens the database it wrote with the Node service's own store. It serves no HTML, keeps no access log and never prints a client's address. The API, the log of names and how clients verify it are on the <a href="/wiki/registry/">Registry</a> page.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Registry modules">
+      <table>
+        <thead><tr><th>Module</th><th>What it holds</th><th>JavaScript twin</th></tr></thead>
+        <tbody>
+          <tr><td><code>registry/mod.rs</code></td><td><code>RegistryConfig</code>, the per-minute budgets, request handling, CORS, headers, the hyper server</td><td><code>registry/server.mjs</code></td></tr>
+          <tr><td><code>registry/protocol.rs</code></td><td>canonical names, strong keys, the three signed statements, announcement admission, origin rules, public-node ordering</td><td><code>registry/protocol.mjs</code></td></tr>
+          <tr><td><code>registry/store.rs</code></td><td>the SQLite schema (version 5), reservations, publications, announcements, the operator's lists, the log rows, a mirror's audit tables</td><td><code>registry/store.mjs</code></td></tr>
+          <tr><td><code>registry/log.rs</code></td><td>the RFC 6962 Merkle tree, signed heads, inclusion and consistency paths</td><td><code>registry/log.mjs</code>, <code>registry/public/log.js</code></td></tr>
+          <tr><td><code>registry/mirror.rs</code></td><td><code>--registry-mirror</code>: audit another registry's log and import its verified publications</td><td>none (hoi-node only)</td></tr>
+          <tr><td><code>registry/release.rs</code></td><td>the release manifest: compiled, or a file read on each request, validated like <code>scripts/release-schema.mjs</code></td><td><code>scripts/release-config.mjs</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 id="registry-server">The server</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Registry server limits">
+      <table>
+        <thead><tr><th>Limit</th><th>Value</th></tr></thead>
+        <tbody>
+          <tr><td>Protocol</td><td>HTTP/1.1 only, no TLS (put a proxy in front), keep-alive off: one request per connection</td></tr>
+          <tr><td>Connections at once</td><td>256 (<code>MAX_CONNECTIONS</code>); beyond that a client gets a closed socket</td></tr>
+          <tr><td>Headers</td><td>within 10 s (<code>header_read_timeout</code>), read buffer 16 KiB</td></tr>
+          <tr><td>Body</td><td>within 10 s, else 408 <code>request-timeout</code>; at most 2048 bytes for a name claim, 8192 for an announcement, else 413</td></tr>
+          <tr><td>Whole connection</td><td>cut after 30 s (<code>CONNECTION_TIMEOUT</code>)</td></tr>
+          <tr><td>Budgets</td><td>three global fixed one-minute windows: reads (every GET), name claims (PUT <code>/v1</code> and <code>/v2/communities</code>), announcements (PUT <code>/v2/nodes</code>); over budget: 429 with <code>Retry-After</code> in seconds (at least 1). No client identifier is kept.</td></tr>
+          <tr><td>Headers on every answer</td><td><code>Content-Type: application/json; charset=utf-8</code>, <code>Cache-Control: no-store</code>, <code>X-Content-Type-Options: nosniff</code>, <code>Referrer-Policy: no-referrer</code>, <code>Strict-Transport-Security: max-age=31536000; includeSubDomains</code>, <code>Vary: Origin</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 id="registry-endpoints">Endpoints</h3>
+    <p>Paths are at the root of <code>ADDR</code>. "Origin" is the browser rule: a request without <code>Origin</code> (the carrier, scripts) always passes; one with an <code>Origin</code> outside <code>--registry-origin</code> gets 403 <code>origin-denied</code>, except on the public reads marked "any".</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Registry endpoints">
+      <table>
+        <thead><tr><th>Method and path</th><th>Request</th><th>Answer</th><th>Origin</th><th>Budget</th></tr></thead>
+        <tbody>
+          <tr><td><code>GET /v1/meta</code></td><td>no query</td><td><code>{release, registry: {apiVersion: 2, schemaVersion: 3, indexVersion}, publicNodes, appUrl}</code></td><td>allowed</td><td>reads</td></tr>
+          <tr><td><code>GET /release.json</code></td><td>no query</td><td>the validated release manifest</td><td>allowed</td><td>reads</td></tr>
+          <tr><td><code>GET /v1/communities</code></td><td><code>?name=</code> or <code>?prefix=</code></td><td><code>{name, community, proof}</code>; a list of up to 50</td><td>allowed</td><td>reads</td></tr>
+          <tr><td><code>PUT /v1/communities</code></td><td><code>{name, community, signature}</code>, ≤ 2048 B</td><td>200 the mapping, 409 a conflict</td><td>allowed</td><td>claims</td></tr>
+          <tr><td><code>GET /v2/communities</code></td><td><code>?name=</code>, <code>?community=</code>, or <code>?prefix=</code> with optional <code>&amp;after=</code></td><td>a listing with versions, <code>compatible</code>, <code>indexed</code>, <code>proof</code>; a page of up to 50</td><td>allowed</td><td>reads</td></tr>
+          <tr><td><code>PUT /v2/communities</code></td><td><code>{name, community, protocolVersion, indexVersion, signature}</code>, ≤ 2048 B</td><td>200 the listing, 409 a conflict</td><td>allowed</td><td>claims</td></tr>
+          <tr><td><code>GET /v2/nodes</code></td><td><code>?community=KEY</code></td><td><code>{publicNodes}</code>, at most 16 routes</td><td>any</td><td>reads</td></tr>
+          <tr><td><code>PUT /v2/nodes</code></td><td><code>{registry, endpoint, routes, communities, issuedAt, signature}</code>, ≤ 8192 B</td><td>200 what discovery holds for the node</td><td>allowed</td><td>announcements</td></tr>
+          <tr><td><code>GET /v2/log/head</code></td><td>no query</td><td><code>{logKey, size, root, timestamp, signature}</code></td><td>any</td><td>reads</td></tr>
+          <tr><td><code>GET /v2/log/entries</code></td><td><code>?start=&amp;end=</code>, at most 256</td><td><code>{entries, leaves}</code></td><td>any</td><td>reads</td></tr>
+          <tr><td><code>GET /v2/log/proof</code></td><td><code>?leaf=&amp;size=</code></td><td><code>{index, size, path}</code></td><td>any</td><td>reads</td></tr>
+          <tr><td><code>GET /v2/log/consistency</code></td><td><code>?first=&amp;second=</code></td><td><code>{first, second, path}</code></td><td>any</td><td>reads</td></tr>
+          <tr><td><code>OPTIONS</code> any of the above</td><td><code>Access-Control-Request-Method</code></td><td>204 with <code>Access-Control-Allow-Methods</code> and <code>-Headers: Content-Type</code>; 405 for a method the path lacks</td><td>as the path</td><td>none</td></tr>
+          <tr><td>anything else</td><td></td><td>404 <code>{"error":"not-found"}</code>; a known path with another method: 405 with <code>Allow</code></td><td></td><td>none</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 id="registry-origin">Which origin an announcement must name</h3>
+    <p>With <code>--registry-url</code> the registry answers to that URL's origin only. Without it, <code>loopback_origins</code> reads the address the connection reached from the socket, never from a header: a connection to <code>127.0.0.1:P</code> accepts announcements for <code>http://127.0.0.1:P</code> and <code>http://localhost:P</code> (no port for 80), one to <code>[::1]:P</code> for <code>http://[::1]:P</code> and <code>http://localhost:P</code>, and any other address accepts none (403 <code>announcements-disabled</code>). That is why a registry behind a TLS proxy needs <code>--registry-url</code>.</p>
+    <h3 id="registry-mirror">Mirroring another registry</h3>
+    <p>Each <code>--registry-mirror URL</code> runs <code>mirror::spawn</code>: a first pass after 5 s, then one every 5 minutes. A pass is an audit, then an import.</p>
+    <ol class="wk-steps">
+      <li><b>Audit the log</b><p>Fetch <code>/v2/log/head</code> and check its signature against the key it names. Compare with what was saved: a changed log key or a smaller size is a fault. Read new entries 256 at a time, at most 40 pages (10,240 entries) per pass; check each entry hashes to its leaf, that a community key signed it, and that no name moved to another key and no key took a second name. Withheld entries arrive as leaves alone. Once every leaf is read, recompute the root and compare it with the head.</p></li>
+      <li><b>Page the listings</b><p><code>/v2/communities?prefix=&amp;after=…</code>, 50 a page, at most 40 pages, keeping only listings whose leaf is in the audited log.</p></li>
+      <li><b>Import</b><p>Re-verify each version 2 proof here, skip names already taken here, publish the rest. A name taken here by another key stays with the local first claim. Prints <code>registry: mirrored N new names from URL</code>.</p></li>
+    </ol>
+    <p>A lasting fault (a changed log key, a log that shrank, an entry that does not hash to its leaf or that no community key signed, a moved name, a root that does not match the head) is stored in the <code>witnessed</code> table and stops that mirror until <code>hoi-node admin registry unwitness URL</code>. A head that does not verify or a registry that keeps no log is only retried. Either way the node says why once (<code>registry: mirror of URL: not mirrored: …; retrying</code>). Announced nodes are never mirrored: a public node announces to each registry it is given.</p>
+    <h3 id="registry-release">The release manifest</h3>
+    <p><code>ReleaseSource</code> is either the <code>release.json</code> compiled into the binary or a file named by <code>--registry-release</code>, read on every request so a notice can change without a rebuild. A file over 16 KiB is refused. Validation keeps exactly these fields and fails closed: <code>schemaVersion</code> 1; <code>revision</code> &gt; 0; <code>channel</code> <code>preview</code> or <code>stable</code>; <code>protocolVersion</code> and each of 1 to 16 distinct <code>supportedProtocols</code> 1–64 characters of letters, digits, <code>.</code>, <code>_</code>, <code>-</code>, starting with a letter or digit, the protocol among the supported; <code>indexVersion</code> 1 to 2³¹−1; <code>notice.title</code> up to 100 and <code>notice.message</code> up to 1200 non-blank characters. A file that stops validating later makes requests that need it answer 503 <code>unavailable</code>.</p>
+  </section>
+
+  <section class="wk-sec" id="admin">
+    <h2>hoi-node admin</h2>
+    <p>The operator's tools work on the data directory from a shell, never over the network: there is no admin socket, port or endpoint to find or guess. Operators can stop serving; nobody can forge. There is no login or token either: the authority is the file system, so whoever can read and write the data directory (under the installers' unit, root through <code>sudo</code>) can run them. Nothing here prints a record's contents, only counts and the ids you gave.</p>
+    <div class="wk-code" data-lang="sh" data-title="hoi-node/src/admin.rs (usage, trimmed)"><pre><code>hoi-node admin [--data DIR] COMMAND</code></pre></div>
+    <p><code>--data</code> defaults to <code>hoi-node-data</code> as for the node. <code>--note TEXT</code> and <code>--evidence DIR</code> go only with <code>suppress</code>. Exit codes: 0 done, 1 refused or failed (the reason on standard error as <code>hoi-node admin: …</code>), 2 usage.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Admin commands">
+      <table>
+        <thead><tr><th>Command</th><th>Works on</th><th>Node running?</th><th>Effect</th></tr></thead>
+        <tbody>
+          <tr><td><code>suppress community KEY</code></td><td><code>hoi.db</code></td><td>must be stopped</td><td>Deletes the community's records and the media only they used, stops announcing it, and refuses it from every path for good: a carry request, an index listing, a browser offering it, an invite, a public join, sync.</td></tr>
+          <tr><td><code>suppress record ID</code></td><td><code>hoi.db</code></td><td>must be stopped</td><td>Deletes one post, comment, edit, report or profile (with its edits) and never takes it again. Records that decide who may speak or what is hidden cannot be suppressed one by one.</td></tr>
+          <tr><td><code>suppress media HASH</code></td><td><code>hoi.db</code></td><td>must be stopped</td><td>Deletes the media bytes (BLAKE3 hash) and refuses them from now on; posts showing them are served to nobody.</td></tr>
+          <tr><td><code>unsuppress ID</code></td><td><code>hoi.db</code></td><td>must be stopped</td><td>Lifts a suppression; nothing deleted comes back by itself.</td></tr>
+          <tr><td><code>suppressions</code></td><td><code>hoi.db</code></td><td>must be stopped</td><td>Lists target, id, time and note.</td></tr>
+          <tr><td><code>endpoint</code></td><td><code>hoi.db</code>, read-only</td><td>either</td><td>Prints the node's endpoint key (the public half of the <code>transport</code> secret in the <code>keys</code> blob), for a registry's allowlist.</td></tr>
+          <tr><td><code>pieces</code></td><td><code>pieces.db</code>, read-only</td><td>either</td><td>Totals only: pieces held, megabytes, how many expire within a week.</td></tr>
+          <tr><td><code>relay list</code></td><td><code>packet-relay-blocked.txt</code></td><td>either</td><td>Endpoints the packet relay refuses.</td></tr>
+          <tr><td><code>relay block KEY</code> / <code>relay unblock KEY</code></td><td><code>packet-relay-blocked.txt</code></td><td>either</td><td>Adds or removes a key; a running relay reads the file again within 30 s.</td></tr>
+          <tr><td><code>registry list</code></td><td><code>registry.db</code></td><td>either</td><td>Withheld listings, refused nodes, nodes announced now (endpoint, routes, communities, issued at).</td></tr>
+          <tr><td><code>registry hide NAME|KEY</code> / <code>unhide</code></td><td><code>registry.db</code></td><td>either</td><td>Withhold a listing: still reserved, no longer listed, looked up or named as carried.</td></tr>
+          <tr><td><code>registry drop-node KEY</code> / <code>allow-node</code></td><td><code>registry.db</code></td><td>either</td><td>Forget a node's announcement and refuse its next ones (403 <code>announcer-refused</code>), or lift that.</td></tr>
+          <tr><td><code>registry unwitness URL</code></td><td><code>registry.db</code></td><td>either</td><td>Forget what was audited of a mirrored registry's log; the next pass starts from its current head.</td></tr>
+          <tr><td><code>notice check FILE</code></td><td>the file</td><td>either</td><td>Reads a notice as <code>--notice</code> does: its problems, or <code>ok</code>, its hash, its size of 1536 bytes at most, notes on what was left out, and the text as people read it.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Store commands take the same lock as the node, so they refuse while it runs (<code>a hoi-node is running on DIR; stop it first</code>). The registry's database is a separate SQLite file the registry reads on every request, so its commands take effect at once while it serves. After a suppression the tool commits and checkpoints SQLite's write-ahead log (<code>wal_checkpoint(TRUNCATE)</code>) so deleted rows do not linger there; the store deletes with <code>secure_delete</code> on. Backups and snapshots taken earlier still hold what was deleted, and the tool says so.</p>
+    <h3 id="admin-evidence">Evidence copies</h3>
+    <p><code>--evidence DIR</code> copies what is about to go into a new directory under <code>DIR</code> before anything is deleted; if the copy cannot be written, nothing is deleted. Directories are created with mode 0700 and files with 0600.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Evidence directory">
+      <table>
+        <thead><tr><th>Path</th><th>Content</th></tr></thead>
+        <tbody>
+          <tr><td><code>hoi-evidence-&lt;unix time&gt;-&lt;target&gt;-&lt;first 16 hex of the id&gt;/</code></td><td>the copy</td></tr>
+          <tr><td><code>records/&lt;id&gt;.hoi</code></td><td>each signed record exactly as it arrived; it decodes to the id in its name and verifies on its own</td></tr>
+          <tr><td><code>media/&lt;hash&gt;</code></td><td>each media file, named by its BLAKE3 hash</td></tr>
+          <tr><td><code>manifest.json</code></td><td><code>exported_at</code>, <code>software</code>, <code>target</code>, <code>id</code>, <code>note</code>, <code>records</code> (id, kind, community, author, created_at, expires_at, received_at, file), <code>media</code> (hash, bytes, file), and a <code>verify</code> sentence</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="wk-sec" id="notice">
+    <h2>The operator's notice</h2>
+    <p>A public node tells people who runs it before it serves them. <code>--notice FILE</code> is JSON with camelCase keys, as the installers, the app's <i>A node on a server</i> page and the node setup app write it. The node checks it at start (a bad one exits 1), puts it into every hello to a stranger and, signed with its endpoint key, into its node link, so a client shows it before it says anything of its own. <code>refresh_notice</code> checks the file's modification time every 30 s: a changed, valid file is taken on and connected strangers read it again; a file that no longer reads keeps the notice as it was and says so once. <code>DIR/notice-hash</code> always holds the hash of the notice carried now (it is removed when no notice is given). Who reads it and how is on <a href="/wiki/links/">Links &amp; URIs</a>; the operator's duties are on the <a href="/download/#operator">download page</a>.</p>
+    <dl class="wk-defs">
+      <dt>v<small>u64</small></dt><dd>Notice format, 1.</dd>
+      <dt>node<small>text ≤ 64</small></dt><dd>The node's label.</dd>
+      <dt>operator<small>text ≤ 120</small></dt><dd>Name or pseudonym; may be empty, and the notice then says so.</dd>
+      <dt>contact<small>text ≤ 200</small></dt><dd>How to reach the operator; may be empty.</dd>
+      <dt>country<small>ISO 3166-1 alpha-2</small></dt><dd>Two upper-case letters, or empty.</dd>
+      <dt>provider<small>text ≤ 120, optional</small></dt><dd>Who hosts the server.</dd>
+      <dt>processes<small>text ≤ 600, required</small></dt><dd>What the node processes beyond addresses and connection data.</dd>
+      <dt>ipLogging, retentionDays<small>bool, u16 ≤ 3650</small></dt><dd>Whether the host keeps logs of IP addresses (the node software never does) and for how many days; days go with logging and only with it.</dd>
+      <dt>purpose, communityRules, extra<small>text ≤ 400, 600, 600, optional</small></dt><dd>More of the operator's words.</dd>
+      <dt>updated<small>YYYY-MM-DD, required</small></dt><dd>When it last changed.</dd>
+      <dt>pieces<small>bool</small></dt><dd>Set by the node from <code>--hold-pieces</code>, whatever the file says; it adds a fixed sentence.</dd>
+    </dl>
+    <p>What travels is canonical CBOR with one-letter keys, at most 1536 bytes, hashed with BLAKE3; <code>core/vectors/node-notice.json</code> pins the bytes and the hash (<a href="/wiki/vectors/">Test vectors</a>).</p>
+  </section>
+
+  <section class="wk-sec" id="storage">
+    <h2>Storage</h2>
+    <p>Everything lives in the data directory (<code>--data</code>, default <code>./hoi-node-data</code>; <code>/var/lib/hoi-node</code> or <code>/var/lib/hoi-public</code> under the installers' systemd unit, <code>/data</code> in the image). <a href="/wiki/storage/">Storage</a> describes the record store itself.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Files in the data directory">
+      <table>
+        <thead><tr><th>File</th><th>Written by</th><th>Content</th></tr></thead>
+        <tbody>
+          <tr><td><code>hoi.db</code> (+ <code>-wal</code>, <code>-shm</code>)</td><td>the core</td><td>SQLite, WAL, <code>synchronous=FULL</code>, <code>secure_delete=ON</code>: table <code>records(id, community, expires_at, wire)</code> and table <code>blobs(key, value)</code> holding state, settings, suppressions and the <code>keys</code> blob (identity and transport secrets)</td></tr>
+          <tr><td><code>hoi-node.lock</code></td><td>node and admin</td><td>empty; an advisory lock held while a node runs</td></tr>
+          <tr><td><code>pairing-link</code></td><td>home node</td><td>the <code>hoi://pair?code=…</code> link and, once WebRTC found an address, the <code>https://…/#/pair?code=…</code> link; mode 0600, replaced atomically; removed when the node has no listener</td></tr>
+          <tr><td><code>node-link</code></td><td>public node or relay</td><td>the link anyone may open, checked every 2 s; removed while the node serves no strangers</td></tr>
+          <tr><td><code>notice-hash</code></td><td>with <code>--notice</code></td><td>the notice's hash and a newline</td></tr>
+          <tr><td><code>pieces.db</code> (+ WAL)</td><td>with pieces</td><td>SQLite, WAL, <code>synchronous=NORMAL</code>: table <code>pieces(loc, expiry_day, touched_day, drop_hash, drop_key_id, bytes)</code></td></tr>
+          <tr><td><code>registry.db</code> (+ WAL)</td><td>with <code>--registry</code></td><td>the registry's eight tables (and a mirror's three), at <code>user_version</code> 5</td></tr>
+          <tr><td><code>packet-relay-blocked.txt</code></td><td><code>hoi-node admin relay</code></td><td>refused endpoint keys</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="wk-note limit"><b>Backups</b><p>Back up the whole directory with the node stopped, or with SQLite's backup tooling: copying <code>hoi.db</code> alone while the node runs is not a safe backup, and the WAL holds committed changes. The directory holds the person's keys on a home node. A store restored from an older backup comes back without later suppressions; suppress again before starting it. Turning a node off does not erase its database.</p></div>
+  </section>
+
+  <section class="wk-sec" id="logging">
+    <h2>Logging</h2>
+    <p>The node prints its own status to standard output (warnings and failures to standard error) and installs no tracing subscriber, so the libraries it uses log nothing. Under systemd that is the journal; in Docker, the container log.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="What is and is not printed">
+      <table>
+        <thead><tr><th>Printed</th><th>Never printed</th></tr></thead>
+        <tbody>
+          <tr><td>version, data directory, role, number of communities kept warm</td><td>who connected, from where, or when</td></tr>
+          <tr><td>where paired devices are served; that the pairing link is in its file</td><td>the pairing link (unless <code>--show-pairing</code> or <code>--new-pairing</code>)</td></tr>
+          <tr><td>the WebRTC port and the node's own routes; relaying on or off and the daily cap; the carry policy and limits; refused count; pieces held</td><td>peers' addresses or endpoint keys</td></tr>
+          <tr><td>the addresses this node gives out and who hears each (<code>report_addresses</code>, on change)</td><td>record contents, names of people, posts</td></tr>
+          <tr><td>the node link and what it holds, on change</td><td>a registry's free-text error messages</td></tr>
+          <tr><td>port-mapping results; DHT and LAN ports; VPN state</td><td>registry clients' addresses</td></tr>
+          <tr><td><code>public index: …</code> and <code>tracker URL: …</code> status, <code>now carrying c/NAME</code></td><td></td></tr>
+          <tr><td><code>registry listening on ADDR · N names · M announced nodes</code>, its origin and allowlist mode, mirror results</td><td></td></tr>
+          <tr><td>the operator notice's byline and the first 12 hex of its hash</td><td></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="wk-code" data-lang="text" data-title="hoi-node/src/main.rs status lines (example values)"><pre><code>hoi-node 1.0.0-preview.1 · /var/lib/hoi-node · home node and public relay · 2 communities kept warm
+serving paired devices at ws://127.0.0.1:7842
+pairing link: written to /var/lib/hoi-node/pairing-link (readable by this user only)
+start with --show-pairing to print it here (it is a credential: keep it out of shared logs)
+WebRTC on UDP 7844 for browsers and phones: …
+relaying for members' browsers and nodes: on, up to 5 GB a day
+carry policy: any (carry requests from connected peers, and what each --index registry lists)
+carrying on request: up to 128 communities and 256 MB together
+port mapping: asking the router to forward UDP 7844 and 7843 and 7846 and 7847</code></pre></div>
+    <p>The address report spells out exposure, because the operator should never have to guess what the internet learns: each address with its reach (<code>internet, forwarded by the router</code>, <code>internet</code>, <code>home network</code>, <code>this computer</code>) and who is told it (<code>your devices</code>, <code>anyone who connects, invites</code>, <code>the node link</code>). Whoever connects also sees the address the connection comes from; the node's own output is not the only record, since hosts, proxies and providers may log connections.</p>
+  </section>
+
+  <section class="wk-sec" id="service">
+    <h2>systemd unit and container image</h2>
+    <h3 id="service-unit">hoi-node.service</h3>
+    <p>The checked-in unit runs a home node and public relay with <code>--data /var/lib/hoi-node --listen 127.0.0.1:7842 --name "home node"</code>. The installers write their own version of it for each role (<a href="/wiki/deploy/">Deploying &amp; hosting</a>) with the same sandbox plus <code>RestartSec=5</code> and <code>TimeoutStopSec=30</code>.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Unit hardening">
+      <table>
+        <thead><tr><th>Directive</th><th>Effect</th></tr></thead>
+        <tbody>
+          <tr><td><code>DynamicUser=yes</code></td><td>runs as a transient user made for the service, owning nothing else on the system</td></tr>
+          <tr><td><code>StateDirectory=hoi-node</code></td><td>systemd creates <code>/var/lib/hoi-node</code> for that user (the only writable place)</td></tr>
+          <tr><td><code>Restart=on-failure</code></td><td>started again after a non-zero exit, such as the VPN kill switch's code 3</td></tr>
+          <tr><td><code>NoNewPrivileges=yes</code></td><td>no privilege gain through set-uid binaries</td></tr>
+          <tr><td><code>ProtectSystem=strict</code></td><td>the whole file system read-only except the state directory</td></tr>
+          <tr><td><code>ProtectHome=yes</code></td><td><code>/home</code>, <code>/root</code> and <code>/run/user</code> invisible</td></tr>
+          <tr><td><code>PrivateTmp=yes</code></td><td>a private <code>/tmp</code></td></tr>
+          <tr><td><code>PrivateDevices=yes</code></td><td>no physical devices</td></tr>
+          <tr><td><code>RestrictAddressFamilies=AF_INET AF_INET6 AF_NETLINK</code></td><td>IP sockets only, plus netlink, which is how the node lists its addresses and finds the router</td></tr>
+          <tr><td><code>LockPersonality=yes</code></td><td>no execution-domain changes</td></tr>
+          <tr><td><code>MemoryDenyWriteExecute=yes</code></td><td>no memory that is both writable and executable</td></tr>
+          <tr><td><code>After=</code>/<code>Wants=network-online.target</code></td><td>started once the network is up</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 id="service-docker">Dockerfile</h3>
+    <p>Built from the repository root: <code>docker build -f core/crates/hoi-node/Dockerfile -t hoi-node .</code>.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Image stages">
+      <table>
+        <thead><tr><th>Stage</th><th>What it does</th></tr></thead>
+        <tbody>
+          <tr><td><code>build</code></td><td><code>rust:1.97-slim-bookworm</code> pinned by digest; copies <code>core/</code>, <code>vendor/</code> and <code>release.json</code> (embedded at compile time); <code>cargo build --release --locked -p hoi-node</code>. The same Debian release as the final image, so the binary's C library matches.</td></tr>
+          <tr><td><code>binary</code></td><td><code>FROM scratch</code> with only <code>/hoi-node</code>, for <code>--target binary --output type=local</code> (what <code>scripts/build-server.mjs</code> uses).</td></tr>
+          <tr><td>final</td><td><code>debian:bookworm-slim</code> pinned by digest; a system user <code>hoi</code> with home <code>/data</code> and no login shell; <code>VOLUME /data</code>; <code>EXPOSE</code> UDP 7843, 7844, 7846, 7847; <code>ENTRYPOINT ["hoi-node", "--data", "/data", "--peer-bind", "0.0.0.0:7843"]</code>.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Only the peer transports are exposed. The paired-device listener stays on the container's own loopback unless you pass <code>--listen</code>; a <code>--public</code> node has none at all. The compose files in <code>deploy/</code> add a read-only root, a 16 MB <code>noexec</code> tmpfs, all capabilities dropped, <code>no-new-privileges</code>, memory and process limits (and a CPU limit on the server) and a capped log.</p>
+  </section>
+
+  <section class="wk-sec" id="limits">
+    <h2>Resource limits</h2>
+    <p>Every bound the node puts on others, in one place. Limits of the protocol itself (record sizes, rate windows) are on <a href="/wiki/spam/">Spam &amp; rate limits</a> and <a href="/wiki/records/">Records &amp; encoding</a>.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Resource limits">
+      <table>
+        <thead><tr><th>What</th><th>Bound</th><th>Where</th></tr></thead>
+        <tbody>
+          <tr><td>Paired-device connections</td><td>32 at once; 10 s upgrade; 15 s to <code>hello</code>; 180 s idle; 30 s per write</td><td><code>hoi-net/src/lib.rs</code></td></tr>
+          <tr><td>WebSocket message</td><td>16 MiB + 64 KiB</td><td><code>hoi_sync::MAX_MESSAGE</code></td></tr>
+          <tr><td>Paired device credentials</td><td>32</td><td><code>hoi-core/src/net.rs</code></td></tr>
+          <tr><td>WebRTC sessions</td><td>32 at once, 8 opening, 15 s to open the data channel, 10 new per source per minute</td><td><code>hoi-net/src/rtc.rs</code></td></tr>
+          <tr><td>Relaying for others</td><td><code>--daily-cap-gb</code>, default 5</td><td>settings</td></tr>
+          <tr><td>Communities carried</td><td><code>--carry-limit</code>, default 256, half of it on request</td><td><code>main.rs</code></td></tr>
+          <tr><td>Bytes carried on request</td><td><code>--carry-mb</code>, default 256 MB</td><td><code>hoi_core::carry</code></td></tr>
+          <tr><td>Pieces held</td><td><code>--hold-pieces</code>, default 2 GB on a node that serves strangers</td><td><code>hoi_store::pieces</code></td></tr>
+          <tr><td>Packet relay per client</td><td>1 MiB/s, 4 MiB bursts</td><td><code>packet_relay.rs</code></td></tr>
+          <tr><td>Relays configured</td><td>16</td><td><code>hoi-net/src/p2p.rs</code></td></tr>
+          <tr><td>Registry connections</td><td>256 at once, 10 s headers, 10 s body, 30 s per connection, 16 KiB buffer</td><td><code>registry/mod.rs</code></td></tr>
+          <tr><td>Registry bodies</td><td>2048 B for a claim, 8192 B for an announcement</td><td><code>registry/mod.rs</code></td></tr>
+          <tr><td>Registry budgets</td><td>600 reads, 30 claims, 120 announcements a minute</td><td><code>--registry-limits</code></td></tr>
+          <tr><td>Registry answers read</td><td>256 KiB, 20 s</td><td><code>http.rs</code></td></tr>
+          <tr><td>Index lookups</td><td>4 per 5 s tick; misses not repeated for 10 min</td><td><code>index.rs</code></td></tr>
+          <tr><td>Trackers</td><td>16</td><td><code>trackers.rs</code></td></tr>
+          <tr><td>Release manifest file</td><td>16 KiB</td><td><code>registry/release.rs</code></td></tr>
+          <tr><td>Operator notice</td><td>1536 canonical bytes</td><td><code>hoi_types::notice</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="wk-sec" id="next">
+    <h2>Read next</h2>
+    <div class="wk-cards">
+      <a class="wk-card g-sun" href="/wiki/registry/"><i></i><b>Registry</b><span>The API this node serves with <code>--registry</code>, the log of names and how clients verify it.</span></a>
+      <a class="wk-card g-mint" href="/wiki/deploy/"><i></i><b>Deploying &amp; hosting</b><span>Installers, compose files, the server bundle, ports and backups.</span></a>
+      <a class="wk-card g-sky" href="/wiki/discovery/"><i></i><b>Discovery</b><span>Node links, public nodes passing on others, the DHT, LAN beacons and registries.</span></a>
+      <a class="wk-card g-coral" href="/wiki/node-setup/"><i></i><b>hoi Node Setup</b><span>The wizard that installs and manages a node over SSH.</span></a>
+      <a class="wk-card g-lilac" href="/wiki/scatter/"><i></i><b>Scattered delivery</b><span>The encrypted pieces <code>--hold-pieces</code> keeps for others.</span></a>
+      <a class="wk-card g-peach" href="/wiki/transports/"><i></i><b>Transports</b><span>iroh QUIC, WebRTC, the WebSocket link and relays.</span></a>
+    </div>
+  </section>
+</article>
+<!-- @wiki-close -->
+<!-- @include footer.html -->
+<script type="module" src="/src/pages/wiki.ts"></script>
+</body>
+</html>

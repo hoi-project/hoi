@@ -1,0 +1,933 @@
+{
+  "cases": [
+    {
+      "name": "a browser alone, nothing missing, never synced",
+      "observation": {
+        "hinted": 0,
+        "holders": [],
+        "last_sync": null,
+        "live": false,
+        "media_present": 0,
+        "media_wanted": 0,
+        "missing": 0,
+        "now": 1790000000,
+        "own_durable": false,
+        "records": 40
+      },
+      "warmth": {
+        "complete": 1.0,
+        "copies": 1.0,
+        "durable_copies": 0.0,
+        "fresh": false,
+        "guarded": 0.0,
+        "hint": 0,
+        "holders_durable": 0,
+        "holders_transient": 0,
+        "kept": 0.0,
+        "level": "cold",
+        "media": 1.0,
+        "network_copies": 0.0,
+        "places": 0,
+        "score": 12,
+        "spread": 0.0
+      }
+    },
+    {
+      "name": "a browser with its home node",
+      "observation": {
+        "hinted": 0,
+        "holders": [
+          {
+            "coverage": 1.0,
+            "durable": true,
+            "guarded": true,
+            "network": null,
+            "operator": null
+          }
+        ],
+        "last_sync": 1789999940,
+        "live": true,
+        "media_present": 0,
+        "media_wanted": 0,
+        "missing": 0,
+        "now": 1790000000,
+        "own_durable": false,
+        "records": 40
+      },
+      "warmth": {
+        "complete": 1.0,
+        "copies": 2.0,
+        "durable_copies": 1.0,
+        "fresh": true,
+        "guarded": 1.0,
+        "hint": 1,
+        "holders_durable": 1,
+        "holders_transient": 0,
+        "kept": 1.0,
+        "level": "cool",
+        "media": 1.0,
+        "network_copies": 1.0,
+        "places": 1,
+        "score": 55,
+        "spread": 1.0
+      }
+    },
+    {
+      "name": "a desktop with one member's browser connected",
+      "observation": {
+        "hinted": 0,
+        "holders": [
+          {
+            "coverage": 1.0,
+            "durable": false,
+            "guarded": true,
+            "network": null,
+            "operator": null
+          }
+        ],
+        "last_sync": null,
+        "live": true,
+        "media_present": 0,
+        "media_wanted": 0,
+        "missing": 0,
+        "now": 1790000000,
+        "own_durable": true,
+        "records": 40
+      },
+      "warmth": {
+        "complete": 1.0,
+        "copies": 2.0,
+        "durable_copies": 1.0,
+        "fresh": true,
+        "guarded": 0.0,
+        "hint": 0,
+        "holders_durable": 0,
+        "holders_transient": 1,
+        "kept": 0.0,
+        "level": "cold",
+        "media": 1.0,
+        "network_copies": 0.0,
+        "places": 0,
+        "score": 20,
+        "spread": 0.0
+      }
+    },
+    {
+      "name": "two members' nodes, complete",
+      "observation": {
+        "hinted": 0,
+        "holders": [
+          {
+            "coverage": 1.0,
+            "durable": true,
+            "guarded": true,
+            "network": null,
+            "operator": null
+          },
+          {
+            "coverage": 1.0,
+            "durable": true,
+            "guarded": true,
+            "network": null,
+            "operator": null
+          }
+        ],
+        "last_sync": 1789999940,
+        "live": true,
+        "media_present": 0,
+        "media_wanted": 0,
+        "missing": 0,
+        "now": 1790000000,
+        "own_durable": false,
+        "records": 40
+      },
+      "warmth": {
+        "complete": 1.0,
+        "copies": 3.0,
+        "durable_copies": 2.0,
+        "fresh": true,
+        "guarded": 1.0,
+        "hint": 2,
+        "holders_durable": 2,
+        "holders_transient": 0,
+        "kept": 2.0,
+        "level": "warm",
+        "media": 1.0,
+        "network_copies": 2.0,
+        "places": 2,
+        "score": 70,
+        "spread": 1.0
+      }
+    },
+    {
+      "name": "three members' nodes, complete and fresh",
+      "observation": {
+        "hinted": 0,
+        "holders": [
+          {
+            "coverage": 1.0,
+            "durable": true,
+            "guarded": true,
+            "network": null,
+            "operator": null
+          },
+          {
+            "coverage": 1.0,
+            "durable": true,
+            "guarded": true,
+            "network": null,
+            "operator": null
+          },
+          {
+            "coverage": 1.0,
+            "durable": true,
+            "guarded": true,
+            "network": null,
+            "operator": null
+          }
+        ],
+        "last_sync": 1789999940,
+        "live": true,
+        "media_present": 0,
+        "media_wanted": 0,
+        "missing": 0,
+        "now": 1790000000,
+        "own_durable": false,
+        "records": 40
+      },
+      "warmth": {
+        "complete": 1.0,
+        "copies": 4.0,
+        "durable_copies": 3.0,
+        "fresh": true,
+        "guarded": 1.0,
+        "hint": 3,
+        "holders_durable": 3,
+        "holders_transient": 0,
+        "kept": 3.0,
+        "level": "hot",
+        "media": 1.0,
+        "network_copies": 3.0,
+        "places": 3,
+        "score": 85,
+        "spread": 1.0
+      }
+    },
+    {
+      "name": "three members' nodes, 7% still missing",
+      "observation": {
+        "hinted": 0,
+        "holders": [
+          {
+            "coverage": 1.0,
+            "durable": true,
+            "guarded": true,
+            "network": null,
+            "operator": null
+          },
+          {
+            "coverage": 1.0,
+            "durable": true,
+            "guarded": true,
+            "network": null,
+            "operator": null
+          },
+          {
+            "coverage": 1.0,
+            "durable": true,
+            "guarded": true,
+            "network": null,
+            "operator": null
+          }
+        ],
+        "last_sync": 1789999940,
+        "live": true,
+        "media_present": 0,
+        "media_wanted": 0,
+        "missing": 3,
+        "now": 1790000000,
+        "own_durable": false,
+        "records": 40
+      },
+      "warmth": {
+        "complete": 0.93,
+        "copies": 4.0,
+        "durable_copies": 3.0,
+        "fresh": true,
+        "guarded": 1.0,
+        "hint": 3,
+        "holders_durable": 3,
+        "holders_transient": 0,
+        "kept": 3.0,
+        "level": "warm",
+        "media": 1.0,
+        "network_copies": 3.0,
+        "places": 3,
+        "score": 84,
+        "spread": 1.0
+      }
+    },
+    {
+      "name": "two nodes, less than half here",
+      "observation": {
+        "hinted": 0,
+        "holders": [
+          {
+            "coverage": 1.0,
+            "durable": true,
+            "guarded": true,
+            "network": null,
+            "operator": null
+          },
+          {
+            "coverage": 1.0,
+            "durable": true,
+            "guarded": true,
+            "network": null,
+            "operator": null
+          }
+        ],
+        "last_sync": null,
+        "live": true,
+        "media_present": 0,
+        "media_wanted": 0,
+        "missing": 60,
+        "now": 1790000000,
+        "own_durable": false,
+        "records": 40
+      },
+      "warmth": {
+        "complete": 0.4,
+        "copies": 3.0,
+        "durable_copies": 2.0,
+        "fresh": true,
+        "guarded": 1.0,
+        "hint": 2,
+        "holders_durable": 2,
+        "holders_transient": 0,
+        "kept": 2.0,
+        "level": "cool",
+        "media": 1.0,
+        "network_copies": 2.0,
+        "places": 2,
+        "score": 63,
+        "spread": 1.0
+      }
+    },
+    {
+      "name": "two nodes, last catch-up eight days ago, nothing connected",
+      "observation": {
+        "hinted": 0,
+        "holders": [
+          {
+            "coverage": 1.0,
+            "durable": true,
+            "guarded": true,
+            "network": null,
+            "operator": null
+          },
+          {
+            "coverage": 1.0,
+            "durable": true,
+            "guarded": true,
+            "network": null,
+            "operator": null
+          }
+        ],
+        "last_sync": 1789308800,
+        "live": false,
+        "media_present": 0,
+        "media_wanted": 0,
+        "missing": 0,
+        "now": 1790000000,
+        "own_durable": false,
+        "records": 40
+      },
+      "warmth": {
+        "complete": 1.0,
+        "copies": 3.0,
+        "durable_copies": 2.0,
+        "fresh": false,
+        "guarded": 1.0,
+        "hint": 2,
+        "holders_durable": 2,
+        "holders_transient": 0,
+        "kept": 2.0,
+        "level": "cool",
+        "media": 1.0,
+        "network_copies": 2.0,
+        "places": 2,
+        "score": 62,
+        "spread": 1.0
+      }
+    },
+    {
+      "name": "partial copies on two nodes",
+      "observation": {
+        "hinted": 0,
+        "holders": [
+          {
+            "coverage": 0.5,
+            "durable": true,
+            "guarded": true,
+            "network": null,
+            "operator": null
+          },
+          {
+            "coverage": 0.75,
+            "durable": true,
+            "guarded": true,
+            "network": null,
+            "operator": null
+          }
+        ],
+        "last_sync": 1789999940,
+        "live": true,
+        "media_present": 0,
+        "media_wanted": 0,
+        "missing": 0,
+        "now": 1790000000,
+        "own_durable": false,
+        "records": 40
+      },
+      "warmth": {
+        "complete": 1.0,
+        "copies": 2.3,
+        "durable_copies": 1.3,
+        "fresh": true,
+        "guarded": 1.0,
+        "hint": 1,
+        "holders_durable": 2,
+        "holders_transient": 0,
+        "kept": 1.3,
+        "level": "cool",
+        "media": 1.0,
+        "network_copies": 1.3,
+        "places": 2,
+        "score": 59,
+        "spread": 1.0
+      }
+    },
+    {
+      "name": "a public join still waiting, the carrier listed 12 records",
+      "observation": {
+        "hinted": 0,
+        "holders": [
+          {
+            "coverage": 1.0,
+            "durable": true,
+            "guarded": true,
+            "network": null,
+            "operator": null
+          }
+        ],
+        "last_sync": null,
+        "live": true,
+        "media_present": 0,
+        "media_wanted": 0,
+        "missing": 12,
+        "now": 1790000000,
+        "own_durable": false,
+        "records": 0
+      },
+      "warmth": {
+        "complete": 0.0,
+        "copies": 2.0,
+        "durable_copies": 1.0,
+        "fresh": true,
+        "guarded": 1.0,
+        "hint": 1,
+        "holders_durable": 1,
+        "holders_transient": 0,
+        "kept": 1.0,
+        "level": "cold",
+        "media": 1.0,
+        "network_copies": 1.0,
+        "places": 1,
+        "score": 43,
+        "spread": 1.0
+      }
+    },
+    {
+      "name": "one node seen first hand, a connected node reports three",
+      "observation": {
+        "hinted": 3,
+        "holders": [
+          {
+            "coverage": 1.0,
+            "durable": true,
+            "guarded": true,
+            "network": null,
+            "operator": null
+          }
+        ],
+        "last_sync": 1789999940,
+        "live": true,
+        "media_present": 0,
+        "media_wanted": 0,
+        "missing": 0,
+        "now": 1790000000,
+        "own_durable": false,
+        "records": 40
+      },
+      "warmth": {
+        "complete": 1.0,
+        "copies": 2.0,
+        "durable_copies": 1.0,
+        "fresh": true,
+        "guarded": 1.0,
+        "hint": 1,
+        "holders_durable": 1,
+        "holders_transient": 0,
+        "kept": 1.0,
+        "level": "cool",
+        "media": 1.0,
+        "network_copies": 3.0,
+        "places": 1,
+        "score": 55,
+        "spread": 1.0
+      }
+    },
+    {
+      "name": "media: one of four pictures here",
+      "observation": {
+        "hinted": 0,
+        "holders": [
+          {
+            "coverage": 1.0,
+            "durable": true,
+            "guarded": true,
+            "network": null,
+            "operator": null
+          }
+        ],
+        "last_sync": 1789999940,
+        "live": true,
+        "media_present": 1,
+        "media_wanted": 4,
+        "missing": 0,
+        "now": 1790000000,
+        "own_durable": false,
+        "records": 40
+      },
+      "warmth": {
+        "complete": 1.0,
+        "copies": 2.0,
+        "durable_copies": 1.0,
+        "fresh": true,
+        "guarded": 1.0,
+        "hint": 1,
+        "holders_durable": 1,
+        "holders_transient": 0,
+        "kept": 1.0,
+        "level": "cool",
+        "media": 0.25,
+        "network_copies": 1.0,
+        "places": 1,
+        "score": 55,
+        "spread": 1.0
+      }
+    },
+    {
+      "name": "three nodes in one network: one place",
+      "observation": {
+        "hinted": 0,
+        "holders": [
+          {
+            "coverage": 1.0,
+            "durable": true,
+            "guarded": true,
+            "network": 7,
+            "operator": null
+          },
+          {
+            "coverage": 1.0,
+            "durable": true,
+            "guarded": true,
+            "network": 7,
+            "operator": null
+          },
+          {
+            "coverage": 1.0,
+            "durable": true,
+            "guarded": true,
+            "network": 7,
+            "operator": null
+          }
+        ],
+        "last_sync": 1789999940,
+        "live": true,
+        "media_present": 0,
+        "media_wanted": 0,
+        "missing": 0,
+        "now": 1790000000,
+        "own_durable": false,
+        "records": 40
+      },
+      "warmth": {
+        "complete": 1.0,
+        "copies": 4.0,
+        "durable_copies": 3.0,
+        "fresh": true,
+        "guarded": 1.0,
+        "hint": 1,
+        "holders_durable": 3,
+        "holders_transient": 0,
+        "kept": 1.0,
+        "level": "cool",
+        "media": 1.0,
+        "network_copies": 3.0,
+        "places": 1,
+        "score": 48,
+        "spread": 0.33
+      }
+    },
+    {
+      "name": "three nodes in three networks: three places",
+      "observation": {
+        "hinted": 0,
+        "holders": [
+          {
+            "coverage": 1.0,
+            "durable": true,
+            "guarded": true,
+            "network": 1,
+            "operator": null
+          },
+          {
+            "coverage": 1.0,
+            "durable": true,
+            "guarded": true,
+            "network": 2,
+            "operator": null
+          },
+          {
+            "coverage": 1.0,
+            "durable": true,
+            "guarded": true,
+            "network": 3,
+            "operator": null
+          }
+        ],
+        "last_sync": 1789999940,
+        "live": true,
+        "media_present": 0,
+        "media_wanted": 0,
+        "missing": 0,
+        "now": 1790000000,
+        "own_durable": false,
+        "records": 40
+      },
+      "warmth": {
+        "complete": 1.0,
+        "copies": 4.0,
+        "durable_copies": 3.0,
+        "fresh": true,
+        "guarded": 1.0,
+        "hint": 3,
+        "holders_durable": 3,
+        "holders_transient": 0,
+        "kept": 3.0,
+        "level": "hot",
+        "media": 1.0,
+        "network_copies": 3.0,
+        "places": 3,
+        "score": 85,
+        "spread": 1.0
+      }
+    },
+    {
+      "name": "one operator in two networks, and a node of its own",
+      "observation": {
+        "hinted": 0,
+        "holders": [
+          {
+            "coverage": 1.0,
+            "durable": true,
+            "guarded": true,
+            "network": 1,
+            "operator": 42
+          },
+          {
+            "coverage": 1.0,
+            "durable": true,
+            "guarded": true,
+            "network": 2,
+            "operator": 42
+          },
+          {
+            "coverage": 1.0,
+            "durable": true,
+            "guarded": true,
+            "network": 3,
+            "operator": null
+          }
+        ],
+        "last_sync": 1789999940,
+        "live": true,
+        "media_present": 0,
+        "media_wanted": 0,
+        "missing": 0,
+        "now": 1790000000,
+        "own_durable": false,
+        "records": 40
+      },
+      "warmth": {
+        "complete": 1.0,
+        "copies": 4.0,
+        "durable_copies": 3.0,
+        "fresh": true,
+        "guarded": 1.0,
+        "hint": 2,
+        "holders_durable": 3,
+        "holders_transient": 0,
+        "kept": 2.0,
+        "level": "warm",
+        "media": 1.0,
+        "network_copies": 3.0,
+        "places": 2,
+        "score": 67,
+        "spread": 0.67
+      }
+    },
+    {
+      "name": "two of three copies only over unchecked links",
+      "observation": {
+        "hinted": 0,
+        "holders": [
+          {
+            "coverage": 1.0,
+            "durable": true,
+            "guarded": false,
+            "network": 1,
+            "operator": null
+          },
+          {
+            "coverage": 1.0,
+            "durable": true,
+            "guarded": false,
+            "network": 2,
+            "operator": null
+          },
+          {
+            "coverage": 1.0,
+            "durable": true,
+            "guarded": true,
+            "network": 3,
+            "operator": null
+          }
+        ],
+        "last_sync": 1789999940,
+        "live": true,
+        "media_present": 0,
+        "media_wanted": 0,
+        "missing": 0,
+        "now": 1790000000,
+        "own_durable": false,
+        "records": 40
+      },
+      "warmth": {
+        "complete": 1.0,
+        "copies": 4.0,
+        "durable_copies": 3.0,
+        "fresh": true,
+        "guarded": 0.33,
+        "hint": 3,
+        "holders_durable": 3,
+        "holders_transient": 0,
+        "kept": 3.0,
+        "level": "warm",
+        "media": 1.0,
+        "network_copies": 3.0,
+        "places": 3,
+        "score": 78,
+        "spread": 1.0
+      }
+    }
+  ],
+  "links": [
+    {
+      "links": [],
+      "name": "no connection",
+      "warmth": {
+        "effective": 0.0,
+        "guarded": 0.0,
+        "largest": 0.0,
+        "level": "cold",
+        "links": 0,
+        "places": 0,
+        "score": 0
+      }
+    },
+    {
+      "links": [
+        {
+          "guarded": true,
+          "network": 1,
+          "operator": null
+        }
+      ],
+      "name": "one link: everything through one place",
+      "warmth": {
+        "effective": 1.0,
+        "guarded": 1.0,
+        "largest": 1.0,
+        "level": "cool",
+        "links": 1,
+        "places": 1,
+        "score": 40
+      }
+    },
+    {
+      "links": [
+        {
+          "guarded": true,
+          "network": 1,
+          "operator": null
+        },
+        {
+          "guarded": true,
+          "network": 1,
+          "operator": null
+        },
+        {
+          "guarded": true,
+          "network": 1,
+          "operator": null
+        }
+      ],
+      "name": "three links into one network",
+      "warmth": {
+        "effective": 1.0,
+        "guarded": 1.0,
+        "largest": 1.0,
+        "level": "cool",
+        "links": 3,
+        "places": 1,
+        "score": 40
+      }
+    },
+    {
+      "links": [
+        {
+          "guarded": true,
+          "network": 1,
+          "operator": null
+        },
+        {
+          "guarded": true,
+          "network": 2,
+          "operator": null
+        },
+        {
+          "guarded": true,
+          "network": 3,
+          "operator": null
+        }
+      ],
+      "name": "three links, three places, all guarded",
+      "warmth": {
+        "effective": 3.0,
+        "guarded": 1.0,
+        "largest": 0.33,
+        "level": "hot",
+        "links": 3,
+        "places": 3,
+        "score": 80
+      }
+    },
+    {
+      "links": [
+        {
+          "guarded": true,
+          "network": 1,
+          "operator": null
+        },
+        {
+          "guarded": true,
+          "network": 1,
+          "operator": null
+        },
+        {
+          "guarded": true,
+          "network": 1,
+          "operator": null
+        },
+        {
+          "guarded": true,
+          "network": 2,
+          "operator": null
+        }
+      ],
+      "name": "four links, three into one place",
+      "warmth": {
+        "effective": 1.6,
+        "guarded": 1.0,
+        "largest": 0.75,
+        "level": "warm",
+        "links": 4,
+        "places": 2,
+        "score": 53
+      }
+    },
+    {
+      "links": [
+        {
+          "guarded": false,
+          "network": 1,
+          "operator": null
+        },
+        {
+          "guarded": false,
+          "network": 2,
+          "operator": null
+        },
+        {
+          "guarded": true,
+          "network": 3,
+          "operator": null
+        }
+      ],
+      "name": "three places, two links unguarded",
+      "warmth": {
+        "effective": 3.0,
+        "guarded": 0.33,
+        "largest": 0.33,
+        "level": "cool",
+        "links": 3,
+        "places": 3,
+        "score": 49
+      }
+    },
+    {
+      "links": [
+        {
+          "guarded": true,
+          "network": 1,
+          "operator": 42
+        },
+        {
+          "guarded": true,
+          "network": 2,
+          "operator": 42
+        },
+        {
+          "guarded": true,
+          "network": 3,
+          "operator": null
+        }
+      ],
+      "name": "one operator across two networks, and a third",
+      "warmth": {
+        "effective": 1.8,
+        "guarded": 1.0,
+        "largest": 0.67,
+        "level": "warm",
+        "links": 3,
+        "places": 2,
+        "score": 57
+      }
+    }
+  ],
+  "note": "hoi_sync::warmth::assess over first-hand observations (PROTOCOL.md §20). Copies are counted once per independent place: holders sharing an operator key or a network key (IPv4 /24, IPv6 /48, this machine), directly or through another, are one place, and `kept` is the sum over places of the most any holder there showed. Levels read `kept` (the observer's own copy never warms its own reading): cold below one, cool below two, warm below three or while incomplete, hot from three; one level colder when less than half is here, nothing caught up for a week, or under half of the other durable copies are reached over a guarded link. Score: 0.6 × min(1, kept / 4) + 0.1 × spread + 0.1 × guarded + 0.12 × complete + 0.08 × fresh, spread = kept / other durable copies. `hint` is ⌊kept⌋ capped at 3, what a node attaches to its catalog entry (`w`). `links` are hoi_sync::warmth::assess_links over a device's own connections: places as above, effective = 1 / Σ share², cold with none, cool through one place or under half guarded, hot from 3 effective places with none over half the links and nine in ten guarded; score 0.6 × min(1, effective / 4) + 0.25 × guarded + 0.15 × (1 − largest), kept inside its level's band (cool ≤ 49, warm 50–79, hot ≥ 80)."
+}

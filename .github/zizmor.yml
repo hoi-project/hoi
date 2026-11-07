@@ -1,0 +1,8 @@
+# zizmor (the Workflow security job in security.yml). Every exception says why.
+rules:
+  cache-poisoning:
+    ignore:
+      # The release jobs use actions/setup-node v4, which restores a cache only when `cache:` is
+      # set, and no release job sets it (they build from a clean install). zizmor assumes the
+      # automatic package-manager caching of setup-node v5 and later.
+      - release.yml

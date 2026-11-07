@@ -1,0 +1,5 @@
+# Keep the build context small: never ship build output or VCS into the image builder.
+target/
+**/target/
+.git/
+*.log

@@ -1,0 +1,19 @@
+{
+  "communities": [
+    {
+      "hash": "9fde4008e5c165541b53c7d2b3620a21c9a3aaced53ea2912112b160a471043c",
+      "key": "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+      "named": true
+    },
+    {
+      "hash": "1995a3150a7c89c8abc4c04f18d4267ff5fbda2b06f679e604e30f6ffcc7838b",
+      "key": "8a875fff1eb38451577acd5afee405456568dd7c89e090863a0557bc7af49f17",
+      "named": false
+    }
+  ],
+  "context": "hoi 2026 hello community v1",
+  "home_to_device_hello": "aa61638258208a875fff1eb38451577acd5afee405456568dd7c89e090863a0557bc7af49f1758208a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c61746568656c6c6f61760262667881646c696e6b626c6b58204c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c6270747818626d56346443427759576c796157356e49477870626d7368646e616d656d6c656e612773206c6170746f70646e6f64655820090909090909090909090909090909090909090909090909090909090909090965746f6b656e782f5a47563261574e6c49474e795a57526c626e5270595777675a6d3979494745676447567a644342325a574e3062334966736572766573f5",
+  "note": "Sync version 2. To a stranger, `c` names only the communities whose routes led to this connection; `ch` lists the sender's other public communities as BLAKE3-derive-key(context, n ‖ key), sorted, under the per-connection salt `n` (16 bytes). A receiver matches it against the keys it holds; no other key can be read from it. Between a home node and its devices `c` lists every public community and there is no `n`/`ch`. A home node's hello to a device that showed the pairing link's token carries `token` (the device's own credential from now on), `pt` (the token of the next pairing link) and `lk` (the 32-byte key `link` messages are sealed with).",
+  "salt": "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+  "stranger_hello": "a861638158208a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c616e505a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a61746568656c6c6f6176026263688158201995a3150a7c89c8abc4c04f18d4267ff5fbda2b06f679e604e30f6ffcc7838b6266788167636174616c6f67646e6f64655820080808080808080808080808080808080808080808080808080808080808080866736572766573f4"
+}

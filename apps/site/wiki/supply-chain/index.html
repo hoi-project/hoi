@@ -1,0 +1,378 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <!-- @include head.html title="Supply chain &amp; hardening · hoi wiki" description="Lockfiles, cargo-vet, cargo-deny, the dependency regression gate, vendored patches, pinned actions and images, the exact Content-Security-Policy, SRI, headers and the security policy." -->
+</head>
+<body class="wiki">
+<!-- @include header.html nav="wiki" -->
+<!-- @wiki-open -->
+<article class="wk-doc">
+  <!-- @wiki-crumbs -->
+  <h1>Supply chain <span class="acc">&amp; hardening</span></h1>
+  <p class="wk-lead">Everything hoi ships is built from pinned, audited inputs, and every page it serves locks itself down before it runs a line of script. This page lists each check on the dependencies, each patched crate and why, and the exact policies the website, the app and the desktop shells enforce.</p>
+  <p class="wk-src-list">Source <a href="{{REPO_URL}}/tree/main/core/supply-chain">core/supply-chain/</a> <a href="{{REPO_URL}}/blob/main/core/deny.toml">core/deny.toml</a> <a href="{{REPO_URL}}/blob/main/scripts/check-dependency-security.mjs">check-dependency-security.mjs</a> <a href="{{REPO_URL}}/blob/main/vendor/README.md">vendor/README.md</a> <a href="{{REPO_URL}}/blob/main/packages/vite-plugin-hardening/index.js">vite-plugin-hardening</a> <a href="{{REPO_URL}}/blob/main/apps/site/plugins/headers-file.ts">headers-file.ts</a> <a href="{{REPO_URL}}/blob/main/SECURITY.md">SECURITY.md</a></p>
+  <div class="wk-head-rule"></div>
+
+  <section class="wk-sec" id="layers">
+    <h2>The layers</h2>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Supply-chain checks">
+      <table>
+        <thead><tr><th>Check</th><th>Covers</th><th>Runs</th></tr></thead>
+        <tbody>
+          <tr><td>Lockfiles, <code>--locked</code>, <code>--frozen-lockfile</code></td><td>every Rust and npm dependency at an exact version and checksum</td><td>every build</td></tr>
+          <tr><td>cargo-vet</td><td>every crate in <code>core/Cargo.lock</code> audited or exempted at its current version</td><td><code>security.yml</code></td></tr>
+          <tr><td>cargo-deny</td><td>licenses, advisories, yanked crates, wildcard requirements and sources, per workspace</td><td><code>security.yml</code>; the major release <code>security</code> job</td></tr>
+          <tr><td>cargo-audit</td><td>a second reading of the RustSec database: fails on vulnerabilities</td><td>the same two places</td></tr>
+          <tr><td>The regression gate</td><td>specific vulnerable or yanked versions, and the vendored patches staying in place</td><td><code>check:quick</code> (Quick source checks and every release); <code>security.yml</code>; major releases</td></tr>
+          <tr><td><code>pnpm audit --audit-level low</code></td><td>npm advisories</td><td><code>security.yml</code>; major releases</td></tr>
+          <tr><td>Vendored patches</td><td>five crates and one npm package, patched locally</td><td>in every build</td></tr>
+          <tr><td>Pinned actions and images</td><td>CI actions by commit SHA; the hoi-node, registry and sandbox hub images by digest</td><td>every workflow and image build</td></tr>
+          <tr><td>CSP, SRI, <code>_headers</code>, the service worker's hashes</td><td>what a served page may load and run</td><td>every build of the site and app</td></tr>
+          <tr><td>Reproducible builds</td><td>the WASM, hoi-node and the static site, byte for byte (<a href="/wiki/releases/">Releases</a>)</td><td>major releases; every hoi-node in a release</td></tr>
+          <tr><td>The SBOM</td><td>every package of every program, from the lockfiles (<a href="/wiki/sbom/">SBOM</a>)</td><td>the site build</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="wk-sec" id="lockfiles">
+    <h2>Lockfiles and workspaces</h2>
+    <p>Rust code lives in four Cargo workspaces, each with its own lockfile, so a dependency of one never leaks into another's checks. The core workspace stays free of SSH and WebKitGTK; the fuzz workspace keeps <code>libfuzzer-sys</code> out of the core's lockfile.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Lockfiles">
+      <table>
+        <thead><tr><th>Lockfile</th><th>Packages</th><th>From crates.io</th><th>Checked by</th></tr></thead>
+        <tbody>
+          <tr><td><code>core/Cargo.lock</code></td><td>721</td><td>702</td><td>cargo-vet, cargo-deny, cargo-audit, the gate</td></tr>
+          <tr><td><code>apps/desktop/src-tauri/Cargo.lock</code></td><td>901</td><td>885</td><td>cargo-deny, cargo-audit, the gate</td></tr>
+          <tr><td><code>apps/setup/src-tauri/Cargo.lock</code></td><td>562</td><td>560</td><td>cargo-deny, cargo-audit, the gate</td></tr>
+          <tr><td><code>core/fuzz/Cargo.lock</code></td><td>288</td><td>283</td><td>none: test tooling only</td></tr>
+          <tr><td><code>pnpm-lock.yaml</code></td><td colspan="2">every npm package of the workspace</td><td><code>pnpm audit</code>; <code>--frozen-lockfile</code> everywhere</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Every Cargo build, test and install command in the scripts and workflows passes <code>--locked</code>, and every <code>pnpm install</code> passes <code>--frozen-lockfile</code>, so a lockfile that doesn't match its manifests fails instead of being rewritten. The root devDependencies are exact versions (<code>playwright 1.56.1</code>, <code>@playwright/test 1.56.1</code>, <code>axe-core 4.14.0</code>, <code>binaryen 132.0.0</code>), and tools installed in CI are pinned too (<code>wasm-bindgen-cli --version 0.2.129 --locked</code>, <code>cargo-fuzz --locked --version 0.13.2</code>).</p>
+  </section>
+
+  <section class="wk-sec" id="cargo-vet">
+    <h2>cargo-vet</h2>
+    <p><code>core/supply-chain/</code> holds the core workspace's <a href="{{REPO_URL}}/tree/main/core/supply-chain">cargo-vet</a> records. The <code>vet</code> job runs <code>cargo vet --locked</code> in <code>core/</code>: every crate in <code>core/Cargo.lock</code> must be covered by an imported audit, an audit of the project's own, or an exemption at exactly its current version. So a new crate or a version bump fails until someone reviews it.</p>
+    <h3 id="vet-config">config.toml</h3>
+    <p>Format version <code>0.10</code>. Six audit sets are imported:</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Imported audit sets">
+      <table>
+        <thead><tr><th>Import</th><th>From</th><th>Audits in imports.lock</th></tr></thead>
+        <tbody>
+          <tr><td><code>bytecode-alliance</code></td><td>the wasmtime repository's <code>supply-chain/audits.toml</code></td><td>55 audits, 3 wildcard audits</td></tr>
+          <tr><td><code>embark-studios</code></td><td><code>EmbarkStudios/rust-ecosystem</code></td><td>10</td></tr>
+          <tr><td><code>google</code></td><td><code>google/supply-chain</code></td><td>34</td></tr>
+          <tr><td><code>isrg</code></td><td>the <code>divviup/libprio-rs</code> repository</td><td>37</td></tr>
+          <tr><td><code>mozilla</code></td><td><code>mozilla/supply-chain</code></td><td>106 audits, 14 wildcard audits</td></tr>
+          <tr><td><code>zcash</code></td><td><code>zcash/rust-ecosystem</code></td><td>18</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>In all, <code>imports.lock</code> pins 260 audits and 17 wildcard audits covering 113 crates, plus the 17 crates.io <code>publisher</code> records the wildcard audits rely on (<code>bumpalo</code>, <code>cexpr</code>, the <code>unicode-*</code> crates, the <code>uniffi*</code> crates, <code>utf8_iter</code>, <code>wasip2</code>, <code>weedle2</code>, <code>wit-bindgen</code>).</p>
+    <dl class="wk-defs">
+      <dt>policy<small>4 entries</small></dt><dd><code>core-models</code>, <code>dimpl</code>, <code>openmls_basic_credential</code> and <code>openmls_rust_crypto</code> have <code>audit-as-crates-io = true</code>: although they come from <code>vendor/</code>, they are vetted as the crates.io releases they patch, not waved through as first-party code.</dd>
+      <dt>exemptions<small>588 entries, 539 crates</small></dt><dd>Each names a crate, one version and a criterion: 584 are <code>safe-to-deploy</code>, and 4 are only <code>safe-to-run</code> (<code>borsh</code> 1.8.1, <code>borsh-derive</code> 1.8.1, <code>proptest</code> 1.12.0, <code>rand_xorshift</code> 0.5.0). A crate in the lockfile at two versions has two entries (<code>netdev</code> 0.45.1 and 0.46.3, for instance).</dd>
+      <dt>audits.toml<small>empty</small></dt><dd>The project has recorded no audits of its own yet: the file holds only its <code>[audits]</code> header.</dd>
+    </dl>
+    <div class="wk-code" data-lang="toml" data-title="core/supply-chain/config.toml (trimmed)"><pre><code>[cargo-vet]
+version = "0.10"
+
+[imports.mozilla]
+url = "https://raw.githubusercontent.com/mozilla/supply-chain/main/audits.toml"
+
+[policy.openmls_rust_crypto]
+audit-as-crates-io = true
+
+[[exemptions.aead]]
+version = "0.5.2"
+criteria = "safe-to-deploy"</code></pre></div>
+  </section>
+
+  <section class="wk-sec" id="cargo-deny">
+    <h2>cargo-deny</h2>
+    <p>Each application workspace has its own <code>deny.toml</code>. The <code>deny</code> job in <code>security.yml</code>, and the <code>security</code> job of a major release, run <code>EmbarkStudios/cargo-deny-action</code> with <code>--all-features</code> once per manifest (<code>core/Cargo.toml</code>, <code>apps/desktop/src-tauri/Cargo.toml</code>, <code>apps/setup/src-tauri/Cargo.toml</code>), then <code>cargo audit --file &lt;its Cargo.lock&gt;</code>. cargo-audit is the second reading: it fails on vulnerabilities, while <code>deny.toml</code> decides what unmaintained or yanked crates mean for each graph.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="cargo-deny settings">
+      <table>
+        <thead><tr><th>Setting</th><th><code>core/deny.toml</code></th><th>desktop and setup <code>deny.toml</code></th></tr></thead>
+        <tbody>
+          <tr><td><code>[graph] all-features</code></td><td><code>true</code></td><td><code>true</code></td></tr>
+          <tr><td><code>[advisories] yanked</code></td><td><code>"deny"</code></td><td><code>"deny"</code></td></tr>
+          <tr><td><code>[advisories] unmaintained</code></td><td>default (all crates)</td><td><code>"workspace"</code>: only the app's own direct dependencies</td></tr>
+          <tr><td><code>[advisories] ignore</code></td><td>7 advisories (below)</td><td>none</td></tr>
+          <tr><td><code>[licenses] confidence-threshold</code></td><td><code>0.9</code></td><td><code>0.9</code></td></tr>
+          <tr><td><code>[bans] multiple-versions</code></td><td><code>"allow"</code></td><td><code>"allow"</code></td></tr>
+          <tr><td><code>[bans] wildcards</code></td><td><code>"deny"</code>, with <code>allow-wildcard-paths = true</code></td><td>the same</td></tr>
+          <tr><td><code>[sources]</code></td><td><code>unknown-registry = "deny"</code>, <code>unknown-git = "deny"</code>, only crates.io's index allowed</td><td>the same</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>The two Tauri workspaces flag unmaintained crates only among their direct dependencies, because Tauri's GTK, zbus and URL-pattern stacks carry unmaintained transitive crates the project doesn't control. For the same reason they need no ignore for uniffi's <code>basic-toml</code>, which the core keeps.</p>
+    <h3 id="licenses">Allowed licenses</h3>
+    <p>All three files allow the same 15: <code>AGPL-3.0-only</code>, <code>Apache-2.0</code>, <code>Apache-2.0 WITH LLVM-exception</code>, <code>BSD-2-Clause</code>, <code>BSD-3-Clause</code>, <code>BSL-1.0</code>, <code>CC0-1.0</code>, <code>CDLA-Permissive-2.0</code>, <code>ISC</code>, <code>MIT</code>, <code>MIT-0</code>, <code>MPL-2.0</code>, <code>Unicode-3.0</code>, <code>Unlicense</code>, <code>Zlib</code>. hoi itself is <code>AGPL-3.0-only</code>.</p>
+    <h3 id="ignored">Ignored advisories (core only)</h3>
+    <p>Every one is an "unmaintained" notice, not a reported vulnerability, and each comes with a reason:</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Ignored advisories">
+      <table>
+        <thead><tr><th>Advisory</th><th>Crate</th><th>How it gets in</th></tr></thead>
+        <tbody>
+          <tr><td><code>RUSTSEC-2024-0436</code></td><td><code>paste</code></td><td>a build-time macro through pinned iroh's Linux network monitor (iroh → netwatch → netlink-packet-core)</td></tr>
+          <tr><td><code>RUSTSEC-2026-0374</code></td><td><code>basic-toml</code></td><td>uniffi's build tooling; no runtime exposure</td></tr>
+          <tr><td><code>RUSTSEC-2026-0247</code></td><td><code>im</code></td><td>loro-internal's persistent maps, behind the community rules and wiki text</td></tr>
+          <tr><td><code>RUSTSEC-2026-0248</code></td><td><code>sized-chunks</code></td><td>the same, through <code>im</code></td></tr>
+          <tr><td><code>RUSTSEC-2026-0251</code></td><td><code>bitmaps</code></td><td>the same, through <code>im</code></td></tr>
+          <tr><td><code>RUSTSEC-2023-0089</code></td><td><code>atomic-polyfill</code></td><td><code>heapless</code> 0.7 through postcard in loro's serde_columnar; on hoi's targets it passes straight to native atomics</td></tr>
+          <tr><td><code>RUSTSEC-2024-0370</code></td><td><code>proc-macro-error</code></td><td>a build-time macro helper under genawaiter, which iroh-blobs' streaming fetch uses</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="wk-sec" id="gate">
+    <h2>The dependency regression gate</h2>
+    <p><code>scripts/check-dependency-security.mjs</code> is a fast, offline guard over the three application lockfiles. It doesn't replace cargo-deny's current advisory data; it makes sure specific, known-bad states can never come back. It runs inside <code>check:quick</code>, so in Quick source checks and in every release, whatever its tier.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="What the gate refuses">
+      <table>
+        <thead><tr><th>Rule</th><th>Why</th></tr></thead>
+        <tbody>
+          <tr><td><code>crypto-bigint</code> must be present, and every copy at least <code>0.7.6</code>, without a prerelease</td><td><code>RUSTSEC-2026-0387</code>; a second, vulnerable copy can't hide behind a patched one</td></tr>
+          <tr><td>no <code>proc-macro-error2</code></td><td>it reintroduces <code>RUSTSEC-2026-0173</code></td></tr>
+          <tr><td>no <code>async-executor</code> <code>1.14.0</code></td><td>yanked for a use-after-free; 1.14.1 or newer</td></tr>
+          <tr><td><code>netdev</code> <code>0.46.3</code> must have no <code>source</code></td><td>it must be the local iOS compatibility patch</td></tr>
+          <tr><td>in a graph with <code>openmls</code>: exactly one each of <code>openmls_rust_crypto</code>, <code>openmls_basic_credential</code>, <code>dimpl</code>, <code>core-models</code>, all local</td><td>the reviewed patches belong to the MLS and media graph</td></tr>
+          <tr><td>in a graph without <code>openmls</code> (the setup app's): none of those four from a registry</td><td>so the unpatched releases can't slip in another way</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="wk-code" data-lang="js" data-title="scripts/check-dependency-security.mjs (trimmed)"><pre><code>const mls = packages.some((entry) =&gt; entry.name === 'openmls');
+for (const name of ['openmls_rust_crypto', 'openmls_basic_credential', 'dimpl', 'core-models']) {
+  const entries = packages.filter((entry) =&gt; entry.name === name);
+  const patched = entries.length === 1 &amp;&amp; !entries[0].source;
+  if (mls ? !patched : entries.some((entry) =&gt; entry.source)) errors.push(`${label}: ${name} must use the reviewed local patch; …`);
+}</code></pre></div>
+    <p>It prints "Dependency regression gate passed for core, desktop and the node setup app. Run cargo deny check for current advisories." Its tests check that every committed lockfile passes and that each guarded regression fails.</p>
+  </section>
+
+  <section class="wk-sec" id="vendor">
+    <h2>Vendored patches</h2>
+    <p><code>vendor/</code> holds temporary, locally maintained patches of existing dependencies. They are not new crypto implementations and not an independently audited fork, and they keep their licenses and upstream attribution. The published providers still select the vulnerable RustCrypto 0.13 curve stack; these patches move them to upstream crypto releases. The core and desktop workspaces use the same <code>[patch.crates-io]</code> entries; the setup app has no MLS and needs none of them.</p>
+    <div class="wk-code" data-lang="toml" data-title="core/Cargo.toml"><pre><code># Published providers still select the vulnerable RustCrypto 0.13 curve stack.
+# These reviewed compatibility patches use upstream crypto releases; see ../vendor/README.md.
+[patch.crates-io]
+openmls_rust_crypto = { path = "../vendor/openmls_rust_crypto" }
+openmls_basic_credential = { path = "../vendor/openmls_basic_credential" }
+dimpl = { path = "../vendor/dimpl" }
+core-models = { path = "../vendor/core-models" }
+# Shared Darwin ioctl layout: libc exposes its request type only on macOS.
+netdev = { path = "../vendor/netdev-0.46.3" }</code></pre></div>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Vendored crates and packages">
+      <table>
+        <thead><tr><th>Directory</th><th>Baseline</th><th>Local change</th></tr></thead>
+        <tbody>
+          <tr><td><code>openmls_rust_crypto</code></td><td>0.6.0, OpenMLS commit <code>3a3e35de…</code></td><td>the upstream crypto API migration (<code>055a2b4b…</code>); HPKE dependencies upgraded to 0.8 as in <code>e0b21a70…</code>; unused post-quantum dependencies feature-gated as upstream did in <code>27ddc74e…</code></td></tr>
+          <tr><td><code>openmls_basic_credential</code></td><td>0.6.0, the same OpenMLS commit</td><td>the same crypto API migration; optional ML-DSA feature-gated; the released serialization and storage APIs kept</td></tr>
+          <tr><td><code>dimpl</code></td><td>0.7.6, commit <code>0c196c24…</code></td><td>P-256/P-384 to 0.14 and ECDSA to 0.17, their <code>Generate</code> trait for ephemeral keys and the matching PKCS#8 decoding trait; the DTLS state machine, wire protocol and ciphers unchanged</td></tr>
+          <tr><td><code>core-models</code></td><td>0.0.7, libcrux commit <code>c5fb80f3…</code></td><td>only <code>hax-lib</code> 0.3.7 → 0.4.1, as in the upstream libcrux workspace; it models Rust operations for proof tooling under <code>cfg(hax)</code> and is not active in hoi's runtime</td></tr>
+          <tr><td><code>netdev-0.46.3</code></td><td>the published crate at commit <code>4505d238…</code>, MIT license and normalized manifest kept</td><td>only <code>src/os/darwin/ipv6_addr_flags.rs</code>: it defines the XNU IPv6 interface request locally, because libc 0.2.191 exports <code>in6_ifreq</code> only on macOS and iOS uses the same ioctl. The full 288-byte request includes room for the union's 34-counter statistics member; compile-time assertions check its size, field offset and the macOS libc ABI. The Windows-only transitive <code>netdev</code> 0.45.1 stays upstream</td></tr>
+          <tr><td><code>deepmerge</code> (npm)</td><td>the published 4.3.1 CommonJS build and declarations, MIT</td><td>source and target key copies reject <code>__proto__</code>, <code>constructor</code> and <code>prototype</code>, nested merges and null-prototype targets included: the fix for <code>GHSA-gcqx-w48m-w2h4</code>, which had no patched upstream release on 2026-11-02. Development tooling removed from the manifest</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p><code>openmls-crypto-migration.patch</code> is the exact upstream source migration with paths adjusted for this directory: four files (<code>openmls_basic_credential/src/lib.rs</code>, <code>openmls_rust_crypto/src/lib.rs</code>, <code>provider.rs</code>, <code>rand_shim.rs</code>). It was applied to the published 0.6.0 source instead of copying all of OpenMLS main, which keeps the newer <code>openmls</code> 0.9.2 release's targeted-message security interface. The migration raises the provider's minimum Rust to 1.94; hoi pins 1.97. All three lockfiles now resolve <code>crypto-bigint</code> 0.7.10, above the patched minimum 0.7.6 for <code>RUSTSEC-2026-0387</code>; the old 0.5.5 and <code>proc-macro-error2</code> are gone, and no advisory ignore was added to get there.</p>
+    <h3 id="vendor-npm">The npm override</h3>
+    <p><code>pnpm-workspace.yaml</code> scopes one override to the Svelte Vite plugin's existing build dependency, so the published version number stays and no audit advisory is ignored:</p>
+    <div class="wk-code" data-lang="yaml" data-title="pnpm-workspace.yaml"><pre><code># The published deepmerge has no fix for GHSA-gcqx-w48m-w2h4 yet.
+# Keep this build-only dependency on the reviewed local patch (vendor/README.md).
+overrides:
+  '@sveltejs/vite-plugin-svelte&gt;deepmerge': file:./vendor/deepmerge</code></pre></div>
+    <p><code>scripts/deepmerge.test.mjs</code> checks that the plugin resolves these exact patched bytes, that malicious keys can't poison merged prototypes, and that Svelte's array replacement and function options still merge.</p>
+    <h3 id="vendor-maintenance">Keeping them honest</h3>
+    <ol class="wk-steps">
+      <li><b>Gate</b><p><code>node scripts/check-dependency-security.mjs</code> rejects vulnerable duplicates, the unmaintained macro, or a removed patch in either lockfile.</p></li>
+      <li><b>Policy</b><p><code>cargo deny check</code> in both application workspaces for current advisories, licenses, sources and bans.</p></li>
+      <li><b>Function</b><p><code>cargo test --locked -p hoi-core -p hoi-net --test crypto_backend</code> in <code>core/</code>: every supported MLS suite, AEAD authentication, signing, HPKE exporters, DTLS key exchange and interoperability with rcgen/ring certificates, invalid inputs and tampering included.</p></li>
+      <li><b>Everything else</b><p>The full Rust tests, native and desktop checks, the WASM build, the iOS device and simulator builds and the browser private-community tests. <code>pnpm audit --audit-level low</code> and the desktop frontend build after an npm change. The CI path filters include <code>vendor/</code>.</p></li>
+    </ol>
+    <div class="wk-note limit"><b>What was checked</b><p>The proof-tool source was compiled against hax 0.4.2 as a compatibility check; that is not a rerun of the upstream formal proofs. New crypto advisories or upstream releases need a fresh look even when these tests pass, and the patches go as soon as compatible upstream releases exist.</p></div>
+  </section>
+
+  <section class="wk-sec" id="pinned">
+    <h2>Pinned actions and images</h2>
+    <p>Every third-party GitHub Action is referenced by a full 40-character commit SHA, with the version it stands for in a comment, so a moved tag can't change what runs. <code>static-boundaries.test.mjs</code> asserts the Pages upload step's pin.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Pinned GitHub Actions">
+      <table>
+        <thead><tr><th>Action</th><th>Commit</th><th>Version</th><th>Uses</th></tr></thead>
+        <tbody>
+          <tr><td><code>actions/checkout</code></td><td><code>11d5960a326750d5838078e36cf38b85af677262</code></td><td>v4.4.0</td><td>27</td></tr>
+          <tr><td><code>actions/setup-node</code></td><td><code>49933ea5288caeca8642d1e84afbd3f7d6820020</code></td><td>v4.4.0</td><td>18</td></tr>
+          <tr><td><code>dtolnay/rust-toolchain</code></td><td><code>b725eda525362e7cf34af9a7243cac1e3f01a7ec</code></td><td>stable (with an explicit <code>toolchain</code>)</td><td>15</td></tr>
+          <tr><td><code>pnpm/action-setup</code></td><td><code>b906affcce14559ad1aafd4ab0e942779e9f58b1</code></td><td>v4.3.0</td><td>11</td></tr>
+          <tr><td><code>Swatinem/rust-cache</code></td><td><code>d1527c8f67ef9af357290475d4af4b0fab8f12e0</code></td><td>v2.9.3</td><td>9</td></tr>
+          <tr><td><code>EmbarkStudios/cargo-deny-action</code></td><td><code>3c6349835b2b7b196a839186cb8b78e02f7b5f25</code></td><td>v2.1.1</td><td>2</td></tr>
+          <tr><td><code>tauri-apps/tauri-action</code></td><td><code>84b9d35b5fc46c1e45415bdb6144030364f7ebc5</code></td><td>v0.6.2</td><td>2</td></tr>
+          <tr><td><code>actions/attest-build-provenance</code></td><td><code>e8998f949152b193b063cb0ec769d69d929409be</code></td><td>v2.4.0</td><td>1</td></tr>
+          <tr><td><code>actions/upload-pages-artifact</code></td><td><code>56afc609e74202658d3ffba0e8f6dda462b719fa</code></td><td>v3.0.1</td><td>1</td></tr>
+          <tr><td><code>actions/deploy-pages</code></td><td><code>d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e</code></td><td>v4.0.5</td><td>1</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Jobs get <code>contents: read</code> unless they write a release; release checkouts use <code>persist-credentials: false</code>; test jobs use read-only tokens and are given no secrets. Container base images used for shipped binaries are pinned by digest:</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Container base images">
+      <table>
+        <thead><tr><th>Dockerfile</th><th>Bases</th></tr></thead>
+        <tbody>
+          <tr><td><code>core/crates/hoi-node/Dockerfile</code></td><td><code>rust:1.97-slim-bookworm@sha256:2775a09d…</code> to build, <code>scratch</code> for the bare binary (<code>--target binary</code>), <code>debian:bookworm-slim@sha256:734a72b3…</code> to run</td></tr>
+          <tr><td><code>registry/Dockerfile</code></td><td><code>node:24-slim@sha256:01d566e8…</code></td></tr>
+          <tr><td><code>sandbox/Dockerfile</code></td><td>the same two digests as hoi-node's</td></tr>
+          <tr><td><code>sandbox/App.Dockerfile</code>, <code>Control.Dockerfile</code></td><td><code>rust:1.97-slim</code> and <code>node:22-bookworm-slim</code> by tag (local test tooling)</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="wk-sec" id="csp">
+    <h2>Content-Security-Policy</h2>
+    <p>Static hosts such as GitHub Pages send no security headers, so every page carries its policy in a <code>&lt;meta http-equiv="Content-Security-Policy"&gt;</code> that <code>@hoi/vite-plugin-hardening</code> injects at build time (the dev server keeps HMR working without it). No page needs inline JavaScript, inline styles or <code>style</code> attributes, so no policy allows <code>'unsafe-inline'</code>. The Tauri apps set their policy in <code>tauri.conf.json</code>, and the app's desktop and setup builds inject none.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="CSP directives per surface">
+      <table>
+        <thead><tr><th>Directive</th><th>Website</th><th>Web app</th><th>Desktop</th><th>Node Setup</th></tr></thead>
+        <tbody>
+          <tr><td><code>default-src</code></td><td><code>'self'</code></td><td><code>'self'</code></td><td><code>'self'</code></td><td><code>'self'</code></td></tr>
+          <tr><td><code>script-src</code></td><td><code>'self'</code></td><td><code>'self' 'wasm-unsafe-eval'</code></td><td><code>'self'</code></td><td><code>'self'</code></td></tr>
+          <tr><td><code>worker-src</code></td><td>—</td><td><code>'self'</code></td><td><code>'none'</code></td><td><code>'none'</code></td></tr>
+          <tr><td><code>style-src</code></td><td><code>'self'</code></td><td><code>'self'</code></td><td><code>'self'</code></td><td><code>'self'</code></td></tr>
+          <tr><td><code>img-src</code></td><td><code>'self' data:</code></td><td><code>'self' data: blob:</code></td><td><code>'self' data: blob:</code></td><td><code>'self' data: blob:</code></td></tr>
+          <tr><td><code>media-src</code></td><td>—</td><td><code>'self' blob:</code></td><td><code>'self' blob:</code></td><td><code>'none'</code></td></tr>
+          <tr><td><code>font-src</code></td><td><code>'self'</code></td><td><code>'self'</code></td><td><code>'self'</code></td><td><code>'self'</code></td></tr>
+          <tr><td><code>connect-src</code></td><td><code>'self'</code></td><td><code>'self' ws: wss: https:</code> + chosen relay and registry origins</td><td><code>'self' ipc: http://ipc.localhost</code> + chosen registry and relay origins</td><td><code>'self' ipc: http://ipc.localhost</code></td></tr>
+          <tr><td><code>object-src</code></td><td><code>'none'</code></td><td><code>'none'</code></td><td><code>'none'</code></td><td><code>'none'</code></td></tr>
+          <tr><td><code>base-uri</code></td><td><code>'none'</code></td><td><code>'none'</code></td><td><code>'none'</code></td><td><code>'none'</code></td></tr>
+          <tr><td><code>form-action</code></td><td><code>'none'</code></td><td><code>'none'</code></td><td><code>'none'</code></td><td><code>'none'</code></td></tr>
+          <tr><td><code>frame-ancestors</code></td><td><code>'none'</code> (header only)</td><td><code>'none'</code> (header only)</td><td>—</td><td>—</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 id="csp-why">Why each exception exists</h3>
+    <dl class="wk-defs">
+      <dt>'wasm-unsafe-eval'<small>web app</small></dt><dd>The browser core is WebAssembly; compiling it needs this, and nothing else in the policy allows <code>eval</code>.</dd>
+      <dt>worker-src 'self'<small>web app</small></dt><dd>The core runs in a same-origin worker. The desktop app runs the core natively and allows no workers at all.</dd>
+      <dt>blob: for images and media<small>apps</small></dt><dd>Media plays only from bytes the core checked and handed over as <code>blob:</code> URLs, never straight from the network (<a href="/wiki/media/">Media</a>).</dd>
+      <dt>ws: wss: https:<small>web app</small></dt><dd>Node links are WebSockets to addresses the person opens; <code>https:</code> is for the trackers a community names, asked only when no route answers. The app itself names no service.</dd>
+      <dt>Chosen origins<small>web app, desktop</small></dt><dd>A relay or registry fixed at build time is added as its exact origin: HTTPS only (plain HTTP only for <code>localhost</code>, <code>127.0.0.1</code>, <code>[::1]</code>), no credentials, query or fragment, at most three relays. No wildcard origins. The desktop wrapper <code>apps/desktop/scripts/tauri.mjs</code> merges them into Tauri's policy; the setup app talks to nothing but its own IPC and merges none.</dd>
+      <dt>frame-ancestors<small>headers</small></dt><dd>A <code>&lt;meta&gt;</code> policy can't set it, so it exists only where a host sends the <code>_headers</code> file.</dd>
+    </dl>
+    <div class="wk-code" data-lang="js" data-title="packages/vite-plugin-hardening/index.js (the default policy, used by the website)"><pre><code>const csp = opts.csp === false ? null : cspString(opts.csp ?? {
+  'default-src': ["'self'"],
+  'script-src': ["'self'"],
+  'style-src': ["'self'"],
+  'img-src': ["'self'", 'data:'],
+  'font-src': ["'self'"],
+  'connect-src': ["'self'"],
+  'object-src': ["'none'"],
+  'base-uri': ["'none'"],
+  'form-action': ["'none'"],
+});</code></pre></div>
+  </section>
+
+  <section class="wk-sec" id="sri">
+    <h2>Subresource Integrity and the service worker</h2>
+    <p>The hardening plugin's <code>generateBundle</code> hook runs last (<code>order: 'post'</code>, because Vite rewrites dynamic-import preload lists in its own <code>generateBundle</code>, and hashing earlier would leave stale values). It hashes every emitted chunk and asset with SHA-384, then adds <code>integrity="sha384-…"</code> and <code>crossorigin</code> to every <code>&lt;script src&gt;</code> and every <code>&lt;link rel="stylesheet"&gt;</code> or <code>rel="modulepreload"</code> that points at a bundled file. Tags that already have <code>integrity</code>, external URLs and <code>data:</code> URLs are left alone. A built page's entry looks like this:</p>
+    <div class="wk-code" data-lang="text" data-title="apps/site/dist/index.html (one line)"><pre><code>&lt;script type="module" crossorigin src="/assets/index-DxDvfslu.js" integrity="sha384-exbER/tRMJjeiQ1tFCLXbTBhrB29Ie4LMKUP1O40/p5rPM6kjgCk1Oa+gJBDTUnd"&gt;</code></pre></div>
+    <p>The website builds with <code>modulePreload: false</code> (with scripts disabled, browsers cancel those fetches) and <code>assetsInlineLimit: 0</code>, so fonts and images are never inlined as <code>data:</code> URIs that the policy's <code>font-src 'self'</code> would refuse.</p>
+    <p>SRI can't cover what a script loads later: dynamic imports, workers and the WASM binary. The app's service worker covers those. At build time <code>vite/sw-plugin.js</code> records the SHA-256 of every file the build writes (except <code>_headers</code>, <code>sw.js</code> and <code>release.json</code>), and derives the cache name from all those hashes, so any change ships a new worker.</p>
+    <div class="wk-seq" data-title="Installing a new version of the app">
+lanes: Page | Service worker | Same origin
+Page -> Service worker: register <code>sw.js</code>; <code>reg.update()</code> every hour
+Service worker -> Same origin: fetch every precached file, <code>cache: 'reload'</code>
+Same origin --> Service worker: the files
+Service worker: SHA-256 of each must equal the build's; one mismatch fails the install
+Service worker --> Page: installed and waiting
+Page: "A new version is ready · Reload"
+Page -> Service worker: <code>skip-waiting</code>, only after the click
+Service worker: activates, deletes older <code>hoi-*</code> caches; the page reloads
+    </div>
+    <p>After that the worker serves hashed files cache-first and re-checks any file it has to fetch; <code>index.html</code> is network-first (its own SRI attributes pin the entry script and stylesheet); it never touches cross-origin requests; and it never answers for <code>release.json</code>, so an installed worker can't freeze a notice. It is registered only in production web builds: never in development, inside Tauri or in sandbox builds.</p>
+  </section>
+
+  <section class="wk-sec" id="headers">
+    <h2>The _headers file</h2>
+    <p>For hosts that read a <code>_headers</code> file (Netlify and similar; GitHub Pages ignores it), both builds emit one with the same policy plus what a <code>&lt;meta&gt;</code> can't set. The website's comes from <code>apps/site/plugins/headers-file.ts</code>, which reads the policy back out of the built <code>index.html</code> so the two never drift, and fails the build if the <code>&lt;meta&gt;</code> is missing:</p>
+    <div class="wk-code" data-lang="text" data-title="apps/site/dist/_headers (as built)"><pre><code>/*
+  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: no-referrer
+  Strict-Transport-Security: max-age=31536000; includeSubDomains
+  Permissions-Policy: interest-cohort=(), browsing-topics=(), geolocation=(), microphone=(), payment=()
+  Cross-Origin-Opener-Policy: same-origin
+
+# Hashed build output never changes.
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
+
+# The release manifest is what the apps check for updates; always revalidate.
+/releases/*
+  Cache-Control: no-cache
+
+# Operator release notices can change independently of a software build.
+/release.json
+  Cache-Control: no-store
+
+# The installers are read by a shell or PowerShell, not rendered: plain text, always fresh.
+/install.sh
+  Content-Type: text/plain; charset=utf-8
+  Cache-Control: no-cache
+/install.ps1
+  Content-Type: text/plain; charset=utf-8
+  Cache-Control: no-cache</code></pre></div>
+    <p>The app's file has the same six security headers with the app's policy, plus <code>X-Robots-Tag: noindex, nofollow</code> while the channel is preview and <code>Cache-Control: no-store</code> for its <code>release.json</code>. <code>assemble-static.mjs</code> merges the two so the site's stricter policy never matches anything under <code>/app/</code> (<a href="/wiki/development/">Building &amp; testing</a>). Pages that a host serves without headers still carry <code>&lt;meta name="referrer" content="no-referrer"&gt;</code>, and the preview app a <code>robots</code> <code>noindex</code> tag. Hosting the app on its own origin is stronger still: its keys then share nothing with the site.</p>
+  </section>
+
+  <section class="wk-sec" id="third-party">
+    <h2>No third-party requests</h2>
+    <p>The website and the app load everything from their own origin: scripts, styles, fonts and images are bundled locally. Tests hold this in place:</p>
+    <ul>
+      <li><code>apps/site/scripts/e2e.mjs</code> fails on any request to another origin (<code>data:</code> and <code>blob:</code> aside), on every page, at every viewport, with and without scripts.</li>
+      <li><code>static-boundaries.test.mjs</code>: the website's shared script calls no <code>fetch</code>, <code>sendBeacon</code>, <code>localStorage</code>, <code>sessionStorage</code>, <code>indexedDB</code> or <code>document.cookie</code>; the Pages build pins the registry and relay settings empty; the app's defaults name no registry or relay; a node starts with no relays, indexes, nodes or joins, and iroh starts from its minimal preset with only the relays given.</li>
+      <li><code>public-copy.test.mjs</code>: no email address or deployment-configuration hint in any public page.</li>
+      <li><code>e2e-deployment.mjs</code>: the assembled site, served with no headers at all, carries its policy in every page and needs no inline styles or scripts.</li>
+    </ul>
+    <p>The website's <code>robots.txt</code> says it plainly: "hoi.sh is a static site with nothing to hide and nothing to track." Nothing in the site or app includes analytics or crash reporting. What the app does contact (nodes, a registry, relays) is described on <a href="/wiki/discovery/">Discovery</a> and <a href="/wiki/transports/">Transports</a>.</p>
+  </section>
+
+  <section class="wk-sec" id="security-policy">
+    <h2>The security policy</h2>
+    <p><code>SECURITY.md</code> states the project's status: hoi is preview software, compatibility may change and data may be lost, and there is no independent security audit or supported stable release yet.</p>
+    <ol class="wk-steps">
+      <li><b>Report privately</b><p>Use the repository's <b>Security → Report a vulnerability</b> page when private reporting is available, with the affected version, reproduction steps and impact.</p></li>
+      <li><b>Never in public</b><p>If that page is unavailable, don't put details in a public issue; ask the maintainer to enable a private reporting channel first.</p></li>
+      <li><b>Nothing real</b><p>Don't include real private keys, personal data or illegal material in a report.</p></li>
+    </ol>
+    <p>It lists the current limitations openly:</p>
+    <ul>
+      <li>Recipients can keep copies after posts expire (<a href="/wiki/expiry/">Expiry</a>).</li>
+      <li>A public node can read the public records it stores. Private-relay encryption doesn't hide all connection metadata or prevent withholding (<a href="/wiki/mailboxes/">Mailboxes</a>).</li>
+      <li>A compromised client distribution can expose the data and keys available to that client: check your download (<a href="/wiki/releases/">Releases</a>).</li>
+      <li>Recovery keys restore identity, not all local data or private-group state (<a href="/wiki/identity/">Keys &amp; identity</a>).</li>
+      <li>Registry discovery depends on its operator: keep independent copies and full invites (<a href="/wiki/registry/">Registry</a>).</li>
+    </ul>
+    <p>Issues that concern a documented limitation are still worth reporting when the impact is unexpected. Operators should read the relevant deployment guide before running a service.</p>
+  </section>
+
+  <section class="wk-sec" id="sbom">
+    <h2>The full dependency list</h2>
+    <p>The <a href="/wiki/sbom/">SBOM page</a> lists every package of every program, with versions, licenses and sources, built from the lockfiles at site build time, and offers a CycloneDX file. <code>node apps/site/scripts/sbom.mjs --check</code> verifies it still matches every lockfile.</p>
+    <div class="wk-cards">
+      <a class="wk-card g-mint" href="/wiki/sbom/"><i></i><b>SBOM</b><span>Every dependency of every program.</span></a>
+      <a class="wk-card g-sky" href="/wiki/releases/"><i></i><b>Releases &amp; verification</b><span>Signatures, digests and checking a download.</span></a>
+      <a class="wk-card g-coral" href="/wiki/website/"><i></i><b>This website</b><span>How the site is built and served.</span></a>
+      <a class="wk-card g-sun" href="/wiki/development/"><i></i><b>Building &amp; testing</b><span>Where each of these checks runs.</span></a>
+    </div>
+  </section>
+</article>
+<!-- @wiki-close -->
+<!-- @include footer.html -->
+<script type="module" src="/src/pages/wiki.ts"></script>
+</body>
+</html>

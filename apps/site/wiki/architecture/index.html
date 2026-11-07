@@ -1,0 +1,281 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <!-- @include head.html title="Architecture · hoi wiki" description="Every hoi program, every layer of the Rust core, every connection between them and what crosses it, in one diagram and a few tables." -->
+</head>
+<body class="wiki">
+<!-- @include header.html nav="wiki" -->
+<!-- @wiki-open -->
+<article class="wk-doc wide">
+  <!-- @wiki-crumbs -->
+  <h1>One core, <span class="acc">many shells</span></h1>
+  <p class="wk-lead">hoi is one Rust core that does all the thinking (records, keys, checks, moderation, sync) wrapped in thin shells: a browser app, phone libraries, a desktop app, a headless node and a setup wizard. They all speak the same protocol to each other over a handful of transports. Nothing in the middle is required, and nothing the project hosts is more than static files.</p>
+  <p class="wk-src-list">Source <a href="{{REPO_URL}}/tree/main/core">core/</a> <a href="{{REPO_URL}}/tree/main/apps">apps/</a> <a href="{{REPO_URL}}/tree/main/registry">registry/</a> <a href="{{REPO_URL}}/tree/main/relay">relay/</a> <a href="{{REPO_URL}}/tree/main/deploy">deploy/</a></p>
+  <div class="wk-head-rule"></div>
+
+  <section class="wk-sec" id="diagram">
+    <h2>The whole thing</h2>
+    <p>Each box is a program or a crate and opens its page. The flowing lines are calls inside a device; the bottom row is everything a device talks to over the network.</p>
+    <figure class="wk-fig arch" data-arch>
+      <div class="wk-fig-scroll" tabindex="0" role="region" aria-label="Architecture diagram, scrolls sideways on small screens">
+        <svg viewBox="0 0 1180 880" role="img" aria-labelledby="arch-t arch-d">
+          <title id="arch-t">hoi's architecture</title>
+          <desc id="arch-d">Five interfaces at the top (website, web app, phone apps, desktop companion, node setup) reach the Rust core through bindings (WebAssembly in a worker, UniFFI, Tauri commands, an SSH engine). The core, hoi-core over eight crates, and the headless hoi-node sit on hoi-net, which talks to public nodes, members' nodes, browsers, the Mainline DHT, and optionally a registry and an encrypted relay.</desc>
+          <defs>
+            <marker id="arch-h" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" class="d-head"></path></marker>
+          </defs>
+
+          <text class="d-tag c-mute" x="40" y="34">INTERFACES</text>
+          <text class="d-tag c-mute" x="40" y="176">BINDINGS</text>
+          <text class="d-tag c-mute" x="40" y="308">THE CORE · RUST</text>
+          <text class="d-tag c-mute" x="40" y="550">NETWORKING</text>
+          <text class="d-tag c-mute" x="40" y="690">WHAT A DEVICE TALKS TO</text>
+
+          <!-- connectors (drawn first, under the boxes) -->
+          <path class="d-line" d="M144 50 C144 18 367 18 367 50" marker-end="url(#arch-h)"></path>
+          <text class="d-sub" x="214" y="24">serves /app/ as static files</text>
+          <path class="d-line arch-c" data-a="web wasm" d="M367 126 L367 186" marker-end="url(#arch-h)"></path>
+          <path class="d-flow c-coral arch-f" d="M367 126 L367 186"></path>
+          <text class="d-sub" x="376" y="160">postMessage · Node::call</text>
+          <path class="d-line arch-c" data-a="phone ffi" d="M590 126 L590 186" marker-end="url(#arch-h)"></path>
+          <path class="d-flow c-lilac arch-f" d="M590 126 L590 186"></path>
+          <text class="d-sub" x="599" y="160">UniFFI</text>
+          <path class="d-line arch-c" data-a="desktop tauri" d="M813 126 L813 186" marker-end="url(#arch-h)"></path>
+          <path class="d-flow c-sky arch-f" d="M813 126 L813 186"></path>
+          <text class="d-sub" x="822" y="160">invoke hoi_call</text>
+          <path class="d-line arch-c" data-a="setup ssh" d="M1036 126 L1036 186" marker-end="url(#arch-h)"></path>
+          <path class="d-flow c-peach arch-f" d="M1036 126 L1036 186"></path>
+          <text class="d-sub" x="1045" y="160">commands</text>
+          <path class="d-line arch-c" data-a="wasm storage" d="M263 226 L252 226" marker-end="url(#arch-h)"></path>
+          <path class="d-line arch-c" data-a="wasm core" d="M367 262 L367 316" marker-end="url(#arch-h)"></path>
+          <path class="d-flow c-coral arch-f" d="M367 262 L367 316"></path>
+          <path class="d-line arch-c" data-a="ffi core" d="M590 262 L590 316" marker-end="url(#arch-h)"></path>
+          <path class="d-flow c-lilac arch-f" d="M590 262 L590 316"></path>
+          <path class="d-line arch-c" data-a="tauri core" d="M813 262 L813 316" marker-end="url(#arch-h)"></path>
+          <path class="d-flow c-sky arch-f" d="M813 262 L813 316"></path>
+          <path class="d-line dash arch-c" data-a="ssh node" d="M1036 262 L1036 316" marker-end="url(#arch-h)"></path>
+          <path class="d-flow c-peach arch-f" d="M1036 262 L1036 316"></path>
+          <text class="d-sub" x="1045" y="295">upload · install</text>
+          <path class="d-line arch-c" data-a="node core" d="M932 360 L921 360" marker-end="url(#arch-h)"></path>
+          <path class="d-line arch-c" data-a="core net" d="M478 510 L478 556" marker-end="url(#arch-h)"></path>
+          <path class="d-flow c-mint arch-f" d="M478 510 L478 556"></path>
+          <path class="d-line arch-c" data-a="node net" d="M1036 510 L1036 556" marker-end="url(#arch-h)"></path>
+          <path class="d-flow c-sun arch-f" d="M1036 510 L1036 556"></path>
+          <path class="d-line arch-c" data-a="net public" d="M125 636 L125 696" marker-end="url(#arch-h)"></path>
+          <path class="d-flow c-sun arch-f" d="M125 636 L125 696"></path>
+          <path class="d-line arch-c" data-a="net members" d="M311 636 L311 696" marker-end="url(#arch-h)"></path>
+          <path class="d-flow c-mint arch-f" d="M311 636 L311 696"></path>
+          <path class="d-line arch-c" data-a="net browsers" d="M497 636 L497 696" marker-end="url(#arch-h)"></path>
+          <path class="d-flow c-sky arch-f" d="M497 636 L497 696"></path>
+          <path class="d-line arch-c" data-a="net dht" d="M683 636 L683 696" marker-end="url(#arch-h)"></path>
+          <path class="d-flow c-sun arch-f" d="M683 636 L683 696"></path>
+          <path class="d-line dash arch-c" data-a="net registry" d="M869 636 L869 696" marker-end="url(#arch-h)"></path>
+          <path class="d-line dash arch-c" data-a="net relay" d="M1055 636 L1055 696" marker-end="url(#arch-h)"></path>
+
+          <!-- interfaces -->
+          <a href="/wiki/website/" class="arch-b" data-k="site" data-d="The static site at hoi.sh: these pages, the downloads, and the web app's files under /app/. It runs no service and names no node.">
+            <title>This website</title>
+            <rect class="d-box acc c-peach" x="40" y="50" width="208" height="76" rx="14"></rect>
+            <text class="d-text" x="56" y="82">Website</text><text class="d-sub" x="56" y="104">hoi.sh · static · Vite</text>
+          </a>
+          <a href="/wiki/web-app/" class="arch-b" data-k="web" data-d="The Svelte app. Its interface runs on the page; the core runs as WebAssembly in a Web Worker, reached by postMessage. It reaches nodes over WebRTC and its own home node over WebSocket.">
+            <title>Web app</title>
+            <rect class="d-box acc c-coral" x="263" y="50" width="208" height="76" rx="14"></rect>
+            <text class="d-text" x="279" y="82">Web app</text><text class="d-sub" x="279" y="104">Svelte 5 · any browser</text>
+          </a>
+          <a href="/wiki/mobile/" class="arch-b" data-k="phone" data-d="Swift and Kotlin libraries around the same core, compiled for Android and iOS through UniFFI, with key stores in the Keychain and Android Keystore.">
+            <title>Mobile libraries</title>
+            <rect class="d-box acc c-lilac" x="486" y="50" width="208" height="76" rx="14"></rect>
+            <text class="d-text" x="502" y="82">Phone libraries</text><text class="d-sub" x="502" y="104">Swift · Kotlin</text>
+          </a>
+          <a href="/wiki/desktop/" class="arch-b" data-k="desktop" data-d="The Tauri app for macOS, Windows and Linux. It shows the web app's interface and runs the core natively, so it can be dialed, carry communities and serve your other devices.">
+            <title>Desktop companion</title>
+            <rect class="d-box acc c-sky" x="709" y="50" width="208" height="76" rx="14"></rect>
+            <text class="d-text" x="725" y="82">Desktop companion</text><text class="d-sub" x="725" y="104">Tauri · native core</text>
+          </a>
+          <a href="/wiki/node-setup/" class="arch-b" data-k="setup" data-d="A wizard that installs, upgrades and manages hoi-node on a Linux server over SSH.">
+            <title>hoi Node Setup</title>
+            <rect class="d-box acc c-peach" x="932" y="50" width="208" height="76" rx="14"></rect>
+            <text class="d-text" x="948" y="82">hoi Node Setup</text><text class="d-sub" x="948" y="104">Tauri · wizard</text>
+          </a>
+
+          <!-- bindings -->
+          <a href="/wiki/storage/" class="arch-b" data-k="storage" data-d="What the browser keeps: the core's journal in IndexedDB, files in OPFS, all inside a vault encrypted with your passphrase or a passkey.">
+            <title>Storage</title>
+            <rect class="d-box" x="40" y="190" width="208" height="72" rx="12"></rect>
+            <text class="d-text" x="56" y="220">Browser storage</text><text class="d-sub" x="56" y="242">IndexedDB · OPFS · vault</text>
+          </a>
+          <a href="/wiki/api/" class="arch-b" data-k="wasm" data-d="hoi-wasm: the core for browsers, plus the stamp miner the worker pool runs. One call() takes a method name and JSON arguments.">
+            <title>hoi-wasm</title>
+            <rect class="d-box" x="263" y="190" width="208" height="72" rx="12"></rect>
+            <text class="d-text" x="279" y="220">hoi-wasm</text><text class="d-sub" x="279" y="242">wasm-bindgen · Web Worker</text>
+          </a>
+          <a href="/wiki/api/" class="arch-b" data-k="ffi" data-d="hoi-ffi: typed UniFFI bindings for Swift and Kotlin over the same Node API.">
+            <title>hoi-ffi</title>
+            <rect class="d-box" x="486" y="190" width="208" height="72" rx="12"></rect>
+            <text class="d-text" x="502" y="220">hoi-ffi</text><text class="d-sub" x="502" y="242">UniFFI · typed API</text>
+          </a>
+          <a href="/wiki/desktop/" class="arch-b" data-k="tauri" data-d="The desktop shell's Tauri commands: hoi_call forwards a method and JSON arguments to the native core; others mine stamps, unlock the vault and save files.">
+            <title>Tauri commands</title>
+            <rect class="d-box" x="709" y="190" width="208" height="72" rx="12"></rect>
+            <text class="d-text" x="725" y="220">Tauri commands</text><text class="d-sub" x="725" y="242">hoi_call · hoi_mine</text>
+          </a>
+          <a href="/wiki/node-setup/" class="arch-b" data-k="ssh" data-d="The setup app's engine: SSH sessions (russh), profiles, the files it writes on the server, and the hoi-node binary it uploads and checks by hash.">
+            <title>SSH engine</title>
+            <rect class="d-box" x="932" y="190" width="208" height="72" rx="12"></rect>
+            <text class="d-text" x="948" y="220">SSH engine</text><text class="d-sub" x="948" y="242">russh · profiles</text>
+          </a>
+
+          <!-- the core -->
+          <a href="/wiki/crates/" class="arch-b" data-k="core" data-d="hoi-core: the Node. Every record passes its ingest pipeline; it keeps the state, runs the sync conversation and answers every API call.">
+            <title>hoi-core</title>
+            <rect class="d-box acc c-mint" x="40" y="320" width="877" height="190" rx="18"></rect>
+            <text class="d-text" x="58" y="352">hoi-core</text><text class="d-sub" x="140" y="352">Node · ingest pipeline · effects · API · DTOs · JSON dispatch · sync conversation</text>
+          </a>
+          <a href="/wiki/records/" class="arch-b" data-k="types" data-d="hoi-types: records, ids, canonical DAG-CBOR, limits, did:key, hoi:// links."><title>hoi-types</title><rect class="d-box" x="56" y="410" width="99" height="80" rx="10"></rect><text class="d-text arch-s" x="66" y="440">types</text><text class="d-sub" x="66" y="462">records</text><text class="d-sub" x="66" y="477">CBOR</text></a>
+          <a href="/wiki/stamps/" class="arch-b" data-k="crypto" data-d="hoi-crypto: Ed25519, BLAKE3 stamps, Argon2id, the keystore, Shamir, scattered pieces and HPKE envelopes."><title>hoi-crypto</title><rect class="d-box" x="163" y="410" width="99" height="80" rx="10"></rect><text class="d-text arch-s" x="173" y="440">crypto</text><text class="d-sub" x="173" y="462">keys</text><text class="d-sub" x="173" y="477">stamps</text></a>
+          <a href="/wiki/validation/" class="arch-b" data-k="validate" data-d="hoi-validate: the pure pipeline stages, text and link rules, media checks."><title>hoi-validate</title><rect class="d-box" x="270" y="410" width="99" height="80" rx="10"></rect><text class="d-text arch-s" x="280" y="440">validate</text><text class="d-sub" x="280" y="462">pipeline</text><text class="d-sub" x="280" y="477">content</text></a>
+          <a href="/wiki/storage/" class="arch-b" data-k="store" data-d="hoi-store: the in-memory index, expiry, and persistence (SQLite natively, a journal in browsers)."><title>hoi-store</title><rect class="d-box" x="377" y="410" width="99" height="80" rx="10"></rect><text class="d-text arch-s" x="387" y="440">store</text><text class="d-sub" x="387" y="462">index</text><text class="d-sub" x="387" y="477">SQLite</text></a>
+          <a href="/wiki/communities/" class="arch-b" data-k="moderation" data-d="hoi-moderation: community state replayed from the signed ledger, and the ladder: standing, holds, hides, blocks, vetoes."><title>hoi-moderation</title><rect class="d-box" x="484" y="410" width="99" height="80" rx="10"></rect><text class="d-text arch-s" x="494" y="440">moderation</text><text class="d-sub" x="494" y="462">ledger</text><text class="d-sub" x="494" y="477">ladder</text></a>
+          <a href="/wiki/trust/" class="arch-b" data-k="trust" data-d="hoi-trust: trust levels and weights, and hot, fresh and loudest ranking, computed locally."><title>hoi-trust</title><rect class="d-box" x="591" y="410" width="99" height="80" rx="10"></rect><text class="d-text arch-s" x="601" y="440">trust</text><text class="d-sub" x="601" y="462">weights</text><text class="d-sub" x="601" y="477">ranking</text></a>
+          <a href="/wiki/spam/" class="arch-b" data-k="spam" data-d="hoi-spam: decaying strikes and peer scores."><title>hoi-spam</title><rect class="d-box" x="698" y="410" width="99" height="80" rx="10"></rect><text class="d-text arch-s" x="708" y="440">spam</text><text class="d-sub" x="708" y="462">strikes</text><text class="d-sub" x="708" y="477">scores</text></a>
+          <a href="/wiki/sync/" class="arch-b" data-k="sync" data-d="hoi-sync: the sync messages and their caps, range reconciliation, warmth."><title>hoi-sync</title><rect class="d-box" x="805" y="410" width="99" height="80" rx="10"></rect><text class="d-text arch-s" x="815" y="440">sync</text><text class="d-sub" x="815" y="462">messages</text><text class="d-sub" x="815" y="477">ranges</text></a>
+
+          <a href="/wiki/hoi-node/" class="arch-b" data-k="node" data-d="hoi-node: the headless node. A home node for your devices by default; also a public node, a registry or a packet relay when asked.">
+            <title>hoi-node</title>
+            <rect class="d-box acc c-sun" x="932" y="320" width="208" height="190" rx="18"></rect>
+            <text class="d-text" x="948" y="352">hoi-node</text>
+            <text class="d-sub" x="948" y="380">home node</text><text class="d-sub" x="948" y="400">--public</text><text class="d-sub" x="948" y="420">--registry</text><text class="d-sub" x="948" y="440">--packet-relay</text><text class="d-sub" x="948" y="470">SQLite · systemd · Docker</text>
+          </a>
+
+          <!-- networking -->
+          <a href="/wiki/transports/" class="arch-b" data-k="net" data-d="hoi-net: authenticated iroh QUIC peers (ALPN hoi/sync/1), WebRTC data channels for browsers and phones (str0m, ICE-lite), the paired-device WebSocket, the Mainline DHT, LAN beacons and port mapping.">
+            <title>hoi-net</title>
+            <rect class="d-box acc c-sky" x="40" y="560" width="1100" height="76" rx="14"></rect>
+            <text class="d-text" x="58" y="592">hoi-net</text>
+            <text class="d-sub" x="58" y="616">iroh QUIC hoi/sync/1 · WebRTC :7844 (str0m) · WebSocket 127.0.0.1:7842 · DHT :7846/7847 · LAN 239.255.70.74:7848</text>
+          </a>
+
+          <!-- the network -->
+          <a href="/wiki/discovery/" class="arch-b" data-k="public" data-d="Public nodes: home nodes made public and hoi-node --public. They carry open communities, pass on public nodes they reached themselves, and are the only nodes that publish an address."><title>Public nodes</title><rect class="d-box acc c-sun" x="40" y="700" width="170" height="96" rx="14"></rect><text class="d-text" x="54" y="732">Public nodes</text><text class="d-sub" x="54" y="756">QUIC · WebRTC</text><text class="d-sub" x="54" y="774">carry · nodes · find</text></a>
+          <a href="/wiki/sync/" class="arch-b" data-k="members" data-d="Members' nodes: the home nodes and desktops of a community's members, which keep its live window and sync by range reconciliation."><title>Members' nodes</title><rect class="d-box acc c-mint" x="226" y="700" width="170" height="96" rx="14"></rect><text class="d-text" x="240" y="732">Members' nodes</text><text class="d-sub" x="240" y="756">rng · want · recs</text><text class="d-sub" x="240" y="774">live gossip</text></a>
+          <a href="/wiki/joining/" class="arch-b" data-k="browsers" data-d="Browsers and phones: they dial nodes over WebRTC and can't be dialed. With Direct links on, a node can introduce two of them."><title>Browsers and phones</title><rect class="d-box acc c-coral" x="412" y="700" width="170" height="96" rx="14"></rect><text class="d-text" x="426" y="732">Browsers, phones</text><text class="d-sub" x="426" y="756">WebRTC only</text><text class="d-sub" x="426" y="774">direct links</text></a>
+          <a href="/wiki/discovery/" class="arch-b" data-k="dht" data-d="The Mainline DHT, run among public nodes with no outside bootstrap: communities are announced under BLAKE3(&quot;hoi dht node v1&quot; ‖ key)."><title>Mainline DHT</title><rect class="d-box acc c-sun" x="598" y="700" width="170" height="96" rx="14"></rect><text class="d-text" x="612" y="732">Mainline DHT</text><text class="d-sub" x="612" y="756">among public nodes</text><text class="d-sub" x="612" y="774">UDP 7846 / 7847</text></a>
+          <a href="/wiki/registry/" class="arch-b" data-k="registry" data-d="A registry, if a community names one: names to community keys, signed and logged, and short-lived node announcements. Builds name none."><title>Registry</title><rect class="d-box" x="784" y="700" width="170" height="96" rx="14"></rect><text class="d-text" x="798" y="732">Registry</text><text class="d-sub" x="798" y="756">optional · HTTPS</text><text class="d-sub" x="798" y="774">names · node lists</text></a>
+          <a href="/wiki/mailboxes/" class="arch-b" data-k="relay" data-d="An encrypted relay for private communities, if one is configured: padded ciphertext in rooms, kept at most 31 days."><title>Encrypted relay</title><rect class="d-box" x="970" y="700" width="170" height="96" rx="14"></rect><text class="d-text" x="984" y="732">Encrypted relay</text><text class="d-sub" x="984" y="756">optional · HTTPS</text><text class="d-sub" x="984" y="774">private rooms</text></a>
+
+          <text class="d-sub" x="40" y="840">Solid: always there. Dashed: optional, or only when you run it. Every box opens its page.</text>
+        </svg>
+      </div>
+      <figcaption><span class="arch-say js-only" aria-live="polite">Hover or focus a box to read what it is.</span><span class="nojs-only">Each box links to its page.</span></figcaption>
+    </figure>
+  </section>
+
+  <section class="wk-sec" id="programs">
+    <h2>The programs</h2>
+    <p>Six things get built and shipped. They share the core and the protocol; they differ in what their platform lets them do: a browser can't accept connections, a phone sleeps, a server never has a person in front of it.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="The programs">
+      <table>
+        <thead><tr><th>Program</th><th>Built from</th><th>Core reached through</th><th>Talks</th><th>Keeps data in</th></tr></thead>
+        <tbody>
+          <tr><td><a href="/wiki/web-app/">Web app</a></td><td><code>apps/web</code> (Svelte 5, Vite)</td><td><code>hoi-wasm</code> in a Web Worker; <code>call(method, json)</code></td><td>WebRTC to nodes; WebSocket to its own home node; HTTPS to a relay or registry if one is configured</td><td>IndexedDB journal and OPFS, inside an encrypted vault</td></tr>
+          <tr><td><a href="/wiki/desktop/">Desktop companion</a></td><td><code>apps/desktop</code> (Tauri 2) + the web app's interface</td><td>native <code>hoi-core</code> via the <code>hoi_call</code> command</td><td>iroh QUIC, WebRTC listener, WebSocket server for paired devices, LAN beacons</td><td>SQLite, sealed by the vault</td></tr>
+          <tr><td><a href="/wiki/hoi-node/">hoi-node</a></td><td><code>core/crates/hoi-node</code></td><td>links <code>hoi-core</code> directly</td><td>everything the desktop does, plus the DHT, trackers, a registry role and a packet relay</td><td>SQLite in its data directory</td></tr>
+          <tr><td><a href="/wiki/mobile/">Phone libraries</a></td><td><code>apps/mobile</code> + <code>hoi-ffi</code></td><td>typed UniFFI bindings</td><td>through the core's transports</td><td>the app's sandbox; keys in Keychain or Android Keystore</td></tr>
+          <tr><td><a href="/wiki/node-setup/">hoi Node Setup</a></td><td><code>apps/setup</code> (Tauri 2) + its engine</td><td>no core: it manages a node</td><td>SSH to your server</td><td>connection profiles</td></tr>
+          <tr><td><a href="/wiki/website/">Website</a></td><td><code>apps/site</code> (Vite, anime.js)</td><td>none: informational, plus the app's files</td><td>nothing; this page makes no request but for its own files</td><td>nothing</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="wk-note info"><b>Services you can run, none you must</b><p>A <a href="/wiki/registry/">registry</a> and an <a href="/wiki/mailboxes/">encrypted relay</a> are separate, optional services (Node.js or Cloudflare Workers). The published app names neither; a community or a person adds one. See <a href="/wiki/deploy/">Deploying &amp; hosting</a>.</p></div>
+  </section>
+
+  <section class="wk-sec" id="layers">
+    <h2>The core, layer by layer</h2>
+    <p>The crates form a strict stack: each depends only on the ones below it, so the pure parts (types, crypto, validation) build for every target, including WebAssembly and the WASI test runner, and know nothing about networks or disks.</p>
+    <ol class="wk-steps">
+      <li><b>hoi-types</b><p>What a record is, byte for byte: the envelope, every kind's body, canonical DAG-CBOR with a strict decoder, ids, limits, <code>did:key</code>, <code>hoi://</code> links. <a href="/wiki/records/">Records &amp; encoding</a>.</p></li>
+      <li><b>hoi-crypto</b><p>Ed25519 with weak keys refused, BLAKE3 stamps and the miner, Argon2id identity work, the keystore, Shamir, sealed boxes, scattered pieces and HPKE envelopes. <a href="/wiki/stamps/">Stamps &amp; work</a>, <a href="/wiki/identity/">Keys &amp; identity</a>.</p></li>
+      <li><b>hoi-validate</b><p>The pipeline's pure stages: decode, stamp floor, signature and consent, identity, time, rate windows, content. <a href="/wiki/validation/">Validation pipeline</a>.</p></li>
+      <li><b>hoi-store, hoi-moderation, hoi-trust, hoi-spam, hoi-sync</b><p>What a device remembers, what a community decided, whom you trust, who misbehaved, and how two devices compare notes. <a href="/wiki/storage/">Storage</a>, <a href="/wiki/communities/">Communities</a>, <a href="/wiki/trust/">Trust</a>, <a href="/wiki/spam/">Spam</a>, <a href="/wiki/sync/">Sync</a>.</p></li>
+      <li><b>hoi-core</b><p>The <code>Node</code>: one object holding all of it, with one entry point for the interfaces (<code>Node::call</code>, JSON in and out) and one for the network (messages in, effects out). <a href="/wiki/api/">Core API</a>.</p></li>
+      <li><b>hoi-net, hoi-wasm, hoi-ffi, hoi-node</b><p>The edges: real sockets for native programs, bindings for browsers and phones, and the headless binary. <a href="/wiki/transports/">Transports</a>, <a href="/wiki/crates/">Crates</a>.</p></li>
+    </ol>
+  </section>
+
+  <section class="wk-sec" id="a-post">
+    <h2>A post, end to end</h2>
+    <p>What happens between pressing Post in the web app and the post showing up on a member's device. The stamp is mined outside the core, by a pool of workers, so the interface never freezes.</p>
+    <div class="wk-seq" data-title="Posting from the web app">
+lanes: Interface | Core worker | Miner workers | Home node | Members
+Interface -> Core worker: <code>draftPost</code> {community, title, text, media}
+Core worker: builds and checks the record; media stripped and hashed
+Core worker --> Interface: draft {token, prefix, suffix, bits}
+Interface -> Miner workers: mine(prefix, suffix, bits)
+Miner workers: BLAKE3(id ‖ nonce) until enough zero bits
+Miner workers --> Interface: nonce
+Interface -> Core worker: <code>publishDraft</code> {token, nonce}
+Core worker: signs; the full pipeline accepts its own record; stored
+Core worker -> Home node @mint: <code>recs</code> [the post]
+Home node: checks it again, stores it
+Home node => Members @mint: <code>recs</code> to every connected member
+Members: each checks it before showing it
+</div>
+    <p>Every receiver runs the same <a href="/wiki/validation/">pipeline</a>; a device that was away gets the post later by <a href="/wiki/sync/">range reconciliation</a>. The method names are the core's dispatch names; see <a href="/wiki/api/">Core API</a>.</p>
+  </section>
+
+  <section class="wk-sec" id="wires">
+    <h2>Every wire</h2>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Transports and ports">
+      <table>
+        <thead><tr><th>Wire</th><th>Port</th><th>Between</th><th>Carries</th></tr></thead>
+        <tbody>
+          <tr><td>iroh QUIC, ALPN <code>hoi/sync/1</code></td><td>UDP, automatic</td><td>native nodes</td><td>the sync protocol: 4-byte length + CBOR message, one bidirectional stream</td></tr>
+          <tr><td>iroh-blobs</td><td>same endpoint</td><td>native nodes</td><td>media, verified as it streams</td></tr>
+          <tr><td>WebRTC data channel <code>hoi</code></td><td>UDP 7844</td><td>browsers and phones to nodes; browser to browser</td><td>the same protocol and framing; ICE-lite, DTLS, SCTP</td></tr>
+          <tr><td>WebSocket</td><td>TCP 7842 on 127.0.0.1</td><td>a home node and its paired devices</td><td>one CBOR message per binary frame</td></tr>
+          <tr><td>Mainline DHT</td><td>UDP 7846, answers on 7847</td><td>public nodes</td><td>community announcements; signed answers ≤ 1200 bytes</td></tr>
+          <tr><td>LAN beacons</td><td>UDP 7848, 239.255.70.74</td><td>native devices on one network</td><td>sealed routes per community, every 30 s</td></tr>
+          <tr><td>Registry</td><td>HTTPS (a node's registry role: TCP 7845)</td><td>nodes and apps, if configured</td><td>names, proofs, node announcements</td></tr>
+          <tr><td>Encrypted relay</td><td>HTTPS</td><td>members of private communities, if configured</td><td>padded ciphertext objects in rooms</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>The details, with every handshake: <a href="/wiki/transports/">Transports</a>. To watch them happen: the <a href="/wiki/playground/">playground</a>.</p>
+  </section>
+
+  <section class="wk-sec" id="who-sees">
+    <h2>Who can see what</h2>
+    <div class="wk-table" tabindex="0" role="region" aria-label="What each party sees">
+      <table>
+        <thead><tr><th>Party</th><th>Sees</th><th>Never sees</th></tr></thead>
+        <tbody>
+          <tr><td>The static host (hoi.sh)</td><td>Your IP address and which files you load</td><td>Anything you do in the app: it isn't in the path</td></tr>
+          <tr><td>A public node</td><td>Your IP address, the public communities you name to it, the public records it carries</td><td>Your posting key when you connect from a browser (a fresh random node key per connection); private communities</td></tr>
+          <tr><td>Your home node</td><td>Everything your devices sync through it</td><td>Your root key (it only ever holds what a device gives it)</td></tr>
+          <tr><td>An encrypted relay</td><td>Room ids, rounded sizes, upload and read times, expiry</td><td>Member keys, community ids, plaintext</td></tr>
+          <tr><td>A registry</td><td>The names and announcements published to it</td><td>Posts, profiles, members</td></tr>
+          <tr><td>The network in between</td><td>That two addresses talk, when, and how much</td><td>Contents: QUIC, DTLS and TLS encrypt every wire</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="wk-sec" id="repo">
+    <h2>Where it lives in the repository</h2>
+    <dl class="wk-defs">
+      <dt>core/<small>Rust workspace</small></dt><dd><p>Every crate above, the fuzz targets and the conformance vectors. <a href="/wiki/crates/">Crates</a>, <a href="/wiki/vectors/">Test vectors</a>.</p></dd>
+      <dt>apps/<small>interfaces</small></dt><dd><p><code>web</code>, <code>desktop</code>, <code>setup</code>, <code>mobile</code> and <code>site</code> (this website and wiki).</p></dd>
+      <dt>packages/<small>shared JS</small></dt><dd><p><code>core-api</code> (the TypeScript types of the core's API), <code>tokens</code> (design tokens for CSS, Swift and Kotlin), <code>vite-plugin-hardening</code> (CSP and SRI).</p></dd>
+      <dt>registry/, relay/<small>services</small></dt><dd><p>The optional registry and encrypted relay, each as a Node.js server and a Cloudflare Worker.</p></dd>
+      <dt>deploy/<small>templates</small></dt><dd><p>Static hosting, home nodes, servers and the installers. <a href="/wiki/deploy/">Deploying &amp; hosting</a>.</p></dd>
+      <dt>scripts/, sandbox/<small>tooling</small></dt><dd><p>Builds, releases, checks, end-to-end tests and an isolated test network. <a href="/wiki/development/">Building &amp; testing</a>.</p></dd>
+      <dt>vendor/<small>patched deps</small></dt><dd><p>Published packages with small reviewed patches. <a href="/wiki/supply-chain/">Supply chain</a>, <a href="/wiki/sbom/">SBOM</a>.</p></dd>
+    </dl>
+  </section>
+</article>
+<!-- @wiki-close -->
+<!-- @include footer.html -->
+<script type="module" src="/src/pages/wiki.ts"></script>
+</body>
+</html>

@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/hoi-project/hoi/security/advisories/new
+    about: Report vulnerabilities privately. Never in a public issue.
+  - name: Questions and ideas
+    url: https://github.com/hoi-project/hoi/discussions
+    about: Ask questions and discuss ideas before they become issues.

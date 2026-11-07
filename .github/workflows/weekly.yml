@@ -1,0 +1,49 @@
+# The full major-release suites (every OS, browsers, fuzzing, the 200-node battle, reproducible
+# builds) once a week on main, so a regression shows up long before a major release needs them.
+# Scheduled: the public hoi-project repository only. By hand: anywhere (see docs/CI.md).
+name: Weekly
+
+on:
+  schedule:
+    - cron: "41 3 * * 6"
+  # By hand it runs anywhere, the private workspace included: test it there with linux_only.
+  workflow_dispatch:
+    inputs:
+      linux_only:
+        description: "Linux legs only (cheap; for a private repository)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: weekly
+  cancel-in-progress: true
+
+jobs:
+  # A scheduled run's event has no repository field, so ask: macOS and Windows minutes on a
+  # private repository are billed many times over.
+  visibility:
+    name: Public repository?
+    if: github.event_name == 'schedule' && github.repository == 'hoi-project/hoi'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      public: ${{ steps.check.outputs.public }}
+    steps:
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: echo "public=$(gh api "repos/$GITHUB_REPOSITORY" --jq '.private | not')" >> "$GITHUB_OUTPUT"
+
+  suites:
+    name: Major suites on main
+    needs: visibility
+    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.visibility.outputs.public == 'true') }}
+    uses: ./.github/workflows/release-major.yml
+    with:
+      ref: ${{ github.sha }}
+      version: main
+      weekly: true
+      linux_only: ${{ github.event_name == 'workflow_dispatch' && inputs.linux_only }}

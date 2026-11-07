@@ -1,0 +1,116 @@
+{
+  "$comment": "The wiki's table of contents. Each page lives at wiki/<slug>/index.html (the home page at wiki/index.html). The sidebar, the pager, the breadcrumbs, the search index, the build inputs and the sitemap all come from this list (plugins/wiki.ts, vite.config.ts).",
+  "groups": [
+    {
+      "id": "start",
+      "title": "Start here",
+      "color": "sun",
+      "pages": [
+        { "slug": "", "title": "Wiki home", "summary": "What hoi is, how the parts fit, where to read next." },
+        { "slug": "architecture", "title": "Architecture", "summary": "Every program, every connection and what crosses it, in one diagram." },
+        { "slug": "playground", "title": "Network playground", "summary": "Join a simulated network and watch every frame your device sends." },
+        { "slug": "glossary", "title": "Glossary", "summary": "Every term the protocol and the apps use, defined once." }
+      ]
+    },
+    {
+      "id": "records",
+      "title": "Records & identity",
+      "color": "coral",
+      "pages": [
+        { "slug": "records", "title": "Records & encoding", "summary": "The envelope, canonical DAG-CBOR, ids, signatures and size caps." },
+        { "slug": "kinds", "title": "Record kinds", "summary": "Every kind and every field of its body." },
+        { "slug": "stamps", "title": "Stamps & work", "summary": "Proof of work per record, identity work, difficulty and mining." },
+        { "slug": "identity", "title": "Keys & identity", "summary": "Root keys, devices, delegations, revocation, burning, recovery and names." },
+        { "slug": "links", "title": "Links & URIs", "summary": "hoi:// links for joining, node links, pairing and masking." }
+      ]
+    },
+    {
+      "id": "checks",
+      "title": "Validation & content",
+      "color": "peach",
+      "pages": [
+        { "slug": "validation", "title": "Validation pipeline", "summary": "The stages every record passes, in order, and what failing costs." },
+        { "slug": "content-rules", "title": "Text, links & names", "summary": "The markdown subset, Unicode rules, link and name rules." },
+        { "slug": "media", "title": "Media", "summary": "Formats, sniffing, stripping, blobs, pictures and perceptual hashes." }
+      ]
+    },
+    {
+      "id": "community",
+      "title": "Communities & moderation",
+      "color": "mint",
+      "pages": [
+        { "slug": "communities", "title": "Communities & the ledger", "summary": "Community records, limits, rules, the signed ledger and changes by consent." },
+        { "slug": "standing", "title": "Standing & review", "summary": "The ladder, voice, vouches, hides, blocks, vetoes and suspensions." },
+        { "slug": "trust", "title": "Trust & ranking", "summary": "Trust levels, weights, ranking, labelers, blocklists, tallies and age proofs." },
+        { "slug": "spam", "title": "Spam & rate limits", "summary": "Rate windows, copy-paste floods, strikes, reports, autobans and peer scores." },
+        { "slug": "expiry", "title": "Expiry & removal", "summary": "Retention windows, tombstones, what stays and what can't be promised." }
+      ]
+    },
+    {
+      "id": "network",
+      "title": "Network",
+      "color": "sky",
+      "pages": [
+        { "slug": "transports", "title": "Transports", "summary": "iroh QUIC, the WebSocket link, WebRTC data channels, relays and NAT." },
+        { "slug": "sync", "title": "Sync & gossip", "summary": "Sync messages, range reconciliation, gossip and warmth." },
+        { "slug": "discovery", "title": "Discovery", "summary": "Node lists, public nodes, directory gossip, the DHT, LAN and registries." },
+        { "slug": "joining", "title": "Joining, step by step", "summary": "Exactly what happens from opening a link to reading the first post." }
+      ]
+    },
+    {
+      "id": "private",
+      "title": "Private communities",
+      "color": "lilac",
+      "pages": [
+        { "slug": "private", "title": "Private communities", "summary": "MLS groups, membership, keys and what each party can read." },
+        { "slug": "mailboxes", "title": "Mailboxes & encrypted relays", "summary": "The relay protocol, padded objects, rooms and the relay service." },
+        { "slug": "scatter", "title": "Scattered delivery", "summary": "Sealing, the all-or-nothing transform, Reed–Solomon pieces and envelopes." }
+      ]
+    },
+    {
+      "id": "apps",
+      "title": "Applications",
+      "color": "coral",
+      "pages": [
+        { "slug": "web-app", "title": "Web app", "summary": "The Svelte app, its worker core, storage, vault and every screen." },
+        { "slug": "desktop", "title": "Desktop companion", "summary": "The Tauri shell, its native core and what it adds." },
+        { "slug": "node-setup", "title": "hoi Node Setup", "summary": "The wizard that installs and manages a node over SSH." },
+        { "slug": "mobile", "title": "Mobile libraries", "summary": "UniFFI bindings for Swift and Kotlin, key stores and themes." },
+        { "slug": "website", "title": "This website", "summary": "How hoi.sh is built, hardened and served." }
+      ]
+    },
+    {
+      "id": "services",
+      "title": "Nodes & services",
+      "color": "sun",
+      "pages": [
+        { "slug": "hoi-node", "title": "hoi-node", "summary": "The headless node: roles, flags, routes, admin and packet relay." },
+        { "slug": "registry", "title": "Registry", "summary": "Names to community keys: the log, proofs, mirrors and verification." },
+        { "slug": "deploy", "title": "Deploying & hosting", "summary": "Static hosting, home nodes, servers and the installers." }
+      ]
+    },
+    {
+      "id": "core",
+      "title": "Core internals",
+      "color": "sky",
+      "pages": [
+        { "slug": "crates", "title": "Crates", "summary": "Every Rust crate in core/, its modules and what depends on it." },
+        { "slug": "api", "title": "Core API", "summary": "The Node API, JSON dispatch, DTOs, events and the TypeScript types." },
+        { "slug": "storage", "title": "Storage", "summary": "The in-memory index, SQLite, the IndexedDB journal, OPFS and the vault." },
+        { "slug": "simulator", "title": "Simulator", "summary": "hoi-sim: scenarios, forged attacks, load and reports." }
+      ]
+    },
+    {
+      "id": "build",
+      "title": "Build & supply chain",
+      "color": "mint",
+      "pages": [
+        { "slug": "development", "title": "Building & testing", "summary": "Toolchains, scripts, test suites, fuzzing and CI." },
+        { "slug": "releases", "title": "Releases & verification", "summary": "Versions, manifests, signatures, reproducible builds and notices." },
+        { "slug": "supply-chain", "title": "Supply chain & hardening", "summary": "cargo-vet, cargo-deny, vendored patches, CSP, SRI and the sandbox." },
+        { "slug": "vectors", "title": "Test vectors", "summary": "Every conformance vector and what it pins down." },
+        { "slug": "sbom", "title": "SBOM", "summary": "Every dependency of every program, with versions, sources and links." }
+      ]
+    }
+  ]
+}

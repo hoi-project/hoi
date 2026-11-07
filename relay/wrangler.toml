@@ -1,0 +1,16 @@
+# Standalone encrypted storage; independent operators use their own Worker/account.
+name = "hoi-opaque-relay"
+main = "worker.mjs"
+compatibility_date = "2026-10-01"
+compatibility_flags = ["nodejs_compat"]
+
+[observability]
+enabled = false
+
+[[durable_objects.bindings]]
+name = "OPAQUE_RELAY"
+class_name = "OpaqueRelay"
+
+[[migrations]]
+tag = "opaque-relay-v1"
+new_sqlite_classes = ["OpaqueRelay"]

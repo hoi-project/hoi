@@ -1,0 +1,50 @@
+# Called by release.yml on the resolved tag commit. No publishing or secrets.
+name: "Release: checks"
+on:
+  workflow_call:
+    inputs:
+      ref:
+        required: true
+        type: string
+      version:
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - name: Select checks from the version
+        id: tier
+        env:
+          VERSION: ${{ inputs.version }}
+        run: node scripts/release-tier.mjs "$VERSION"
+      # Every tier: the quick checks' release tests verify signatures with @noble/curves and @noble/hashes.
+      - name: Install JS dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Quick checks (every release)
+        run: pnpm check:quick
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        if: steps.tier.outputs.tier != 'patch'
+        with:
+          toolchain: "1.97.0"
+          components: rustfmt
+      - name: Site/API types and web unit tests (minor and major)
+        if: steps.tier.outputs.tier != 'patch'
+        run: pnpm --filter @hoi/site check && pnpm --filter @hoi/core-api check && pnpm --filter @hoi/web test
+      - name: Format and selected Rust library tests (minor and major)
+        if: steps.tier.outputs.tier != 'patch'
+        working-directory: core
+        run: |
+          cargo fmt --all --check
+          cargo test --locked -p hoi-types -p hoi-trust --lib

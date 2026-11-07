@@ -1,0 +1,20 @@
+# Global uniffi-bindgen config for the phone packages, passed with `--config` by
+# apps/mobile/scripts/build-ios.sh and build-android.sh. Each crate's own uniffi.toml still
+# applies (hoi-ffi's renames `HoiError.Api.message` to `reason` in Kotlin).
+
+# Swift: the C declarations of both crates go into one Clang module, `HoiCoreFFI`, which is the
+# xcframework's module (Headers/HoiCoreFFI/module.modulemap, written by build-ios.sh).
+[defaults.bindings.swift]
+ffi_module_name = "HoiCoreFFI"
+generate_module_map = false
+
+[crates.hoi_core.bindings.swift]
+ffi_module_filename = "hoi_coreFFI"
+
+[crates.hoi_ffi.bindings.swift]
+ffi_module_filename = "hoi_ffiFFI"
+
+# Kotlin: Android's SystemCleaner (API 33+, JNA's cleaner below) and Kotlin 2 idioms.
+[defaults.bindings.kotlin]
+android = true
+kotlin_target_version = "2.0.0"

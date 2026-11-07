@@ -1,0 +1,366 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <!-- @include head.html title="Links &amp; URIs · hoi wiki" description="Every hoi:// link (join, node and pair), their masked codes, fields, limits and validation, the older clear-text forms, how the apps open them, and the hoi: codes." -->
+</head>
+<body class="wiki">
+<!-- @include header.html nav="wiki" -->
+<!-- @wiki-open -->
+<article class="wk-doc">
+  <!-- @wiki-crumbs -->
+  <h1>Links <span class="acc">&amp; URIs</span></h1>
+  <p class="wk-lead">Nothing in hoi names a server to start from, so links carry everything a device needs: an invite carries a community's key, its signed genesis and a few routes; a node link carries a public node's addresses and its operator's signed notice; a pairing link carries a home node's address and a one-time token. All three pack their fields into one masked code, so no IP address or token can be read from the link. This page gives the exact fields, encodings, limits and checks of each, the older clear-text forms that still open, and what the web app, the desktop app and <code>hoi-node</code> do with them.</p>
+  <p class="wk-src-list">Source <a href="{{REPO_URL}}/blob/main/core/crates/hoi-types/src/uri.rs">hoi-types/src/uri.rs</a> <a href="{{REPO_URL}}/blob/main/core/crates/hoi-types/src/notice.rs">hoi-types/src/notice.rs</a> <a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/nodes.rs">hoi-core/src/nodes.rs</a> <a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/net.rs">hoi-core/src/net.rs</a> <a href="{{REPO_URL}}/blob/main/apps/web/src/lib/router.ts">web/src/lib/router.ts</a> <a href="{{REPO_URL}}/blob/main/apps/web/src/lib/pairing.ts">web/src/lib/pairing.ts</a> <a href="{{REPO_URL}}/blob/main/core/vectors/uris.json">vectors/uris.json</a></p>
+  <div class="wk-head-rule"></div>
+
+  <section class="wk-sec" id="overview">
+    <h2>The links</h2>
+    <p>Each link has two spellings: a <code>hoi://</code> URI, and the same query after <code>#/&lt;verb&gt;?</code> in the web app's address, which a phone's camera or any browser can open. The core parses both the same way.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Link types">
+      <table>
+        <thead><tr><th>Link</th><th>Carries</th><th>Secret?</th><th>Rust type</th><th>Code magic</th></tr></thead>
+        <tbody>
+          <tr><td><code>hoi://join?code=…</code><br><code>…#/join?code=…</code></td><td>a public community's key, its signed genesis, routes to members, trackers</td><td>no</td><td><code>Invite</code></td><td><code>HOI</code> 0x02</td></tr>
+          <tr><td><code>hoi://node?code=…</code><br><code>…#/node?code=…</code></td><td>a public node's WebRTC and native routes, and its operator's signed notice</td><td>no</td><td><code>NodeLink</code></td><td><code>HON</code> 0x01</td></tr>
+          <tr><td><code>hoi://pair?code=…</code><br><code>…#/pair?code=…</code></td><td>a home node's address, a pairing token, a name, WebRTC routes</td><td>yes: the token pairs one device</td><td><code>Pair</code></td><td><code>HOP</code> 0x01</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Two neighbors are not <code>hoi://</code> links but come up in the same places: the web app's public join page, <code>#/public?c=&lt;key&gt;&amp;name=&lt;name&gt;&amp;p=&lt;protocol&gt;</code> (<a href="#public-join">below</a>), and a handful of <code>hoi:&lt;kind&gt;:&lt;base64url&gt;</code> codes people copy between their own devices or between owners (<a href="#codes">below</a>).</p>
+  </section>
+
+  <section class="wk-sec" id="parsing">
+    <h2>How a link is read</h2>
+    <p>All three parsers start with <code>query_after(link, verb)</code>. It trims the link, finds the first <code>&lt;verb&gt;?</code> anywhere in it, and takes what follows up to a <code>#</code> as the query. So <code>hoi://join?…</code>, <code>web+hoi://join?…</code>, <code>https://hoi.sh/app/#/join?…</code> and a link with any other base all read the same, and the parser never looks at the host part of an https link.</p>
+    <ol class="wk-steps">
+      <li><b>Split</b><p>The query is split on <code>&amp;</code>; empty pairs are skipped; each pair splits at its first <code>=</code> (a key with no <code>=</code> gets an empty value).</p></li>
+      <li><b>Decode values</b><p>Values are percent-decoded (<code>%XX</code>, and <code>+</code> as a space) and must be UTF-8. Keys are taken as written.</p></li>
+      <li><b>Code or clear text</b><p>If a <code>code</code> key is present, the link is read from the code alone: there must be exactly one <code>code</code>, and none of the clear-text keys of that link type may appear beside it, so nothing outside the code can change what a preview showed. Otherwise the older clear-text keys are read, and keys the parser doesn't know are ignored.</p></li>
+      <li><b>Check</b><p>The decoded fields are checked like a record's: CBOR must be canonical, unknown fields are refused, types and lengths must match, and each link type adds its own rules.</p></li>
+    </ol>
+    <p>The web forms are made by <code>to_web(base)</code>: the base with any fragment cut off, then <code>#/&lt;verb&gt;?</code> and the query. Nodes and apps write their links after the web app address they were configured with; <code>hoi-node</code> and the mobile libraries use <code>https://hoi.sh/app/</code>.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Encodings used in links">
+      <table>
+        <thead><tr><th>Encoding</th><th>Where</th><th>Details</th></tr></thead>
+        <tbody>
+          <tr><td>base64url, no padding</td><td>every <code>code</code>, legacy <code>g</code>, <code>nt</code>, <code>ns</code></td><td>RFC 4648 URL-safe alphabet; <code>unb64</code> trims whitespace and any trailing <code>=</code></td></tr>
+          <tr><td>canonical DAG-CBOR</td><td>inside every code</td><td>the encoder and strict decoder of <a href="/wiki/records/">Records &amp; encoding</a></td></tr>
+          <tr><td>raw DEFLATE</td><td>node and pairing codes, legacy <code>nt</code></td><td><code>miniz_oxide</code> at level 10 (best); inflated with a hard output limit</td></tr>
+          <tr><td>z-base-32</td><td>legacy invite <code>c</code> and <code>i</code></td><td>alphabet <code>ybndrfg8ejkmcpqxot1uwisza345h769</code>, decoded case-insensitively; 32 bytes are 52 characters</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="wk-sec" id="masking">
+    <h2>Masked codes</h2>
+    <p>Every link the software writes today carries one <code>code</code>. The code is an envelope: four magic bytes saying what it is, a 16-byte checksum, and the payload XORed with a keystream derived from the checksum. Its job is narrow and the code says so: a generic Base64 decoder no longer shows the addresses, tokens or names inside, so a link pasted into a chat, a screenshot or a log doesn't spell out where a node is. It is public obfuscation, not encryption.</p>
+    <div class="wk-code" data-lang="rust" data-title="hoi-types/src/uri.rs"><pre><code>/// A public mask, not a secret key: a generic Base64 decoder no longer exposes addresses,
+/// but anyone with the link and this algorithm can undo it. The checksum detects damage;
+/// it does not authenticate the link. Signed genesis and notice checks happen separately.
+fn mask(context: &amp;str, payload: &amp;mut [u8], checksum: &amp;[u8]) {
+    let mut hasher = blake3::Hasher::new_derive_key(context);
+    hasher.update(checksum);
+    let mut stream = hasher.finalize_xof();
+    let mut mask = [0u8; 64];
+    for chunk in payload.chunks_mut(mask.len()) {
+        stream.fill(&amp;mut mask[..chunk.len()]);
+        for (byte, mask_byte) in chunk.iter_mut().zip(mask.iter()) {
+            *byte ^= mask_byte;
+        }
+    }
+}
+
+fn encode_code(magic: &amp;[u8; 4], context: &amp;str, mut payload: Vec&lt;u8&gt;) -&gt; String {
+    let digest = blake3::hash(&amp;payload);
+    let checksum = &amp;digest.as_bytes()[..16];
+    mask(context, &amp;mut payload, checksum);
+    let mut envelope = Vec::with_capacity(CODE_HEADER + payload.len());
+    envelope.extend_from_slice(magic);
+    envelope.extend_from_slice(checksum);
+    envelope.extend_from_slice(&amp;payload);
+    b64(&amp;envelope)
+}</code></pre></div>
+    <div class="wk-bytes" data-title="A code, before base64url">
+magic | 4 B | sun | 2 | <code>HOI 02</code>, <code>HON 01</code> or <code>HOP 01</code>
+checksum | 16 B | lilac | 3 | first 16 bytes of BLAKE3(payload), before masking
+masked payload | n B | coral | 7 | payload XOR BLAKE3-XOF(derive-key mode, context, checksum)
+</div>
+    <ol class="wk-steps">
+      <li><b>Pack</b><p>The fields become a canonical CBOR map. Node and pairing payloads are then deflated; invite payloads are not (they mostly hold a signed genesis, which doesn't compress much).</p></li>
+      <li><b>Checksum</b><p><code>checksum = BLAKE3(payload)[0..16]</code>, over the unmasked payload.</p></li>
+      <li><b>Mask</b><p>The keystream is BLAKE3 in key-derivation mode with the link type's context string, fed the checksum, read as an extendable output for as many bytes as the payload. Each payload byte is XORed with it.</p></li>
+      <li><b>Wrap</b><p><code>magic ‖ checksum ‖ masked</code>, base64url without padding.</p></li>
+    </ol>
+    <p>Opening reverses it: the envelope must be longer than the 20-byte header (<code>code is truncated</code>), the magic must match, and after unmasking the checksum must match the payload (<code>code is damaged</code>). Tests flip every bit and cut every length of a code and check that each one is refused, and that an invite code opened as a node link (or the other way round) is refused by its magic.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Code parameters per link type">
+      <table>
+        <thead><tr><th></th><th>Invite</th><th>Node link</th><th>Pairing link</th></tr></thead>
+        <tbody>
+          <tr><td>magic</td><td><code>48 4f 49 02</code> ("HOI" 2)</td><td><code>48 4f 4e 01</code> ("HON" 1)</td><td><code>48 4f 50 01</code> ("HOP" 1)</td></tr>
+          <tr><td>mask context</td><td><code>hoi invite obfuscation v2</code></td><td><code>hoi node link obfuscation v1</code></td><td><code>hoi pairing link obfuscation v1</code></td></tr>
+          <tr><td>deflated</td><td>no</td><td>yes</td><td>yes</td></tr>
+          <tr><td>longest code</td><td>131,072 characters</td><td>16,384 characters (<code>MAX_NODE_CODE</code>)</td><td>4,096 characters (<code>MAX_PAIR_CODE</code>)</td></tr>
+          <tr><td>inflate limit</td><td>–</td><td>6,144 bytes (<code>MAX_NOTICE_WIRE</code> + 4,096)</td><td>4,096 bytes</td></tr>
+          <tr><td>code starts with</td><td><code>SE9JA</code></td><td><code>SE9OA</code></td><td><code>SE9QA</code></td></tr>
+          <tr><td>unmasked code accepted</td><td>yes: the original CBOR code (does not start "HOI")</td><td>no</td><td>no</td></tr>
+          <tr><td>clear-text form accepted</td><td><code>c r p i g</code></td><td><code>w p nt ns</code></td><td><code>u t n w</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="wk-note warn"><b>What masking is not</b><p>Anyone who has the link and this page can unmask it. The checksum catches damage, not forgery: a masked link is exactly as trustworthy as the person who sent it. What protects a joiner is checked separately: an invite's genesis must be signed by the community key it names, and a node link's notice must be signed by the node it names. A pairing link's token is a bearer secret either way: masking keeps it from being read off a screen, not from being used by whoever holds the link.</p></div>
+  </section>
+
+  <section class="wk-sec" id="join">
+    <h2>Join links (invites)</h2>
+    <p>An invite to a public community. <code>Node::invite</code> writes one with the community key, its genesis wire, up to 16 peer routes and 8 relays the node knows for it, and up to 2 trackers; the app shows both <code>uri</code> and <code>web</code>, with the addresses inside and whether any reaches the internet. Private communities never get one: they use encrypted invitations (<a href="/wiki/private/">Private communities</a>).</p>
+    <h3 id="join-fields">Fields in the code</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Invite fields">
+      <table>
+        <thead><tr><th>Key</th><th>Type</th><th>Required</th><th>Holds</th></tr></thead>
+        <tbody>
+          <tr><td><code>v</code></td><td>uint</td><td>yes</td><td>must be <code>1</code></td></tr>
+          <tr><td><code>c</code></td><td>bytes32</td><td>yes</td><td>the community key</td></tr>
+          <tr><td><code>r</code></td><td>[text]</td><td>yes (may be empty)</td><td>relay addresses</td></tr>
+          <tr><td><code>p</code></td><td>[text]</td><td>yes (may be empty)</td><td>peer routes: <code>rtc:&lt;fp&gt;@&lt;addr&gt;</code>, <code>&lt;endpoint&gt;@&lt;addr&gt;</code> or a bare endpoint (<a href="#routes">Routes</a>)</td></tr>
+          <tr><td><code>i</code></td><td>bytes32</td><td>no</td><td>an optional invite id; read and written, but the core's own invites leave it out</td></tr>
+          <tr><td><code>g</code></td><td>bytes</td><td>no</td><td>the genesis record's wire bytes</td></tr>
+          <tr><td><code>t</code></td><td>[text]</td><td>no; never written empty</td><td>1 or 2 trackers, each an <code>https://</code> address (<code>tracker_ok</code>)</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>The parser refuses an unknown field, a <code>v</code> other than 1, a key of the wrong length, a non-text route, non-bytes <code>g</code>, and zero or more than two trackers written. A tracker passes <code>tracker_ok</code> when it starts <code>https://</code> (or <code>http://</code> on <code>127.0.0.1</code>, <code>localhost</code> or <code>[::1]</code>, for tests), has a host, has at most 200 bytes, all printable ASCII, and contains none of <code>? # @</code>, spaces, backslashes or line breaks.</p>
+    <h3 id="join-example">Examples</h3>
+    <div class="wk-code" data-lang="text" data-title="core/vectors/uris.json (cut)"><pre><code>invite         hoi://join?code=SE9JAlwZ1c9XMEE25vPrboKwZRH9pLFk9R8DkDiPp3h57fd3mcmxQB…mR3sVU3swy4Y2sEQnH0Q   (1,034 chars)
+invite_web     https://hoi.sh/app/#/join?code=SE9JAlwZ1c9XMEE25vPrboKwZRH9pLFk9R8D…          (1,049 chars)
+routed_invite  hoi://join?code=SE9JAgZNtlzm5KwKnzTmmWa1ml8dfr1XqLeSSUVnAk8XMBFQU9APMz…   (1,402 chars)
+v1_invite      hoi://join?code=pWFjWCCKiOPddAnxlf1S2y08ul1yymcJvx2UEhvzdIgBtA9vXGFnWQ…   (unmasked CBOR)
+legacy_invite  hoi://join?c=tkrq8zmwb8a3m9k15csu3q17qmfgqnp9dskbrg9uq1rydpyxp7qy&amp;g=omFyqGF2AWRib2R5…</code></pre></div>
+    <p>The <code>routed_invite</code> vector names two peers (<code>rtc:qqqq…@203.0.113.7:7844</code> and <code>8a88…6f5c@[2001:db8::7]:7843</code>), one relay (<code>https://relay.example:443</code>) and two trackers; none of those strings appear in the link, nor in its Base64 decoding. The invite's masked payload (743 bytes) is exactly as long as the unmasked <code>v1_invite</code> CBOR, since invites aren't deflated.</p>
+    <h3 id="join-legacy">Older forms that still open</h3>
+    <ul>
+      <li><b>The original code</b>: <code>code=</code> holding plain canonical CBOR, unmasked. If the decoded bytes don't start with <code>HOI</code> they are read as CBOR directly; if they start with <code>HOI</code> but not <code>HOI</code> 0x02, the code is refused as an unsupported version. A frozen v1 code is kept in the tests.</li>
+      <li><b>The clear-text query</b>: <code>c=</code> the community key in z-base-32 (required: <code>invite has no community key</code>), <code>r=</code> and <code>p=</code> comma-separated lists, <code>i=</code> z-base-32, <code>g=</code> base64url genesis wire. Unknown keys are ignored.</li>
+    </ul>
+    <h3 id="join-flow">What opening one does</h3>
+    <div class="wk-seq" data-title="Opening an invite in the web app">
+lanes: Person | Web app | Core
+Person -> Web app: opens …#/join?code=… or pastes a link
+Web app -> Core: <code>previewInvite</code>("hoi://join?" + query)
+Core: <code>Invite::parse</code>; refuses a private community's key
+Core: checks the genesis in <code>g</code>: decodes, verifies its signature, kind is <code>community</code>, its key is <code>c</code>, content rules hold
+Core --> Web app: name, color, description, limits, owners, relays, peers, trackers, <code>verified</code>
+Web app: shows the card: retention, admission, newcomer posts, the stamp in bits and time
+Person -> Web app: Join (after the join warning)
+Web app -> Core: <code>join</code>(link)
+Core: stores the genesis, keeps up to 16 valid peer routes and 8 valid relays, and up to 2 trackers
+Core --> Web app: the community; sync starts with the routes
+</div>
+    <p>Without <code>g</code>, the preview falls back to a genesis this device already holds or one a directory listing brought; with none of those it answers "This invite doesn't carry the community's details". Routes from an invite are hints: <code>remember_hints</code> keeps only those that pass <a href="#routes">route validation</a>, fresh ones first. What happens next is on <a href="/wiki/joining/">Joining, step by step</a>.</p>
+  </section>
+
+  <section class="wk-sec" id="node">
+    <h2>Node links</h2>
+    <p>A public node's address, for anyone to open: no credential and no community. Whoever opens one connects to that node, sees the open communities it carries and hears of the other public nodes it reached (<a href="/wiki/discovery/">Discovery</a>). A node offers its link only while it serves strangers (<code>node_link</code>): its WebRTC and native routes, those on the internet first, then those on its own network, and its operator's notice with the endpoint key's signature when it has one. <code>hoi-node</code> writes it to <code>DIR/node-link</code> and prints it with a line saying what it holds ("it holds 1 WebRTC route and 1 native route, and the operator's notice, signed; the addresses are packed into the code").</p>
+    <h3 id="node-fields">Fields in the code</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Node link fields">
+      <table>
+        <thead><tr><th>Key</th><th>Type</th><th>Required</th><th>Holds</th></tr></thead>
+        <tbody>
+          <tr><td><code>v</code></td><td>uint</td><td>yes</td><td>must be <code>1</code></td></tr>
+          <tr><td><code>w</code></td><td>[text]</td><td>yes (may be empty)</td><td>WebRTC routes without their <code>rtc:</code> prefix: <code>&lt;fingerprint&gt;@&lt;socket address&gt;</code>; at most 4 are read</td></tr>
+          <tr><td><code>p</code></td><td>[text]</td><td>yes (may be empty)</td><td>native routes <code>&lt;endpoint hex&gt;@&lt;socket address&gt;</code>; entries starting <code>rtc:</code> are dropped; at most 4 are read</td></tr>
+          <tr><td><code>n</code></td><td>bytes</td><td>no</td><td>the operator's notice, its canonical bytes (<code>NodeNotice::canonical</code>), at most 2,048 bytes (<code>MAX_NOTICE_WIRE</code>)</td></tr>
+          <tr><td><code>s</code></td><td>bytes64</td><td>with <code>n</code>, and only with it</td><td>the endpoint key's Ed25519 signature binding the notice to this node</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Empty strings in <code>w</code> and <code>p</code> are skipped. After decoding, a link needs at least one route (<code>node link has no address</code>), a notice needs its signature and a signature needs its notice. A code that isn't masked is refused rather than read. The endpoint a notice is checked against is the key of the first native route (<code>NodeLink::endpoint</code>).</p>
+    <h3 id="node-notice">The notice and its signature</h3>
+    <p>The notice is what the operator tells people before the node serves them: what it processes and keeps, and, if the operator says, who runs it, how to reach them and where the server is (<a href="/wiki/hoi-node/">hoi-node</a> covers writing one). In the link it travels as its canonical CBOR bytes (one-letter keys); its hash is <code>BLAKE3</code> of those bytes; the signature is over the UTF-8 statement</p>
+    <div class="wk-code" data-lang="text" data-title="hoi_types::notice::statement (no trailing newline)"><pre><code>hoi node notice v1
+&lt;endpoint key, 64 hex&gt;
+&lt;notice hash, 64 hex&gt;</code></pre></div>
+    <p>Naming the endpoint means a notice signed for one node means nothing in another node's link. The vector in <a href="{{REPO_URL}}/blob/main/core/vectors/node-notice.json">node-notice.json</a> carries such a link: 638 characters with the notice, starting <code>hoi://node?code=SE9OAV1m6-1etSPt…</code>, beside its clear-text form of 590 characters. Deflated, a plain notice keeps the link short enough for a QR code; a test requires under 900 characters.</p>
+    <h3 id="node-legacy">The clear-text form</h3>
+    <p>Earlier links spelled the same fields out: <code>w=&lt;fp&gt;@&lt;addr&gt;,…</code>, <code>p=&lt;endpoint&gt;@&lt;addr&gt;,…</code>, <code>nt=</code> the notice deflated and base64url (at most 2,048 bytes packed and inflated), <code>ns=</code> the 64-byte signature in base64url. They still open, with the same checks; a <code>code</code> beside any of <code>w p nt ns</code> is refused.</p>
+    <h3 id="node-flow">What opening one does</h3>
+    <div class="wk-seq" data-title="Opening a node link">
+lanes: Person | App | Core | Public node
+Person -> App: opens …#/node?code=… or pastes it under Communities
+App -> Core: <code>previewNodeLink</code>(link)
+Core: parses it; the first route with an address gives <code>host</code> and its scope
+Core: with a notice: checks size and format, the endpoint, and the signature over the statement
+Core --> App: <code>{host, scope, endpoint, notice, verified, problem}</code>
+App: shows where it points and the notice, or a box to tick when there is none
+Person -> App: Accept and connect
+App -> Core: <code>acceptNotice</code>(node, hash), then <code>openNodeLink</code>(link)
+Core: refuses unless that notice was accepted (the consent gate); keeps up to 2 routes of each kind
+App -> Public node: dials the routes
+Public node --> App: its hello, with the notice it carries
+</div>
+    <p>The consent gate is on in browsers, the desktop app and phones, never on a headless node: there a link whose notice the person hasn't accepted by its hash is refused (<code>Read and accept the operator's notice first.</code>). A link without a notice opens, but the web app asks the person to tick "I understand, and want to connect to this node anyway" first. <code>open_node_link</code> drops routes that are this device's own, keeps the node first among at most 32 known nodes, and passes its routes on to others only once it has answered as a public node. Declining a notice leaves the node uncontacted.</p>
+  </section>
+
+  <section class="wk-sec" id="pair">
+    <h2>Pairing links</h2>
+    <p>Pairs a browser or phone with a home node: the device then syncs its communities through that node. A home node serving paired devices shows its current link (<code>Serving.pairing</code> and <code>pairing_web</code>); <code>hoi-node</code> writes it to <code>DIR/pairing-link</code>, readable only by its user, and prints it only with <code>--show-pairing</code> or <code>--new-pairing</code>, because the link is a credential.</p>
+    <h3 id="pair-fields">Fields in the code</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Pairing link fields">
+      <table>
+        <thead><tr><th>Key</th><th>Type</th><th>Required</th><th>Holds</th></tr></thead>
+        <tbody>
+          <tr><td><code>v</code></td><td>uint</td><td>yes</td><td>must be <code>1</code></td></tr>
+          <tr><td><code>u</code></td><td>text</td><td>yes (may be empty)</td><td>the WebSocket address; empty when the node is reachable only over WebRTC</td></tr>
+          <tr><td><code>t</code></td><td>text</td><td>yes</td><td>the pairing token; empty counts as missing</td></tr>
+          <tr><td><code>w</code></td><td>[text]</td><td>yes (may be empty)</td><td>WebRTC routes without <code>rtc:</code>, at most 4 written and read</td></tr>
+          <tr><td><code>n</code></td><td>text</td><td>no</td><td>the node's name, as the link says ("lena's laptop")</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>After decoding, the address must be <code>wss://</code>, or <code>ws://</code> only to this very machine: <code>localhost</code>, <code>127.0.0.0/8</code> or <code>[::1]</code>, with nothing before the host that could smuggle another one in (<code>ws://localhost@evil/</code> is refused). Plain <code>ws://</code> to anywhere else carries the token unencrypted and is refused (<code>a home node elsewhere needs wss:// (or its WebRTC routes)</code>). No address at all is fine when there are WebRTC routes, since a phone on the same network can reach the node over WebRTC without a certificate. A token is required. The clear-text form <code>u=…&amp;t=…&amp;n=…&amp;w=…</code> (routes comma-separated) still opens; a <code>code</code> beside any of those keys is refused, and a pairing code is never accepted unmasked.</p>
+    <h3 id="pair-token">The token is spent once</h3>
+    <p>A home node's pairing token (<code>serve_token</code>) is 18 random bytes in base64url, 24 characters. It pairs exactly one device: that device is given a credential of its own and the link is replaced, so a link left in a screenshot or a browser history pairs nobody else.</p>
+    <div class="wk-seq" data-title="Spending a pairing link">
+lanes: Device | Home node
+Device: <code>pair</code>(link): stores the address, token, name and valid routes as its home
+Device -> Home node: connects over <code>wss://</code> or WebRTC; hello with <code>token</code> = the link's token
+Home node: compares it with the current link token in constant time
+Home node: issues a credential (32 random bytes), keeps only its digest, replaces the link token with a fresh one
+Home node --> Device: hello with <code>token</code> = the credential, <code>pairing</code> = the next link's token, <code>link_key</code>
+Device: keeps the credential, remembers a digest of the spent token, keeps the next link to show other devices
+</div>
+    <p>A home node keeps at most 32 paired devices (the least recently seen goes first) and stores only digests of their credentials. A device opening a link it already spent gets its existing pairing back instead of an error, and <code>previewPair</code> tells the app it is "already paired here" when the link's token is the spent one, the next one or the current credential. The web app removes the token from the address bar and the browser history the moment pairing succeeds (<code>router.replace('#/pair')</code>).</p>
+  </section>
+
+  <section class="wk-sec" id="routes">
+    <h2>Routes inside links</h2>
+    <p>Invites and node links carry routes as strings. Only routes that pass <code>valid_peer_hint</code> are kept or dialed.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Route formats">
+      <table>
+        <thead><tr><th>Form</th><th>Example</th><th>For</th><th>Rules</th></tr></thead>
+        <tbody>
+          <tr><td><code>rtc:&lt;fp&gt;@&lt;addr&gt;</code></td><td><code>rtc:qqqq…qqq@203.0.113.7:7844</code></td><td>browsers and phones, over WebRTC</td><td><code>fp</code>: exactly 43 base64url characters (the SHA-256 of the node's DTLS certificate); <code>addr</code>: an IP socket address</td></tr>
+          <tr><td><code>&lt;endpoint&gt;@&lt;addr&gt;</code></td><td><code>8a88…6f5c@[2001:db8::7]:7843</code></td><td>native apps and nodes, over iroh QUIC</td><td><code>endpoint</code>: 64 hex digits; <code>addr</code>: an IP socket address</td></tr>
+          <tr><td><code>&lt;endpoint&gt;</code></td><td>64 hex digits</td><td>native, found through relays or the DHT</td><td>no address to dial directly; not passed on in node lists</td></tr>
+          <tr><td>relay</td><td><code>https://relay.example:443</code></td><td>native, as an iroh relay</td><td><code>https://</code> (or <code>http://</code> on loopback), at most 512 bytes, no <code>@ ? #</code>, no whitespace or control characters</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Every route is at most 128 characters, its port is not 0 and its IP is neither unspecified nor multicast. Transports and their routes are covered on <a href="/wiki/transports/">Transports</a>.</p>
+    <h3 id="scope">Where a link points</h3>
+    <p>Before a person connects, the apps say whether a link points at this device, at a computer on their network, or at the internet. For node links the core decides (<code>ip_scope</code>): loopback is <code>device</code>; private, link-local, broadcast, <code>0.0.0.0/8</code> and carrier-grade NAT (<code>100.64.0.0/10</code>) IPv4, and unique-local or link-local IPv6, are <code>network</code>; anything else is <code>internet</code>. For pairing links the web app decides from the address and routes <code>previewPair</code> returns, in <code>describeHome</code>:</p>
+    <div class="wk-code" data-lang="ts" data-title="apps/web/src/lib/pairing.ts (trimmed)"><pre><code>const local = (h: string) =&gt; h === 'localhost' || h === '::1' || /^127\./.test(h);
+const lan = (h: string) =&gt; /^(10|192\.168|169\.254|172\.(1[6-9]|2\d|3[01]))\./.test(h) || /^(f[cd]|fe80)/i.test(h) || h.endsWith('.local');
+const scope: HomeScope = hosts.every(local) ? 'device' : hosts.every((h) =&gt; local(h) || lan(h)) ? 'network' : 'internet';</code></pre></div>
+    <p>Every host in the link counts: one internet address makes the whole link "on the internet", and the pairing page then asks "Yes, connect to …" and warns that everything posted would pass through that node. The name in a link is "whatever the link says"; the address is what the device dials.</p>
+  </section>
+
+  <section class="wk-sec" id="web">
+    <h2>In the web app</h2>
+    <p>The web app is a hash-routed single page (<a href="{{REPO_URL}}/blob/main/apps/web/src/lib/router.ts">router.ts</a>), so links work under any base path. Three routes take a link's query verbatim and hand it to the core; the app never reads a code itself.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Link routes in the web app">
+      <table>
+        <thead><tr><th>Route</th><th>Screen</th><th>Core calls</th></tr></thead>
+        <tbody>
+          <tr><td><code>#/join?&lt;query&gt;</code></td><td><code>routes/Join.svelte</code></td><td><code>previewInvite</code>, then <code>join</code>, with <code>hoi://join?&lt;query&gt;</code></td></tr>
+          <tr><td><code>#/node?&lt;query&gt;</code></td><td><code>routes/NodeLink.svelte</code></td><td><code>previewNodeLink</code>, <code>acceptNotice</code> / <code>declineNotice</code>, <code>openNodeLink</code>, with <code>hoi://node?&lt;query&gt;</code></td></tr>
+          <tr><td><code>#/pair?&lt;query&gt;</code></td><td><code>routes/Pair.svelte</code></td><td><code>previewPair</code>, <code>pair</code>, with <code>hoi://pair?&lt;query&gt;</code></td></tr>
+          <tr><td><code>#/public?c=…&amp;name=…&amp;p=…</code></td><td><code>routes/PublicJoin.svelte</code></td><td><code>publicJoin</code>, <code>publicJoinStatus</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <ul>
+      <li><b>Join.</b> With no query it shows a paste box. <code>inviteQuery</code> accepts <code>hoi://join?…</code>, <code>hoi://join/?…</code>, <code>web+hoi://join?…</code>, anything with <code>#/join?…</code>, or a bare <code>code=…</code> / <code>c=…</code> query, and needs a <code>code</code> or <code>c</code> parameter. With a query it shows the preview card ("✓ signed details check out" when the genesis verified), and joins after the join warning.</li>
+      <li><b>Node.</b> The page needs <code>code</code>, <code>w</code> or <code>p</code> in the query, shows where the link points and the notice (or the no-notice box), and connects. A node link pasted under Communities opens the same page (<code>hoi://node?</code> or <code>#/node?</code>). On a first run without a key, the app makes one first and comes back to the node page.</li>
+      <li><b>Pair.</b> With a <code>code</code> or a <code>t</code> in the query it asks the core for <code>previewPair</code>, then shows the name, where it points and a Connect button; after pairing it clears the token from the address. On a device without a key yet, the same page then offers to link this device to the person's existing key through the home node. A pairing link can also be pasted under You → Home node.</li>
+    </ul>
+    <p>The worker that runs the core handles a few of these calls itself after the core answers: after <code>pair</code> it reconnects to the home node at once; after <code>openNodeLink</code> it frees a discovery slot and dials; after <code>acceptNotice</code> it clears earlier back-offs and dials. More on <a href="/wiki/web-app/">Web app</a>.</p>
+  </section>
+
+  <section class="wk-sec" id="public-join">
+    <h2>Public join pages</h2>
+    <p><code>#/public?c=&lt;key&gt;&amp;name=&lt;name&gt;&amp;p=&lt;protocol&gt;</code> is the page a registry listing links to ("Review and join"). It carries no routes and no genesis, only what a registry already publishes, and <code>publicTarget</code> checks it strictly before anything happens:</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Public join parameters">
+      <table>
+        <thead><tr><th>Parameter</th><th>Rule</th></tr></thead>
+        <tbody>
+          <tr><td><code>c</code></td><td>required: the full community key, 64 lowercase hex digits</td></tr>
+          <tr><td><code>name</code></td><td>optional: a registry name, <code>^[a-z0-9][a-z0-9._-]{0,31}$</code></td></tr>
+          <tr><td><code>p</code></td><td>optional: a protocol label, <code>^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$</code>; the page can join only if it is empty or one of the release's <code>supportedProtocols</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Joining looks the name up in the registry again and refuses if the listing's community or protocol differs ("This public link does not match the verified community name"), then asks the core to join through at most 16 public routes: nodes that announced they carry the community first, then the registry's general list. <a href="/wiki/registry/">Registry</a> covers the listings.</p>
+  </section>
+
+  <section class="wk-sec" id="native">
+    <h2>Desktop and hoi-node</h2>
+    <ul>
+      <li><b>Desktop.</b> The Tauri app registers the <code>hoi</code> URL scheme (<code>tauri-plugin-deep-link</code>). <code>open_link</code> turns <code>hoi://join?…</code> (or <code>hoi://join/?…</code>) into <code>#/join?…</code> and <code>hoi://pair?…</code> into <code>#/pair?…</code> and shows the window there; a second launch with a <code>hoi://</code> argument is handed to the running instance. It doesn't route <code>hoi://node?</code> links; those open in the app's Communities screen or from their https form.</li>
+      <li><b>hoi-node.</b> <code>--node LINK</code> (repeatable) takes a node link in either form and refuses anything <code>NodeLink::parse</code> won't read. The node writes its own node link to <code>DIR/node-link</code> while it serves strangers (removing the file when it stops) and its pairing link to <code>DIR/pairing-link</code>; <code>--new-pairing</code> issues a new pairing link, so devices paired before must pair again. <code>--public-url URL</code> puts a <code>wss://</code> TLS proxy address in pairing links.</li>
+    </ul>
+    <p>Flags and files in full: <a href="/wiki/hoi-node/">hoi-node</a>, <a href="/wiki/desktop/">Desktop companion</a>.</p>
+  </section>
+
+  <section class="wk-sec" id="codes">
+    <h2>hoi: codes</h2>
+    <p>Some things travel by hand between a person's own devices, or between a community's owners, as a prefix and base64url. They are not links (no <code>//</code>, no query) and are not masked; each is checked by its prefix and decoded strictly.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="hoi: codes">
+      <table>
+        <thead><tr><th>Prefix</th><th>Payload</th><th>Used for</th></tr></thead>
+        <tbody>
+          <tr><td><code>hoi:link:</code></td><td>canonical CBOR map with <code>t: "link-req"</code> (the new device's key and label) or <code>t: "link-ok"</code> (root, person, the blessing, the identity record, up to 8 community geneses)</td><td>linking a new device to a key: request on the new device, approval on the device with the root (<a href="/wiki/identity/">Keys &amp; identity</a>)</td></tr>
+          <tr><td><code>hoi:cosign:</code></td><td>a canonical ledger record, its <code>cosign</code> list so far</td><td>passing a threshold entry between owners until it has enough cosignatures; refused once 7 days old (<a href="/wiki/communities/">Communities &amp; the ledger</a>)</td></tr>
+          <tr><td><code>hoi:private-request:</code></td><td>JSON: an MLS key package, records, where to pick the invitation up</td><td>asking to join a private community</td></tr>
+          <tr><td><code>hoi:private:</code></td><td>JSON: an MLS welcome and the community's bootstrap</td><td>the invitation an owner sends back (<a href="/wiki/private/">Private communities</a>); private codes over 2 MiB are refused</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="wk-sec" id="limits">
+    <h2>Limits, in one place</h2>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Link limits">
+      <table>
+        <thead><tr><th>Limit</th><th>Value</th><th>Constant</th></tr></thead>
+        <tbody>
+          <tr><td>invite code length</td><td>131,072 characters</td><td>inline in <code>Invite::parse</code></td></tr>
+          <tr><td>node link code length</td><td>16,384 characters</td><td><code>MAX_NODE_CODE</code></td></tr>
+          <tr><td>pairing code length, and its inflated payload</td><td>4,096</td><td><code>MAX_PAIR_CODE</code></td></tr>
+          <tr><td>node link payload, inflated</td><td>6,144 bytes</td><td><code>MAX_NOTICE_WIRE + 4096</code></td></tr>
+          <tr><td>notice in a link</td><td>2,048 bytes (a notice itself: 1,536)</td><td><code>MAX_NOTICE_WIRE</code>, <code>MAX_NOTICE_BYTES</code></td></tr>
+          <tr><td>routes per node link, per kind</td><td>4 read, 2 kept per known node</td><td><code>MAX_PAIR_ROUTES</code>, <code>ROUTES_PER_KIND</code></td></tr>
+          <tr><td>routes per pairing link</td><td>4</td><td><code>MAX_PAIR_ROUTES</code></td></tr>
+          <tr><td>trackers per invite</td><td>1 or 2 written, each at most 200 bytes</td><td><code>MAX_TRACKERS</code>, <code>MAX_TRACKER_LEN</code></td></tr>
+          <tr><td>routes and relays kept from an invite</td><td>16 peers, 8 relays</td><td><code>MAX_HINT_PEERS</code>, <code>MAX_HINT_RELAYS</code></td></tr>
+          <tr><td>a route string</td><td>128 characters</td><td><code>valid_peer_hint</code></td></tr>
+          <tr><td>a relay string</td><td>512 bytes</td><td><code>valid_relay_hint</code></td></tr>
+          <tr><td>pairing token / credential</td><td>18 / 32 random bytes</td><td><code>net.rs</code></td></tr>
+          <tr><td>paired devices per home node</td><td>32</td><td><code>MAX_PAIRED</code></td></tr>
+          <tr><td>known public nodes per device</td><td>32</td><td><code>MAX_KNOWN</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="wk-sec" id="vectors">
+    <h2>Vectors</h2>
+    <p><a href="{{REPO_URL}}/blob/main/core/vectors/uris.json">uris.json</a> pins the invite encodings for the community of seed <code>01…01</code>: its key in hex and z-base-32, the masked <code>invite</code> and <code>invite_web</code> (genesis only), <code>routed_invite</code> with its <code>routed_peers</code>, <code>routed_relays</code> and <code>routed_trackers</code>, the unmasked <code>v1_invite</code> and <code>v1_invite_web</code>, the clear-text <code>legacy_invite</code> and <code>legacy_invite_web</code>, the genesis id and a root's <code>did_key_root</code>. Every one of them must parse to the same community. <a href="{{REPO_URL}}/blob/main/core/vectors/node-notice.json">node-notice.json</a> pins a notice's canonical bytes, hash, statement and signature, and the node link and clear-text link that carry it. More on <a href="/wiki/vectors/">Test vectors</a>.</p>
+  </section>
+
+  <section class="wk-sec" id="next">
+    <h2>Read next</h2>
+    <div class="wk-cards">
+      <a class="wk-card g-sky" href="/wiki/joining/"><i></i><b>Joining, step by step</b><span>From opening an invite to reading the first post.</span></a>
+      <a class="wk-card g-mint" href="/wiki/discovery/"><i></i><b>Discovery</b><span>Public nodes, node lists, registries and trackers.</span></a>
+      <a class="wk-card g-coral" href="/wiki/web-app/"><i></i><b>Web app</b><span>The screens that open these links.</span></a>
+      <a class="wk-card g-sun" href="/wiki/hoi-node/"><i></i><b>hoi-node</b><span>Where node and pairing links come from.</span></a>
+    </div>
+  </section>
+</article>
+<!-- @wiki-close -->
+<!-- @include footer.html -->
+<script type="module" src="/src/pages/wiki.ts"></script>
+</body>
+</html>

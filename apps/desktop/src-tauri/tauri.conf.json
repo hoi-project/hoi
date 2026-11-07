@@ -1,0 +1,84 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "hoi",
+  "version": "1.0.0-preview.1",
+  "identifier": "sh.hoi.desktop",
+  "build": {
+    "beforeDevCommand": "pnpm --filter @hoi/web dev:desktop",
+    "devUrl": "http://localhost:5174",
+    "beforeBuildCommand": "pnpm --filter @hoi/web build:desktop",
+    "frontendDist": "../../web/dist-desktop"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "hoi",
+        "width": 560,
+        "height": 860,
+        "minWidth": 360,
+        "minHeight": 560,
+        "center": true,
+        "visible": false
+      }
+    ],
+    "security": {
+      "csp": {
+        "default-src": "'self'",
+        "script-src": "'self'",
+        "worker-src": "'none'",
+        "style-src": "'self'",
+        "img-src": "'self' data: blob:",
+        "media-src": "'self' blob:",
+        "font-src": "'self'",
+        "connect-src": "'self' ipc: http://ipc.localhost",
+        "object-src": "'none'",
+        "base-uri": "'none'",
+        "form-action": "'none'"
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "category": "SocialNetworking",
+    "shortDescription": "A forum with nobody in the middle.",
+    "longDescription": "Small communities around shared interests, living on their members' devices. No accounts, no company servers. Posts fade after a community-chosen window. This app keeps your communities reachable while your computer is on, lets your phone and browser in with one scan, and shows what passes through it. Run it as the full app or as a small companion in the tray.",
+    "copyright": "hoi contributors, AGPL-3.0",
+    "license": "AGPL-3.0-only",
+    "homepage": "https://hoi.sh",
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"],
+    "linux": {
+      "deb": { "section": "net" },
+      "rpm": { "release": "1" },
+      "appimage": { "bundleMediaFramework": false }
+    },
+    "macOS": {
+      "minimumSystemVersion": "11.0",
+      "dmg": {
+        "background": "installer/dmg-background.png",
+        "windowSize": { "width": 660, "height": 400 },
+        "appPosition": { "x": 180, "y": 170 },
+        "applicationFolderPosition": { "x": 480, "y": 170 }
+      }
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "installerIcon": "icons/icon.ico",
+        "uninstallerIcon": "icons/icon.ico",
+        "headerImage": "installer/header.bmp",
+        "uninstallerHeaderImage": "installer/header.bmp",
+        "sidebarImage": "installer/sidebar.bmp",
+        "startMenuFolder": "hoi",
+        "languages": ["English"],
+        "displayLanguageSelector": false
+      }
+    }
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": { "schemes": ["hoi"] }
+    }
+  }
+}

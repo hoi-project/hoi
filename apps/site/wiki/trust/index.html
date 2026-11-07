@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <!-- @include head.html title="Trust &amp; ranking · hoi wiki" description="Trust levels, weights, ranking, labelers, blocklists, tallies and age proofs." -->
+</head>
+<body class="wiki">
+<!-- @include header.html nav="wiki" -->
+<!-- @wiki-open -->
+<article class="wk-doc">
+  <!-- @wiki-crumbs -->
+  <h1>Trust <span class="acc">&amp; ranking</span></h1>
+  <p class="wk-lead">The community's ladder is shared: every device computes the same one. Trust is personal: how much a key counts on <em>this</em> device, from whom this person marked as a friend. It weighs votes for ranking and reports for autobans, and it is never sent anywhere. This page covers trust levels and weights, the Hot, Fresh and Loudest formulas, and the people a person can choose to listen to: labelers, blocklist keepers and tally aggregators. It ends with operator suppression and age proofs as a way into a community.</p>
+  <p class="wk-src-list">Source <a href="{{REPO_URL}}/blob/main/core/crates/hoi-trust/src/lib.rs">hoi-trust/src/lib.rs</a> · <a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/trust.rs">hoi-core/src/trust.rs</a> · <a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/views.rs">hoi-core/src/views.rs</a> · <a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/labelers.rs">labelers.rs</a> · <a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/blocklists.rs">blocklists.rs</a> · <a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/tally.rs">tally.rs</a> · <a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/suppress.rs">suppress.rs</a> · <a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/age.rs">age.rs</a></p>
+  <div class="wk-head-rule"></div>
+
+  <section class="wk-sec" id="levels">
+    <h2>Trust levels and weights</h2>
+    <p><code>hoi-trust</code> is a tiny crate with no dependencies. Its first line says what it is for: how much a key counts on this device. Nothing in it is ever sent anywhere, so two devices can rank the same community differently, and that is intended.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Trust levels">
+      <table>
+        <thead><tr><th>Level</th><th>Who</th><th>Weight</th></tr></thead>
+        <tbody>
+          <tr><td><span class="tag t-coral">me</span></td><td>This device's own person</td><td>1.0</td></tr>
+          <tr><td><span class="tag t-mint">friend</span></td><td>Someone this person marked as a friend</td><td>1.0</td></tr>
+          <tr><td><span class="tag t-sky">fof</span></td><td>A friend of a friend: named in a friend's published trust statement</td><td>0.5</td></tr>
+          <tr><td><span class="tag t-lilac">member</span></td><td>A key this device first saw more than 90 days ago (<code>MEMBER_AGE</code>)</td><td>0.25</td></tr>
+          <tr><td><span class="tag t-soft">newcomer</span></td><td>Everyone else</td><td>0.05</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="wk-code" data-lang="rust" data-title="core/crates/hoi-trust/src/lib.rs (trimmed)"><pre><code>pub const MEMBER_AGE: u64 = 90 * 86_400;
+
+impl Level {
+    pub fn of(is_me: bool, is_friend: bool, is_fof: bool, key_age_secs: u64) -&gt; Level {
+        if is_me {
+            Level::Me
+        } else if is_friend {
+            Level::Friend
+        } else if is_fof {
+            Level::Fof
+        } else if key_age_secs &gt; MEMBER_AGE {
+            Level::Member
+        } else {
+            Level::Newcomer
+        }
+    }
+
+    pub fn weight(&amp;self) -&gt; f64 {
+        match self {
+            Level::Me | Level::Friend =&gt; 1.0,
+            Level::Fof =&gt; 0.5,
+            Level::Member =&gt; 0.25,
+            Level::Newcomer =&gt; 0.05,
+        }
+    }
+}</code></pre></div>
+    <p>Key age counts from when this device first saw the key (<code>state.first_seen</code>), never from what a record claims, so nobody backdates their way into a heavier weight. These levels have nothing to do with the community's ladder: a trusted member of a community is a "newcomer" here until this device has known their key for 90 days, unless someone made them a friend. The app shows the level on every person as their <code>trust</code>.</p>
+  </section>
+
+  <section class="wk-sec" id="ring">
+    <h2>Friends and trust statements</h2>
+    <p>Friends are local: <code>set_trust(key, true)</code> adds a key to <code>state.friends</code> on this device. It reaches others only in communities where this person shares whom they trust. Friends of friends need something published: a <code>trust</code> record, in which a person says whom they trust, in one community, by choice.</p>
+    <dl class="wk-defs">
+      <dt>keys<small>[bytes32]</small></dt><dd>0 to 256 person ids (<code>MAX_TRUST</code>), sorted, each once. Empty takes the last statement back.</dd>
+    </dl>
+    <p>A trust record has no parent, is 10 KiB at most, stamps at <code>pow_bits − 8</code>, and is rate-limited to 4 an hour and 12 a day. The latest per person and community replaces the earlier ones: the store drops the older. It expires with the community's retention.</p>
+    <ul>
+      <li><b>A choice per community.</b> <code>share_trust(community, true)</code> publishes a statement there; turning it off publishes an empty one in its place. Private communities are refused: their members keep who trusts whom to themselves.</li>
+      <li><b>Only friends known there.</b> A statement in a community names only friends who are admitted there or have records of their own there, so sharing in one place says nothing about the rest.</li>
+      <li><b>Kept current.</b> At each sweep, and whenever friends change, the device publishes a new statement where the friends it should name changed or the last would expire within two days (<code>RENEW_BEFORE</code>).</li>
+    </ul>
+    <p><code>refresh_ring</code> works out the ring again: degree 1 is the friends marked here; degree 2 is everyone named in each friend's latest usable statement in any community this device holds, besides this person and their friends. The ring is rebuilt when a trust record arrives and at every sweep, so expired or removed statements leave it. The person view shows up to three friends who named someone (<code>trusted_by</code>).</p>
+    <p>The <code>two_people_with_different_rings_see_different_hot_orders_and_why</code> test gives two readers the same records and different friends. Each sees a different Hot order, and the app explains why: a post's up-votes from friends and from friends of friends are counted separately.</p>
+  </section>
+
+  <section class="wk-sec" id="tally">
+    <h2>The tally behind a post</h2>
+    <p>Every device counts votes itself, from the vote records it holds. Nobody ships totals around (aggregators aside, <a href="#aggregators">below</a>).</p>
+    <div class="wk-code" data-lang="rust" data-title="core/crates/hoi-core/src/views.rs (trimmed)"><pre><code>for (voter, (_, v)) in latest {
+    if self.bounced(&amp;voter).is_some() {
+        continue;
+    }
+    t.score += v;
+    if Some(voter) == me {
+        t.mine = v;
+    }
+    let level = self.trust_level(&amp;voter);
+    let w = level.weight();
+    if v &gt; 0 {
+        t.up_w += w;
+        match level {
+            hoi_trust::Level::Friend =&gt; t.friends_up += 1,
+            hoi_trust::Level::Fof =&gt; t.fof_up += 1,
+            _ =&gt; {}
+        }
+    } else if v &lt; 0 {
+        t.down_w += w;
+    }
+}</code></pre></div>
+    <ul>
+      <li><b>One vote per person.</b> For each voter root, the vote with the highest <code>seq</code> counts. A vote is <code>-1</code>, <code>0</code> (retracts) or <code>1</code>; the app writes <code>seq</code> as <code>now × 1000</code> or one more than its last.</li>
+      <li><b>Bounced keys don't count.</b> A key this device bounced for spam weighs nothing while the bounce lasts (<a href="/wiki/spam/#bounces">bounces</a>).</li>
+      <li><b><code>score</code></b> is the plain sum shown next to a post. <b><code>up_w</code></b> and <b><code>down_w</code></b> are the weighted sums ranking uses. <code>friends_up</code> and <code>fof_up</code> say how many up-votes came from friends and friends of friends.</li>
+    </ul>
+    <p>The community's ladder counts votes differently, for its own purpose: unweighted, from members only, toward the author's standing (<a href="/wiki/standing/#trusted">trusted</a>).</p>
+  </section>
+
+  <section class="wk-sec" id="ranking">
+    <h2>Ranking</h2>
+    <h3 id="wilson">Wilson lower bound</h3>
+    <p>Hot ranks by confidence, not by raw counts. <code>wilson</code> is the lower bound of the 95% Wilson score interval (z = 1.96) on the weighted votes, so a post with 10 up-votes beats one with a single up-vote, though both are 100% positive.</p>
+    <div class="wk-code" data-lang="rust" data-title="core/crates/hoi-trust/src/lib.rs (trimmed)"><pre><code>/// Lower bound of the Wilson score interval (95%) on weighted votes.
+pub fn wilson(up: f64, down: f64) -&gt; f64 {
+    let n = up + down;
+    if n &lt;= 0.0 {
+        return 0.0;
+    }
+    let z = 1.96_f64;
+    let p = up / n;
+    (p + z * z / (2.0 * n) - z * ((p * (1.0 - p) + z * z / (4.0 * n)) / n).sqrt()) / (1.0 + z * z / n)
+}
+
+/// `hot = wilson(up, down) / (age_hours + 2)^1.5`, with a small floor so a
+/// brand-new post with no votes yet still surfaces by freshness.
+pub fn hot(up_w: f64, down_w: f64, age_secs: u64) -&gt; f64 {
+    let age_h = age_secs as f64 / 3600.0;
+    (wilson(up_w, down_w) + 0.02) / (age_h + 2.0).powf(1.5)
+}
+
+pub fn loudest(up_w: f64, down_w: f64) -&gt; f64 {
+    up_w - down_w
+}</code></pre></div>
+    <h3 id="hot">Hot</h3>
+    <p>So, exactly: <code>hot = (wilson(up_w, down_w) + 0.02) / (age_hours + 2)^1.5</code>, where <code>age_hours</code> is the seconds since the post's <code>created_at</code> divided by 3,600. The 0.02 floor lets a new post with no votes surface by freshness alone. Some values, worked from the formula:</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Hot examples">
+      <table>
+        <thead><tr><th>Weighted up</th><th>Weighted down</th><th>wilson</th><th>Age</th><th>hot</th></tr></thead>
+        <tbody>
+          <tr><td>0</td><td>0</td><td>0</td><td>just now</td><td>0.00707</td></tr>
+          <tr><td>0</td><td>0</td><td>0</td><td>1 hour</td><td>0.00385</td></tr>
+          <tr><td>1 (one friend)</td><td>0</td><td>0.2065</td><td>1 hour</td><td>0.0436</td></tr>
+          <tr><td>0.25 (one older key)</td><td>0</td><td>0.0611</td><td>—</td><td>—</td></tr>
+          <tr><td>0.05 (one new key)</td><td>0</td><td>0.0128</td><td>—</td><td>—</td></tr>
+          <tr><td>5</td><td>0</td><td>0.5655</td><td>1 hour</td><td>0.1127</td></tr>
+          <tr><td>5</td><td>0</td><td>0.5655</td><td>1 day</td><td>0.0044</td></tr>
+          <tr><td>5</td><td>1</td><td>0.4365</td><td>—</td><td>—</td></tr>
+          <tr><td>10</td><td>10</td><td>0.2993</td><td>—</td><td>—</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>A new key's up-vote weighs a twentieth of a friend's: twenty fresh keys voting together count exactly as much as one friend.</p>
+
+    <h3 id="orders">Every order the feed offers</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Feed orders">
+      <table>
+        <thead><tr><th>Sort</th><th>Key, highest first</th><th>Notes</th></tr></thead>
+        <tbody>
+          <tr><td><code>hot</code></td><td><code>hot(up_w, down_w, age)</code></td><td>The default, and what any unknown sort name falls back to.</td></tr>
+          <tr><td><code>fresh</code></td><td><code>created_at</code></td><td>Newest first.</td></tr>
+          <tr><td><code>loudest</code></td><td><code>up_w − down_w</code></td><td>Weighted, with no time decay.</td></tr>
+          <tr><td><code>friends</code></td><td><code>created_at</code></td><td>Only posts whose author is me or a friend.</td></tr>
+          <tr><td><code>counted</code></td><td>up − down from the first followed aggregator that counts the post</td><td>Posts no aggregator counts sort last (<a href="#aggregators">aggregators</a>).</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Ties break on <code>created_at</code>, newest first. When the feed is asked for one community, pinned posts come first. A feed holds only posts this device shows (not held, author not muted or bounced, and, for viewers below established, not waiting at the door), 200 by default; the web app's home asks for 60. Napping posts stay in the feed, marked, so anyone can peek.</p>
+    <h3 id="comments-order">Comments</h3>
+    <p>Replies under a post sort by the author's trust first (me and friends, then friends of friends, then everyone), then by plain score, highest first, then oldest first. Removed comments keep their place as a Poof box.</p>
+  </section>
+
+  <section class="wk-sec" id="labelers">
+    <h2>Labelers</h2>
+    <p>A labeler is anyone whose labels a person chooses to follow. A label from a labeler someone here follows, or one the community names by default in its limits, puts its target to sleep or adds a note on this device. A label from anybody else is refused, without penalty.</p>
+    <h3 id="label-record">The label record</h3>
+    <dl class="wk-defs">
+      <dt>label<small>text</small></dt><dd>Required, at most 40 characters on one line: <code>spam</code>, <code>nsfw</code>, <code>off-topic</code>, or a short note.</dd>
+      <dt>note<small>text, optional</small></dt><dd>At most 300 characters.</dd>
+    </dl>
+    <p>Its <code>parent</code> is the post or comment labelled. It is 512 bytes at most, stamps at <code>pow_bits − 8</code>, shares a rate group with reports (20 a day for newcomers, 200 a day for members) and expires with the community's retention. The app labels only posts and comments in public communities: "Private groups moderate among themselves: labels are for public communities."</p>
+    <h3 id="label-effect">What a label does</h3>
+    <p>A node takes a label only from this person, a labeler they follow (<code>state.labelers</code>), or one of the community's default labelers (<code>limits.labelers</code>, at most 32). Anything else is refused at ingest as <code>labels from a labeler nobody here follows</code>, which costs the sender nothing. Taken labels then work like the ledger's: one of the hiding labels (<code>spam</code>, <code>likely spam</code>, <code>hide</code>, <code>nsfw</code>, <code>illegal</code>, <code>off-topic</code>, any case) makes the record nap, attributed to the labeler; any other label is a note. Why a record naps is decided in this order: a pending removal, the community's hides, an author the community blocked, your own hide, moderators' labels, then followed labelers' labels.</p>
+    <h3 id="follow-labeler">Following</h3>
+    <p><code>follow_labeler(key, true)</code> adds the key, marks every view changed, and starts every connection's sync over (<code>reconcile_again</code>): labels this device refused before arrive with the next sync. Your own labels always count here.</p>
+    <div class="wk-seq" data-title="Following a labeler">
+lanes: Reader's device | Peer | Labeler
+Labeler => Peer: <code>label</code> {parent: a post, label "spam"}
+Peer -> Reader's device: offers it in sync
+Reader's device: refused without penalty: nobody here follows them
+Reader's device: the reader follows the labeler
+Reader's device -> Peer: sync starts over: ranges and haves sent afresh
+Peer => Reader's device: the label, again
+Reader's device: taken: the post naps, "spam" by the labeler
+</div>
+    <p>The <code>following_a_labeler_hides_what_they_labeled_within_one_sync</code> test checks exactly that, and <code>a_labeler_labels_from_the_app_and_a_community_default_counts_for_everyone</code> checks that a community's default labeler counts for someone who follows nobody. In the web app, <a href="{{REPO_URL}}/blob/main/apps/web/src/lib/ui/Labelers.svelte">Labelers.svelte</a> lists followed labelers and community defaults ("default in c/…"), how many labels each has here, and a box to follow one by key; it also lists followed aggregators.</p>
+  </section>
+
+  <section class="wk-sec" id="blocklists">
+    <h2>Open blocklists</h2>
+    <p>A list keeper (a group that tracks abuse imagery, or a community's own moderators) publishes the exact media hashes and picture fingerprints it refuses, signed, as a <code>blocklist</code> record. A person follows keepers as they follow labelers; every device of theirs then refuses those hashes, and pictures close to those fingerprints, in every community, besides its own list.</p>
+    <dl class="wk-defs">
+      <dt>exact<small>[bytes32]</small></dt><dd>BLAKE3 hashes of media bytes, sorted, each once, at most 1,000.</dd>
+      <dt>pdq<small>[bytes32]</small></dt><dd>256-bit PDQ picture fingerprints, sorted, each once, at most 1,000.</dd>
+    </dl>
+    <p>A blocklist has no parent, is 72 KiB at most, stamps at <code>pow_bits − 8</code>, is rate-limited to 4 an hour and 12 a day, and expires with the community's retention. The latest per keeper and community replaces the earlier ones. A node takes one only from this person or a keeper they follow (<code>state.blocklists</code>); others are refused without penalty (<code>a blocklist from a keeper nobody here follows</code>).</p>
+    <h3 id="lists-apply">How lists apply</h3>
+    <p><code>refresh_lists</code> builds the union of every followed keeper's latest list across every community this device holds. When it changes, the node deletes stored media whose hash is listed, looks again at stored pictures and deletes those whose fingerprint, in any orientation, is within 31 bits of a listed one (<code>MATCH_DISTANCE</code>, out of 256), and drops profiles whose picture is now blocked. Posts whose media hash a followed list names are held (<code>its media failed the checks</code>), and so are posts whose bytes, when they arrive, look like a listed picture: the device refuses those bytes and remembers their hash. The listed exact hashes stay the keeper's, kept apart from this person's own refusals, and stop counting the moment they unfollow. See <a href="/wiki/media/">media</a> for fingerprints.</p>
+    <h3 id="publish-list">Publishing a list</h3>
+    <p><code>publish_blocklist(community, text)</code> reads one hash a line: a 64-character PDQ fingerprint, or <code>blake3:</code> and an exact media hash. Lines starting with <code>#</code> are notes, and anything after a comma or a space is ignored. Lists are for public communities only. A person's own list of fingerprints is separate: <code>import_blocklist</code> adds PDQ hashes to this device's own refusals and publishes nothing. In the web app, <a href="{{REPO_URL}}/blob/main/apps/web/src/lib/ui/ListKeepers.svelte">ListKeepers.svelte</a> lists followed keepers with their counts ("N hashes · N fingerprints") and has a form to publish a list in one of the joined communities.</p>
+  </section>
+
+  <section class="wk-sec" id="aggregators">
+    <h2>Tally aggregators</h2>
+    <p>A browser holds part of a community; a durable node holds more. An aggregator is a device that counts a community's votes and publishes the counts, signed, as a <code>tally</code> record. People follow an aggregator as they follow a labeler. Its counts show next to a post's own and can order the feed when the person picks that. They never go into Hot or any other ranking on their own: an aggregator's word is its word.</p>
+    <dl class="wk-defs">
+      <dt>counts<small>[[post, up, down]]</small></dt><dd>At most 500 rows (<code>MAX_TALLY</code>), sorted by post id, each post once. <code>up</code> and <code>down</code> are plain counts.</dd>
+    </dl>
+    <ul>
+      <li><b>Counting.</b> For each post the device shows, each voter's latest vote once, unweighted. Posts with no votes are left out; of the rest, the 500 with the most votes are kept.</li>
+      <li><b>Publishing.</b> <code>set_aggregating(community, true)</code> publishes at once and then every hour at the sweep (<code>EVERY</code> = 3,600 s). Only public communities this device keeps. A tally expires after the community's retention or 7 days, whichever is shorter, and the newest replaces the older.</li>
+      <li><b>Taking.</b> A node takes a tally only from itself or an aggregator its person follows (<code>counts from an aggregator nobody here follows</code>). Tally records are 32 KiB at most, rate-limited to 4 an hour and 48 a day.</li>
+      <li><b>Showing.</b> Each post lists every followed aggregator's latest count for it. The <code>counted</code> sort uses the first of them (followed aggregators are kept in key order).</li>
+    </ul>
+  </section>
+
+  <section class="wk-sec" id="reports-weight">
+    <h2>Trust weighs reports too</h2>
+    <p>Reports, signed flags against a key, are counted with the same weights. A reporter counts by the larger of their weight here and their standing in the community: trusted 1.0, established 0.5, anyone else 0. When the weighted reports against a key reach the community's <code>autoban_threshold</code> (12 by default), this device bounces the key. Fresh keys weigh 0.05 here and nothing on the ladder, so it takes 240 distinct fresh keys to reach 12. The Manage tab's flags show a weight from trust alone. Details are on <a href="/wiki/spam/#autoban">spam</a>.</p>
+  </section>
+
+  <section class="wk-sec" id="suppress">
+    <h2>Operator suppression</h2>
+    <p>The person who runs a native node can stop serving something; nobody can forge anything. An operator can suppress an identified community, record or media blob: it is deleted on that node, never fetched, accepted or served again, and the refusal survives restarts. Nothing is signed and nothing is sent. A suppressed item is simply absent from that node, and every other node decides for itself.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Suppression targets">
+      <table>
+        <thead><tr><th>Target</th><th>What it deletes</th><th>What it refuses</th></tr></thead>
+        <tbody>
+          <tr><td><code>community</code></td><td>Every record of the community, the media only those records used, its skeletons</td><td>The community, however it arrives: invites, carry offers, public joins, its genesis</td></tr>
+          <tr><td><code>record</code></td><td>The record and its edits, and media only they used</td><td>Those ids, for good: marked deleted with no end date</td></tr>
+          <tr><td><code>media</code></td><td>The bytes</td><td>The hash; posts that show it are held</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Only records that hold what people wrote or showed can be suppressed one by one: posts, comments, edits, reports, profiles and profile colors. A record whose absence would change who may speak or what is hidden (a genesis, an identity, a device or its revocation, the ledger, vouches, reviews, deletions, labels, votes) can't: suppressing it alone could bring back what a community removed. The operator suppresses its community, or the post it is about. Private groups aren't held in the open and can't be suppressed; the node leaves them instead.</p>
+    <p>Hosts reach this through <code>hoi-node admin</code> while the node is stopped: <code>suppress community|record|media &lt;id&gt;</code> with an optional <code>--note</code> (one line, at most 200 characters, the operator's own reference) and <code>--evidence &lt;dir&gt;</code>, then <code>suppressions</code> and <code>unsuppress &lt;id&gt;</code>. It is not part of the JSON dispatch the apps use, so no client and no peer can ask for it. An operator who must keep evidence first takes a copy (<code>suppression_material</code>): the signed records exactly as they arrived, which anyone can verify later, and the media. Lifting a suppression brings nothing back by itself; what was deleted stays deleted until sync, an index or a request brings it again. See <a href="/wiki/hoi-node/">hoi-node</a>.</p>
+  </section>
+
+  <section class="wk-sec" id="age">
+    <h2>Age proofs as a way in</h2>
+    <p>A community whose <code>admission</code> is <code>age-proof</code> lets a newcomer in once a moderator saw a proof that they are over 18, and nothing else about them. The proof is an SD-JWT VC presentation from an identity wallet. It is never published: the ledger entry that lets the person in says only <code>age proof</code>. How the presentation is built and verified is covered with <a href="/wiki/identity/">keys &amp; identity</a>; this section covers the community's side.</p>
+    <h3 id="age-setup">What the community sets</h3>
+    <ul>
+      <li><code>limits.admission</code> = <code>age-proof</code>, changed by consent like any limit.</li>
+      <li><code>limits.age_issuers</code>: the raw public keys of the credential issuers it trusts, 1 to 8, each 32 bytes (Ed25519, EdDSA) or 33 or 65 bytes (P-256 SEC1, ES256). An age-proof community without one is refused (<code>an age-proof community names the credential issuers it trusts</code>). The Manage tab takes them as hex, one a line.</li>
+    </ul>
+    <p>From then on, a newcomer's posts, comments, edits and profiles are held until they are admitted, and only <code>admit</code> entries admit anyone: the ladder runs with <code>admits_only</code>, so vouches give voice but let nobody in.</p>
+    <h3 id="age-flow">Getting in</h3>
+    <div class="wk-seq" data-title="An age proof, from wallet to ledger">
+lanes: Wallet | Newcomer's device | Moderator's device | Every device
+Newcomer's device: <code>age_challenge</code>: aud <code>hoi:&lt;community hex&gt;</code>, a nonce for this person and community, the trusted issuers
+Newcomer's device -> Wallet: the challenge
+Wallet --> Newcomer's device: a presentation disclosing only <code>age_over_18</code>, key-bound to aud and nonce
+Newcomer's device: checks it; makes a <code>hoi-age-1-</code> code
+Newcomer's device -> Moderator's device: the code, however they like
+Moderator's device: checks it again, now; community is age-proof; person not in yet
+Moderator's device => Every device @mint: <code>ledger</code> {action <code>admit</code>, target: the person, reason "age proof"}
+Every device: admitted; what they wrote while held goes out
+</div>
+    <p>The nonce is derived, so a proof made for one person or community is useless for another: BLAKE3 in derive-key mode with the context <code>hoi age proof nonce v1</code>, over the person's root key and the community key, first 16 bytes, base64url. The code carries everything the moderator's device needs to check it again:</p>
+    <div class="wk-bytes" data-title="An age proof code: hoi-age-1- followed by base64url of">
+person | 32 B | sun | 3 | the newcomer's root key
+community | 32 B | mint | 3 | the community key
+presentation | up to 16 KiB | sky | 6 | the SD-JWT presentation with its key binding, as text
+</div>
+    <h3 id="age-checks">What both devices check</h3>
+    <p><code>age::check</code> runs on the newcomer's device before it makes the code and on the moderator's before it admits. It accepts a presentation only if it is at most 16 KiB; signed by one of the community's issuers; not expired; using SHA-256 digests; disclosing <code>age_over_18: true</code> and nothing else; carrying a key binding (<code>typ</code> <code>kb+jwt</code>) signed by the credential's own holder key, for this community's <code>aud</code> and this person's nonce, made in the last 15 minutes (up to 60 seconds in the future); and whose <code>sd_hash</code> covers the presentation it came with. A code is checked against the clock when the moderator uses it, so it has to be used within those 15 minutes.</p>
+    <p>The moderator's device also refuses a code for a community that doesn't ask for age proofs and for someone already in ("They're in already."). The <code>a_newcomer_is_let_in_by_a_proof_of_age_and_vouches_alone_dont</code> test walks the whole flow: the newcomer's post is held, a vouch doesn't help, a proof made for someone else is refused, the right one admits them with reason <code>age proof</code>, their held post goes out, and no record anywhere holds the issuer's signed part of the presentation.</p>
+  </section>
+
+  <section class="wk-sec" id="local">
+    <h2>What never leaves the device</h2>
+    <p>Everything a person decides about whom to listen to is local state, on this device only: friends, petnames, muted keys, followed labelers, followed blocklist keepers, followed aggregators, the communities this device counts for, bounces, this device's own media and picture refusals, and the first time it saw each key. None of it is a record, none of it syncs. What is published is only what a person chooses to publish: a trust statement, a label, a list, a tally, a report.</p>
+    <p>So two people holding the same records can see different orders, different napping posts and different weights, and both are right. The community's own decisions, its ledger and its ladder, are the part every device agrees on (<a href="/wiki/communities/">communities</a>, <a href="/wiki/standing/">standing</a>).</p>
+    <div class="wk-cards">
+      <a class="wk-card g-mint" href="/wiki/standing/"><i></i><b>Standing &amp; review</b><span>The shared ladder, next to your own weights.</span></a>
+      <a class="wk-card g-peach" href="/wiki/spam/"><i></i><b>Spam &amp; rate limits</b><span>Reports, bounces and autobans.</span></a>
+      <a class="wk-card g-coral" href="/wiki/media/"><i></i><b>Media</b><span>Hashes, fingerprints and what is refused.</span></a>
+      <a class="wk-card g-sky" href="/wiki/identity/"><i></i><b>Keys &amp; identity</b><span>Roots, devices and credentials.</span></a>
+    </div>
+  </section>
+</article>
+<!-- @wiki-close -->
+<!-- @include footer.html -->
+<script type="module" src="/src/pages/wiki.ts"></script>
+</body>
+</html>

@@ -1,0 +1,379 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <!-- @include head.html title="Spam &amp; rate limits · hoi wiki" description="Rate windows, copy-paste floods, strikes, reports, autobans and peer scores." -->
+</head>
+<body class="wiki">
+<!-- @include header.html nav="wiki" -->
+<!-- @wiki-open -->
+<article class="wk-doc">
+  <!-- @wiki-crumbs -->
+  <h1>Spam <span class="acc">&amp; rate limits</span></h1>
+  <p class="wk-lead">There is no spam filter in the middle, because there is no middle. Every device is the bouncer: it counts each key's records against rolling windows, spots the same words pasted again and again, keeps a fading score of strikes per key, bounces keys past the line, signs reports with record ids as evidence, and drops peers that forward junk. This page covers every window, constant and formula, and what the simulator's attacks show.</p>
+  <p class="wk-src-list">Source <a href="{{REPO_URL}}/blob/main/core/crates/hoi-validate/src/lib.rs">hoi-validate/src/lib.rs</a> · <a href="{{REPO_URL}}/blob/main/core/crates/hoi-spam/src/lib.rs">hoi-spam/src/lib.rs</a> · <a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/node.rs">hoi-core/src/node.rs</a> · <a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/net.rs">hoi-core/src/net.rs</a> · <a href="{{REPO_URL}}/blob/main/core/crates/hoi-store/src/lib.rs">hoi-store/src/lib.rs</a> · <a href="{{REPO_URL}}/blob/main/core/crates/hoi-sim/src/forge.rs">hoi-sim/src/forge.rs</a> · <a href="{{REPO_URL}}/blob/main/core/crates/hoi-sim/src/scenario.rs">hoi-sim/src/scenario.rs</a></p>
+  <div class="wk-head-rule"></div>
+
+  <section class="wk-sec" id="defences">
+    <h2>Where spam meets the pipeline</h2>
+    <p>Every record passes the same checks, in order, whether it arrives live, during catch-up or from this device's own keyboard (<a href="/wiki/validation/">validation pipeline</a>). The cheap checks come first, so junk costs the receiver as little as possible. The spam defences sit at these points in <code>Node::ingest</code>:</p>
+    <ol class="wk-steps">
+      <li><b>Stamp floor, before any signature</b><p>The least work any key could need in this community for this kind, checked with one hash. A flood of unstamped records costs a hash each, not a signature check (<a href="/wiki/stamps/">stamps</a>).</p></li>
+      <li><b>Signature, identity work, the full stamp, time</b><p>Bad bytes and bad signatures cost the forwarding peer score (<a href="#peers">peer scores</a>). A key needs memory-hard identity work, so making a thousand keys costs a thousand times the work (<a href="/wiki/identity/">identity</a>).</p></li>
+      <li><b>Bans, removals, bounces</b><p>A banned key's new records and removed records are refused. A key this device bounced has its records refused and counted (<code>bounced_records</code>).</p></li>
+      <li><b>Rate</b><p>The key's records of this kind in this community, counted by <code>created_at</code> against rolling windows (<a href="#rate-windows">rate windows</a>). Breaking one on live gossip is a strike.</p></li>
+      <li><b>Content, then copy-paste floods</b><p>Text, link and media rules (<a href="/wiki/content-rules/">content rules</a>), then the same words again (<a href="#floods">floods</a>). Both are strikes when a peer sent the record.</p></li>
+      <li><b>Standing</b><p>What the author may share here. Beyond it, records are held, not refused (<a href="/wiki/standing/#holds">holds</a>).</p></li>
+    </ol>
+  </section>
+
+  <section class="wk-sec" id="rate-windows">
+    <h2>Rate windows</h2>
+    <p><code>hoi_validate::rate_windows</code> says how many records of a kind one author may have in a community within each window. A record must fit every window listed for it. <em>Newcomer</em> here means the ladder hasn't admitted the author yet; owners and moderators have no windows at all.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Rate windows by kind">
+      <table>
+        <thead><tr><th>Kind</th><th>Newcomer</th><th>Member and above</th></tr></thead>
+        <tbody>
+          <tr><td><code>post</code></td><td>1 day: <code>newcomer_posts_per_day</code> (2 by default)</td><td>1 hour: 12 · 1 day: 48</td></tr>
+          <tr><td><code>post</code> with media</td><td>the newcomer budget above (and media is held below trusted)</td><td>1 hour: 4 · 1 day: 6</td></tr>
+          <tr><td><code>comment</code></td><td>1 hour: 10 · 1 day: 30</td><td>1 hour: 60 · 1 day: 400</td></tr>
+          <tr><td><code>edit</code>, <code>delete</code></td><td colspan="2">1 hour: 30 · 1 day: 100</td></tr>
+          <tr><td><code>vote</code></td><td colspan="2">1 hour: 300 · 1 day: 2,000</td></tr>
+          <tr><td><code>vouch</code>, <code>review</code></td><td>1 day: 20</td><td>1 hour: 60 · 1 day: 300</td></tr>
+          <tr><td><code>label</code>, <code>report</code></td><td>1 day: 20</td><td>1 day: 200</td></tr>
+          <tr><td><code>profile</code>, <code>profile-color</code></td><td colspan="2">1 hour: 2 · 1 day: 6</td></tr>
+          <tr><td><code>pointer</code></td><td>1 hour: 20 · 1 day: 60</td><td>1 hour: 120 · 1 day: 1,000</td></tr>
+          <tr><td><code>roster</code></td><td colspan="2">1 day: 8 (one every twelve hours from each of a person's durable devices)</td></tr>
+          <tr><td><code>share</code></td><td colspan="2">1 day: 20</td></tr>
+          <tr><td><code>trust</code></td><td colspan="2">1 hour: 4 · 1 day: 12</td></tr>
+          <tr><td><code>wiki</code></td><td colspan="2">1 hour: 60 · 1 day: 200 (a page is written in sittings)</td></tr>
+          <tr><td><code>tally</code></td><td colspan="2">1 hour: 4 · 1 day: 48</td></tr>
+          <tr><td><code>blocklist</code></td><td colspan="2">1 hour: 4 · 1 day: 12</td></tr>
+          <tr><td><code>ledger</code>, <code>community</code>, <code>identity</code>, <code>delegation</code>, <code>revoke</code>, <code>rotate</code></td><td colspan="2">no windows</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>An hour is 3,600 seconds, a day 86,400. A window with a budget of 0 allows nothing: a community that sets <code>newcomer_posts_per_day</code> to 0 lets newcomers comment but not post. The day budget for newcomer posts is the more lenient of the limits in effect when the record says it was made and today's (<a href="/wiki/communities/#limits-for">which limits apply</a>).</p>
+    <h3 id="rate-groups">Rate groups</h3>
+    <p>A window counts the author's records in the same <em>rate group</em>, so edits and deletes share one budget, and so do vouches and reviews, and labels and reports:</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Rate groups">
+      <table>
+        <thead><tr><th>Group</th><th>Kinds</th><th>Group</th><th>Kinds</th></tr></thead>
+        <tbody>
+          <tr><td>0</td><td><code>post</code></td><td>8</td><td><code>profile-color</code></td></tr>
+          <tr><td>1</td><td><code>comment</code></td><td>9</td><td><code>pointer</code></td></tr>
+          <tr><td>2</td><td><code>edit</code>, <code>delete</code></td><td>10</td><td><code>roster</code></td></tr>
+          <tr><td>3</td><td><code>vote</code></td><td>11</td><td><code>share</code></td></tr>
+          <tr><td>4</td><td><code>vouch</code>, <code>review</code></td><td>12</td><td><code>trust</code></td></tr>
+          <tr><td>5</td><td><code>label</code>, <code>report</code></td><td>13</td><td><code>wiki</code></td></tr>
+          <tr><td>6</td><td>everything else</td><td>14</td><td><code>tally</code></td></tr>
+          <tr><td>7</td><td><code>profile</code></td><td>15</td><td><code>blocklist</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Posts with and without media are one group with different budgets: a member's media post must fit 4 an hour and 6 a day counting all their posts.</p>
+    <div class="wk-stage" data-demo="ratelimit" data-title="Posts against rolling windows">
+      <p class="nojs">A key posts in bursts. Each post is placed on a timeline at its created_at, and every one-hour and one-day span around it is counted. Posts that would put any span over its budget are dropped; the rest are accepted, whenever they claim to have been written.</p>
+      <p class="wk-stage-cap">Windows roll: they count by each record's own time, not by when it arrived.</p>
+    </div>
+  </section>
+
+  <section class="wk-sec" id="counting">
+    <h2>Counting by <code>created_at</code></h2>
+    <p>Windows count records by the time they say they were made, not by when they arrived. That makes the limit the same on every device, and closes the gap where backdated records, arriving as catch-up, would skip the limit. The store keeps, per (community, author root), every record's <code>(created_at, id)</code>, and <code>author_times</code> returns the times of those in the record's rate group.</p>
+    <div class="wk-code" data-lang="rust" data-title="core/crates/hoi-validate/src/lib.rs"><pre><code>/// Whether a record at `t` keeps every `w`-second span around it at `max` records or fewer,
+/// given the author's other records' times (`times`, any order).
+pub fn window_ok(times: &amp;[u64], t: u64, w: u64, max: u32) -&gt; bool {
+    if max == 0 {
+        return false;
+    }
+    let mut near: Vec&lt;u64&gt; = times.iter().copied().filter(|x| x.abs_diff(t) &lt; w).collect();
+    near.push(t);
+    near.sort_unstable();
+    // every span [s, s + w) that contains t starts at a record time in (t - w, t]
+    near.iter().filter(|s| **s &lt;= t).all(|s| near.iter().filter(|x| **x &gt;= *s &amp;&amp; **x &lt; s.saturating_add(w)).count() &lt;= max as usize)
+}</code></pre></div>
+    <p>The window rolls: it isn't a calendar day. For a record at <code>t</code>, every <code>w</code>-second span that contains <code>t</code> must hold at most <code>max</code> records, counting this one. Only spans that start at a record time need checking. A property test feeds random times through it, accepting what fits, and checks that no day-long span of the accepted ones ever holds more than the budget.</p>
+    <ul>
+      <li><b>Backdating doesn't dodge it.</b> With two posts at 1,000 and 5,000 and a budget of 2 a day, a third at 3,000 fails, and so does one backdated to 900. The <code>backdating_doesnt_dodge_the_rate_limit</code> node test sends ten posts backdated an hour apart and accepts exactly the community's five a day.</li>
+      <li><b>What counts.</b> Only records the store holds: refused records never count against the author. Records the store holds that are held back (beyond the author's standing) do count.</li>
+      <li><b>When it applies.</b> On every record in a community except at startup load, from peers and from this device alike. Only a breach on <em>live</em> gossip strikes the key; a catch-up record over the limit is refused and nothing more.</li>
+    </ul>
+    <p>The older token bucket, <code>RateBucket</code> (refills at a rate per day up to a capacity, then takes one), is still in hoi-validate for per-connection budgets; records use the windows.</p>
+  </section>
+
+  <section class="wk-sec" id="floods">
+    <h2>Copy-paste floods</h2>
+    <p>Spam is usually the same words, again and again, sometimes from many fresh keys. Each post and comment gets a fingerprint of its words:</p>
+    <div class="wk-bytes" data-title="A text fingerprint">
+words | — | sky | 6 | a post's title, text and link joined by newlines, or a comment's text
+normalized | — | mint | 6 | lowercased, whitespace collapsed to single spaces; under 12 characters: no fingerprint
+
+fingerprint | 16 B | sun | 6 | the first 16 bytes of BLAKE3 of the normalized words
+</div>
+    <p>The store indexes fingerprints per community: (author root, <code>created_at</code>, id) for every record with one. <code>check_duplicate</code> then refuses two patterns:</p>
+    <div class="wk-code" data-lang="rust" data-title="core/crates/hoi-core/src/node.rs"><pre><code>/// The same words twice from one author within a week, or from three newcomers within a day.
+fn check_duplicate(&amp;self, r: &amp;Record, root: Id, c: Id) -&gt; Result&lt;(), Reject&gt; {
+    let Some(f) = hoi_validate::text_fingerprint(r) else { return Ok(()) };
+    let same = self.store.same_text(&amp;c, &amp;f);
+    if same.iter().any(|(a, t, _)| *a == root &amp;&amp; t.abs_diff(r.created_at) &lt; 7 * DAY) {
+        return Err(Reject::Content("the same words again".into()));
+    }
+    if let Some(st) = self.communities.get(&amp;c)
+        &amp;&amp; !st.is_admitted(&amp;root)
+    {
+        let others: BTreeSet&lt;Id&gt; =
+            same.iter().filter(|(a, t, _)| *a != root &amp;&amp; t.abs_diff(r.created_at) &lt; DAY &amp;&amp; !st.is_admitted(a)).map(|x| x.0).collect();
+        if others.len() &gt;= 2 {
+            return Err(Reject::Content("the same words from several newcomers: a copy-paste flood".into()));
+        }
+    }
+    Ok(())
+}</code></pre></div>
+    <p>Case and spacing don't help: "Free crypto / click   here now" and "free CRYPTO / click here\nnow" fingerprint the same. The <code>copy_paste_floods_bounce</code> test has three fresh keys post the same sentence: the first two are taken, the third is a flood. Admitted members can repeat each other freely; only an author repeating themselves within a week is refused. A refused duplicate from a peer is an <code>Offence::Duplicate</code> strike.</p>
+  </section>
+
+  <section class="wk-sec" id="strikes">
+    <h2>Strikes</h2>
+    <p>Each device keeps a fading score per (key, community) in <code>hoi_spam::Strikes</code>. Every offence adds its weight; the score halves every hour. When a key crosses 10, the device bounces it and signs a report.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Offences">
+      <table>
+        <thead><tr><th>Offence</th><th>Weight</th><th>Recorded when</th><th>Report reason</th></tr></thead>
+        <tbody>
+          <tr><td><code>Rate</code></td><td>1.0</td><td>A record from a live gossip peer breaks a rate window</td><td><code>rate</code></td></tr>
+          <tr><td><code>Content</code></td><td>3.0</td><td>A record from a peer breaks the content rules; media bytes don't match what the post said or can't be decoded</td><td><code>spam</code></td></tr>
+          <tr><td><code>Duplicate</code></td><td>0.25</td><td>A record from a peer is a copy-paste duplicate</td><td><code>dup</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="wk-code" data-lang="rust" data-title="core/crates/hoi-spam/src/lib.rs (trimmed)"><pre><code>pub const HALF_LIFE_SECS: f64 = 3600.0;
+pub const BAN_AT: f64 = 10.0;
+
+fn decay(score: f64, from: u64, to: u64) -&gt; f64 {
+    let dt = to.saturating_sub(from) as f64;
+    score * 0.5_f64.powf(dt / HALF_LIFE_SECS)
+}
+
+impl Strikes {
+    /// Records an offence by `key` in `community`. Returns true when the key just crossed the line.
+    pub fn add(&amp;mut self, key: Id, community: Id, o: Offence, now: u64) -&gt; bool {
+        let e = self.scores.entry((key, community)).or_insert((0.0, now));
+        let before = decay(e.0, e.1, now);
+        let after = before + o.weight();
+        *e = (after, now);
+        before &lt; BAN_AT &amp;&amp; after &gt;= BAN_AT
+    }
+}</code></pre></div>
+    <p>So the score at time <code>t</code> is <code>s × 0.5^((t − t₀) / 3600)</code>, where <code>s</code> was the score after the last offence at <code>t₀</code>. A key crosses the line once: <code>add</code> returns true only on the offence that takes it from under 10 to 10 or more. Rate offences one second apart cross it on the eleventh (the score decays a little between them), and four content offences in quick succession cross it; spread out over hours, the same offences never do. In the <code>spam_bounces_off</code> test below, the eleventh refused post is the one that bounces the key. Scores below 0.05 are forgotten at the sweep. Ten hours after twelve quick rate offences, the score is under 0.1.</p>
+    <h3 id="strike-rules">Who gets a strike</h3>
+    <ul>
+      <li><b>Only for what peers send.</b> Strikes come only from records a peer delivered; a record refused on its way out of this device just fails with a message. This device's own person is never bounced.</li>
+      <li><b>Never for old rules.</b> A record made before the rule it broke took effect is refused and nothing more: its author's client may have judged it by the rules of its day. The cutoff is <code>hoi_validate::RULES_SINCE</code> (0 in this build) for every offence and, for rate offences, also the time of the community's latest limits change.</li>
+      <li><b>Evidence.</b> The device keeps up to 16 record ids per (key, community) as it records offences; when the key crosses the line, those ids become the report's evidence.</li>
+    </ul>
+  </section>
+
+  <section class="wk-sec" id="bounces">
+    <h2>Bounces</h2>
+    <p>A bounce is one device's verdict on a key, and the rules it judged by may differ from the author's client, so a bounce lifts on its own. The first lasts a day; each bounce of the same key while the last one is still remembered lasts twice as long, up to 30 days.</p>
+    <div class="wk-code" data-lang="rust" data-title="core/crates/hoi-spam/src/lib.rs"><pre><code>pub const BOUNCE_FOR: u64 = 86_400;
+pub const BOUNCE_MAX: u64 = 30 * 86_400;
+
+/// How long a key's `times`-th bounce in a row lasts.
+pub fn bounce_lasts(times: u32) -&gt; u64 {
+    BOUNCE_FOR.saturating_mul(1 &lt;&lt; times.saturating_sub(1).min(16)).min(BOUNCE_MAX)
+}</code></pre></div>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Bounce lengths">
+      <table>
+        <thead><tr><th>Bounce in a row</th><th>1st</th><th>2nd</th><th>3rd</th><th>4th</th><th>5th</th><th>6th and later</th></tr></thead>
+        <tbody>
+          <tr><td>Lasts</td><td>1 day</td><td>2 days</td><td>4 days</td><td>8 days</td><td>16 days</td><td>30 days</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>A lifted bounce is remembered for 30 days (<code>BOUNCE_MAX</code>) after it lifts, then forgotten, so the next one starts at a day again. While a key is bounced on this device:</p>
+    <ul>
+      <li>its new records are refused and counted, not stored; what was stored before stays stored, hidden, because deleting it would outlast the bounce;</li>
+      <li>its records aren't shown, and its votes don't count in tallies;</li>
+      <li>the community view lists it among the banned as <code>bounced on this device: &lt;reason&gt;</code>, and the Manage tab tags it "bounced automatically";</li>
+      <li>the device says so: "Bounced mallory for a day: too many bad records. Until then your device won't store or pass on anything it signs."</li>
+    </ul>
+    <p>This device's own person is never bounced. <code>unban</code> on a key bounced only here lifts the bounce without signing anything.</p>
+  </section>
+
+  <section class="wk-sec" id="reports">
+    <h2>Reports</h2>
+    <p>A report is a signed record of kind <code>report</code> against a key. It is not a confidential message to moderators: anyone in the community can read it. Its evidence is record ids, never copies of the posts.</p>
+    <dl class="wk-defs">
+      <dt>parent<small>bytes32</small></dt><dd>The reported person's root key.</dd>
+      <dt>reason<small>text</small></dt><dd><code>spam</code>, <code>rate</code>, <code>dup</code>, <code>illegal</code> or <code>rule:&lt;n&gt;</code>, at most 40 characters.</dd>
+      <dt>evidence<small>[bytes32]</small></dt><dd>At most 64 record ids.</dd>
+    </dl>
+    <p>A report is 2 KiB at most, stamps at <code>pow_bits − 8</code>, shares the label rate group (20 a day for newcomers, 200 for members), and expires after the community's retention or 30 days, whichever is shorter. Reports come from two places:</p>
+    <ul>
+      <li><b>Automatically</b>, when a key crosses the strike line: reason <code>rate</code>, <code>dup</code> or <code>spam</code> from the offence that tipped it, with the evidence collected so far.</li>
+      <li><b>By hand</b>, with <code>flag(target, reason)</code> on a post or comment: the report names its author, with the record as evidence.</li>
+    </ul>
+    <p>Owners and moderators see reports on the Manage tab as flags: grouped by the flagged record when this device holds it, otherwise by the flagged key, with the reasons, how many people flagged, and their summed trust weight against the auto-bounce threshold. Flags can't be dismissed; they fade with time like everything else. A flag for <code>illegal</code> says a removal for that reason takes effect at once.</p>
+  </section>
+
+  <section class="wk-sec" id="autoban">
+    <h2>Weighted reports and autobans</h2>
+    <p>Every time a report arrives, the device weighs all reports against that key in the community. Each reporter counts once, by the larger of their weight in this device's trust view and their standing in the community:</p>
+    <div class="wk-code" data-lang="rust" data-title="core/crates/hoi-core/src/node.rs"><pre><code>pub(crate) fn report_weight(&amp;self, c: &amp;Id, target: &amp;Id) -&gt; f64 {
+    let st = self.communities.get(c);
+    let mut by: BTreeMap&lt;Id, f64&gt; = BTreeMap::new();
+    for s in self.store.of_kind(c, Kind::Report) {
+        if s.record.parent == Some(*target) {
+            let local = self.trust_level(&amp;s.author_root).weight();
+            let ladder = st.map_or(0.0, |st| match st.level(&amp;s.author_root) {
+                hoi_moderation::Level::Trusted =&gt; 1.0,
+                hoi_moderation::Level::Established =&gt; 0.5,
+                _ =&gt; 0.0,
+            });
+            by.insert(s.author_root, local.max(ladder));
+        }
+    }
+    by.values().sum()
+}</code></pre></div>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Report weights">
+      <table>
+        <thead><tr><th>Reporter</th><th>Trust weight here</th><th>Ladder weight</th><th>Reporters to reach 12</th></tr></thead>
+        <tbody>
+          <tr><td>Me, a friend, or a trusted member</td><td>1.0</td><td>1.0 if trusted</td><td>12</td></tr>
+          <tr><td>A friend of a friend</td><td>0.5</td><td>—</td><td>24</td></tr>
+          <tr><td>An established member</td><td>—</td><td>0.5</td><td>24</td></tr>
+          <tr><td>A key seen here over 90 days</td><td>0.25</td><td>—</td><td>48</td></tr>
+          <tr><td>A fresh key</td><td>0.05</td><td>0</td><td>240</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>When the sum reaches the community's <code>autoban_threshold</code> (12 by default, 1–10,000), the device bounces the key with the reason <code>enough trusted members flagged it</code>. Owners and moderators are never autobanned. A pile of fresh keys can't ban anyone: they weigh almost nothing, and their reports are rate-limited like everything else.</p>
+    <h3 id="autoban-ledger">On a moderator's device</h3>
+    <p>On an owner's or moderator's device the ban also goes into the ledger, for everyone. After each batch of records and at each commit, <code>write_autobans</code> signs a <code>ban</code> entry with the reason <code>Flagged by enough trusted members</code> and up to 64 of the reports against the key as evidence. It does this once per person, skips anyone already banned and owners and moderators, and writes at most 200 a community an hour. The code says why that cap is not the safeguard: reports count only from established and trusted members (or friends), and the cap bounds a device gone wrong without stopping it answering a flood of fresh keys. The ledger ban can be vetoed like any other (<a href="/wiki/standing/#vetoes">vetoes</a>).</p>
+    <div class="wk-seq" data-title="From strikes to a ledger ban">
+lanes: Spammer | Your device | Moderator's device | Every device
+Spammer => Your device: 40 posts in a minute, live
+Your device: 2 taken (the newcomer budget); each one after is a rate strike
+Your device: the score crosses 10: bounced for a day
+Your device -> Every device: <code>report</code> {parent: the key, reason <code>rate</code>, evidence: record ids}
+Every device -> Moderator's device: more reports from established and trusted members
+Moderator's device: weighted reports reach <code>autoban_threshold</code>: bounce, ban due
+Moderator's device => Every device @coral: <code>ledger</code> {action <code>ban</code>, reason "Flagged by enough trusted members", evidence: report ids}
+Every device: the key's new records are refused here too
+</div>
+    <p>The <code>spam_bounces_off</code> test runs the first half: a fresh key sends 40 posts straight at a node with a newcomer budget of 2; exactly 2 are accepted, the key is bounced, its posts vanish from the feed, the community view lists it as bounced, and one signed report with evidence shows among the flags.</p>
+  </section>
+
+  <section class="wk-sec" id="peers">
+    <h2>Peer scores</h2>
+    <p>Keys sign records; peers forward them. A peer that forwards junk loses score and gets disconnected, so spam relays end up talking to themselves. <code>hoi_spam::PeerScores</code> keeps one score per connection, starting at 0.</p>
+    <div class="wk-code" data-lang="rust" data-title="core/crates/hoi-spam/src/lib.rs (trimmed)"><pre><code>pub const DISCONNECT_AT: f64 = -20.0;
+/// The best score good behaviour earns. A penalty of `MAX_SCORE - DISCONNECT_AT` drops any peer.
+pub const MAX_SCORE: f64 = 10.0;
+
+impl PeerScores {
+    /// Returns true when the peer should be dropped.
+    pub fn penalize(&amp;mut self, peer: &amp;str, amount: f64) -&gt; bool {
+        let s = self.scores.entry(peer.to_string()).or_insert(0.0);
+        *s -= amount;
+        *s &lt;= DISCONNECT_AT
+    }
+
+    pub fn reward(&amp;mut self, peer: &amp;str) {
+        let s = self.scores.entry(peer.to_string()).or_insert(0.0);
+        *s = (*s + 0.1).min(MAX_SCORE);
+    }
+}</code></pre></div>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Peer penalties">
+      <table>
+        <thead><tr><th>What the peer did</th><th>Score</th></tr></thead>
+        <tbody>
+          <tr><td>Delivered a valid new record</td><td>+0.1, up to 10</td></tr>
+          <tr><td>Sent records that don't decode</td><td>−2 each</td></tr>
+          <tr><td>Sent a record refused for bad bytes, a size over its kind's cap, or a bad signature</td><td>−2</td></tr>
+          <tr><td>Sent a record with forged identity work</td><td>−30 (<code>MAX_SCORE − DISCONNECT_AT</code>): dropped however well it behaved, and the rest of its batch is skipped</td></tr>
+          <tr><td>Sent a message that doesn't decode</td><td>−5</td></tr>
+          <tr><td>Sent media bytes that don't match their hash</td><td>−5</td></tr>
+          <tr><td>Sent more than 3,000 messages in a minute</td><td>−1 per message over</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Other parts of the node (carrying, injecting, scattered pieces, signaling, linking) penalize their own protocol violations by 1 to 5 the same way. At −20 or below the node says <code>Bye</code> with a reason (<code>too many invalid records</code>, <code>media that doesn't match its hash</code>, <code>too many messages</code>) and closes the link. A forged identity costs an Argon2id run to check, which is why one is one too many. Refusals that don't point at the peer, such as a stamp too weak, a rate limit or a label from an unfollowed labeler, cost it nothing: an older peer may still send them in good faith. A peer's score is forgotten when it disconnects.</p>
+  </section>
+
+  <section class="wk-sec" id="who-pays">
+    <h2>Who pays for which refusal</h2>
+    <p><code>Reject::strike()</code> says whom to blame when a record fails, and <code>Reject::code()</code> gives the short name counters and import reports use.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Rejections and blame">
+      <table>
+        <thead><tr><th>Rejection</th><th>Code</th><th>Blame</th></tr></thead>
+        <tbody>
+          <tr><td>Undecodable, too big, bad signature, invalid identity</td><td><code>decode</code>, <code>too-big</code>, <code>signature</code>, <code>identity</code></td><td>The peer</td></tr>
+          <tr><td>Rate limited, content rules</td><td><code>rate</code>, <code>content</code></td><td>The key (strikes as above)</td></tr>
+          <tr><td>Weak stamp</td><td><code>stamp</code></td><td>Nobody: dropped quietly</td></tr>
+          <tr><td>No identity yet, identity work too weak for this community</td><td><code>identity</code></td><td>Nobody</td></tr>
+          <tr><td>Delegation missing, expired, revoked or out of scope</td><td><code>delegation</code></td><td>Nobody</td></tr>
+          <tr><td>From the future, too old to arrive live, expired, expiring too late</td><td><code>time</code></td><td>Nobody</td></tr>
+          <tr><td>Burned, banned or bounced, removed, duplicate</td><td><code>burned</code>, <code>banned</code>, <code>removed</code>, <code>duplicate</code></td><td>Nobody</td></tr>
+          <tr><td>Unknown community, not allowed</td><td><code>unknown-community</code>, <code>not-allowed</code></td><td>Nobody</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="wk-sec" id="sim">
+    <h2>What the simulator's attacks show</h2>
+    <p><code>hoi-sim</code> attacks real <code>hoi-core</code> nodes the way an attacker's own tool would: no client in the way, no rules obeyed on the sending side (<a href="/wiki/simulator/">simulator</a>). A <code>Forger</code> owns a root identity with the cheapest acceptable work (4 bits) and a blessed device, and can sign anything, well-formed or not.</p>
+    <h3 id="forge">The forgery catalogue</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Forged attacks">
+      <table>
+        <thead><tr><th>Attack</th><th>What it sends</th><th>Expected</th></tr></thead>
+        <tbody>
+          <tr><td><code>bad-sig</code></td><td>A post whose signature doesn't match its id</td><td>Refused at the signature</td></tr>
+          <tr><td><code>future</code></td><td>A post dated an hour ahead</td><td>Refused: later than now plus the clock skew</td></tr>
+          <tr><td><code>expired</code></td><td>A post whose <code>expires_at</code> passed an hour ago</td><td>Refused at time</td></tr>
+          <tr><td><code>unstamped</code></td><td>A post with nonce 0</td><td>Refused at the stamp, cheaply</td></tr>
+          <tr><td><code>oversize</code></td><td>A post of 70,000 characters, past the 64 KiB cap</td><td>Refused at decode</td></tr>
+          <tr><td><code>noncanonical</code></td><td>A valid record with a trailing byte</td><td>Refused by the strict decoder</td></tr>
+          <tr><td><code>dup-flood</code></td><td>The same pitch six times from one author</td><td>The first contained, the other five refused as duplicates</td></tr>
+          <tr><td><code>no-identity</code></td><td>A post from a key whose root never published an identity</td><td>Refused: no identity work</td></tr>
+          <tr><td><code>wrong-root-delegation</code></td><td>A delegation blessing someone else's device key, signed without that device's consent</td><td>Refused: not signed by the device it delegates</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Besides the catalogue, <code>backdated_vouch</code> makes a vouch claiming to be older than it is, which a node that had caught up counts from arrival (<a href="/wiki/standing/#late">late records</a>), and <code>Forger::review</code> makes hides and vetoes for brigading.</p>
+    <h3 id="siege">The siege</h3>
+    <p><code>scenario::siege</code> runs a founder, honest members and attackers around a hub node over accelerated time, with an 8-bit stamp, a one-day <code>established_age</code>, one vouch to get in, 4 newcomer posts a day and a one-hour contest window. Honest members act through the ordinary node API; everything hostile goes in as raw records over the sync protocol. At the end it scores these invariants:</p>
+    <ol class="wk-steps">
+      <li><b>Honest members become established</b><p>by being vouched in and waiting.</p></li>
+      <li><b>Forged records never reach the feed</b><p>Every catalogued forgery, from every attacker, injected straight at the hub; none is displayed.</p></li>
+      <li><b>Spam is held for newcomers and the community naps the rest without a moderator</b><p>Five spam posts from each fresh key; whatever shows, honest members hide, and none is left showing.</p></li>
+      <li><b>A Sybil ring vouched in together shares one voucher's voice</b><p>A turncoat vouches six Sybils in at once; together they hold no more voice than the turncoat.</p></li>
+      <li><b>A Sybil mob can't block a real member</b><p>Every Sybil hides a loyal member's posts and objects to them; the member stands.</p></li>
+      <li><b>Rules and limits change only by consent</b><p>The founder proposes raising identity work to 16 bits; it stays pending.</p></li>
+      <li><b>Honest nodes agree</b><p>on every member's level. With churn, members who came and went catch up with everything.</p></li>
+    </ol>
+    <p>CI runs the siege with 3 honest members and 2 attackers, 5 and 4, and 6 and 3 with a third of members offline at any time; a run with 200 honest nodes, 20 attackers and 20% churn is ignored by default and runs when asked for (<code>--ignored</code>).</p>
+  </section>
+
+  <section class="wk-sec" id="limits">
+    <h2>What this can't do</h2>
+    <ul>
+      <li><b>Bounces and strikes are per device.</b> Each device judges what reaches it. A key bounced on yours may post fine elsewhere until other devices see the same behavior, or until the community's ledger bans it.</li>
+      <li><b>A modified client can ignore all of it on its own side.</b> It can't make other devices accept what breaks their windows or rules: that is the point of checking on receipt.</li>
+      <li><b>Patient spammers.</b> A key that stays inside every window and writes different words each time isn't spam to these checks. It is a newcomer posting text, marked unvalidated, which established members can hide and block (<a href="/wiki/standing/#hides">hides</a>, <a href="/wiki/standing/#blocks">blocks</a>).</li>
+      <li><b>Identity work is a cost, not a wall.</b> It makes keys expensive in bulk; it doesn't stop one determined person with time.</li>
+    </ul>
+    <div class="wk-cards">
+      <a class="wk-card g-peach" href="/wiki/validation/"><i></i><b>Validation pipeline</b><span>Every stage, in order.</span></a>
+      <a class="wk-card g-mint" href="/wiki/standing/"><i></i><b>Standing &amp; review</b><span>Hides and blocks by the community.</span></a>
+      <a class="wk-card g-sun" href="/wiki/stamps/"><i></i><b>Stamps &amp; work</b><span>The cost of every record.</span></a>
+      <a class="wk-card g-sky" href="/wiki/simulator/"><i></i><b>Simulator</b><span>Sieges, forgeries and load.</span></a>
+    </div>
+  </section>
+</article>
+<!-- @wiki-close -->
+<!-- @include footer.html -->
+<script type="module" src="/src/pages/wiki.ts"></script>
+</body>
+</html>

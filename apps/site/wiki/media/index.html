@@ -1,0 +1,410 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <!-- @include head.html title="Media · hoi wiki" description="Formats, sniffing, stripping, blobs, pictures and perceptual hashes." -->
+</head>
+<body class="wiki">
+<!-- @include header.html nav="wiki" -->
+<!-- @wiki-open -->
+<article class="wk-doc">
+  <!-- @wiki-crumbs -->
+  <h1>Media</h1>
+  <p class="wk-lead">Pictures, sound and video travel apart from the records that mention them, by BLAKE3 hash. The sender's device strips everything that isn't the picture or the sound; every receiver checks the bytes are exactly what <code>sanitize</code> would produce, structure tiled to the last byte, nothing hidden. Pictures get a perceptual fingerprint, so a device that refuses one image refuses its altered copies too.</p>
+  <p class="wk-src-list">Source <a href="{{REPO_URL}}/blob/main/core/crates/hoi-validate/src/media.rs">hoi-validate/src/media.rs</a> · <a href="{{REPO_URL}}/blob/main/core/crates/hoi-validate/src/similar.rs">hoi-validate/src/similar.rs</a> · <a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/node.rs">hoi-core/src/node.rs</a> · <a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/blobs.rs">hoi-core/src/blobs.rs</a> · <a href="{{REPO_URL}}/blob/main/core/crates/hoi-net/src/blobs.rs">hoi-net/src/blobs.rs</a> · <a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/look.rs">hoi-core/src/look.rs</a> · <a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/profile.rs">hoi-core/src/profile.rs</a></p>
+  <div class="wk-head-rule"></div>
+
+  <section class="wk-sec" id="formats">
+    <h2>Seven formats</h2>
+    <p>hoi carries seven media types and nothing else. SVG and every other format that can hold a script are not media here.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Media types">
+      <table>
+        <thead><tr><th>Type</th><th>Constant</th><th>Largest item</th><th>States dimensions</th><th>Fingerprinted</th></tr></thead>
+        <tbody>
+          <tr><td><code>image/png</code></td><td><code>PNG</code></td><td>2 MiB</td><td>yes</td><td>yes</td></tr>
+          <tr><td><code>image/jpeg</code></td><td><code>JPEG</code></td><td>2 MiB</td><td>yes</td><td>yes</td></tr>
+          <tr><td><code>image/gif</code></td><td><code>GIF</code></td><td>2 MiB</td><td>yes</td><td>yes (first frame)</td></tr>
+          <tr><td><code>image/webp</code></td><td><code>WEBP</code></td><td>2 MiB</td><td>yes</td><td>yes (first frame)</td></tr>
+          <tr><td><code>audio/ogg</code> (Opus)</td><td><code>OGG</code></td><td>8 MiB</td><td>no</td><td>no</td></tr>
+          <tr><td><code>video/mp4</code></td><td><code>MP4</code></td><td>16 MiB</td><td>no</td><td>by frames, where the host can play it</td></tr>
+          <tr><td><code>video/webm</code></td><td><code>WEBM</code></td><td>16 MiB</td><td>no</td><td>by frames, where the host can play it</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <dl class="wk-defs">
+      <dt>MAX_SIDE<small>16,384 px</small></dt><dd>The longest side an image may state.</dd>
+      <dt>MAX_PIXELS<small>16,777,216</small></dt><dd>Width × height at most: a guard against decompression bombs, and small enough for every device to fingerprint.</dd>
+      <dt>MAX_PIXELS_16<small>8,388,608</small></dt><dd>For 16-bit PNGs, which take twice the memory to decode.</dd>
+      <dt>MAX_MEDIA<small>4</small></dt><dd>Media items one post carries.</dd>
+      <dt>total<small>24 MiB</small></dt><dd>All of one post's items together.</dd>
+    </dl>
+    <p>Only posts carry media items. Profile pictures are a separate, much smaller thing (<a href="#profile-pictures">below</a>). Who may share media at all is a matter of standing: images, audio and video unlock for <b>trusted</b> members (<a href="/wiki/standing/">Standing &amp; review</a>).</p>
+  </section>
+
+  <section class="wk-sec" id="two-functions">
+    <h2>Two functions: sanitize and check</h2>
+    <p><a href="{{REPO_URL}}/blob/main/core/crates/hoi-validate/src/media.rs">media.rs</a> has one walker per format with a <code>fix</code> flag. With <code>fix</code> set it builds clean bytes; without, it refuses anything the clean version wouldn't have.</p>
+    <dl class="wk-defs">
+      <dt>sanitize(bytes)<small>on the sender</small></dt><dd>Sniffs the type from the bytes (never from a file name or a claim), strips everything that isn't the picture or the sound (EXIF with GPS positions, XMP, comments, thumbnails, embedded color profiles, titles, tags, attachments, trailing data such as the video of a "motion photo" after a JPEG), then runs <code>check</code> on the result. Its output is what gets hashed and shared.</dd>
+      <dt>check(mime, bytes)<small>on every receiver</small></dt><dd>Accepts only what <code>sanitize</code> would produce: the claimed type's size cap, bytes that sniff as that type, a known container whose structure tiles the file exactly, only allow-listed chunks and boxes, no metadata, nothing after the end marker, sane dimensions. It doesn't decode pixels or samples; browsers and OS decoders do that, sandboxed.</dd>
+    </dl>
+    <p>That kills polyglots (a file that is also HTML, a ZIP or a script) and metadata leaks on arrival. A PNG with <code>&lt;html&gt;&lt;script&gt;…</code> appended fails <code>check</code> ("png has data after its end"); <code>sanitize</code> cuts the tail off.</p>
+    <div class="wk-code" data-lang="rust" data-title="hoi-validate/src/media.rs"><pre><code>pub fn check(mime: &amp;str, b: &amp;[u8]) -&gt; R&lt;Info&gt; {
+    let cap = max_size(mime).ok_or_else(|| format!("{mime} is not a media type hoi carries"))?;
+    if b.len() as u64 &gt; cap {
+        return err("media is too big");
+    }
+    if sniff(b) != Some(mime_static(mime)) {
+        return err("media bytes don't match their type");
+    }
+    let info = match mime {
+        PNG =&gt; png(b, false)?.1,
+        JPEG =&gt; jpeg(b, false)?.1,
+        GIF =&gt; gif(b, false)?.1,
+        WEBP =&gt; webp(b, false)?.1,
+        OGG =&gt; ogg(b, false)?.1,
+        MP4 =&gt; mp4(b, false)?.1,
+        WEBM =&gt; webm(b, false)?.1,
+        _ =&gt; unreachable!("max_size knows the list"),
+    };
+    image_dims(&amp;info)?;
+    Ok(info)
+}</code></pre></div>
+    <h3 id="sniffing">Sniffing</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Magic bytes">
+      <table>
+        <thead><tr><th>Type</th><th>The file starts with</th></tr></thead>
+        <tbody>
+          <tr><td>PNG</td><td><code>89 50 4E 47 0D 0A 1A 0A</code> (<code>\x89PNG\r\n\x1a\n</code>)</td></tr>
+          <tr><td>JPEG</td><td><code>FF D8 FF</code></td></tr>
+          <tr><td>GIF</td><td><code>GIF87a</code> or <code>GIF89a</code></td></tr>
+          <tr><td>WebP</td><td><code>RIFF</code>, four size bytes, <code>WEBP</code></td></tr>
+          <tr><td>Ogg</td><td><code>OggS</code></td></tr>
+          <tr><td>MP4</td><td>four size bytes, then <code>ftyp</code></td></tr>
+          <tr><td>WebM</td><td><code>1A 45 DF A3</code> (the EBML header id)</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Anything else: "hoi shares PNG, JPEG, GIF and WebP images, Ogg Opus audio and MP4 or WebM video". A claimed type that the bytes don't sniff as (a GIF sent as <code>image/png</code>) is "media bytes don't match their type". Every length read is bounds-checked with overflow checks, since the wasm build is 32-bit, and property tests feed the walkers random and mutated files to make sure none panics.</p>
+  </section>
+
+  <section class="wk-sec" id="png">
+    <h2>PNG</h2>
+    <p>After the 8-byte signature, chunks of <code>length (u32 BE) ‖ type (4) ‖ data ‖ CRC-32</code>, where the CRC (IEEE) covers type and data and must be right.</p>
+    <ul>
+      <li>The first chunk is <code>IHDR</code> of exactly 13 bytes; a second <code>IHDR</code> is refused.</li>
+      <li>Bit depth and color type must be a valid pair: grayscale (0) at 1, 2, 4, 8 or 16 bits; palette (3) at 1, 2, 4 or 8; RGB (2), gray+alpha (4) and RGBA (6) at 8 or 16. Compression and filter method 0; interlace 0 or 1.</li>
+      <li>A 16-bit image may have at most <code>MAX_PIXELS_16</code> pixels.</li>
+      <li><code>IDAT</code> chunks must be consecutive ("png image data is split up"), and there must be at least one.</li>
+      <li><code>IEND</code> is empty and ends the file: data after it fails <code>check</code> and is dropped by <code>sanitize</code>.</li>
+    </ul>
+    <div class="wk-table" tabindex="0" role="region" aria-label="PNG chunks">
+      <table>
+        <thead><tr><th>Chunks</th><th>Treatment</th></tr></thead>
+        <tbody>
+          <tr><td><code>IHDR</code>, <code>PLTE</code>, <code>IDAT</code>, <code>IEND</code>, <code>tRNS</code>, <code>gAMA</code>, <code>cHRM</code>, <code>sRGB</code>, <code>sBIT</code>, <code>bKGD</code>, <code>pHYs</code>, <code>acTL</code>; and for APNG <code>fcTL</code>, <code>fdAT</code></td><td>kept, copied as they are</td></tr>
+          <tr><td>any other ancillary chunk (lowercase first letter): <code>tEXt</code>, <code>zTXt</code>, <code>iTXt</code>, <code>eXIf</code>, <code>iCCP</code>, <code>tIME</code>…</td><td><code>sanitize</code> drops it; <code>check</code>: "png carries a … chunk"</td></tr>
+          <tr><td>an unknown critical chunk (uppercase first letter)</td><td>refused by both: "png has an unknown critical chunk"</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>The vector <a href="{{REPO_URL}}/blob/main/core/vectors/media.json">core/vectors/media.json</a> is a 1×1 PNG with a <code>tEXt</code> chunk holding a location: its <code>input</code>, the <code>sanitized</code> bytes with the chunk gone and everything else copied as is, and <code>hash</code>, BLAKE3 of the clean bytes, which is what a <code>MediaRef</code> names.</p>
+  </section>
+
+  <section class="wk-sec" id="jpeg">
+    <h2>JPEG</h2>
+    <p>A JPEG is walked marker by marker from <code>FF D8</code>. Fill bytes (<code>FF</code> before a marker) are allowed. Each segment's length must be at least 2 and fit. A second <code>SOI</code>, <code>TEM</code> (<code>01</code>) or a restart marker outside a scan is "a marker out of place". After each <code>SOS</code> the entropy-coded data runs until a marker that is neither a stuffed <code>FF 00</code> nor a restart <code>FF D0</code>–<code>FF D7</code>. <code>EOI</code> (<code>FF D9</code>) ends the file: anything after it, such as the MP4 of a motion photo, fails <code>check</code> and is cut by <code>sanitize</code>. There must be a frame header.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="JPEG segments">
+      <table>
+        <thead><tr><th>Marker</th><th>Segment</th><th>Treatment</th></tr></thead>
+        <tbody>
+          <tr><td><code>C0</code>–<code>C3</code>, <code>C5</code>–<code>C7</code>, <code>C9</code>–<code>CB</code>, <code>CD</code>–<code>CF</code></td><td>frame headers (SOF): height and width are read here</td><td>kept</td></tr>
+          <tr><td><code>C4</code>, <code>CC</code>, <code>DB</code>, <code>DD</code>, <code>DA</code>, <code>DC</code></td><td>Huffman and arithmetic tables, quantization tables, restart interval, start of scan, number of lines</td><td>kept</td></tr>
+          <tr><td><code>EE</code></td><td>APP14 <code>Adobe</code>, exactly 12 bytes (it says how colors are coded)</td><td>kept; any other APP14 dropped</td></tr>
+          <tr><td><code>E1</code></td><td>APP1 (EXIF, XMP)</td><td>dropped, except the orientation (below)</td></tr>
+          <tr><td>everything else: <code>E0</code> (JFIF), <code>E2</code> (ICC), <code>ED</code> (IPTC), <code>FE</code> (comments), …</td><td>application data and comments</td><td><code>sanitize</code> drops it; <code>check</code>: "jpeg carries metadata or an unknown segment"</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 id="jpeg-orientation">The one piece of EXIF kept</h3>
+    <p>Without its orientation a phone photo shows sideways, so <code>sanitize</code> reads the Orientation tag (0x0112, values 1–8) from the original EXIF, in either byte order, and, unless it is 1, writes one fixed APP1 segment of its own just before the first scan. <code>check</code> accepts an APP1 only if it is exactly this segment for a valid orientation, and only once.</p>
+    <div class="wk-bytes" data-title="The only APP1 a shared JPEG may carry (32 bytes after the length)">
+Exif\0\0 | 6 B | sun | 3 | the EXIF identifier
+MM | 2 B | sky | 1 | big-endian TIFF
+0x002A | 2 B | sky | 1 | TIFF magic
+8 | 4 B | sky | 2 | offset of IFD0
+
+1 | 2 B | lilac | 1 | one entry
+0x0112 | 2 B | coral | 1 | Orientation
+3 | 2 B | lilac | 1 | type SHORT
+1 | 4 B | lilac | 2 | one value
+o | 2 B | coral | 1 | the orientation, 2–8
+0 | 2 B | mute | 1 | padding
+0 | 4 B | mute | 2 | no next IFD
+</div>
+    <div class="wk-code" data-lang="rust" data-title="hoi-validate/src/media.rs"><pre><code>/// The only EXIF a shared JPEG may carry: big-endian TIFF, one IFD0 entry, Orientation.
+fn exif_orientation_segment(o: u16) -&gt; Vec&lt;u8&gt; {
+    let mut p = b"Exif\0\0MM\0\x2a\0\0\0\x08\0\x01".to_vec();
+    p.extend_from_slice(&amp;[0x01, 0x12, 0x00, 0x03, 0, 0, 0, 1]);
+    p.extend_from_slice(&amp;o.to_be_bytes());
+    p.extend_from_slice(&amp;[0, 0, 0, 0, 0, 0]);
+    p
+}</code></pre></div>
+  </section>
+
+  <section class="wk-sec" id="gif">
+    <h2>GIF</h2>
+    <p>The header and logical screen descriptor (13 bytes; width and height little-endian at offsets 6 and 8) and the global color table if the flags say there is one. Then blocks until the trailer <code>3B</code>; data after it fails <code>check</code> and is cut by <code>sanitize</code>.</p>
+    <ul>
+      <li><b>Image descriptor</b> (<code>2C</code>): kept, with its local color table and data sub-blocks; the LZW minimum code size must be 2–8. At most 2,000 frames; at least one.</li>
+      <li><b>Graphic control extension</b> (<code>21 F9</code>): kept (frame timing and transparency).</li>
+      <li><b>Application extension</b> (<code>21 FF</code>): kept only for <code>NETSCAPE2.0</code> and <code>ANIMEXTS1.0</code> (looping).</li>
+      <li><b>Every other extension</b> (comments <code>21 FE</code>, plain text, other applications such as XMP): dropped; <code>check</code>: "gif carries comments or other extensions".</li>
+    </ul>
+  </section>
+
+  <section class="wk-sec" id="webp">
+    <h2>WebP</h2>
+    <p>The RIFF size field plus 8 must be the file's length exactly (<code>sanitize</code> may cut trailing bytes after it). Chunks of <code>type ‖ length (u32 LE) ‖ data</code>, padded to an even length, must fill the file exactly.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="WebP chunks">
+      <table>
+        <thead><tr><th>Chunk</th><th>Rule</th></tr></thead>
+        <tbody>
+          <tr><td><code>VP8X</code></td><td>first, exactly 10 bytes; canvas width and height are 1 + 24-bit values. The ICC (0x20), EXIF (0x08) and XMP (0x04) flags are cleared by <code>sanitize</code> and refused by <code>check</code> ("webp says it carries metadata").</td></tr>
+          <tr><td><code>VP8 </code></td><td>lossy frame: at least 10 bytes with the start code <code>9D 01 2A</code>; 14-bit width and height</td></tr>
+          <tr><td><code>VP8L</code></td><td>lossless frame: at least 5 bytes starting with <code>2F</code>; 14-bit width − 1 and height − 1</td></tr>
+          <tr><td><code>ALPH</code>, <code>ANIM</code>, <code>ANMF</code></td><td>kept (alpha, animation)</td></tr>
+          <tr><td>anything else (<code>ICCP</code>, <code>EXIF</code>, <code>XMP </code>, unknown)</td><td>dropped; <code>check</code>: "webp carries metadata or an unknown chunk"</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>There must be an image (<code>VP8 </code>, <code>VP8L</code> or <code>ANMF</code>). <code>sanitize</code> rebuilds the RIFF container from the kept chunks.</p>
+  </section>
+
+  <section class="wk-sec" id="ogg">
+    <h2>Ogg Opus</h2>
+    <p>Every page starts <code>OggS</code> with version 0 and carries a correct Ogg CRC-32 (polynomial <code>0x04C11DB7</code>, computed with the checksum field zeroed). At most 100,000 pages.</p>
+    <ul>
+      <li>One logical stream: every page has the first page's serial number, and page sequence numbers run 0, 1, 2… without gaps.</li>
+      <li>Only the first page has the beginning-of-stream flag; the last page has the end-of-stream flag.</li>
+      <li>Page 0 holds exactly the <code>OpusHead</code> packet: at least 19 bytes, version byte at most 15, at least one channel.</li>
+      <li>The <code>OpusTags</code> packet starts on page 1 and may span pages (continuation flag set), but must end exactly at a page end: tags never share a page with audio.</li>
+    </ul>
+    <p><code>check</code> accepts only clean tags: a vendor string of at most 64 printable ASCII bytes, zero user comments, nothing after them; otherwise "opus carries tags". <code>sanitize</code> replaces the tags packet with one of its own (vendor <code>hoi</code>, no comments) on a fresh page 1, renumbers the audio pages from 2 and recomputes every CRC. Artist, title, cover art and every other comment are gone.</p>
+  </section>
+
+  <section class="wk-sec" id="mp4">
+    <h2>MP4</h2>
+    <p>Boxes of <code>size (u32 BE) ‖ type</code>; size 1 means a 64-bit size follows, size 0 means "to the end of the file" (only at the top level). Boxes must fit inside their parent and tile it exactly, nested at most 12 levels below the top, at most 200,000 boxes.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="MP4 boxes">
+      <table>
+        <thead><tr><th>Boxes</th><th>Treatment</th></tr></thead>
+        <tbody>
+          <tr><td>top level: <code>ftyp</code>, <code>moov</code>, <code>mdat</code>, <code>free</code>, <code>skip</code>, <code>wide</code>, <code>moof</code>, <code>mfra</code>, <code>sidx</code>, <code>styp</code></td><td>allowed</td></tr>
+          <tr><td>containers walked into: <code>moov</code>, <code>trak</code>, <code>mdia</code>, <code>minf</code>, <code>stbl</code>, <code>dinf</code>, <code>edts</code>, <code>mvex</code>, <code>moof</code>, <code>traf</code>, <code>mfra</code></td><td>their children are checked the same way</td></tr>
+          <tr><td>metadata at any level: <code>udta</code>, <code>meta</code>, <code>uuid</code></td><td><code>sanitize</code> renames it <code>free</code> and zeroes its contents; <code>check</code>: "mp4 carries metadata"</td></tr>
+          <tr><td>any other top-level box</td><td><code>sanitize</code>: renamed <code>free</code> and zeroed; <code>check</code>: "mp4 carries a … box"</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Blanking in place keeps every size and offset where it was, so sample tables still point at the right bytes: the clean file is exactly as long as the original. The file must start with exactly one <code>ftyp</code> and have a <code>moov</code> and media (<code>mdat</code> or <code>moof</code>). Location, camera and the recording app live in <code>udta</code> and <code>meta</code>; they come out as zeros.</p>
+  </section>
+
+  <section class="wk-sec" id="webm">
+    <h2>WebM</h2>
+    <p>EBML elements: an id of 1–4 bytes and a size of 1–8 bytes; the "unknown size" value is refused, and children must tile their parent exactly (at most 500,000 per parent).</p>
+    <ul>
+      <li>At the top level only the EBML header (first), one <code>Segment</code>, and <code>Void</code>. The header's <code>DocType</code> must be <code>webm</code> ("only webm, not other matroska files").</li>
+      <li>Inside the segment only <code>SeekHead</code>, <code>Info</code>, <code>Tracks</code>, <code>Cluster</code>, <code>Cues</code>, <code>Void</code> and <code>CRC-32</code>; <code>Tags</code>, <code>Attachments</code>, <code>Chapters</code> and anything else are refused by <code>check</code> ("webm carries metadata or attachments") and blanked by <code>sanitize</code>.</li>
+      <li>Inside <code>Info</code>: <code>Title</code>, <code>DateUTC</code>, <code>MuxingApp</code>, <code>WritingApp</code> and <code>SegmentUUID</code> (who made it, when, with what) are blanked or refused. Inside each <code>TrackEntry</code>: its <code>Name</code>.</li>
+      <li>There must be <code>Tracks</code>.</li>
+    </ul>
+    <p>Blanking turns an element into a <code>Void</code> element (<code>EC</code>) of the same total length, filled with zeros, so the file keeps its length and every offset.</p>
+  </section>
+
+  <section class="wk-sec" id="sender">
+    <h2>On the sender's device</h2>
+    <ol class="wk-steps">
+      <li><b>Fit (web app)</b><p>A photo straight off a phone is often bigger than 2 MiB. The composer's <code>fitImage</code> (<a href="{{REPO_URL}}/blob/main/apps/web/src/lib/media.ts">apps/web/src/lib/media.ts</a>) re-encodes still JPEG, PNG and WebP files over 2 MiB or with a side over 2560 pixels in the browser's own decoder: JPEG stays JPEG, the rest becomes WebP (keeping transparency), trying 2560, 2048, 1600 and 1280 pixels at qualities 0.86 to 0.72 until it fits. Re-encoding drops everything that isn't the picture too. Animations, audio and video pass untouched.</p></li>
+      <li><b>Sanitize and hash</b><p><code>prepare_media</code> in the core takes at most four files, runs <code>media::sanitize</code> on each ("That file won't do: …") and hashes the clean bytes with BLAKE3.</p></li>
+      <li><b>Look</b><p>Pictures and videos get a <a href="#pdq">look</a>. A picture this device can't decode is refused ("That picture can't be read here, so nobody else could check it either. Try saving it as JPEG or PNG."), and one that matches media blocked here is refused too. In the browser the look happens in a worker before the draft (the core then finds it by hash, or asks to attach the picture again).</p></li>
+      <li><b>Reference and keep</b><p>A <code>MediaRef</code> per item goes into the post; the bytes are kept locally, marked private until a public post that uses them is accepted.</p></li>
+      <li><b>Standing</b><p><code>check_standing</code> refuses media from anyone below trusted before anything is stamped: "Images and other media unlock for trusted members: established, active, and well received."</p></li>
+    </ol>
+  </section>
+
+  <section class="wk-sec" id="references">
+    <h2>How a post names its media</h2>
+    <p>A post's <code>media</code> field is an array of <code>MediaRef</code> maps, omitted on the wire when empty. The bytes travel separately, by hash.</p>
+    <dl class="wk-defs">
+      <dt>hash<small>bytes32</small></dt><dd>BLAKE3 of the sanitized bytes.</dd>
+      <dt>mime<small>text</small></dt><dd>One of the seven types.</dd>
+      <dt>size<small>u64</small></dt><dd>The exact length of the bytes, 1 to the type's cap.</dd>
+      <dt>w, h<small>u32, optional</small></dt><dd>Width and height in pixels: required for images (1–16,384, product at most 16,777,216), forbidden for audio and video ("only images state dimensions").</dd>
+      <dt>alt<small>text, optional</small></dt><dd>A description for people who can't see the picture: one line, at most 500 characters.</dd>
+    </dl>
+    <p>The content stage checks the references (<code>media_refs</code>): at most four, a known type, a size in range, no hash twice, dimensions as above, alt text as a line, and at most 24 MiB in total. These need no bytes, so a record with impossible media is refused before anyone fetches anything.</p>
+  </section>
+
+  <section class="wk-sec" id="transfer">
+    <h2>Fetching media</h2>
+    <p>On the sync link, two messages move media (<a href="/wiki/sync/">Sync &amp; gossip</a>): <code>bwant { ids }</code> asks for up to <code>MAX_BWANT</code> (32) hashes, and <code>blob { id, data }</code> carries one item, at most <code>MAX_BLOB</code> (16 MiB).</p>
+    <div class="wk-seq" data-title="Media over the sync link">
+lanes: Device | Peer | Author's device
+-- The post arrives first --
+Peer -> Device: <code>recs</code> [post with <code>media</code> refs]
+Device: the post passes the pipeline; its author may share media here
+-- Asking --
+Device -> Peer: <code>bwant</code> {ids: [hash]}
+Peer: serves only bytes of visible posts in a community the device shares
+Peer: not here yet: owed to Device, up to 256 per peer
+Peer -> Author's device: <code>bwant</code> {ids: [hash]} (its own request)
+Author's device => Peer @peach: <code>blob</code> {id, data}
+Peer => Device @peach: <code>blob</code> {id, data}
+-- Checking --
+Device: BLAKE3(data) = id, else the peer loses 5 points
+Device: <code>check(mime)</code>, size and dimensions equal the ref, else the author takes a strike
+Device: look, then keep or refuse
+</div>
+    <h3 id="asking">Asking</h3>
+    <p><code>request_missing_media</code> runs after records arrive, when a peer says it shares a community, after media arrives, and on every sweep, if the person's <code>auto_media</code> setting is on (it is by default). It looks at the posts of the public communities this device joined that are forwardable (not held, author not blocked), and picks the hash attempted longest ago that isn't here, isn't refused, hasn't failed, and isn't private. It keeps one request outstanding at a time and asks again after <code>MEDIA_RETRY</code> (120 seconds), so one unavailable picture can't starve the rest and catch-up stays under the transport's byte budget. The request goes over iroh-blobs to one peer that serves it that way, if there is one, else as a <code>bwant</code> to every peer that said hello and shares the community.</p>
+    <h3 id="serving">Serving</h3>
+    <p><code>on_bwant</code> sends bytes only for hashes that a forwardable, non-private post uses in a community the asking peer shares, never private media. One answer holds at most 16 MiB in all; an older client that asks for 32 large blobs at once gets a prefix and asks again for the rest. A hash that isn't here yet (a home node relaying a post that just came from its author's device) is remembered as owed, up to 256 per peer, and sent as soon as the bytes arrive.</p>
+    <h3 id="checking">Checking what arrives</h3>
+    <ol class="wk-steps">
+      <li><b>The hash</b><p>Bytes that don't hash to their id are the sender's fault: 5 points off its score, and a <code>bye</code> ("media that doesn't match its hash") once it falls to −20.</p></li>
+      <li><b>Wanted at all</b><p>Media that is already here, refused, or failed before is ignored; so is media no usable post here uses ("nobody here asked for it"), and media that isn't public.</p></li>
+      <li><b>The checks</b><p><code>media::check</code> with the type the post states; the length must equal <code>size</code>, and for images the dimensions must equal <code>w</code> and <code>h</code>. Bytes that hash right but fail are the author's fault: the hash goes on the device's bad-media list, the post is <a href="/wiki/validation/">held</a> ("its media failed the checks"), and the author's key takes a content strike (weight 3).</p></li>
+      <li><b>The look</b><p>Pictures and videos are fingerprinted. If the look matches something this device refuses, the hash is refused for good and the bytes are never kept. A picture that passed the checks but can't be decoded counts like bad media: refused, struck, held.</p></li>
+      <li><b>Room</b><p>A device keeps at most <code>MEDIA_CAP</code>, 512 MiB, of media; beyond that new media isn't stored and can be fetched again later. Media no stored post uses any more is deleted on the next sweep.</p></li>
+    </ol>
+    <div class="wk-code" data-lang="rust" data-title="hoi-core/src/node.rs (trimmed)"><pre><code>let ok = hoi_validate::media::check(&amp;mref.mime, &amp;data)
+    .ok()
+    .is_some_and(|info| data.len() as u64 == mref.size &amp;&amp; (!hoi_validate::media::is_image(&amp;mref.mime) || (info.w == mref.w &amp;&amp; info.h == mref.h)));
+if !ok {
+    self.state.bad_media.insert(id);
+    self.mark_state();
+    let now = self.now();
+    self.offence(author, c, (post, made), Offence::Content, now);
+    self.mark_changed(c);
+    return true;
+}</code></pre></div>
+  </section>
+
+  <section class="wk-sec" id="iroh-blobs">
+    <h2>Between native nodes: iroh-blobs</h2>
+    <p>A desktop app or hoi-node turns on iroh-blobs (<code>set_blobs</code>; other platforms can't) and says <code>blobs</code> in its hello's features. Its endpoint accepts two ALPNs: <code>hoi/sync/1</code> and iroh-blobs' own. Instead of a <code>bwant</code> on the sync link, it fetches a picture or video from a peer that said <code>blobs</code> and is reached over QUIC, on a connection of its own. iroh-blobs verifies the bytes against the BLAKE3 hash as they stream, so a bad peer is caught at its first wrong chunk, and a large file never waits in front of records on the sync link. What arrives then goes through every check a <code>blob</code> message gets.</p>
+    <div class="wk-seq" data-title="A pinner's media over iroh-blobs">
+lanes: Fetching node | Core | Serving node
+Core -> Fetching node: <code>take_blob_fetches</code> [{peer, endpoint, hash, size}]
+Fetching node -> Serving node: QUIC connect, ALPN iroh-blobs
+Serving node: a sync link with this endpoint? else refused
+Fetching node -> Serving node: get {hash}
+Serving node: <code>blob_to_serve</code>: shared, pinned, public, else refused
+Serving node => Fetching node @sky: the blob, verified chunk by chunk
+Fetching node: refused unless the stream's size equals the post's <code>size</code>
+Fetching node -> Core: <code>blob_fetched</code>(peer, hash, bytes)
+Core: the same checks as a <code>blob</code> message
+</div>
+    <ul>
+      <li><b>Who is served.</b> A connection is taken only from an endpoint with a sync link here (<code>blobs_link</code>); each request only for media of a public, forwardable post in a community that peer shares <em>and this node pins</em>. Requests for many blobs, pushes and observing are refused.</li>
+      <li><b>The serve cache.</b> Bytes are copied into an in-memory store just before they are sent; past <code>SERVE_CACHE</code> (64 MiB) the ones asked for longest ago leave first.</li>
+      <li><b>Limits.</b> A fetch takes at most <code>FETCH_SECS</code> (60 seconds) from dialing to the last byte, and is never longer than the size the post states.</li>
+      <li><b>Falling back.</b> When a fetch fails, the node asks the same peer with <code>bwant</code> and, for the rest of that link, takes that community's media from it that way.</li>
+    </ul>
+    <p>Scattered and private media never go this way: private attachments travel inside the encrypted group (<a href="/wiki/private/">Private communities</a>), and media of open communities kept in pieces travels as pieces (<a href="/wiki/scatter/">Scattered delivery</a>).</p>
+  </section>
+
+  <section class="wk-sec" id="who">
+    <h2>Whose media a device fetches</h2>
+    <p>A device asks for media only for posts that are forwardable here: the post is not <a href="/wiki/validation/">held</a> and its author isn't blocked by the community. Since a post with media from anyone below trusted standing is held ("media unlocks for trusted members"), devices fetch media only from trusted members' posts (and owners' and moderators'). Newcomers' and members' pictures are never downloaded, so they never land on anyone's disk. It asks any peer that shares the community; the hash, not the peer, vouches for the bytes.</p>
+    <p>A person can turn automatic media off (<code>auto_media</code>): then nothing is fetched, and other people's profile pictures aren't shown either.</p>
+  </section>
+
+  <section class="wk-sec" id="profile-pictures">
+    <h2>Profile pictures and colors</h2>
+    <p>A profile picture is a tiny JPEG signed into a <code>profile</code> record, one per community: <code>{ image: bytes, seq: u64 }</code>. An empty <code>image</code> brings back the identicon drawn from the key. <code>hoi_validate::avatar</code> checks it at the content stage, so the pixels are bounded before anything stores, shows or fingerprints them:</p>
+    <div class="wk-code" data-lang="rust" data-title="hoi-validate/src/lib.rs"><pre><code>pub fn avatar(image: &amp;[u8]) -&gt; Result&lt;(), Reject&gt; {
+    if image.is_empty() {
+        return Ok(());
+    }
+    if image.len() &gt; hoi_types::MAX_AVATAR_BYTES {
+        return Err(bad("profile picture exceeds 4 KiB"));
+    }
+    let info = media::check(media::JPEG, image).map_err(bad)?;
+    if !matches!((info.w, info.h), (Some(w), Some(h)) if w == h &amp;&amp; w &gt; 0 &amp;&amp; w &lt;= hoi_types::MAX_AVATAR_SIDE) {
+        return Err(bad("profile pictures must be square and at most 128 pixels"));
+    }
+    similar::examine(media::JPEG, image).map_err(|_| bad("profile picture cannot be decoded"))?;
+    Ok(())
+}</code></pre></div>
+    <h3 id="avatar-web">Making one in the web app</h3>
+    <p><a href="{{REPO_URL}}/blob/main/apps/web/src/lib/profile-picture.ts">profile-picture.ts</a> crops a square (zoom 1–4, offsets −1 to 1 on each axis), draws it on a white background, and encodes JPEG on a canvas: 128 pixels a side at qualities 0.85, 0.7, 0.55 and 0.4, then 96 and 80 pixels, until it fits in 4,096 bytes ("This picture cannot be made small enough. Try a simpler crop."). The core's <code>set_avatar</code> then sanitizes it (the canvas's JFIF segment goes), checks it, and refuses it if it matches media blocked on this device. Only bounded JPEG bytes from the core are ever rendered, as a <code>data:</code> URL, so no picture can be a remote address that tracks readers.</p>
+    <h3 id="avatar-records">Where the picture goes</h3>
+    <ul>
+      <li>The choice is kept on the device with a revision: the larger of now × 1000, one more than any revision seen from this person, and one more than the last.</li>
+      <li>It is published into a community after the person's next post or comment there, as a <code>profile</code> record expiring with the community's retention, but only if the picture is empty or the person is trusted, an owner or a moderator there. Its <code>seq</code> is the larger of the revision and one more than the previous record's. The newest per person and community wins; older ones are held ("a newer profile is known").</li>
+      <li>A device shows someone's picture only for people who are visible, not blocked, not banned and trusted (or owners and moderators) in that community, and only with automatic media on. Pictures from private communities stay inside them.</li>
+      <li>Profile records count in their own rate window (2 an hour, 6 a day) and get the 8-bit stamp discount. Their kind is capped at 5 KiB encoded.</li>
+    </ul>
+    <h3 id="avatar-colors">Identicon colors</h3>
+    <p>A <code>profile-color</code> record <code>{ color, seq }</code> picks the identicon's palette, independent of the picture: <code>mint</code>, <code>sky</code>, <code>lilac</code>, <code>peach</code> or <code>sun</code>, or empty for the color derived from the key. Values are palette names, never CSS or URLs. It is published the same way, with no standing needed, and has its own rate window and revisions.</p>
+  </section>
+
+  <section class="wk-sec" id="pdq">
+    <h2>Perceptual hashes</h2>
+    <p>The BLAKE3 hash catches the same bytes; a perceptual fingerprint catches the same picture, re-encoded, resized, lightly cropped or brightened. hoi uses PDQ, Meta's open 256-bit perceptual hash, so fingerprints can be checked against public PDQ hash lists. <a href="{{REPO_URL}}/blob/main/core/crates/hoi-validate/src/similar.rs">similar.rs</a> is a port of pdqhash 0.1.1 (Apache-2.0), itself a port of Meta's reference; where the two differ it follows the reference.</p>
+    <h3 id="pdq-steps">How a fingerprint is made</h3>
+    <ol class="wk-steps">
+      <li><b>Check, then decode</b><p>Only pictures that passed <code>media::check</code> are decoded, with the format the type names (never a guess), the stated dimensions as hard limits and at most 96 MiB of decoder memory. Above <code>MAX_PIXELS</code> or a decode failure: <code>Unreadable</code>. JPEGs are turned the way their EXIF orientation says, as they are shown. Animations count by their first frame; transparency is ignored. Native hosts catch decoder panics; the browser decodes in a separate worker, so a decoder bug costs one picture, never the node.</p></li>
+      <li><b>Luma</b><p>0.299 R + 0.587 G + 0.114 B per pixel. Sides of 1,024 pixels or more are first averaged over whole blocks of pixels, so that no side stays at 1,024 or more (<code>SHRINK</code> is 512).</p></li>
+      <li><b>Blur</b><p>Two passes of a box filter along rows and then columns, each window <code>ceil(side / 128)</code> wide: a tent filter. Pictures with a side under 5 pixels have no fingerprint.</p></li>
+      <li><b>Sample</b><p>64 × 64 samples at the centers of a regular grid.</p></li>
+      <li><b>DCT</b><p>The 16 × 16 low-frequency corner of their 2-D DCT, DC terms dropped (frequencies 1–16 on each axis).</p></li>
+      <li><b>Bits</b><p>One bit per coefficient: set when it is above the median (taken with Torben's method). 256 bits, 32 bytes.</p></li>
+      <li><b>Quality</b><p>PDQ's gradient score, 0–100: the whole steps of 100/255 between neighboring samples, summed, divided by 90, capped at 100. Under <code>MIN_QUALITY</code> (50) a picture is too flat to tell apart from others and gets no fingerprint.</p></li>
+    </ol>
+    <p>A picture turned a quarter, upside down or mirrored is the same picture. All eight of those variants come from one DCT, since turning and mirroring only swap and negate coefficients, so <code>examine_variants</code> costs barely more than one hash. A picture matches a listed hash when any of its eight variants is within <code>MATCH_DISTANCE</code>, 31 differing bits (PDQ's usual threshold); lists keep the hash as shown. Floats round differently on native and wasm, so the same picture can come out a bit or two apart: hashes are compared by distance, never for equality.</p>
+    <div class="wk-code" data-lang="rust" data-title="hoi-validate/src/similar.rs"><pre><code>/// Bits that differ between two hashes, 0–256.
+pub fn distance(a: &amp;[u8; 32], b: &amp;[u8; 32]) -&gt; u32 {
+    a.iter().zip(b).map(|(x, y)| (x ^ y).count_ones()).sum()
+}
+
+/// Whether two hashes are the same picture.
+pub fn matches(a: &amp;[u8; 32], b: &amp;[u8; 32]) -&gt; bool {
+    distance(a, b) &lt;= MATCH_DISTANCE
+}</code></pre></div>
+    <h3 id="video">Video</h3>
+    <p>A video gets a look only where a host can play it: a handful of frames spread over its length, each fingerprinted like a picture. The core takes at most 16 frames (<code>MAX_FRAMES</code>); the web app samples 8 with the browser's own player, muted and never attached to the page, drawn at most 512 pixels a side, giving up after 30 seconds. A video matches when at least half its frames, and at least two, match frames of a video this device refuses. Hosts that can't play a video (a headless node, a browser without the codec) say <code>Nothing</code>, and only the exact hash list applies.</p>
+    <h3 id="pdq-uses">What fingerprints are used for</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Uses of perceptual hashes">
+      <table>
+        <thead><tr><th>Use</th><th>What happens</th></tr></thead>
+        <tbody>
+          <tr><td>Media called illegal</td><td>When this person hides a post as <code>illegal</code>, when the community's hides of a post for <code>illegal</code> take effect, or when an urgent removal whose reason starts with "illegal" does: the bytes are deleted, the exact hash is refused from then on, and the picture's fingerprint (or each video frame's) is remembered, so altered copies are refused too.</td></tr>
+          <tr><td>Imported hash lists</td><td><code>import_blocklist</code> reads a PDQ hash list: one 64-hex-digit hash at the start of each line, anything after a comma or space ignored, <code>#</code> comments. Kept on this device only. Pictures already stored that match are deleted.</td></tr>
+          <tr><td>Followed list keepers</td><td>A keeper's <code>blocklist</code> record holds up to 1,000 exact BLAKE3 hashes and 1,000 PDQ hashes. Every device of a person who follows the keeper refuses both, in every community (<a href="/wiki/trust/">Trust &amp; ranking</a>).</td></tr>
+          <tr><td>Arriving media</td><td>A look that matches is refused for good, never kept, never shown.</td></tr>
+          <tr><td>Attaching</td><td>A picture that matches is refused in the composer: "That matches media blocked on this device."</td></tr>
+          <tr><td>Profile pictures</td><td>Refused when set and when they arrive, held if a list catches up with them later, purged from storage when a list changes. While any fingerprint list is loaded, a profile picture that can't be decoded counts as blocked.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 id="pdq-vectors">The vector</h3>
+    <p><a href="{{REPO_URL}}/blob/main/core/vectors/pdq.json">core/vectors/pdq.json</a> holds a sanitized 96 × 96 grayscale PNG (<code>picture</code>), its eight PDQ hashes in the order of <code>Variants</code> (as shown, mirrored left to right, upside down, turned half way, then those four transposed), its quality (100), the <code>match_distance</code> (31) and a <code>tolerance</code> of 4 bits for comparing across implementations. See <a href="/wiki/vectors/">Test vectors</a>.</p>
+  </section>
+
+  <section class="wk-sec" id="next">
+    <h2>Read next</h2>
+    <div class="wk-cards">
+      <a class="wk-card g-peach" href="/wiki/validation/"><i></i><b>Validation pipeline</b><span>Where media references are checked, and what holds a post.</span></a>
+      <a class="wk-card g-peach" href="/wiki/content-rules/"><i></i><b>Text, links &amp; names</b><span>Why <code>![…](…)</code> never embeds anything.</span></a>
+      <a class="wk-card g-sky" href="/wiki/sync/"><i></i><b>Sync &amp; gossip</b><span>Every message on the sync link, <code>bwant</code> and <code>blob</code> included.</span></a>
+      <a class="wk-card g-mint" href="/wiki/trust/"><i></i><b>Trust &amp; ranking</b><span>Labelers and list keepers a person follows.</span></a>
+    </div>
+  </section>
+</article>
+<!-- @wiki-close -->
+<!-- @include footer.html -->
+<script type="module" src="/src/pages/wiki.ts"></script>
+</body>
+</html>

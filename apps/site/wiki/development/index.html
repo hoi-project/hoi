@@ -1,0 +1,501 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <!-- @include head.html title="Building &amp; testing · hoi wiki" description="Toolchains, every root script, the build pipeline, build:all, quick checks, every test suite, fuzzing, the sandbox and the CI workflows." -->
+</head>
+<body class="wiki">
+<!-- @include header.html nav="wiki" -->
+<!-- @wiki-open -->
+<article class="wk-doc">
+  <!-- @wiki-crumbs -->
+  <h1>Building <span class="acc">&amp; testing</span></h1>
+  <p class="wk-lead">What you need on your computer, what every root script runs, how the static site and app are put together, and every test suite from the two-second quick checks to the browser runs and fuzzers. Then the sandbox, and the CI workflows that stay off until a repository turns them on.</p>
+  <p class="wk-src-list">Source <a href="{{REPO_URL}}/blob/main/package.json">package.json</a> <a href="{{REPO_URL}}/blob/main/docs/DEVELOPMENT.md">docs/DEVELOPMENT.md</a> <a href="{{REPO_URL}}/blob/main/docs/CI.md">docs/CI.md</a> <a href="{{REPO_URL}}/tree/main/scripts">scripts/</a> <a href="{{REPO_URL}}/tree/main/.github/workflows">.github/workflows/</a> <a href="{{REPO_URL}}/tree/main/core/fuzz">core/fuzz/</a> <a href="{{REPO_URL}}/tree/main/sandbox">sandbox/</a></p>
+  <div class="wk-head-rule"></div>
+
+  <section class="wk-sec" id="toolchains">
+    <h2>Prerequisites and toolchains</h2>
+    <p>Every version that matters is pinned in a file, so two computers build the same thing. The Rust toolchain file is what makes the browser binary and hoi-node come out byte for byte the same (see <a href="/wiki/releases/">Releases &amp; verification</a>).</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Toolchains and where they are pinned">
+      <table>
+        <thead><tr><th>Tool</th><th>Version</th><th>Pinned in</th><th>Needed for</th></tr></thead>
+        <tbody>
+          <tr><td>Node.js</td><td><code>22</code></td><td><code>.node-version</code>; <code>"engines": { "node": "&gt;=22" }</code> in <code>package.json</code></td><td>every script, the site and app builds, every JS test</td></tr>
+          <tr><td>pnpm</td><td><code>10.28.0</code></td><td><code>"packageManager": "pnpm@10.28.0"</code></td><td>the workspace; <code>pnpm/action-setup</code> reads it in CI, and the sandbox images run <code>corepack prepare pnpm@10.28.0</code></td></tr>
+          <tr><td>Rust</td><td><code>1.97.0</code> with <code>rustfmt</code>, <code>clippy</code></td><td><code>core/rust-toolchain.toml</code> (also the target <code>wasm32-unknown-unknown</code>); the workflows pass <code>toolchain: "1.97.0"</code> (the fuzz job uses nightly)</td><td>the core, hoi-node, the desktop and setup apps</td></tr>
+          <tr><td>Rust minimum</td><td><code>1.94</code></td><td><code>rust-version</code> in <code>core/Cargo.toml</code> and both Tauri manifests</td><td>what the crates declare; the vendored OpenMLS provider needs 1.94</td></tr>
+          <tr><td><code>wasm32-unknown-unknown</code></td><td>—</td><td>the toolchain file</td><td><code>pnpm core:wasm</code> (the browser core)</td></tr>
+          <tr><td><code>wasm32-wasip1</code></td><td>—</td><td><code>rustup target add wasm32-wasip1</code> by hand</td><td><code>pnpm core:test:wasi</code> only</td></tr>
+          <tr><td>wasm-bindgen-cli</td><td><code>0.2.129</code></td><td>must equal the <code>wasm-bindgen = "0.2.129"</code> crate in <code>core/Cargo.toml</code></td><td>generating the JS bindings in <code>apps/web/src/lib/core/wasm/pkg</code></td></tr>
+          <tr><td>binaryen (<code>wasm-opt</code>)</td><td><code>132.0.0</code></td><td>root <code>devDependencies</code></td><td>shrinking the browser binary; skipped with a message when absent</td></tr>
+          <tr><td>Playwright</td><td><code>1.56.1</code> (<code>playwright</code> and <code>@playwright/test</code>)</td><td>root <code>devDependencies</code></td><td>every browser end-to-end script, the site checks, the installer art</td></tr>
+          <tr><td>axe-core</td><td><code>4.14.0</code></td><td>root <code>devDependencies</code></td><td><code>scripts/e2e-a11y.mjs</code></td></tr>
+          <tr><td>Rust nightly + cargo-fuzz</td><td>cargo-fuzz <code>0.13.2</code> in CI</td><td><code>release-major.yml</code></td><td><code>core/fuzz</code> only</td></tr>
+          <tr><td>Docker</td><td>Linux containers</td><td>—</td><td><code>build:server</code>, <code>build:all</code>'s <code>server</code> part, <code>release-local.mjs --docker</code>, the sandbox</td></tr>
+          <tr><td>Tauri prerequisites</td><td>per system</td><td>—</td><td>the desktop and setup apps; on Linux CI installs <code>libwebkit2gtk-4.1-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev patchelf</code> (and <code>rpm</code> for releases)</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 id="first-setup">A first setup</h3>
+    <p>For browser builds, add the WASM target, install the matching bindings generator and build the core once. The UI can also run without any WASM against an in-memory mock core.</p>
+    <div class="wk-code" data-lang="sh" data-title="docs/DEVELOPMENT.md"><pre><code>rustup target add wasm32-unknown-unknown
+cargo install wasm-bindgen-cli --version 0.2.129 --locked
+pnpm install --frozen-lockfile
+pnpm core:wasm
+
+pnpm dev:site                     # the website
+pnpm dev:web                      # the browser app
+pnpm --filter @hoi/web dev:mock   # the app on the mock core, no WASM build</code></pre></div>
+    <div class="wk-note info"><b>Note</b><p><code>dev:mock</code> picks the mock backend through an environment variable in a POSIX shell. <a href="{{REPO_URL}}/blob/main/docs/DEVELOPMENT.md">docs/DEVELOPMENT.md</a> gives the PowerShell equivalent.</p></div>
+    <h3 id="workspace">The workspace</h3>
+    <p><code>pnpm-workspace.yaml</code> lists five places: <code>apps/site</code> (<code>@hoi/site</code>), <code>apps/web</code> (<code>@hoi/web</code>), <code>apps/desktop</code> (<code>@hoi/desktop</code>), <code>apps/setup</code> (<code>@hoi/setup</code>) and <code>packages/*</code> (<code>@hoi/core-api</code>, <code>@hoi/tokens</code>, <code>@hoi/vite-plugin-hardening</code>). It also holds the one pnpm override, which pins the Svelte plugin's <code>deepmerge</code> to the reviewed patch in <code>vendor/deepmerge</code> (see <a href="/wiki/supply-chain/">Supply chain</a>). The Rust code lives in four separate Cargo workspaces, each with its own lockfile: <code>core/</code>, <code>apps/desktop/src-tauri/</code>, <code>apps/setup/src-tauri/</code> and <code>core/fuzz/</code>.</p>
+  </section>
+
+  <section class="wk-sec" id="scripts">
+    <h2>Every root script</h2>
+    <p>The root <code>package.json</code> is the front door. Most scripts are a thin call into <code>scripts/</code>, a workspace package or <code>sandbox/</code>.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Root package.json scripts">
+      <table>
+        <thead><tr><th>Script</th><th>Runs</th><th>What it does</th></tr></thead>
+        <tbody>
+          <tr><td><code>release:version</code></td><td><code>node scripts/release-version.mjs</code></td><td>shows, checks or prepares the product version in every manifest, lockfile and <code>release.json</code>; never builds, commits or tags (<a href="/wiki/releases/">Releases</a>)</td></tr>
+          <tr><td><code>check:quick</code></td><td><code>node scripts/check-quick.mjs</code></td><td>the bounded checks below: no compilation, browser or service</td></tr>
+          <tr><td><code>sandbox</code></td><td><code>node sandbox/launch.mjs</code></td><td>builds and starts the sandbox's Compose project and its CLI worker</td></tr>
+          <tr><td><code>sandbox:stop</code></td><td><code>node sandbox/launch.mjs stop</code></td><td>stops every container of the project and the worker; identities and results stay</td></tr>
+          <tr><td><code>sandbox:status</code></td><td><code>node sandbox/launch.mjs status</code></td><td>lists the project's containers, their status and ports</td></tr>
+          <tr><td><code>test:sandbox</code></td><td><code>node --test sandbox/*.test.mjs</code></td><td>the sandbox's own tests</td></tr>
+          <tr><td><code>registry</code></td><td><code>node registry/server.mjs</code></td><td>the Node registry service, on <code>127.0.0.1</code>, port <code>7845</code> by default (<a href="/wiki/registry/">Registry</a>)</td></tr>
+          <tr><td><code>test:registry</code></td><td><code>node --test registry/server.test.mjs</code></td><td>the Node registry's tests</td></tr>
+          <tr><td><code>test:registry:core</code></td><td><code>node scripts/e2e-registry.mjs</code></td><td>the compiled browser core signing a claim against the HTTP registry</td></tr>
+          <tr><td><code>test:registry:node</code></td><td><code>node scripts/e2e-registry-node.mjs</code></td><td>the shared registry conformance suite against <code>hoi-node --public --registry</code></td></tr>
+          <tr><td><code>tokens</code></td><td><code>pnpm --filter @hoi/tokens build</code></td><td>regenerates CSS, Swift and Kotlin tokens from <code>design/tokens/tokens.json</code></td></tr>
+          <tr><td><code>core:wasm</code></td><td><code>node scripts/build-wasm.mjs</code></td><td>builds <code>hoi-wasm</code> and its bindings for the app</td></tr>
+          <tr><td><code>core:test:wasi</code></td><td><code>node scripts/test-core-wasi.mjs</code></td><td>pure core tests and the vectors, compiled to <code>wasm32-wasip1</code>, run in Node</td></tr>
+          <tr><td><code>dev:site</code></td><td><code>pnpm --filter @hoi/site dev</code></td><td>Vite dev server for the website</td></tr>
+          <tr><td><code>dev:web</code></td><td><code>pnpm --filter @hoi/web dev</code></td><td>Vite dev server for the browser app</td></tr>
+          <tr><td><code>dev:desktop</code></td><td><code>pnpm --filter @hoi/desktop dev</code></td><td><code>tauri dev</code> through <code>apps/desktop/scripts/tauri.mjs</code>; its UI is <code>@hoi/web dev:desktop</code> on port <code>5174</code></td></tr>
+          <tr><td><code>dev:setup</code></td><td><code>pnpm --filter @hoi/setup dev</code></td><td>the node setup app; its window is <code>@hoi/web dev:setup</code> on port <code>5175</code></td></tr>
+          <tr><td><code>build:site</code></td><td><code>pnpm --filter @hoi/site build</code></td><td><code>vite build</code> into <code>apps/site/dist</code></td></tr>
+          <tr><td><code>build:web</code></td><td><code>pnpm --filter @hoi/web build</code></td><td><code>vite build</code> into <code>apps/web/dist</code></td></tr>
+          <tr><td><code>build:all</code></td><td><code>node scripts/build-all.mjs</code></td><td>every part this computer can build, a folder per tool (<a href="#build-all">below</a>)</td></tr>
+          <tr><td><code>build:server</code></td><td><code>node scripts/build-server.mjs</code></td><td>the Linux server bundle: hoi-node built with Docker Buildx, plus its service installer</td></tr>
+          <tr><td><code>build:setup</code></td><td><code>pnpm --filter @hoi/setup build</code></td><td><code>tauri build</code> of hoi Node Setup</td></tr>
+          <tr><td><code>deploy:server</code></td><td><code>node deploy/server/bundle/deploy.mjs --bundle dist/server/hoi-server-linux-x64</code></td><td>uploads the x64 bundle to a server over SSH and installs it (<a href="/wiki/deploy/">Deploying</a>)</td></tr>
+          <tr><td><code>build</code></td><td><code>pnpm tokens &amp;&amp; pnpm core:wasm &amp;&amp; pnpm build:site &amp;&amp; pnpm build:web &amp;&amp; node scripts/assemble-static.mjs</code></td><td>the static website with the app at <code>/app/</code>, in <code>dist/</code></td></tr>
+          <tr><td><code>check</code></td><td><code>pnpm -r --if-present check</code></td><td><code>tsc</code> for the site and <code>@hoi/core-api</code>, <code>svelte-check</code> for the app, <code>generate.mjs --check</code> for the tokens</td></tr>
+          <tr><td><code>test</code></td><td><code>node --test scripts/*.test.mjs registry/*.test.mjs relay/*.test.mjs &amp;&amp; pnpm -r --if-present test</code></td><td>every Node test file, then the app's Vitest suite (the only workspace package with a <code>test</code> script)</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="wk-sec" id="pipeline">
+    <h2>The build pipeline</h2>
+    <p><code>pnpm build</code> runs five steps in order. Each needs the one before it: the app imports the WASM bindings, and the assembler refuses to run until both the site and the app exist and carry the same release metadata.</p>
+    <figure class="wk-fig">
+      <div class="wk-fig-scroll" tabindex="0" role="region" aria-label="Build pipeline diagram">
+        <svg viewBox="0 0 800 150" role="img" aria-label="tokens, then core:wasm, then build:site, then build:web, then assemble-static into dist">
+          <rect class="d-box acc c-sun" x="8" y="30" width="128" height="76" rx="12"></rect>
+          <text class="d-text" x="24" y="62">tokens</text>
+          <text class="d-sub" x="24" y="84">CSS, Swift, Kotlin</text>
+          <rect class="d-box acc c-coral" x="168" y="30" width="128" height="76" rx="12"></rect>
+          <text class="d-text" x="184" y="62">core:wasm</text>
+          <text class="d-sub" x="184" y="84">hoi_wasm_bg.wasm</text>
+          <rect class="d-box acc c-peach" x="328" y="30" width="128" height="76" rx="12"></rect>
+          <text class="d-text" x="344" y="62">build:site</text>
+          <text class="d-sub" x="344" y="84">apps/site/dist</text>
+          <rect class="d-box acc c-mint" x="488" y="30" width="128" height="76" rx="12"></rect>
+          <text class="d-text" x="504" y="62">build:web</text>
+          <text class="d-sub" x="504" y="84">apps/web/dist</text>
+          <rect class="d-box acc c-sky" x="648" y="30" width="144" height="76" rx="12"></rect>
+          <text class="d-text" x="664" y="62">assemble</text>
+          <text class="d-sub" x="664" y="84">dist/ and dist/app/</text>
+          <line class="d-line" x1="136" y1="68" x2="160" y2="68"></line>
+          <polygon class="d-head" points="160,62 168,68 160,74"></polygon>
+          <line class="d-line" x1="296" y1="68" x2="320" y2="68"></line>
+          <polygon class="d-head" points="320,62 328,68 320,74"></polygon>
+          <line class="d-line" x1="456" y1="68" x2="480" y2="68"></line>
+          <polygon class="d-head" points="480,62 488,68 480,74"></polygon>
+          <line class="d-line" x1="616" y1="68" x2="640" y2="68"></line>
+          <polygon class="d-head" points="640,62 648,68 640,74"></polygon>
+          <text class="d-tag c-mute" x="8" y="134">pnpm build: each step needs the one before it</text>
+        </svg>
+      </div>
+      <figcaption>The five steps of <code>pnpm build</code>. <code>scripts/reproduce.mjs</code> runs the same steps to digest the static site.</figcaption>
+    </figure>
+    <ol class="wk-steps">
+      <li><b><code>pnpm tokens</code></b><p><code>packages/tokens/scripts/generate.mjs</code> reads <code>design/tokens/tokens.json</code> and writes <code>packages/tokens/generated/tokens.css</code>, <code>HoiTokens.swift</code> and <code>HoiTokens.kt</code>, plus copies into <code>apps/mobile/ios/…/HoiTheme/</code> and <code>apps/mobile/android/…/theme/</code> when those folders exist. The outputs are committed; <code>--check</code> fails on any stale file.</p></li>
+      <li><b><code>pnpm core:wasm</code></b><p>Builds the browser core and its bindings (next section).</p></li>
+      <li><b><code>pnpm build:site</code></b><p>Vite builds every website page and every wiki page in <code>wiki/nav.json</code>, with the CSP <code>&lt;meta&gt;</code>, Subresource Integrity and a <code>_headers</code> file (<a href="/wiki/website/">This website</a>).</p></li>
+      <li><b><code>pnpm build:web</code></b><p>Vite builds the app with a relative base (<code>./</code>), so the same build works under <code>/app/</code> and inside Tauri. It adds its own CSP, <code>_headers</code>, a <code>noindex</code> robots tag while the channel is preview, and the hash-checking service worker.</p></li>
+      <li><b><code>node scripts/assemble-static.mjs</code></b><p>Puts the two together in <code>dist/</code> (below).</p></li>
+    </ol>
+    <h3 id="build-wasm">core:wasm: scripts/build-wasm.mjs</h3>
+    <p>Three commands, then two checks on the result:</p>
+    <ol class="wk-steps">
+      <li><b>Compile</b><p><code>cargo build --locked -p hoi-wasm --target wasm32-unknown-unknown --profile wasm</code>. The <code>wasm</code> profile inherits <code>release</code> (LTO, one codegen unit) with <code>opt-level = "s"</code> and <code>panic = "abort"</code>, but keeps <code>blake3</code> and <code>hoi-crypto</code> at <code>opt-level = 3</code> so hashing and stamps stay fast.</p></li>
+      <li><b>Bind</b><p><code>wasm-bindgen --target web --out-dir apps/web/src/lib/core/wasm/pkg --out-name hoi_wasm</code> on <code>target/wasm32-unknown-unknown/wasm/hoi_wasm.wasm</code>.</p></li>
+      <li><b>Optimize</b><p><code>wasm-opt -O3</code> from <code>node_modules/.bin</code> (the binaryen package) or the system, in place on <code>hoi_wasm_bg.wasm</code>, with exactly the features the build uses. The script's comment: about 40% smaller, same speed. Without <code>wasm-opt</code> it prints a line and goes on.</p></li>
+      <li><b>Check for build paths</b><p>The finished binary must not contain the checkout's path or the home directory (in both slash styles). If it does, the script throws: "The browser binary contains a private build path. Do not deploy it."</p></li>
+      <li><b>Report</b><p>It prints the binary's size in KB.</p></li>
+    </ol>
+    <div class="wk-code" data-lang="js" data-title="scripts/build-wasm.mjs (trimmed)"><pre><code>run('cargo', ['build', '--locked', '-p', 'hoi-wasm', '--target', 'wasm32-unknown-unknown', '--profile', 'wasm']);
+run('wasm-bindgen', ['--target', 'web', '--out-dir', out, '--out-name', 'hoi_wasm', wasm]);
+const features = ['--enable-bulk-memory', '--enable-nontrapping-float-to-int', '--enable-sign-ext',
+  '--enable-mutable-globals', '--enable-reference-types', '--enable-multivalue'];
+run(wasmOpt, ['-O3', ...features, '-o', opt, opt]);</code></pre></div>
+    <h3 id="assemble">assemble-static.mjs</h3>
+    <ul>
+      <li>Both <code>apps/site/dist</code> and <code>apps/web/dist</code> must exist, and the <code>release.json</code> inside each must equal the root <code>release.json</code> after validation; otherwise: "rebuild both site and app before assembling".</li>
+      <li><code>dist/</code> is deleted and rebuilt: the site at <code>/</code>, the app at <code>/app/</code>, and <code>deploy/install/install.sh</code> and <code>install.ps1</code> at the root.</li>
+      <li>The two <code>_headers</code> files are merged. The site's catch-all <code>/*</code> block is written out once per site path (<code>/</code>, <code>/404.html</code>, <code>/robots.txt</code>, <code>/sitemap.xml</code>, <code>/favicon.svg</code>, <code>/og.png</code>, <code>/release.json</code>, <code>/preview.json</code>, <code>/install.sh</code>, <code>/install.ps1</code>, <code>/.well-known/*</code> and every top-level folder), so the site's stricter policy never matches <code>/app/</code>. The app's blocks are prefixed with <code>/app</code>.</li>
+      <li>It writes <code>release.json</code> and a <code>preview.json</code> (<code>preview</code>, <code>protocol</code>, <code>indexVersion</code>, <code>revision</code>, <code>note</code>).</li>
+    </ul>
+    <h3 id="serve-static">Serving what you built</h3>
+    <p><code>node scripts/serve-static.mjs [--port 8787] [--dir dist]</code> serves <code>dist/</code> at <code>http://127.0.0.1:8787</code> the way a plain static host does: GET and HEAD only (405 otherwise), <code>dir/</code> serves <code>dir/index.html</code>, <code>dir</code> redirects to <code>dir/</code> with a 301, <code>page</code> falls back to <code>page.html</code>, anything else is a 404 with <code>404.html</code>. It sends no custom headers on purpose: the pages must carry their policy in <code>&lt;meta&gt;</code> tags. <code>e2e-deployment.mjs</code> uses it.</p>
+  </section>
+
+  <section class="wk-sec" id="build-all">
+    <h2>build:all and the builds folder</h2>
+    <p><code>pnpm build:all</code> builds every part this computer can build into <code>builds/hoi-&lt;version&gt;/</code>, which Git ignores. The version is read from <code>[workspace.package]</code> in <code>core/Cargo.toml</code>; when some package says otherwise it warns and goes on. It is for trying a build and posting it: no checks, no signing. The signed, flat release folder is <code>release-local.mjs</code>'s (<a href="/wiki/releases/">Releases</a>).</p>
+    <div class="wk-code" data-lang="text" data-title="scripts/build-all.mjs"><pre><code>builds/hoi-&lt;version&gt;/
+  README.md, SHA256SUMS
+  server/       hoi-server_&lt;v&gt;_linux-x64.tar.gz, hoi-node_&lt;v&gt;_x86_64-unknown-linux-gnu.tar.gz
+  node-setup/   hoi-node-setup_&lt;v&gt;_&lt;os&gt;-&lt;arch&gt;-portable.exe|zip, -setup.exe, .dmg, .AppImage, …
+  app/          hoi-desktop_&lt;v&gt;_&lt;os&gt;-&lt;arch&gt;-setup.exe, .dmg, .AppImage, .deb, …
+  website/      hoi-website_&lt;v&gt;.tar.gz</code></pre></div>
+    <div class="wk-table" tabindex="0" role="region" aria-label="build:all parts">
+      <table>
+        <thead><tr><th>Part (order)</th><th>Folder</th><th>Built by</th><th>Needs</th></tr></thead>
+        <tbody>
+          <tr><td><code>server</code></td><td><code>server/</code></td><td><code>buildBundle()</code> from <code>build-server.mjs</code> per architecture, then hoi-node alone packed with <code>tar</code></td><td>Docker Desktop (Linux containers), or <code>--node-binary PATH</code></td></tr>
+          <tr><td><code>node-setup</code></td><td><code>node-setup/</code></td><td><code>pnpm --filter @hoi/setup build</code>, the bundles renamed, plus a portable app</td><td>Rust and the Tauri prerequisites</td></tr>
+          <tr><td><code>app</code></td><td><code>app/</code></td><td><code>pnpm --filter @hoi/desktop build</code>, the bundles renamed</td><td>the same</td></tr>
+          <tr><td><code>website</code></td><td><code>website/</code></td><td><code>pnpm build</code>, then <code>tar -C dist -czf hoi-website_&lt;v&gt;.tar.gz .</code></td><td>the Rust/WASM setup above</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <dl class="wk-defs">
+      <dt>--only LIST<small>parts</small></dt><dd>Build just these, comma separated. Unknown names are refused: "no part called …".</dd>
+      <dt>--skip LIST<small>parts</small></dt><dd>Build all but these. Nothing left is an error.</dd>
+      <dt>--arch ARCH<small>x64 | arm64 | all</small></dt><dd>The server architecture; <code>x64</code> by default, <code>all</code> builds both.</dd>
+      <dt>--node-binary PATH<small>path</small></dt><dd>Package this Linux hoi-node (or a hoi-node <code>.tar.gz</code>) instead of building it in Docker. One architecture only.</dd>
+      <dt>--out DIR<small>path</small></dt><dd>Where the version folders go; <code>builds/</code> by default.</dd>
+    </dl>
+    <p>Each part is built into <code>.&lt;folder&gt;.new</code> and renamed into place only when it is complete, so rebuilding a part replaces only its folder. A part that fails is reported with a hint, keeps its previous folder, and the rest still build; the script then exits 1. <code>pnpm install --frozen-lockfile</code> runs at most once. Before a Tauri build, bundles of an earlier version are deleted from the target folder so they aren't copied too, and the build must make at least one bundle whose name carries the version.</p>
+    <p>Afterwards the script writes <code>SHA256SUMS</code> (<code>sha256sum -c</code> format, over every file of every part) and a <code>README.md</code> that says when, from which commit (and whether the tree had uncommitted changes) and on which system it was built, then lists every file with its size and one line on what it is.</p>
+    <h3 id="build-names">File names: build-names.mjs</h3>
+    <p>Every name follows <code>&lt;tool&gt;_&lt;version&gt;_&lt;os&gt;-&lt;arch&gt;[-setup|-portable].&lt;ext&gt;</code>, except the hoi-node archive, which keeps the release name <code>hoi-node_&lt;version&gt;_&lt;rust target&gt;.tar.gz</code> that <code>install.sh --binary</code>, the node setup app and the release list already know.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Tool slugs and examples">
+      <table>
+        <thead><tr><th>Tool</th><th>Slug</th><th>Example</th></tr></thead>
+        <tbody>
+          <tr><td>hoi, the app</td><td><code>hoi-desktop</code></td><td><code>hoi_1.0.0_amd64.deb</code> → <code>hoi-desktop_1.0.0_linux-x64.deb</code></td></tr>
+          <tr><td>hoi Node Setup</td><td><code>hoi-node-setup</code></td><td><code>hoi Node Setup_1.0.0_x64-setup.exe</code> → <code>hoi-node-setup_1.0.0_windows-x64-setup.exe</code></td></tr>
+          <tr><td>hoi Server</td><td><code>hoi-server</code></td><td><code>hoi-server_1.0.0_linux-arm64.tar.gz</code></td></tr>
+          <tr><td>hoi website</td><td><code>hoi-website</code></td><td><code>hoi-website_1.0.0.tar.gz</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>The OS comes from the bundle kind (<code>-setup.exe</code>, <code>.exe</code>, <code>.msi</code> are Windows; <code>.dmg</code> macOS; <code>.AppImage</code>, <code>.deb</code>, <code>.rpm</code> Linux) and the architecture from the name (<code>universal</code>, <code>arm64</code> for <code>aarch64</code>/<code>arm64</code>, <code>x86</code> for <code>i686</code>/<code>i386</code>/<code>x86</code>, else <code>x64</code>). The portable node setup app is the bare <code>.exe</code> on Windows and the <code>.app</code> zipped with <code>ditto</code> on macOS; Linux has its AppImage. The node setup app looks for a hoi-node archive beside itself and in <code>../server/</code>, so the portable app run from <code>node-setup/</code> uploads <code>server/hoi-node_…</code>; in <code>pnpm dev:setup</code> it also looks in the checkout's <code>builds/*/server/</code>.</p>
+    <h3 id="build-server">build:server</h3>
+    <p><code>pnpm build:server [--arch x64|arm64] [--binary PATH] [--out DIR]</code> builds the current checkout with Docker Buildx for a Linux VPS (<code>linux/amd64</code> or <code>linux/arm64</code>), or packages an existing binary, into <code>dist/server/hoi-server-linux-ARCH/</code> and its <code>.tar.gz</code>. Its tests (<code>scripts/build-server.test.mjs</code>) cover the archive round trip, refusing wrong CPUs and corrupted files, SSH arguments that can't become options or shell commands, and the installer keeping data by default.</p>
+  </section>
+
+  <section class="wk-sec" id="quick">
+    <h2>Quick checks</h2>
+    <p><code>pnpm check:quick</code> is where every change starts, and it is the whole of the patch-tier validation in CI. It is dependency-free: no native compilation, no service, no browser, no full suite. It first runs <code>checkVersion()</code> from <code>release-version.mjs</code> (every manifest and lockfile carries the same product version, and a prerelease is on the preview channel), then each of these with Node, from the repository root, with a 90-second timeout each, stopping at the first failure:</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="What check:quick runs">
+      <table>
+        <thead><tr><th>Step</th><th>Checks</th></tr></thead>
+        <tbody>
+          <tr><td><code>packages/tokens/scripts/generate.mjs --check</code></td><td>the committed token outputs match <code>tokens.json</code></td></tr>
+          <tr><td><code>scripts/check-dependency-security.mjs</code></td><td>the regression gate over the three Cargo lockfiles (<a href="/wiki/supply-chain/">Supply chain</a>)</td></tr>
+          <tr><td><code>--test scripts/release-tier.test.mjs</code></td><td>only numeric major releases select the expensive suites</td></tr>
+          <tr><td><code>scripts/release-config.test.mjs</code></td><td><code>release.json</code> is valid, and notices can't relabel a build</td></tr>
+          <tr><td><code>scripts/release-local.test.mjs</code></td><td>every package carries one version; a bump writes it everywhere and nothing else</td></tr>
+          <tr><td><code>scripts/release-version.test.mjs</code></td><td>preparing, promoting, dry runs, refusing bad arguments, lockfile drift</td></tr>
+          <tr><td><code>scripts/release-workflow.test.mjs</code></td><td>the release workflow's job gates with representative GitHub contexts</td></tr>
+          <tr><td><code>scripts/release-plan.test.mjs</code></td><td>when a push plans a tag, and when it doesn't</td></tr>
+          <tr><td><code>scripts/release-manifest.test.mjs</code></td><td>the release list marks the setup app and finds bundles</td></tr>
+          <tr><td><code>scripts/build-all.test.mjs</code></td><td>names, arguments, staging, README and SHA256SUMS</td></tr>
+          <tr><td><code>scripts/installer-art.test.mjs</code></td><td>bitmap format and sizes of the installer artwork</td></tr>
+          <tr><td><code>scripts/static-boundaries.test.mjs</code></td><td>the static deployment can't start a registry, relay or peer, and names none</td></tr>
+          <tr><td><code>scripts/public-copy.test.mjs</code></td><td>no email address or deployment-configuration hint in any public page</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>After it, run the focused tests for what you touched, for example <code>pnpm --filter @hoi/web test</code> or <code>cargo test --locked -p hoi-types</code> from <code>core/</code>. Format Rust with <code>cargo fmt --all</code> from <code>core/</code> and run <code>cargo clippy</code> on touched crates.</p>
+  </section>
+
+  <section class="wk-sec" id="tests">
+    <h2>Test suites</h2>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Every test suite">
+      <table>
+        <thead><tr><th>Suite</th><th>Command</th><th>Where it runs in CI</th></tr></thead>
+        <tbody>
+          <tr><td>Rust workspace</td><td><code>cargo test --locked --workspace</code> and <code>cargo clippy --locked --workspace --all-targets -- -D warnings</code> (from <code>core/</code>)</td><td><b>CI</b> on every pull request (Linux); weekly and major suites on Linux, macOS and Windows</td></tr>
+          <tr><td>Selected Rust libraries</td><td><code>cargo test --locked -p hoi-types -p hoi-trust --lib</code></td><td>minor and major release checks</td></tr>
+          <tr><td>Rust formatting</td><td><code>cargo fmt --all --check</code></td><td><b>CI</b> on every pull request; minor and major checks</td></tr>
+          <tr><td>Acceptance runs</td><td>three <code>#[ignore]</code> tests run with <code>--ignored</code></td><td>major suites</td></tr>
+          <tr><td>WASI</td><td><code>pnpm core:test:wasi</code></td><td>not in a workflow; run it locally</td></tr>
+          <tr><td>Node tests</td><td><code>node --test scripts/*.test.mjs registry/*.test.mjs relay/*.test.mjs</code></td><td>a subset in <code>check:quick</code>; all in major suites</td></tr>
+          <tr><td>Sandbox tests</td><td><code>pnpm test:sandbox</code></td><td>major suites</td></tr>
+          <tr><td>App unit tests</td><td><code>pnpm --filter @hoi/web test</code> (Vitest)</td><td>minor and major checks</td></tr>
+          <tr><td>Type checks</td><td><code>pnpm check</code>; <code>pnpm --filter @hoi/site check</code>, <code>pnpm --filter @hoi/core-api check</code></td><td>site and API types in minor checks; all in major (Svelte checks need the WASM bindings)</td></tr>
+          <tr><td>Browser end to end</td><td><code>node scripts/e2e-*.mjs</code></td><td>major suites</td></tr>
+          <tr><td>Site end to end</td><td><code>node apps/site/scripts/e2e.mjs --quick</code></td><td>major suites</td></tr>
+          <tr><td>Fuzzing</td><td><code>cargo +nightly fuzz run &lt;target&gt;</code> in <code>core/fuzz</code></td><td>major suites, a minute per target</td></tr>
+          <tr><td>Reproducibility</td><td><code>node scripts/reproduce.mjs --twice</code></td><td>major suites</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 id="cargo-tests">Rust tests</h3>
+    <p>Most Rust tests are unit tests next to the code. The integration test files are <code>hoi-core/tests/crypto_backend.rs</code> and <code>persistence.rs</code>, <code>hoi-net/tests/crypto_backend.rs</code>, and <code>hoi-validate/tests/vectors.rs</code>. <code>cargo test --locked -p hoi-core -p hoi-net --test crypto_backend</code> exercises every supported MLS suite, AEAD authentication, signing, HPKE exporters, DTLS key exchange and interoperability with rcgen/ring certificates, including tampering; run it after touching a vendored crate. The vectors test is described on <a href="/wiki/vectors/">Test vectors</a>. Three long runs are marked <code>#[ignore]</code> and run only in the major suites:</p>
+    <div class="wk-code" data-lang="sh" data-title=".github/workflows/release-major.yml (acceptance job)"><pre><code>cd core
+# M0: two nodes through the embedded relay (5 s, expiry)
+cargo test --locked -p hoi-node m0_acceptance -- --ignored --nocapture
+# M1: a flood of 1,000 records from 50 fresh keys at five nodes, banned everywhere
+cargo test --locked --release -p hoi-core m1_acceptance -- --ignored --nocapture
+# 200 real nodes under siege, a fifth offline at any time
+cargo test --locked --release -p hoi-sim two_hundred -- --ignored --nocapture</code></pre></div>
+    <p>The test functions are <code>m0_acceptance_two_nodes_relay_only_five_seconds_and_expiry</code> (<code>hoi-node/src/packet_relay.rs</code>), <code>m1_acceptance_a_flood_from_fifty_fresh_keys_at_five_nodes</code> (<code>hoi-core/src/tests/gaps.rs</code>) and <code>two_hundred_nodes_with_churn_hold</code> (<code>hoi-sim/src/scenario.rs</code>; see <a href="/wiki/simulator/">Simulator</a>).</p>
+    <h3 id="wasi">WASI tests: scripts/test-core-wasi.mjs</h3>
+    <p>The byte formats and the exact arithmetic are checked in a WASM build too, not only natively. The script compiles two sets of tests for <code>wasm32-wasip1</code> with <code>cargo test --locked --target wasm32-wasip1 --no-run --message-format=json-render-diagnostics</code>: the unit tests of <code>hoi-crypto</code> and <code>hoi-types</code> (<code>--lib</code>), and <code>hoi-validate</code>'s <code>vectors</code> test. It reads the test executables from Cargo's JSON output and runs each in Node's <code>node:wasi</code> (<code>preview1</code>) with <code>RUST_TEST_THREADS=1</code>, the <code>core/</code> folder preopened at its own absolute path (the tests find <code>core/vectors</code> through paths compiled in), and <code>--skip committed_vectors_are_current</code>, because that test spawns Cargo, which WASI cannot. It exits 1 if any binary failed.</p>
+    <h3 id="node-tests">Node test files</h3>
+    <p>Each file under <code>scripts/</code> tests the script beside it, or a boundary of the repository:</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="scripts test files">
+      <table>
+        <thead><tr><th>File</th><th>Covers</th></tr></thead>
+        <tbody>
+          <tr><td><code>build-all.test.mjs</code></td><td>bundle names, descriptions, argument parsing, staging, README/SHA256SUMS, a real <code>--only server</code> run</td></tr>
+          <tr><td><code>build-server.test.mjs</code></td><td>the server bundle and its SSH upload, service controls, operator notices, reset confirmation</td></tr>
+          <tr><td><code>check-dependency-security.test.mjs</code></td><td>the lockfile gate: every checked-in lockfile passes, and each regression it guards fails</td></tr>
+          <tr><td><code>deepmerge.test.mjs</code></td><td>the Svelte build resolves the patched <code>deepmerge</code>; prototype-poisoning keys are refused; Svelte config merges still work</td></tr>
+          <tr><td><code>desktop-build.test.mjs</code></td><td>the desktop frontend builds without browser workers or generated WASM</td></tr>
+          <tr><td><code>install.test.mjs</code></td><td><code>deploy/install/install.sh</code> against a release folder: picks the right hoi-node, refuses a changed file, writes each role's service (with <code>--dry-run</code>)</td></tr>
+          <tr><td><code>installer-art.test.mjs</code></td><td>24-bit bottom-up bitmaps, sizes NSIS and Finder expect, each app's own name and icon</td></tr>
+          <tr><td><code>public-copy.test.mjs</code></td><td>no email addresses or deployment-configuration hints in public pages</td></tr>
+          <tr><td><code>registry-config.test.mjs</code></td><td>the desktop CSP allows only the configured registry origin</td></tr>
+          <tr><td><code>relay-config.test.mjs</code></td><td>relay destinations are at most three explicit HTTPS origins (loopback excepted)</td></tr>
+          <tr><td><code>release-*.test.mjs</code></td><td>config, local, manifest, plan, tier, version, workflow (see <a href="#quick">Quick checks</a>), and <code>release-worker.test.mjs</code>: the service worker never serves cached release metadata and refuses bytes that differ from the build</td></tr>
+          <tr><td><code>reproduce.test.mjs</code></td><td>a tree digest depends on paths and bytes, never order or times; builds run with the commit time, UTC and every path remapped</td></tr>
+          <tr><td><code>setup-build.test.mjs</code></td><td>the node setup window builds without the core, its worker, WASM or a service worker</td></tr>
+          <tr><td><code>static-boundaries.test.mjs</code></td><td>the Pages build names no registry or relay; nodes start with nothing configured; the site's scripts don't track or persist</td></tr>
+          <tr><td><code>tauri-bundles.test.mjs</code></td><td>which versions WiX takes; previews built on Windows make the NSIS setup alone</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p><code>registry/server.test.mjs</code> and <code>registry/worker.test.mjs</code> test the Node service and the Worker (including the shared vectors); <code>relay/worker.test.mjs</code> and <code>relay/operator.test.mjs</code> test the encrypted relay and its operator tool (<a href="/wiki/mailboxes/">Mailboxes &amp; relays</a>).</p>
+    <h3 id="web-tests">App unit tests</h3>
+    <p><code>pnpm --filter @hoi/web test</code> runs <code>vitest run</code> over the 32 files in <code>apps/web/src/tests/</code>: the mock core, routing, pairing, the vault's storage, the OPFS store, the registry client, public joins, operator notices (checked against <code>core/vectors/node-notice.json</code>), Shamir splitting, warmth, release notices and more. They need no WASM build.</p>
+  </section>
+
+  <section class="wk-sec" id="e2e">
+    <h2>Browser end-to-end scripts</h2>
+    <p>Each <code>scripts/e2e-*.mjs</code> is a plain Node script that drives real browsers with Playwright. Most of them use the real WASM core and real <code>hoi-node</code> processes on this machine, and nothing the project runs. Build first: <code>pnpm core:wasm</code> (and <code>pnpm build:web</code> where the script serves the built app), and <code>cargo build --locked --manifest-path core/Cargo.toml -p hoi-node</code> where a node is involved. <code>CHROMIUM_PATH</code> picks a Chromium binary.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="End-to-end scripts">
+      <table>
+        <thead><tr><th>Script</th><th>What it proves</th></tr></thead>
+        <tbody>
+          <tr><td><code>e2e-a11y.mjs</code></td><td>axe-core on every route of the app, light and dark, with reduced motion, against the mock core; fails on serious and critical findings and writes <code>test-results/a11y/report.json</code> (<code>--shots</code> saves screenshots)</td></tr>
+          <tr><td><code>e2e-deployment.mjs</code></td><td>the assembled <code>dist/</code>, served like a plain static host: every page carries its own policy in a <code>&lt;meta&gt;</code>, and none needs inline styles or scripts</td></tr>
+          <tr><td><code>e2e-direct.mjs</code></td><td>two browsers introduced by a public node open a data channel to each other; after the node stops, the next post still arrives browser to browser</td></tr>
+          <tr><td><code>e2e-discovery.mjs</code></td><td>registry navigation and search privacy through the real UI, with signed registry fixtures; only registry requests are intercepted</td></tr>
+          <tr><td><code>e2e-mailboxes.mjs</code></td><td>a private community with no relay anywhere: two <code>hoi-node --hold-pieces</code> holders keep the mailboxes; the holders keep only sealed objects (<code>hoi-node admin pieces</code> counts them). Needs an IPv4 address besides loopback</td></tr>
+          <tr><td><code>e2e-network.mjs</code></td><td>two people in two browsers talk through a home node over WebSocket: key, community, pairing, post, invite, join, reply arriving live</td></tr>
+          <tr><td><code>e2e-node-link.mjs</code></td><td>with nothing configured anywhere, a browser opens a node link, starts a community the node carries, and a fresh browser joins and reads it with the author's browser closed</td></tr>
+          <tr><td><code>e2e-passkey.mjs</code></td><td>passkey unlock through Chromium's virtual authenticator with the PRF extension; a wrong answer is refused. Served as <code>localhost</code> because WebAuthn needs a domain</td></tr>
+          <tr><td><code>e2e-peer-only.mjs</code></td><td><code>hoi-node --peer-only</code> relays for members' browsers, opens WebRTC, shows no pairing link and refuses connections on the control port (<code>ECONNREFUSED</code>), then exits 0 on SIGINT</td></tr>
+          <tr><td><code>e2e-private-relay.mjs</code></td><td>private groups in real browsers through an explicitly local encrypted relay (the Worker under <code>wrangler dev --local</code>); never point it at a public relay</td></tr>
+          <tr><td><code>e2e-profile.mjs</code></td><td>signed profile records, encrypted persistence and removal (not part of a workflow)</td></tr>
+          <tr><td><code>e2e-public-network.mjs</code></td><td>a public join with the founder offline: the registry lists no node, the carrier started with <code>--index</code> announces itself, the joiner gets no invite or pairing credential</td></tr>
+          <tr><td><code>e2e-registry-browser.mjs</code></td><td>a real browser worker signs a community, registers it with the versioned HTTP registry and joins it durably; no mocked keys</td></tr>
+          <tr><td><code>e2e-registry-node.mjs</code></td><td><code>hoi-node --public --registry</code> passes the shared registry conformance suite, its admin tools work while it serves, its database opens in the Node service; a second node runs in allowlist mode</td></tr>
+          <tr><td><code>e2e-registry.mjs</code></td><td>the compiled core signs a claim, the HTTP registry stores it, the core reloads it; no browser</td></tr>
+          <tr><td><code>e2e-rtc.mjs</code></td><td>a phone pairs by "scanning" over WebRTC, confirms four digits, signs as the owner; a member joins from an invite and catches up from the node over WebRTC</td></tr>
+          <tr><td><code>e2e-vault.mjs</code></td><td>the encrypted vault: fresh setup, reload, bad password, lock, competing tabs, ciphertext corruption, migration from the plaintext format</td></tr>
+          <tr><td><code>e2e-wiki.mjs</code></td><td>a community wiki page and a rules change as Loro documents inside the WASM core: written, saved, read back after a reload, proposed and in force</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Three helpers are shared. <code>e2e-browser.mjs</code> launches the browser that <code>HOI_E2E_BROWSER</code> names (<code>chromium</code> by default, <code>firefox</code> or <code>webkit</code>), with Firefox preferences that keep loopback and host ICE candidates (the tests dial nodes on <code>127.0.0.1</code>), and strips mobile emulation for Firefox, which has none. <code>browser-vault.mjs</code> accepts the Network &amp; Safety notice and unlocks with a fixed test passphrase. <code>browser-store.mjs</code> reads and edits a browser's store (OPFS log files or IndexedDB) the way someone with access to the profile could. For other engines, run <code>pnpm exec playwright install firefox webkit</code> first.</p>
+    <h3 id="site-e2e">Site checks</h3>
+    <p><code>node apps/site/scripts/e2e.mjs [--shots DIR] [--quick] [--shots-only]</code> needs a built site. It serves <code>apps/site/dist</code> with <code>vite preview</code> on <code>localhost:4317</code> and loads <code>/</code>, <code>/download/</code>, <code>/verify/</code>, <code>/relay/</code>, <code>/communities/</code>, <code>/protocol/</code>, <code>/privacy/</code> and <code>/404.html</code> at 1280×900 and 390×844, light and dark, scripts on and off, with and without reduced motion, plus a 320×640 layout pass. <code>--quick</code> keeps only light with motion. It fails on any console error, failed request, HTTP status 400 or above, request to another origin, horizontal overflow, touch target under 44 px on phones, or missing <code>&lt;h1&gt;</code>; it also runs the home page's demos and the download page with an empty and a filled release list.</p>
+    <p><code>node apps/site/scripts/wiki-check.mjs [pages…]</code> checks wiki pages without a build: structure, the CSP rules, template variables, unique ids, balanced tags, wrapped tables, demo names and every wiki link and anchor. <code>node apps/site/scripts/sbom.mjs --check</code> verifies that <code>wiki/sbom/sbom.json</code> still matches every lockfile (<a href="/wiki/sbom/">SBOM</a>).</p>
+  </section>
+
+  <section class="wk-sec" id="fuzzing">
+    <h2>Fuzzing</h2>
+    <p><code>core/fuzz</code> is a Cargo workspace of its own (<code>hoi-fuzz</code>, with its own <code>Cargo.lock</code>), so <code>libfuzzer-sys</code> stays out of <code>core/Cargo.lock</code> and its dependency checks. It depends on <code>hoi-types</code>, <code>hoi-crypto</code>, <code>hoi-validate</code>, <code>hoi-sync</code> and <code>loro = "=1.17.1"</code>. Each target takes any bytes and must never panic; most also assert a round trip.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Fuzz targets">
+      <table>
+        <thead><tr><th>Target</th><th>Input</th><th>Asserts</th></tr></thead>
+        <tbody>
+          <tr><td><code>record</code></td><td>a record on the wire</td><td><code>Wire::decode</code> → <code>encode</code> → decode gives the same id and bytes; <code>hoi_validate::decode</code>, <code>signature</code> and <code>content</code> don't panic</td></tr>
+          <tr><td><code>sync_msg</code></td><td>a sync message</td><td>whatever <code>Msg::decode</code> accepts re-encodes to a message that decodes equal</td></tr>
+          <tr><td><code>links</code></td><td>UTF-8 text</td><td>an <code>Invite</code> that parses, written out and read again, names the same community; <code>Pair</code>, <code>NodeLink</code> and recovery-key parsing don't panic</td></tr>
+          <tr><td><code>manifest</code></td><td>a scatter manifest or pointer</td><td>what decodes passes <code>check()</code>, re-encodes to the same bytes, and a manifest never accepts an update to itself</td></tr>
+          <tr><td><code>envelope_plaintext</code></td><td>first byte picks one of 8 kinds (<code>Put Get Has Drop Stored Got Had Dropped</code>), two bytes a wanted length</td><td>a request or reply that parses writes back to the same bytes</td></tr>
+          <tr><td><code>rebuild</code></td><td>a class (one of two), a <code>k</code> (1–19), indexes and piece bytes</td><td>rebuilding and undoing the all-or-nothing transform don't panic; a sealed object that comes out has its class's length</td></tr>
+          <tr><td><code>sizing</code></td><td>a level, a generation (0–31), a number of places</td><td>every size returned has <code>k ≥ 3</code>, <code>k + 2 ≤ n ≤ m ≤ budget(n)</code>, <code>n ≤ LINKS·(k − 1)</code>, and meets the level it was made for</td></tr>
+          <tr><td><code>media</code></td><td>any media</td><td><code>check</code> for 8 types never panics; what <code>sanitize</code> keeps passes <code>check</code> as its sniffed type, and sanitizing it again changes nothing</td></tr>
+          <tr><td><code>picture</code></td><td>a picture, or raw luma</td><td>fingerprints meet <code>MIN_QUALITY</code> and their shown variant equals <code>examine()</code>; the avatar check and PDQ on raw luma don't panic</td></tr>
+          <tr><td><code>wiki_update</code></td><td>a Loro update</td><td>if <code>decode_import_blob_meta</code> accepts it, importing it and reading the <code>body</code> and <code>rules</code> texts don't panic</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="wk-code" data-lang="sh" data-title=".github/workflows/release-major.yml (fuzz job)"><pre><code>cd core/fuzz
+cargo install cargo-fuzz --locked --version 0.13.2
+for t in $(cargo +nightly fuzz list); do
+  cargo +nightly fuzz run "$t" -- -max_total_time=60 -rss_limit_mb=2048
+done</code></pre></div>
+    <p>Locally, <code>cargo +nightly fuzz run manifest</code> from <code>core/fuzz</code> runs one target until you stop it. See <a href="/wiki/scatter/">Scattered delivery</a> and <a href="/wiki/media/">Media</a> for the formats under test.</p>
+  </section>
+
+  <section class="wk-sec" id="sandbox">
+    <h2>The sandbox</h2>
+    <p><code>sandbox/</code> is a local community simulator built on the real app and protocol. Nothing in it is special-cased: the hub is a normal <code>hoi-node</code>, members are normal nodes driven by <code>hoi-sim agent</code>, and the personas open the real app. It is test tooling: it lets honest and adversarial agents, scripted or driven by a language model, try to flood, forge, Sybil, brigade and capture a community, and a referee reports what actually took effect.</p>
+    <h3 id="sandbox-stack">What pnpm sandbox launches</h3>
+    <p><code>node sandbox/launch.mjs</code> (commands <code>up</code>, <code>dashboard</code>, <code>stop</code>, <code>status</code>, <code>logs</code>) needs Docker with Linux containers and Node 22. On first run it creates <code>sandbox/.state/control.env</code> with a random 32-byte <code>HOI_SANDBOX_TOKEN</code> (mode 0600, Git-ignored), runs <code>docker compose … up --detach --build --wait --wait-timeout 600</code>, waits for the dashboard's <code>/health</code>, then starts the CLI worker on the host with a fresh lease. Everything groups under one Compose project, <code>hoi-sandbox</code> unless <code>COMPOSE_PROJECT_NAME</code> says otherwise.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Sandbox services">
+      <table>
+        <thead><tr><th>Service</th><th>Image</th><th>Address</th><th>Limits</th></tr></thead>
+        <tbody>
+          <tr><td><code>hub</code>: <code>hoi-node --data /data --listen 0.0.0.0:7842 --name hub --show-pairing</code></td><td><code>sandbox/Dockerfile</code></td><td><code>127.0.0.1:7842</code>; networks <code>control</code> and <code>agents</code></td><td>512 MB, 512 pids</td></tr>
+          <tr><td><code>dashboard</code>: the controller, <code>sandbox/server.mjs</code></td><td><code>sandbox/Control.Dockerfile</code></td><td><code>127.0.0.1:7070</code>; network <code>control</code>; the only service with the Docker socket</td><td>512 MB, 128 pids</td></tr>
+          <tr><td><code>app</code>: three origins for three personas, <code>sandbox/app-server.mjs</code></td><td><code>sandbox/App.Dockerfile</code></td><td><code>7071</code> owner, <code>7072</code> member, <code>7073</code> watcher, all on <code>127.0.0.1</code>, at <code>/app/</code></td><td>256 MB, 128 pids</td></tr>
+          <tr><td>actor containers, one per resident</td><td><code>hoi-sandbox:latest</code></td><td>the internal <code>agents</code> network only</td><td>512 MB, 2 CPUs, 256 pids</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Every service drops all capabilities, sets <code>no-new-privileges</code>, runs with a read-only root filesystem and a 16 MB <code>/tmp</code>. The <code>agents</code> network is <code>internal: true</code>: no route to the internet. The app server is the only holder of the controller token and never sends it to browser code; the persona bootstrap helpers (<code>/__sandbox/…</code>) exist only in builds made with <code>HOI_SANDBOX=1</code>, on the three loopback app ports; those builds also leave out the service worker. Normal builds keep ordinary onboarding.</p>
+    <h3 id="sandbox-images">The Docker files</h3>
+    <dl class="wk-defs">
+      <dt>Dockerfile<small>hub and agents</small></dt><dd>Builds <code>hoi-node</code> and <code>hoi-sim</code> with <code>cargo build --release --locked</code> in <code>rust:1.97-slim-bookworm</code>, copies them into <code>debian:bookworm-slim</code> (both pinned by <code>sha256</code> digest), runs as a system user <code>hoi</code> with <code>/data</code> as home, exposes 7842 and has an empty entrypoint.</dd>
+      <dt>App.Dockerfile<small>the real app</small></dt><dd>Three stages: <code>rust:1.97-slim</code> builds <code>hoi-wasm</code> with the <code>wasm</code> profile and runs wasm-bindgen 0.2.129; <code>node:22-bookworm-slim</code> installs with pnpm 10.28.0 and runs <code>pnpm tokens &amp;&amp; HOI_SANDBOX=1 pnpm build:web</code>; the last stage serves <code>apps/web/dist</code> with <code>app-server.mjs</code> as the <code>node</code> user.</dd>
+      <dt>Control.Dockerfile<small>the dashboard</small></dt><dd><code>node:22-bookworm-slim</code> with the tokens package built and the site's stylesheet, running <code>sandbox/server.mjs</code> on 7070.</dd>
+      <dt>docker-compose.yml<small>the stack</small></dt><dd>The three services, the <code>control</code> and internal <code>agents</code> networks, and the <code>hub-data</code> and <code>control-data</code> volumes.</dd>
+    </dl>
+    <h3 id="sandbox-runs">Runs, scenarios and bounds</h3>
+    <p>The dashboard offers three community scenarios (<code>neighbours</code>: five honest residents; <code>takeover</code>: five honest and one malicious organiser; <code>townhall</code>: eight honest and one organiser, with a town of 1,000 as context only) and the focused exercises Balanced, Protocol and Social. Residents are driven by a local OpenAI-compatible model API, the Codex CLI or the Claude Code CLI through the host's worker, or a scripted demo. A run's defaults: 15 minutes, 24 turns per resident, 15 s between turns, 60 AI calls in total and two decisions at once (ranges 1–120 min, 1–200 turns, 2–120 s, 1–500 calls, 1–3 at once); the CLI worker caps Codex and Claude at two combined requests. Verdicts are Failed, Passed or Inconclusive, and the README is explicit: a run is an observation, not a proof of security.</p>
+    <h3 id="sandbox-teams">Terminal sessions and the red and blue teams</h3>
+    <p><code>./sandbox/hoi-sandbox</code> (with <code>.cmd</code> and <code>.ps1</code> shims for Windows) runs independent sessions, each an internet-less Docker network with one hub. <code>up</code>, <code>watch</code>, <code>agents</code>, <code>spawn</code>, <code>agent</code>, <code>referee</code>, <code>bots</code>, <code>pentest</code>, <code>battle</code>, <code>info</code>, <code>shell</code>, <code>logs</code>, <code>ls</code>, <code>down</code>, <code>build</code> and <code>brief</code> are its commands; the <code>agent</code> verbs include <code>post</code>, <code>vouch</code>, <code>review</code>, <code>propose-limits</code> and <code>forge</code> with the attacks <code>bad-sig future expired unstamped oversize noncanonical dup-flood no-identity wrong-root-delegation</code>. <code>battle</code> is the in-process siege of <code>hoi-sim</code> with a scored verdict.</p>
+    <p><code>sandbox/briefings/red-team.md</code> and <code>blue-team.md</code> are the texts <code>brief red|blue</code> prints for a language-model agent. The red team's playbook: flood, walk the forge catalogue, mint a Sybil ring, brigade a real member, try to rewrite the rules. The blue team posts on topic, vouches the genuine, hides spam with a reason, vetoes wrong moderation, and reports whether five invariants held: no forged record in a feed, spam contained without a central moderator, a Sybil ring sharing one voucher's voice, no real member blocked by a mob, no rule change without the established members' consent.</p>
+    <p><code>pentest</code> starts real Claude Code agents with only the Bash tool, no MCP servers, and <code>sandbox/pentest-guard.mjs</code> as a <code>PreToolUse</code> hook. The guard allows only the session's own wrapped command prefixes and refuses any shell metacharacter (<code>; | &amp; ` $ &lt; &gt; \</code> and newline). Member containers run with all capabilities dropped, no new privileges, read-only, 512 MB and 256 pids, on the session's internal network.</p>
+    <div class="wk-seq" data-title="One pentest action">
+lanes: Claude agent | Guard | Member container | Hub
+Claude agent -> Guard: <code>PreToolUse</code>: the Bash command it wants to run
+Guard: allowed prefix, no metacharacters?
+Guard --> Claude agent: allow, or a hard deny
+Claude agent -> Member container: <code>./sandbox/hoi-sandbox agent demo mallory forge bad-sig …</code> (a one-shot <code>docker run</code>)
+Member container -> Hub @coral: connect over the internal network, sync, one action
+Hub: checks what it receives like any node
+Member container --> Claude agent: JSON: what happened, including the pipeline stage that refused a forged record
+    </div>
+    <p>Tests: <code>pnpm test:sandbox</code> runs <code>app-server</code>, <code>cli-worker</code>, <code>community</code>, <code>docker</code>, <code>providers</code>, <code>server</code> and <code>suite</code> test files.</p>
+  </section>
+
+  <section class="wk-sec" id="ci">
+    <h2>CI workflows</h2>
+    <p>Checks run by themselves in the public <code>hoi-project/hoi</code> repository, where Actions are free: every pull request, forks included, and every push to <code>main</code>. No variable turns them on. Each workflow's small <b>Changes</b> job requires <code>github.repository_owner == 'hoi-project'</code> and a repository that is not private, and every other job needs it, so a private copy and a fork's own pushes start nothing. <b>Run workflow</b> by hand runs anywhere and checks everything, which is how CI is tested in a private repository.</p>
+    <p>The Changes job (<code>scripts/ci-changes.mjs</code>) reads the pull request's own changes and switches on only what they touch: Rust for <code>core/</code> and <code>vendor/</code>, Web for apps, packages, tokens and the pnpm files, dependency audits for manifests and lockfiles, workflow linting for <code>.github/</code>, CodeQL for the languages touched. A skipped job counts as passed for required checks, so there are no workflow-level path filters. Rust builds once: <code>cargo llvm-cov nextest</code> runs the tests and SonarCloud uses its coverage. Tools come prebuilt; only pushes to <code>main</code> write the Rust cache.</p>
+    <h3 id="switches">The two switches</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Repository variables">
+      <table>
+        <thead><tr><th>Variable</th><th>Must equal</th><th>Turns on</th></tr></thead>
+        <tbody>
+          <tr><td><code>HOI_RELEASES_ENABLED</code></td><td><code>true</code></td><td>automatic <b>Release: version</b> on a version change pushed to <code>main</code>, and <b>Release</b> on a pushed tag, in <code>hoi-project/hoi</code> only</td></tr>
+          <tr><td><code>HOI_PAGES_ENABLED</code></td><td><code>true</code></td><td>the manual <b>Website</b> workflow's jobs</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Starting <b>Release: version</b> or <b>Release</b> by hand is itself the opt-in: the jobs check <code>github.event_name == 'workflow_dispatch'</code> before the switch, so a manual release works with no switch set, including every called validation suite, signing and upload. Removing a variable stops future automatic jobs; running jobs must be cancelled separately.</p>
+    <h3 id="workflows">Every workflow</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Workflows">
+      <table>
+        <thead><tr><th>File / name</th><th>Trigger</th><th>Jobs</th></tr></thead>
+        <tbody>
+          <tr><td><code>ci.yml</code> / CI</td><td>every pull request and push to <code>main</code>; by hand anywhere</td><td><b>Changes</b>; <b>Quick checks</b> (<code>pnpm check:quick</code>, always); <b>Web</b> (site and API types, web unit tests); <b>Rust</b> (fmt, clippy <code>-D warnings</code>, <code>cargo llvm-cov nextest --workspace</code>); <b>SonarCloud</b> (scan with that coverage, <code>sonar-project.properties</code>; passes with a notice without <code>SONAR_TOKEN</code>). Required: Changes, Quick checks, Web, Rust</td></tr>
+          <tr><td><code>security.yml</code> / Security</td><td>every pull request, push to <code>main</code>, daily (<code>17 5 * * *</code>); by hand anywhere</td><td><b>Changes</b>; CodeQL per changed language (<code>security-extended</code>; a private repository analyses without uploading); per Cargo graph the gate's tests, cargo-deny and cargo-audit; <code>cargo vet --locked</code>; <code>pnpm audit --audit-level low</code>; dependency review on pull requests; zizmor and actionlint. Audits run when dependencies change, on <code>main</code> and daily</td></tr>
+                    <tr><td><code>scorecard.yml</code> / Scorecard</td><td>push to <code>main</code>, weekly, branch-rule changes</td><td>OpenSSF Scorecard, results to the Security tab and the public badge</td></tr>
+          <tr><td><code>weekly.yml</code> / Weekly</td><td>Saturdays (<code>41 3 * * 6</code>, public repository); by hand anywhere</td><td>the full major suites on <code>main</code>; by hand <code>linux_only</code> by default, which leaves out the macOS and Windows legs</td></tr>
+          <tr><td><code>release-checks.yml</code> / Release: checks</td><td><code>workflow_call</code> from <code>release.yml</code> with <code>ref</code> and <code>version</code></td><td>tier-selected checks on the tagged commit, 20 min</td></tr>
+          <tr><td><code>release-major.yml</code> / Release: major suites</td><td><code>workflow_call</code> for a validated major tag, and from Weekly</td><td>the full suites (<a href="#major-suites">below</a>)</td></tr>
+          <tr><td><code>release-version.yml</code> / Release: version</td><td>push to <code>main</code> changing <code>core/Cargo.toml</code> (the switch), or manual with a <code>desktop</code> boolean</td><td><code>plan</code>, <code>start</code>: create the tag, dispatch Release</td></tr>
+          <tr><td><code>release.yml</code> / Release</td><td>a pushed <code>v*</code> tag (the switch), or manual with <code>tag</code> and <code>desktop</code></td><td>validate, build, sign and upload a draft (<a href="/wiki/releases/">Releases</a>)</td></tr>
+          <tr><td><code>website.yml</code> / Website</td><td>manual only; <code>HOI_PAGES_ENABLED</code></td><td><code>check:quick</code>, then <code>node scripts/reproduce.mjs --only static</code> with the registry and relay settings pinned empty, upload <code>dist</code>, deploy to Pages</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 id="tiers">Release test tiers</h3>
+    <p>The tag's numbers choose how much is tested, never a label someone passes in. <code>scripts/release-tier.mjs</code> parses a SemVer tag (with an optional <code>v</code>; a prerelease suffix is allowed and ignored for the tier) and refuses anything else:</p>
+    <div class="wk-code" data-lang="js" data-title="scripts/release-tier.mjs (trimmed)"><pre><code>const [, major, minor, patch] = match;
+if (patch !== '0') return 'patch';
+if (minor !== '0') return 'minor';
+return major !== '0' ? 'major' : 'patch';</code></pre></div>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Release test tiers">
+      <table>
+        <thead><tr><th>Tier</th><th>Versions</th><th>Validation</th></tr></thead>
+        <tbody>
+          <tr><td><span class="tag t-mint">patch</span></td><td><code>X.Y.Z</code> with Z &gt; 0, and <code>0.0.0</code></td><td><code>pnpm check:quick</code> only: no Rust compilation, browser, Docker or network service. (Pushes and pull requests get the same, plus formatting in <code>rust.yml</code>.)</td></tr>
+          <tr><td><span class="tag t-sky">minor</span></td><td><code>X.Y.0</code> with Y &gt; 0 (so <code>v0.1.0</code> too)</td><td>quick checks; <code>pnpm install --frozen-lockfile</code>; <code>@hoi/site</code> and <code>@hoi/core-api</code> type checks; the app's unit tests; <code>cargo fmt --all --check</code>; <code>cargo test --locked -p hoi-types -p hoi-trust --lib</code></td></tr>
+          <tr><td><span class="tag t-coral">major</span></td><td><code>X.0.0</code> with X &gt; 0, prereleases included (<code>v2.0.0-rc.1</code>, <code>1.0.0-preview.1</code>)</td><td>the minor checks plus <code>release-major.yml</code>, and in <code>release.yml</code> the <code>security</code> (gate, cargo-deny, cargo-audit on three manifests) and <code>npm-audit</code> jobs</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="wk-note info"><b>Note</b><p>Testing less does not build less. Every release still compiles and signs everything it ships; even a patch compiles the requested binaries. The current product version, <code>1.0.0-preview.1</code>, is a major-tier version.</p></div>
+    <h3 id="major-suites">The major suites (release-major.yml)</h3>
+    <p><code>verify-major</code> runs first and refuses the whole workflow unless <code>release-tier.mjs</code> says <code>major</code> and <code>release-local.mjs --check-version</code> agrees with the tree. Then, side by side:</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Major suite jobs">
+      <table>
+        <thead><tr><th>Job</th><th>Runner</th><th>Runs</th></tr></thead>
+        <tbody>
+          <tr><td><code>rust</code></td><td>Ubuntu, macOS, Windows</td><td><code>cargo clippy --locked --workspace --all-targets -- -D warnings</code>, <code>cargo test --locked --workspace</code>; 60 min</td></tr>
+          <tr><td><code>acceptance</code></td><td>Ubuntu</td><td>the three ignored acceptance tests; 90 min</td></tr>
+          <tr><td><code>fuzz</code></td><td>Ubuntu, nightly</td><td>every target for 60 s, 2048 MB RSS limit; 45 min</td></tr>
+          <tr><td><code>android</code></td><td>Ubuntu</td><td><code>cargo ndk -t arm64-v8a build -p hoi-ffi --release --locked</code> with the runner's NDK</td></tr>
+          <tr><td><code>ios</code></td><td>macOS</td><td><code>hoi-ffi</code> for <code>aarch64-apple-ios</code> and <code>aarch64-apple-ios-sim</code></td></tr>
+          <tr><td><code>reproducible</code></td><td>Ubuntu</td><td><code>node scripts/reproduce.mjs --twice</code>; 90 min</td></tr>
+          <tr><td><code>browser-e2e</code></td><td>Ubuntu, Chromium</td><td><code>pnpm check &amp;&amp; pnpm test &amp;&amp; pnpm test:sandbox</code>; the static build; vault, passkey, a11y, wiki and site checks; Worker dry runs for the registry and relay (<code>wrangler@4 deploy --dry-run</code>); discovery and browser registration; deployment and the local relay; registry proofs; peer-only; registry as a node; network, RTC, public network, node link, mailboxes, direct</td></tr>
+          <tr><td><code>webrtc-browsers</code></td><td>Firefox on Ubuntu, WebKit on macOS</td><td><code>e2e-network</code>, <code>e2e-rtc</code>, <code>e2e-node-link</code>, <code>e2e-direct</code> with <code>HOI_E2E_BROWSER</code></td></tr>
+          <tr><td><code>desktop</code></td><td>Ubuntu 22.04, macOS, Windows</td><td><code>pnpm --filter @hoi/web build:desktop</code>, then <code>cargo build --locked</code> in <code>apps/desktop/src-tauri</code></td></tr>
+          <tr><td><code>installers</code></td><td>Windows</td><td><code>install.ps1</code> parses; under Windows PowerShell 5.1 it installs from a release folder with <code>-DryRun</code> and refuses a file changed after the manifest was written (a SHA-256 error)</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 id="ci-hygiene">How the workflows are built</h3>
+    <ul>
+      <li>Every third-party action is pinned to a full commit SHA with the version in a comment (list on <a href="/wiki/supply-chain/">Supply chain</a>).</li>
+      <li>Default permissions are <code>contents: read</code>. Only the release-writing jobs get <code>contents: write</code>; the manifest job adds <code>id-token: write</code> and <code>attestations: write</code>; the tag job adds <code>actions: write</code> to dispatch Release; Pages deployment gets <code>pages: write</code> and <code>id-token: write</code>.</li>
+      <li>Checkouts in called and release workflows use <code>persist-credentials: false</code> and the exact resolved commit.</li>
+      <li>Every job has a timeout. Branch checks cancel obsolete runs (<code>cancel-in-progress: true</code>); release and Pages runs never cancel each other.</li>
+      <li>No long suite runs for a push with an unchanged version, a patch or minor release, or a Pages deployment.</li>
+    </ul>
+  </section>
+
+  <section class="wk-sec" id="contributing">
+    <h2>Contributing</h2>
+    <p><code>CONTRIBUTING.md</code> asks for bug reports with reproduction steps and the version tested, and for focused pull requests; substantial behavior or API changes are discussed in an issue first, and vulnerabilities go through <code>SECURITY.md</code>, never a public issue. The rules for a change:</p>
+    <ul>
+      <li>Run <code>pnpm check:quick</code> and the tests for the code you changed.</li>
+      <li>Format Rust with <code>cargo fmt --all</code> from <code>core/</code>; use <code>cargo clippy</code> for touched crates.</li>
+      <li>Cover protocol changes with core tests and conformance vectors (<a href="/wiki/vectors/">Test vectors</a>).</li>
+      <li>Keep the TypeScript API in <code>packages/core-api</code> aligned with the Rust DTOs (<a href="/wiki/api/">Core API</a>).</li>
+      <li>Edit <code>design/tokens/tokens.json</code> and run <code>pnpm tokens</code> for shared styling.</li>
+      <li>Explain new dependencies and keep their licenses and supply-chain records (<a href="/wiki/supply-chain/">Supply chain</a>).</li>
+    </ul>
+    <p>Its conventions: the website and app stay static, and nodes, registries and relays are optional services; keys and validation stay in the core; never log keys, record bodies or peer addresses; bundle assets locally, support reduced motion, and keep interface copy short. The installer artwork (<code>node scripts/installer-art.mjs</code>) and the setup app's icons (<code>pnpm --filter @hoi/setup icons</code>) are committed; run them again after changing the brand.</p>
+    <div class="wk-cards">
+      <a class="wk-card g-mint" href="/wiki/releases/"><i></i><b>Releases &amp; verification</b><span>Versions, the release list, signatures and reproducible builds.</span></a>
+      <a class="wk-card g-coral" href="/wiki/supply-chain/"><i></i><b>Supply chain</b><span>cargo-vet, cargo-deny, vendored patches, CSP and SRI.</span></a>
+      <a class="wk-card g-sky" href="/wiki/vectors/"><i></i><b>Test vectors</b><span>Every conformance file and the tests that read it.</span></a>
+      <a class="wk-card g-sun" href="/wiki/simulator/"><i></i><b>Simulator</b><span>hoi-sim's scenarios and battles, which the sandbox drives.</span></a>
+    </div>
+  </section>
+</article>
+<!-- @wiki-close -->
+<!-- @include footer.html -->
+<script type="module" src="/src/pages/wiki.ts"></script>
+</body>
+</html>

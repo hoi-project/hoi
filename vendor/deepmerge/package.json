@@ -1,0 +1,10 @@
+{
+  "name": "deepmerge",
+  "version": "4.3.1",
+  "private": true,
+  "description": "deepmerge 4.3.1 with a local prototype-poisoning fix; see ../README.md",
+  "license": "MIT",
+  "repository": "https://github.com/TehShrike/deepmerge",
+  "main": "index.cjs",
+  "types": "index.d.ts"
+}

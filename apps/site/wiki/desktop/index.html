@@ -1,0 +1,360 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <!-- @include head.html title="Desktop companion · hoi wiki" description="The Tauri 2 shell in apps/desktop: the web UI over the native core, its commands, the home node it serves, the tray, the vault, its configuration and permissions." -->
+</head>
+<body class="wiki">
+<!-- @include header.html nav="wiki" -->
+<!-- @wiki-open -->
+<article class="wk-doc">
+  <!-- @wiki-crumbs -->
+  <h1>Desktop <span class="acc">companion</span></h1>
+  <p class="wk-lead">The desktop app is the web app's UI in a Tauri 2 window, over the native Rust core instead of the browser's wasm one. Because it is a real program, it can do what a tab can't: accept connections, stay awake in the tray, serve your browser and phone as their home node, and keep your communities reachable while the computer is on.</p>
+  <p class="wk-src-list">Source <a href="{{REPO_URL}}/tree/main/apps/desktop">apps/desktop</a> · <a href="{{REPO_URL}}/blob/main/apps/desktop/src-tauri/src/lib.rs">src-tauri/src/lib.rs</a> · <a href="{{REPO_URL}}/blob/main/apps/desktop/src-tauri/tauri.conf.json">tauri.conf.json</a> · <a href="{{REPO_URL}}/blob/main/apps/desktop/src-tauri/capabilities/default.json">capabilities/default.json</a> · <a href="{{REPO_URL}}/blob/main/apps/desktop/scripts/tauri.mjs">scripts/tauri.mjs</a> · <a href="{{REPO_URL}}/blob/main/apps/web/src/lib/core/tauri-core.ts">apps/web/src/lib/core/tauri-core.ts</a></p>
+  <div class="wk-head-rule"></div>
+
+  <section class="wk-sec" id="overview">
+    <h2>What it is</h2>
+    <p><code>apps/desktop</code> is the package <code>@hoi/desktop</code>; its Rust side is the crate <code>hoi-desktop</code> (library <code>hoi_desktop_lib</code>, edition 2024, Rust 1.94). The product is called <code>hoi</code> with the identifier <code>sh.hoi.desktop</code>, for Linux, Windows and macOS. The crate is a Cargo workspace of its own, so the core workspace builds without WebKitGTK; it depends on <code>hoi-core</code> and <code>hoi-store</code> with the <code>sqlite</code> feature, <code>hoi-net</code>, <code>hoi-crypto</code> and <code>hoi-types</code> by path, and patches the same vendored crates as the core (<code>openmls_rust_crypto</code>, <code>openmls_basic_credential</code>, <code>dimpl</code>, <code>core-models</code>, <code>netdev</code>).</p>
+    <p>It has two faces in one bundle. It opens as the <b>companion</b>: a small window and a tray icon with status, what passes through, a QR code for your phone and <i>Open hoi in my browser</i>, no forum and no key needed. The <b>full app</b> (read and post right here) opens from the companion or the tray menu and widens the window.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Browser and desktop compared">
+      <table>
+        <thead><tr><th></th><th>Browser (PWA)</th><th>Desktop</th></tr></thead>
+        <tbody>
+          <tr><td>Core</td><td><code>hoi-wasm</code> in a Web Worker</td><td>native <code>hoi-core</code></td></tr>
+          <tr><td>Storage</td><td>Sealed values in OPFS or IndexedDB</td><td>Sealed values in SQLite, <code>hoi.db</code> in the app data folder</td></tr>
+          <tr><td>Stamps</td><td>A pool of 1 to 4 miner workers</td><td>Every CPU core</td></tr>
+          <tr><td>Home node for your browser and phone</td><td>no</td><td>yes: <code>ws://127.0.0.1:7842</code> for the browser, WebRTC on UDP 7844 for the phone</td></tr>
+          <tr><td>Accepts connections from members</td><td>no</td><td>yes, while relaying, within a daily cap</td></tr>
+          <tr><td>Peers across networks</td><td>through a paired home node</td><td>native iroh endpoint, routes from invites</td></tr>
+          <tr><td><code>hoi://</code> links</td><td>no</td><td>opens invites and pairing links</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="wk-sec" id="reuse">
+    <h2>How the web UI is reused</h2>
+    <p>There is no separate desktop UI. <code>tauri.conf.json</code> builds the web app before the shell:</p>
+    <div class="wk-code" data-lang="json" data-title="apps/desktop/src-tauri/tauri.conf.json (trimmed)"><pre><code>"build": {
+  "beforeDevCommand": "pnpm --filter @hoi/web dev:desktop",
+  "devUrl": "http://localhost:5174",
+  "beforeBuildCommand": "pnpm --filter @hoi/web build:desktop",
+  "frontendDist": "../../web/dist-desktop"
+}</code></pre></div>
+    <p><code>build:desktop</code> is <code>vite build --mode desktop --outDir dist-desktop</code>: <code>__HOI_DESKTOP__</code> is true, there is no CSP <code>&lt;meta&gt;</code> (Tauri sets the policy), no service worker and no <code>_headers</code>. <code>scripts/desktop-build.test.mjs</code> checks that this build loads no browser workers and no generated wasm. In the window, <code>src/lib/core/index.ts</code> sees <code>__TAURI_INTERNALS__</code> and picks <code>tauri-core.ts</code>; the screens are the same as in a browser (see <a href="/wiki/web-app/">Web app</a>). A few things go to the shell directly:</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Shell helpers used by the UI">
+      <table>
+        <thead><tr><th>UI code</th><th>Command</th><th>Why</th></tr></thead>
+        <tbody>
+          <tr><td><code>lib/host.ts</code> <code>openInBrowser(url)</code></td><td><code>hoi_open_url</code></td><td>Open a link in the person's own browser.</td></tr>
+          <tr><td><code>lib/host.ts</code> <code>autostart(on?)</code></td><td><code>hoi_autostart</code></td><td>The companion's "Start with this computer" switch.</td></tr>
+          <tr><td><code>lib/host.ts</code> <code>windowFace(full)</code></td><td><code>hoi_face</code></td><td>Size the window for the face it shows.</td></tr>
+          <tr><td><code>lib/util.ts</code> <code>saveFile(name, bytes)</code></td><td><code>hoi_save_file</code></td><td>WebViews don't download; a native save dialog writes key exports and bundles.</td></tr>
+          <tr><td><code>lib/core/index.ts</code> vault calls</td><td><code>hoi_vault_*</code></td><td>Status, unlock, lock and reset, before any core exists.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="wk-seq" data-title="One API call on the desktop">
+lanes: Screen | tauri-core.ts | lib.rs | hoi-core
+Screen -> tauri-core.ts: <code>app.core.community(id)</code>
+tauri-core.ts -> lib.rs: <code>invoke("hoi_call", {method: "community", args: [id]})</code>
+lib.rs -> hoi-core: <code>shared.with(|n| n.call(method, args))</code>
+hoi-core --> lib.rs: JSON value, or <code>ApiError {code, message}</code>
+lib.rs --> tauri-core.ts: <code>Ok(value)</code> or <code>Err({code, message})</code>
+hoi-core -> tauri-core.ts @mint: <code>emit("hoi://event", e)</code> for each core event
+tauri-core.ts --> Screen: the result; events to subscribers
+    </div>
+  </section>
+
+  <section class="wk-sec" id="commands">
+    <h2>Commands the window can call</h2>
+    <p><code>run()</code> registers exactly these fourteen with <code>tauri::generate_handler!</code>. Errors are JSON <code>{code, message}</code>, the same shape as the web worker's.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Tauri commands">
+      <table>
+        <thead><tr><th>Command</th><th>Arguments</th><th>What it does</th></tr></thead>
+        <tbody>
+          <tr><td><code>hoi_call</code></td><td><code>method</code>, <code>args</code></td><td>Every <code>HoiCore</code> method through <code>Node::call</code>, the same JSON surface as the web worker. A few methods get extra work around them (below).</td></tr>
+          <tr><td><code>hoi_mine</code></td><td><code>prefix</code>, <code>suffix</code> (base64url), <code>bits</code></td><td>Mines a stamp with <code>hoi_core::dispatch::mine_puzzle</code> on a blocking thread, without holding the node.</td></tr>
+          <tr><td><code>hoi_mine_identity</code></td><td><code>root_key</code> (hex), <code>bits</code></td><td>More identity work, which can take minutes, on every core; <code>bits</code> must be within <code>identity::MIN_BITS..=MAX_BITS</code>. One at a time: a new job stops the old. Resolves to the work, or null when stopped.</td></tr>
+          <tr><td><code>hoi_identity_progress</code></td><td>none</td><td><code>{tries, best}</code> of the running job, or null.</td></tr>
+          <tr><td><code>hoi_identity_stop</code></td><td>none</td><td>Sets the running job's stop flag.</td></tr>
+          <tr><td><code>hoi_benchmark</code></td><td>none</td><td><code>{hashesPerSecond}</code>: <code>pow::benchmark(200_000)</code> times the available threads.</td></tr>
+          <tr><td><code>hoi_save_file</code></td><td><code>name</code>, <code>data</code> (base64url)</td><td>A native save dialog; false when canceled.</td></tr>
+          <tr><td><code>hoi_open_url</code></td><td><code>url</code></td><td>Opens a web page in the default browser; see <a href="#capabilities-links">which links</a>.</td></tr>
+          <tr><td><code>hoi_autostart</code></td><td><code>on</code> (bool or null)</td><td>Turns start-at-login on or off, then says whether it is on.</td></tr>
+          <tr><td><code>hoi_face</code></td><td><code>full</code></td><td>Sizes the window for the companion or the full app.</td></tr>
+          <tr><td><code>hoi_vault_status</code></td><td>none</td><td><code>{state}</code>: <code>ready</code>, <code>locked</code>, <code>create</code> or <code>migrate</code>.</td></tr>
+          <tr><td><code>hoi_vault_unlock</code></td><td><code>passphrase</code></td><td>Opens storage and starts the node; the passphrase is cleared from memory after use.</td></tr>
+          <tr><td><code>hoi_vault_reset</code></td><td><code>confirmation</code></td><td>Recovery while locked: removes the database files.</td></tr>
+          <tr><td><code>hoi_vault_lock</code></td><td>none</td><td>Flushes and restarts the process.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 id="commands-call">What hoi_call adds</h3>
+    <ul>
+      <li><code>vpnInterfaces</code> is answered by the shell itself: <code>hoi_net::vpn::interfaces()</code> as <code>{name, label, tunnel, addresses}</code>, the choices for "Only through my VPN".</li>
+      <li><code>previewPublicNode</code> is answered by the shell too: the core doesn't talk to routers. It starts or ends asking the router which address it would forward, without publishing it, and returns the net status.</li>
+      <li><code>wipe</code> first removes the router's forwards, then shuts down the iroh endpoint and WebRTC before the core erases their identities, keeps the serving URL, closes every <code>client-</code> link and starts fresh transports. The transport locks are held through the wipe so an endpoint can't publish its old address into the wiped node.</li>
+      <li><code>setSettings</code> is followed by <code>follow_vpn</code> (the transports follow "Only through my VPN" at once), <code>sync_forwarding</code> and <code>sync_pieces</code>.</li>
+      <li><code>pair</code>, <code>unpair</code> and <code>wipe</code> restart the link to this computer's own home node, if it is paired with one.</li>
+    </ul>
+  </section>
+
+  <section class="wk-sec" id="vault">
+    <h2>Starting locked</h2>
+    <p>The app starts locked, including when launched at login. No node, keys, listener or network transport exists before the person unlocks the local vault; the tray tooltip says "hoi: unlock to connect". The vault is the same <code>LocalVault</code> as the browser's (a passphrase of at least 15 characters wraps a random data key with Argon2id at 64 MiB, three passes), stored through <code>hoi_store::vault::EncryptedSqlite</code>. There is no passkey unlock on the desktop. See <a href="/wiki/storage/">Storage</a> for the format.</p>
+    <ol class="wk-steps">
+      <li><b>Status</b><p><code>hoi_vault_status</code> opens <code>hoi.db</code> in <code>app_data_dir()</code>: a vault header means <code>locked</code>, an empty database <code>create</code>, anything else <code>migrate</code>. A mutex (<code>VaultStartup</code>) serializes status, unlock and reset.</p></li>
+      <li><b>Unlock</b><p>On a blocking thread, <code>open_vault_node</code> unlocks the header, or, for an old plaintext database, first opens it through an in-memory <code>Journal</code> to prove it is valid and then creates a vault. Unsupported or damaged data is never rewritten just because someone tried to unlock it.</p></li>
+      <li><b>Open</b><p><code>Node::open(EncryptedSqlite, "desktop", "https://hoi.sh/app/", system_clock())</code>, with the node named after the computer (<code>COMPUTERNAME</code>, <code>/etc/hostname</code> or <code>hostname</code>, without <code>.local</code> or <code>.lan</code>), so your phone and browser can call it that.</p></li>
+      <li><b>Start</b><p><code>start_unlocked</code> builds the transports (next section) and shows the window, sized for the face the settings ask for.</p></li>
+    </ol>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Vault errors on the desktop">
+      <table>
+        <thead><tr><th>Code</th><th>When</th><th>Message begins</th></tr></thead>
+        <tbody>
+          <tr><td><code>bad-passphrase</code></td><td>The header didn't open.</td><td>"This device's passphrase did not unlock its vault. …"</td></tr>
+          <tr><td><code>invalid</code></td><td>A new passphrase was too short or long.</td><td>"Could not protect this device. Use a passphrase of at least 15 characters and at most 1024 bytes."</td></tr>
+          <tr><td><code>saved-data</code></td><td>The passphrase was right but the data didn't load.</td><td>"Saved data could not be opened. Check free storage and close other hoi processes. No replacement key was created."</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 id="vault-lock">Locking restarts the process</h3>
+    <p>Hiding or reloading the webview would leave keys reachable by background transports and the tray, so <code>hoi_vault_lock</code> removes the router's forwards, then holds the node mutex, commits pending writes and calls <code>app.restart()</code> while still holding it: no background task can add a write between the flush and the end of the process. If the flush fails, the process stays up and the window reads "Changes could not be saved. Keep hoi open and restore storage access before locking."</p>
+    <h3 id="vault-reset">Recovery while locked</h3>
+    <p><code>hoi_vault_reset</code> needs the exact confirmation <code>RESET</code> and is refused while the core is open ("Lock hoi before using recovery."). It removes <code>hoi.db</code>, <code>hoi.db-wal</code>, <code>hoi.db-shm</code> and <code>hoi.db-journal</code> and nothing else, without opening or parsing the database, so a malformed one can be cleared too. SQLite runs with <code>secure_delete = ON</code> and the WAL is truncated after a migration (<code>wal_checkpoint(TRUNCATE)</code>); that doesn't reach backups or filesystem snapshots.</p>
+  </section>
+
+  <section class="wk-sec" id="native">
+    <h2>The native node inside the app</h2>
+    <p>After unlock the desktop is a full node. <code>start_unlocked</code> sets the node up and starts everything that runs while hoi is open:</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="What start_unlocked starts">
+      <table>
+        <thead><tr><th>Piece</th><th>Call</th><th>What it does</th></tr></thead>
+        <tbody>
+          <tr><td>Carry policy</td><td><code>set_carry_policy(CarryPolicy::Any, carry::DEFAULT_CARRY_LIMIT)</code></td><td>With "Be a public node" on, carries open communities for whoever asks, within the core's bounds.</td></tr>
+          <tr><td>Consent gate</td><td><code>set_consent_gate(true)</code></td><td>Operators' notices are read before it says anything to a stranger it dialed.</td></tr>
+          <tr><td>Shared node</td><td><code>Shared::new(node, …)</code></td><td>One mutex around the node; every core event is emitted on <code>hoi://event</code>.</td></tr>
+          <tr><td>Native peers</td><td><code>hoi_net::start_p2p</code></td><td>An authenticated iroh endpoint with no default relays or discovery servers; routes come from invites.</td></tr>
+          <tr><td>Home node, browser side</td><td><code>hoi_net::serve(127.0.0.1:7842)</code></td><td>The loopback WebSocket; if another hoi holds 7842, any free port. Extra allowed origins come from <code>HOI_ALLOWED_ORIGINS</code> (comma-separated).</td></tr>
+          <tr><td>Home node, phone side</td><td><code>hoi_net::start_rtc</code></td><td>WebRTC on UDP 7844 (or any free port) on every local address; phones pin this computer's certificate.</td></tr>
+          <tr><td>Mailboxes for others</td><td><code>hoi_net::sync_piece_store(…, pieces.db)</code></td><td>Opened or deleted to match the settings.</td></tr>
+          <tr><td>Link previews, domain names</td><td><code>preview::start_previews</code>, <code>handle::start_handle_checks</code></td><td>For this app and its paired browsers, under the network policy as it is at each fetch.</td></tr>
+          <tr><td>Expiry</td><td><code>hoi_net::spawn_sweeper</code></td><td>Deletes what expired.</td></tr>
+          <tr><td>Own home link</td><td><code>restart_home_link</code></td><td>If this computer is paired with another home node, dials it.</td></tr>
+          <tr><td>Router and VPN</td><td><code>sync_forwarding</code>, then <code>follow_vpn</code> every 5 s</td><td>Once both transports know their ports.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="wk-seq" data-title="From unlock to a running home node">
+lanes: Window | lib.rs | hoi-core | hoi-net
+Window -> lib.rs: <code>hoi_vault_unlock {passphrase}</code>
+lib.rs -> hoi-core: <code>open_vault_node</code>: unlock, <code>Node::open</code>
+lib.rs: <code>clear_passphrase</code>
+lib.rs -> hoi-core: carry policy, consent gate, <code>Shared::new</code>
+lib.rs -> hoi-net: <code>start_p2p</code> (bound to the VPN when one is set)
+lib.rs -> hoi-net: <code>serve(127.0.0.1:7842)</code>, then <code>start_rtc</code>
+lib.rs -> hoi-net: pieces, previews, handle checks, sweeper
+lib.rs: tray rebuilt: "keeping your communities reachable"
+lib.rs --> Window: ok; window sized and shown
+lib.rs -> hoi-net: <code>sync_forwarding</code>; then <code>follow_vpn</code> every 5 s
+    </div>
+    <h3 id="native-settings">Settings the desktop acts on</h3>
+    <p>The core's <code>Settings</code> carry the switches. Native nodes start relaying by default and the desktop opens as the companion once (<code>native_defaults</code>), until someone picks the full app.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Desktop-relevant settings">
+      <table>
+        <thead><tr><th>Field</th><th>Default</th><th>Switch</th></tr></thead>
+        <tbody>
+          <tr><td><code>relay</code></td><td><code>true</code> on desktop and node (<code>false</code> elsewhere)</td><td>Keep communities reachable: members' browsers (WebRTC) and computers (QUIC) may connect and catch up.</td></tr>
+          <tr><td><code>daily_cap_gb</code></td><td>5.0</td><td>How much relaying may carry a day.</td></tr>
+          <tr><td><code>companion</code></td><td><code>true</code> on desktop, once</td><td>Open as companion.</td></tr>
+          <tr><td><code>public_node</code></td><td><code>false</code></td><td>Be a public node.</td></tr>
+          <tr><td><code>hold_pieces_gb</code></td><td>2.0</td><td>Keep mailboxes for others: up to 1, 2, 5, 10 or 20 GB in the UI; only while a public node.</td></tr>
+          <tr><td><code>vpn</code></td><td><code>''</code></td><td>Only through my VPN: the interface name (<code>wg0</code>, <code>utun3</code>, …); empty is every interface.</td></tr>
+          <tr><td><code>home_network</code></td><td><code>true</code></td><td>With a VPN, the home network may still be used directly.</td></tr>
+          <tr><td><code>share_holders</code></td><td><code>false</code></td><td>Share the holders I see.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="wk-sec" id="home-node">
+    <h2>Serving your browser and phone</h2>
+    <p>The desktop is a home node for the person's own devices. A device that pairs gets a link with the WebSocket address, a token and the WebRTC routes; devices without the token are turned away, and nothing about them is logged.</p>
+    <ul>
+      <li><b>The browser on the same computer</b> connects over the loopback WebSocket. <i>Open hoi in my browser</i> (companion, tray, You → Connection) opens the node's <code>pairing_web</code> link in the default browser. Chrome asks before a website may reach apps on this computer ("Apps on device"); if it was blocked, the app says so under Home node.</li>
+      <li><b>A phone</b> scans the QR code. Its browser opens hoi, connects over WebRTC on the same network (the link pins this computer's certificate) and can ask to be linked to your key; you compare four digits here.</li>
+      <li><b>Across the internet</b> a phone reaches the computer through a forwarded port; with "Be a public node" on, the app asks the router itself.</li>
+    </ul>
+    <div class="wk-seq" data-title="Open hoi in my browser">
+lanes: Tray | lib.rs | Browser | Home node (this app)
+Tray -> lib.rs: menu item <code>browser</code>
+lib.rs: <code>net_status().serving.pairing_web</code>
+lib.rs -> Browser: <code>open_url</code>: an <code>https://</code> link to the app with <code>#/pair?…</code>
+Browser: opens hoi, reads the pairing link
+Browser -> Home node (this app): WebSocket to <code>ws://127.0.0.1:7842</code> with the token
+Home node (this app) --> Browser: paired; sync begins
+    </div>
+    <p>The other direction works too: this computer can itself be paired with another home node (a <code>hoi-node</code> on a server). <code>restart_home_link</code> dials it with <code>hoi_net::dial</code> over WebSocket only (a WebRTC-only pairing link is for browsers and phones), stops the old link first, and with a VPN set waits until the VPN is up unless the home node is on loopback or, when allowed, the home network. Pairing itself is described on <a href="/wiki/links/">Links &amp; URIs</a> and <a href="/wiki/transports/">Transports</a>.</p>
+  </section>
+
+  <section class="wk-sec" id="public-node">
+    <h2>Being a public node</h2>
+    <p>Off, the desktop publishes no address of its own. With <i>Be a public node</i> on, it serves strangers: it carries open communities for whoever asks, tells whoever connects about the other public nodes it reached, and asks the router to forward its ports so other networks can reach it.</p>
+    <h3 id="public-forwarding">Port forwarding</h3>
+    <p><code>sync_forwarding</code> collects the ports in use: the WebRTC port, the iroh endpoint's IPv4 ports and, while running, the DHT's two ports. It starts a <code>hoi_net::portmap::PortMapper</code> for them, through the default route, or through the VPN's own interface when one is set (the home router would publish the home). What the router forwards from goes into the advertised routes, and so into invites and the node link. While the person only previews (<code>previewPublicNode(true)</code> before turning it on), the mapper runs but nothing is published, so they see the address first. Turning it off, quitting from the tray or locking removes the forwards and the public addresses they added.</p>
+    <h3 id="public-dht">DHT, LAN and mailboxes</h3>
+    <ul>
+      <li><b>DHT</b>: <code>hoi_net::dht::start_dht</code> runs among public nodes while this computer is one, bound to the VPN's IPv4 under "Only through my VPN" and stopped while that VPN is down. See <a href="/wiki/discovery/">Discovery</a>.</li>
+      <li><b>LAN beacons</b>: <code>hoi_net::lan::start_lan</code> on the native transport's first IPv4 port, for members of the same communities on the local network. Off under "Only through my VPN", because a beacon goes out on the home network.</li>
+      <li><b>Mailboxes for others</b>: with <code>hold_pieces_gb</code> above zero while a public node, <code>pieces.db</code> beside the database keeps other people's private communities' sealed messages and pieces, which this computer can't read. Off, or no longer a public node, the file is deleted. See <a href="/wiki/mailboxes/">Mailboxes</a>.</li>
+    </ul>
+  </section>
+
+  <section class="wk-sec" id="vpn">
+    <h2>Only through my VPN</h2>
+    <p><code>net_policy</code> reads the setting into <code>NetPolicy {vpn, home_network}</code>; its state is <code>Off</code>, <code>Up</code> or <code>Down</code>. <code>follow_vpn</code> runs every 5 seconds and after each settings change, and acts only when the policy or the VPN's state changed:</p>
+    <ol class="wk-steps">
+      <li><b>Report</b><p>The VPN's status goes to the core (<code>set_vpn_status</code>) for the UI.</p></li>
+      <li><b>Forwards off</b><p>The router's forwards are removed.</p></li>
+      <li><b>Native transport</b><p>The iroh endpoint restarts bound to the VPN's IPv4 address when it is up, and doesn't start at all while it is down: the kill switch.</p></li>
+      <li><b>WebRTC</b><p>A new policy restarts it; a changed VPN only makes it rescan its interfaces.</p></li>
+      <li><b>The rest</b><p>Forwarding and the home link follow.</p></li>
+    </ol>
+  </section>
+
+  <section class="wk-sec" id="window">
+    <h2>Window, tray and start-up</h2>
+    <p>The one window, <code>main</code>, is 560 × 860, at least 360 × 560, centered, and starts hidden. The two faces have sizes of their own: <code>COMPANION_SIZE</code> 560 × 860 and <code>FULL_SIZE</code> 1240 × 860. <code>size_for</code> only grows a window that is narrower than the full app's width, or shrinks one wider than the companion's; a window someone sized to fit stays as it is.</p>
+    <h3 id="window-tray">The tray</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Tray menu">
+      <table>
+        <thead><tr><th>Item</th><th>id</th><th>Does</th></tr></thead>
+        <tbody>
+          <tr><td>Show the companion</td><td><code>companion</code></td><td>Companion size, <code>#/companion</code>.</td></tr>
+          <tr><td>Open hoi in my browser</td><td><code>browser</code></td><td>Opens the pairing link while serving; otherwise shows the window.</td></tr>
+          <tr><td>Open the full app</td><td><code>full</code></td><td>Full size, <code>#/</code>.</td></tr>
+          <tr><td>Quit hoi</td><td><code>quit</code></td><td>Removes the router's forwards ("not two hours later"), then exits.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>A left click (button up) brings an open window to the front; a hidden one comes back as the companion when <code>settings.companion</code> is true, else as it was. Locked, there is only the unlock screen. While the tray icon exists, closing the window hides it instead of quitting, so communities stay reachable; without a tray ("no tray icon"), closing quits.</p>
+    <h3 id="window-start">Start at login and single instance</h3>
+    <ul>
+      <li><code>tauri_plugin_autostart</code> registers hoi with <code>MacosLauncher::LaunchAgent</code> and the argument <code>--hidden</code>: started at login, it stays in the tray with no window.</li>
+      <li><code>--start-at-login</code> registers autostart from outside, for an installer (<code>deploy/install</code> uses it for the role <code>companion</code>), and shows nothing.</li>
+      <li><code>tauri_plugin_single_instance</code> forwards a second launch to the running app: <code>--start-at-login</code> enables autostart, a <code>hoi://</code> argument opens that link, anything else shows the window.</li>
+      <li>Deep links (plugin config <code>"schemes": ["hoi"]</code>): <code>hoi://join?…</code> (or <code>hoi://join/?…</code>) opens <code>#/join?…</code>, <code>hoi://pair?…</code> opens <code>#/pair?…</code>; anything else is ignored. On Linux, and on Windows in debug builds, the scheme is registered at start.</li>
+    </ul>
+  </section>
+
+  <section class="wk-sec" id="config">
+    <h2>tauri.conf.json</h2>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Desktop configuration">
+      <table>
+        <thead><tr><th>Key</th><th>Value</th></tr></thead>
+        <tbody>
+          <tr><td><code>productName</code> · <code>version</code> · <code>identifier</code></td><td><code>hoi</code> · <code>1.0.0-preview.1</code> · <code>sh.hoi.desktop</code></td></tr>
+          <tr><td><code>bundle.targets</code></td><td><code>all</code>: <code>.dmg</code>/<code>.app</code>, <code>.msi</code>/<code>.exe</code>, <code>.AppImage</code>/<code>.deb</code>/<code>.rpm</code></td></tr>
+          <tr><td><code>bundle.category</code></td><td><code>SocialNetworking</code></td></tr>
+          <tr><td><code>license</code> · <code>homepage</code></td><td><code>AGPL-3.0-only</code> · <code>https://hoi.sh</code></td></tr>
+          <tr><td>Linux</td><td>deb section <code>net</code>, rpm release <code>1</code>, AppImage without the media framework</td></tr>
+          <tr><td>macOS</td><td>minimum 11.0; disk image 660 × 400 with the app at (180, 170) and Applications at (480, 170) on <code>installer/dmg-background.png</code></td></tr>
+          <tr><td>Windows (NSIS)</td><td><code>installMode: currentUser</code>, header and sidebar art, Start menu folder <code>hoi</code>, English only, no language selector</td></tr>
+          <tr><td>Updater</td><td>none configured: there are no automatic update checks</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 id="config-csp">The window's CSP</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Desktop CSP">
+      <table>
+        <thead><tr><th>Directive</th><th>Sources</th><th>Compared with the web build</th></tr></thead>
+        <tbody>
+          <tr><td><code>default-src</code>, <code>script-src</code>, <code>style-src</code>, <code>font-src</code></td><td><code>'self'</code></td><td>No <code>'wasm-unsafe-eval'</code>: no wasm runs here.</td></tr>
+          <tr><td><code>worker-src</code></td><td><code>'none'</code></td><td>No workers: the core and the miners are native.</td></tr>
+          <tr><td><code>img-src</code></td><td><code>'self' data: blob:</code></td><td>Same.</td></tr>
+          <tr><td><code>media-src</code></td><td><code>'self' blob:</code></td><td>Same.</td></tr>
+          <tr><td><code>connect-src</code></td><td><code>'self' ipc: http://ipc.localhost</code></td><td>No <code>ws:</code>, <code>wss:</code> or <code>https:</code>: the native side makes every connection. <code>scripts/tauri.mjs</code> adds one exact registry origin and the relay origins when they are configured.</td></tr>
+          <tr><td><code>object-src</code>, <code>base-uri</code>, <code>form-action</code></td><td><code>'none'</code></td><td>Same.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="wk-sec" id="capabilities">
+    <h2>Permissions</h2>
+    <p>The window's capabilities file grants the core set and nothing else:</p>
+    <div class="wk-code" data-lang="json" data-title="apps/desktop/src-tauri/capabilities/default.json"><pre><code>{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "The main window may call hoi's own commands and listen for core events. Nothing else: no shell, no file system, no HTTP from the UI.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}</code></pre></div>
+    <p>So the plugins (dialog, opener, autostart, deep link) are only reachable through hoi's own commands, which decide what they may do.</p>
+    <h3 id="capabilities-links">Which links open</h3>
+    <p><code>web_link(url)</code> allows <code>https://</code> anywhere, and <code>http://</code> only to <code>localhost</code> or <code>127.0.0.1</code> with a numeric port. The authority is parsed, not prefix-matched: a URL longer than 4 096 characters, with control characters or whitespace, or with an <code>@</code> in its authority is refused, so <code>http://localhost:1&#64;evil.example/</code> is not a local link. Anything else gets "Only web links open from here." The test <code>only_web_links_open_in_the_browser</code> pins the list, including <code>file:///etc/passwd</code> and <code>hoi://join?c=1</code> as refusals.</p>
+  </section>
+
+  <section class="wk-sec" id="build">
+    <h2>Building it</h2>
+    <p>Prerequisites: Node 22, pnpm 10, the Rust version in <code>core/rust-toolchain.toml</code> and Tauri's system libraries (on Linux <code>libwebkit2gtk-4.1-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev</code>).</p>
+    <div class="wk-code" data-lang="sh" data-title="apps/desktop"><pre><code>pnpm --filter @hoi/desktop dev      # the web UI on :5174 and the app around it
+pnpm --filter @hoi/desktop build    # bundles for this system
+pnpm --filter @hoi/desktop icons    # icon.svg → source.png → every platform size</code></pre></div>
+    <h3 id="build-tauri">scripts/tauri.mjs</h3>
+    <p>Every package script goes through this wrapper rather than the Tauri CLI directly, so the native policy and the web bundle agree:</p>
+    <ul>
+      <li><b>Registry</b>: when the registry address is set it must be <code>https:</code> (or <code>http:</code> on loopback) with no credentials, query or fragment, and its exact origin is merged into <code>connect-src</code>. No wildcard origins.</li>
+      <li><b>Relays</b>: each URL in the relay addresses is added the same way; the relative <code>/relay</code> is refused here ("Desktop relay URLs must be absolute HTTPS addresses.").</li>
+      <li><b>Windows bundles</b>: Windows Installer (<code>.msi</code>, WiX) takes numeric versions only, so <code>scripts/tauri-bundles.mjs</code> adds <code>--bundles nsis</code> to a Windows <code>build</code> whose version it refuses, such as <code>1.0.0-preview.1</code>, and prints why. Bundles chosen on the command line are left alone.</li>
+    </ul>
+    <h3 id="build-art">Icons and installer art</h3>
+    <p><code>scripts/icon-png.mjs</code> renders an icons folder's <code>icon.svg</code> to a 1024 px <code>source.png</code> with Playwright's Chromium (<code>CHROMIUM_PATH</code> picks another), then <code>tauri icon</code> makes every size; the node setup app passes its own folder. <code>scripts/installer-art.mjs</code> at the repository root draws both Tauri apps' installer pictures in the site's colors and fonts, committed so building needs no browser:</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Installer art">
+      <table>
+        <thead><tr><th>File</th><th>Size</th><th>Where it shows</th></tr></thead>
+        <tbody>
+          <tr><td><code>installer/header.bmp</code></td><td>150 × 57</td><td>NSIS, top of the inner pages (and the uninstaller's)</td></tr>
+          <tr><td><code>installer/sidebar.bmp</code></td><td>164 × 314</td><td>NSIS, welcome and finish pages</td></tr>
+          <tr><td><code>installer/dmg-background.png</code></td><td>660 × 400</td><td>The macOS disk image window</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 id="build-profile">Release profile and deny.toml</h3>
+    <p>The release profile is <code>lto = true</code>, <code>codegen-units = 1</code>, <code>opt-level = 3</code>, <code>strip = true</code>. <code>src-tauri/deny.toml</code> applies the core's cargo-deny policy with one difference: <code>unmaintained = "workspace"</code> flags unmaintained crates only when they are direct dependencies, because Tauri's GTK, zbus and URL-pattern stacks carry transitive ones the project doesn't control. Yanked crates are denied; licenses must be one of AGPL-3.0-only, Apache-2.0 (also with the LLVM exception), BSD-2-Clause, BSD-3-Clause, BSL-1.0, CC0-1.0, CDLA-Permissive-2.0, ISC, MIT, MIT-0, MPL-2.0, Unicode-3.0, Unlicense or Zlib at confidence 0.9; wildcards are denied; only crates.io is an allowed registry and unknown git sources are denied. See <a href="/wiki/supply-chain/">Supply chain</a>.</p>
+    <p><code>pnpm build:all --only app</code> copies this system's bundles into <code>builds/hoi-&lt;version&gt;/app/</code> as <code>hoi-desktop_&lt;version&gt;_&lt;os&gt;-&lt;arch&gt;…</code>; signed release builds come from the release workflow. See <a href="/wiki/releases/">Releases</a>.</p>
+  </section>
+
+  <section class="wk-sec" id="tests">
+    <h2>Tests</h2>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Desktop tests">
+      <table>
+        <thead><tr><th>Test</th><th>Pins down</th></tr></thead>
+        <tbody>
+          <tr><td><code>failed_flush_keeps_the_process_alive_until_storage_recovers</code></td><td>A lock with a failing disk doesn't restart; once storage works it does.</td></tr>
+          <tr><td><code>only_web_links_open_in_the_browser</code></td><td>The link rule above.</td></tr>
+          <tr><td><code>locked_recovery_requires_confirmation_and_only_removes_hoi_storage</code></td><td><code>RESET</code> is required, an unlocked core refuses, only the four database files go; a <code>.hoikey</code> beside them stays.</td></tr>
+          <tr><td><code>password_reopens_native_identity_and_data_errors_are_not_password_errors</code></td><td>The right passphrase reopens the same root key; a wrong one is <code>bad-passphrase</code> and changes nothing; a tampered <code>v:keys</code> cell is <code>saved-data</code>.</td></tr>
+          <tr><td><code>scripts/desktop-build.test.mjs</code>, <code>scripts/tauri-bundles.test.mjs</code></td><td>The desktop frontend builds without workers or wasm; which Windows bundles a version gets.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="wk-sec" id="next">
+    <h2>Read next</h2>
+    <div class="wk-cards">
+      <a class="wk-card g-coral" href="/wiki/web-app/"><i></i><b>Web app</b><span>The UI this window shows.</span></a>
+      <a class="wk-card g-sun" href="/wiki/hoi-node/"><i></i><b>hoi-node</b><span>The headless node, for a server.</span></a>
+      <a class="wk-card g-sky" href="/wiki/transports/"><i></i><b>Transports</b><span>iroh, the WebSocket link and WebRTC routes.</span></a>
+      <a class="wk-card g-mint" href="/wiki/supply-chain/"><i></i><b>Supply chain</b><span>cargo-deny, vendored patches and the sandbox.</span></a>
+    </div>
+  </section>
+</article>
+<!-- @wiki-close -->
+<!-- @include footer.html -->
+<script type="module" src="/src/pages/wiki.ts"></script>
+</body>
+</html>

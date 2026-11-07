@@ -1,0 +1,47 @@
+[package]
+name = "hoi-core"
+description = "The hoi node: composes types, crypto, validation, store, moderation, trust, spam and sync behind one API."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+sqlite = ["hoi-store/sqlite"]
+# UniFFI derives on the DTOs, for hoi-ffi (Swift, Kotlin).
+ffi = ["dep:uniffi"]
+
+[dependencies]
+hoi-types.workspace = true
+hoi-crypto.workspace = true
+hoi-validate.workspace = true
+hoi-store.workspace = true
+hoi-sync.workspace = true
+hoi-moderation.workspace = true
+hoi-trust.workspace = true
+hoi-spam.workspace = true
+blake3.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+zeroize.workspace = true
+subtle.workspace = true
+openmls.workspace = true
+openmls_rust_crypto.workspace = true
+openmls_basic_credential.workspace = true
+openmls_traits.workspace = true
+sha2.workspace = true
+loro.workspace = true
+p256.workspace = true
+uniffi = { version = "0.32", optional = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+openmls = { workspace = true, features = ["js"] }
+# RustCrypto's rand 0.8 stack uses getrandom 0.2 independently of hoi's newer RNG.
+getrandom02 = { package = "getrandom", version = "0.2", features = ["js"] }
+
+[dev-dependencies]
+hoi-store = { workspace = true, features = ["sqlite"] }
+image.workspace = true

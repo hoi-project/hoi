@@ -1,0 +1,25 @@
+# Repository labels. Apply with: node scripts/labels.mjs [--dry-run] (needs the GitHub CLI).
+# The script creates and updates these; it never deletes labels.
+- { name: bug,              color: d73a4a, description: "Something does not work as documented" }
+- { name: enhancement,      color: a2eeef, description: "New behaviour or an improvement" }
+- { name: docs,             color: 0075ca, description: "Documentation, wiki or spec" }
+- { name: needs-triage,     color: fbca04, description: "Not reviewed by a maintainer yet" }
+- { name: needs-decision,   color: d93f0b, description: "Needs a maintainer decision or an RFC before work starts" }
+- { name: good first issue, color: 7057ff, description: "Small, well-defined, a good start" }
+- { name: help wanted,      color: 008672, description: "A maintainer would welcome a pull request" }
+- { name: claimed,          color: c5def5, description: "Someone said they are working on it" }
+- { name: blocked,          color: b60205, description: "Waiting on something outside this issue" }
+- { name: duplicate,        color: cfd3d7, description: "Already reported or fixed" }
+- { name: wontfix,          color: ffffff, description: "Will not be changed" }
+- { name: security,         color: b60205, description: "Hardening. Report vulnerabilities privately, not in issues" }
+- { name: protocol,         color: 5319e7, description: "Wire format, records, validation or storage" }
+- { name: "area: core",     color: 1d76db, description: "Rust core, node, crypto" }
+- { name: "area: web",      color: 1d76db, description: "Browser app" }
+- { name: "area: site",     color: 1d76db, description: "Website and wiki" }
+- { name: "area: desktop",  color: 1d76db, description: "Desktop app" }
+- { name: "area: setup",    color: 1d76db, description: "hoi Node Setup" }
+- { name: "area: mobile",   color: 1d76db, description: "Mobile libraries" }
+- { name: "area: services", color: 1d76db, description: "Registry, relay, deployment" }
+- { name: "area: ci",       color: 1d76db, description: "Workflows, build and release tooling" }
+- { name: dependencies,     color: 0366d6, description: "Dependency updates" }
+- { name: release-blocker,  color: b60205, description: "Must be resolved before the next release" }

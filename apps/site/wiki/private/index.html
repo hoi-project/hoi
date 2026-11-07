@@ -1,0 +1,516 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <!-- @include head.html title="Private communities · hoi wiki" description="MLS groups, membership, keys and what each party can read." -->
+</head>
+<body class="wiki">
+<!-- @include header.html nav="wiki" -->
+<!-- @wiki-open -->
+<article class="wk-doc">
+  <!-- @wiki-crumbs -->
+  <h1>Private <span class="acc">communities</span></h1>
+  <p class="wk-lead">A private community is an MLS group whose group id is the community key. Members write the same signed records as anywhere else, but those records leave a device only inside MLS messages, sealed again for the epoch's room and padded to a few fixed sizes. This page follows the core's <code>private.rs</code>: the OpenMLS setup, how a device is bound to its person's key, inviting, posting, removing, what stays on the device and who can read what.</p>
+  <p class="wk-src-list">Source <a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/private.rs">hoi-core/src/private.rs</a> <a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/tests/private_mls.rs">tests/private_mls.rs</a> <a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/tests/private_isolation.rs">tests/private_isolation.rs</a> <a href="{{REPO_URL}}/blob/main/vendor/README.md">vendor/README.md</a> <a href="{{REPO_URL}}/blob/main/apps/web/src/lib/ui/PrivateGroup.svelte">apps/web/src/lib/ui/PrivateGroup.svelte</a></p>
+  <div class="wk-head-rule"></div>
+
+  <section class="wk-sec" id="overview">
+    <h2>What a private community is</h2>
+    <p>A public community syncs its records in the clear between devices (<a href="/wiki/sync/">Sync &amp; gossip</a>). A private one never does. Its records are ordinary signed records (<a href="/wiki/records/">Records &amp; encoding</a>) and every device still runs the full <a href="/wiki/validation/">validation pipeline</a> on them, but they reach other devices only inside an MLS group (RFC 9420) that holds only invited devices. The core implements this on OpenMLS, in <code>hoi-core/src/private.rs</code>.</p>
+    <ul>
+      <li><b>One group per community.</b> The MLS group id is the 32-byte community key. The community's genesis is a normal <code>community</code> record (<a href="/wiki/communities/">Communities &amp; the ledger</a>), but it travels only inside the group.</li>
+      <li><b>One owner.</b> <code>create_private_community</code> refuses co-owners and any threshold but 1 (<i>"Encrypted membership currently requires one owner."</i>). The device that created the group coordinates membership and cannot leave it.</li>
+      <li><b>Devices, not people, are members.</b> Each MLS leaf is one device, bound to its person's root key. A group holds at most 128 leaves.</li>
+      <li><b>No conversion.</b> A Welcome for a community this device already knows as public is refused (<i>"Public communities cannot become private."</i>). The owner of a members-only community (admission <code>invite</code> or <code>approve</code>) can make a <em>private copy</em> instead (<code>privateCopy</code>): a new group with the same name, description, color, limits and rules, whose membership follows its records. Posts stay where they were; people join the copy by request.</li>
+      <li><b>Unlisted.</b> A private community is never in discovery, has no registry registration or publication proof, no public join and no invite link or bundle export.</li>
+    </ul>
+    <h3 id="overview-parts">The moving parts</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Parts of a private community">
+      <table>
+        <thead><tr><th>Part</th><th>What it is</th><th>Where</th></tr></thead>
+        <tbody>
+          <tr><td>MLS group</td><td>Membership, epochs, and the encryption and signing of every message.</td><td><code>private.rs</code>, OpenMLS 0.9.2</td></tr>
+          <tr><td>Room</td><td>An Ed25519 key derived from each epoch's exporter secret. Its public half names the epoch's messages on a relay; it signs uploads and reads.</td><td><code>private.rs</code> (<code>Relay</code>)</td></tr>
+          <tr><td>Sealed object</td><td>One MLS message, length-prefixed, zero-padded and sealed with XChaCha20-Poly1305 under a per-epoch key.</td><td><code>Relay::seal</code></td></tr>
+          <tr><td>Mailboxes</td><td>Two to four public nodes the group agrees on, listed in its MLS group context. Each member writes into numbered slots there.</td><td><a href="/wiki/mailboxes/">Mailboxes &amp; encrypted relays</a></td></tr>
+          <tr><td>Encrypted relay</td><td>Optional opaque storage named at build time, used while a group has no mailboxes yet.</td><td><a href="/wiki/mailboxes/">Mailboxes &amp; encrypted relays</a></td></tr>
+          <tr><td>Pieces</td><td>Posts, comments, edits and media kept in pieces on holders; the group then carries only sealed pointers to them.</td><td><a href="/wiki/scatter/">Scattered delivery</a></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="wk-sec" id="mls">
+    <h2>OpenMLS and its settings</h2>
+    <p>The workspace pins every OpenMLS crate exactly. Two of them are vendored copies with an upstream migration applied (<a href="#vendor">below</a>).</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="OpenMLS crates">
+      <table>
+        <thead><tr><th>Crate</th><th>Version</th><th>Source</th></tr></thead>
+        <tbody>
+          <tr><td><code>openmls</code></td><td><code>=0.9.2</code></td><td>crates.io</td></tr>
+          <tr><td><code>openmls_traits</code></td><td><code>=0.6.0</code></td><td>crates.io</td></tr>
+          <tr><td><code>openmls_rust_crypto</code></td><td><code>=0.6.0</code></td><td><code>vendor/openmls_rust_crypto</code>, through <code>[patch.crates-io]</code></td></tr>
+          <tr><td><code>openmls_basic_credential</code></td><td><code>=0.6.0</code></td><td><code>vendor/openmls_basic_credential</code>, through <code>[patch.crates-io]</code></td></tr>
+          <tr><td><code>openmls_memory_storage</code></td><td>0.6.0 (lockfile)</td><td>crates.io; the provider's key–value storage</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Every group is made with one configuration:</p>
+    <div class="wk-code" data-lang="rust" data-title="core/crates/hoi-core/src/private.rs (trimmed)"><pre><code>const SUITE: Ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
+
+fn config() -&gt; MlsGroupCreateConfig {
+    let required = Extension::RequiredCapabilities(RequiredCapabilitiesExtension::new(&amp;REQUIRED, &amp;[], &amp;[]));
+    MlsGroupCreateConfig::builder()
+        .ciphersuite(SUITE)
+        .capabilities(profile_capabilities())
+        .with_group_context_extensions(Extensions::single(required).expect("a group context extension"))
+        .use_ratchet_tree_extension(true)
+        .wire_format_policy(PURE_CIPHERTEXT_WIRE_FORMAT_POLICY)
+        .max_past_epochs(0)
+        .sender_ratchet_configuration(SenderRatchetConfiguration::new(64, 4096))
+        .build()
+}</code></pre></div>
+    <div class="wk-table" tabindex="0" role="region" aria-label="MLS settings">
+      <table>
+        <thead><tr><th>Setting</th><th>Value</th><th>What it means here</th></tr></thead>
+        <tbody>
+          <tr><td>Ciphersuite</td><td><code>MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519</code></td><td>RFC 9420 suite 0x0001: X25519 HPKE, AES-128-GCM, SHA-256, Ed25519 signatures. Ed25519 is what hoi device keys already are, so a device's key is its MLS signature key. A key package of any other suite is refused.</td></tr>
+          <tr><td>Wire format</td><td><code>PURE_CIPHERTEXT_WIRE_FORMAT_POLICY</code></td><td>Commits and application messages alike are <code>PrivateMessage</code>s. A receiver refuses any other wire format, or a message whose group id is not the community.</td></tr>
+          <tr><td>Ratchet tree extension</td><td>on</td><td>The Welcome carries the tree, so a newcomer needs nothing else to join.</td></tr>
+          <tr><td>Past epochs kept</td><td><code>0</code></td><td>No key of an ended epoch stays. A message from an earlier epoch is noted as received and ignored.</td></tr>
+          <tr><td>Sender ratchet</td><td><code>(64, 4096)</code></td><td>Out-of-order tolerance 64 messages, maximum forward distance 4096.</td></tr>
+          <tr><td>Required capabilities</td><td>five extension types, from epoch 0</td><td>Every leaf must list all of them; MLS refuses to add a key package that lacks one.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 id="mls-capabilities">Required capabilities</h3>
+    <p>The types are in OpenMLS's <code>Unknown</code> range. A request from an app that lacks any of them is refused with <i>"This request comes from an app too old for private communities: they need to update it and ask again."</i></p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Required capabilities">
+      <table>
+        <thead><tr><th>Type</th><th>Constant</th><th>For</th></tr></thead>
+        <tbody>
+          <tr><td><code>0xff42</code></td><td><code>PROFILE_CAPABILITY</code></td><td>Profiles inside the group.</td></tr>
+          <tr><td><code>0xff43</code></td><td><code>PROFILE_COLOR_CAPABILITY</code></td><td>Profile colors.</td></tr>
+          <tr><td><code>0xff44</code></td><td><code>MAILBOX_CAPABILITY</code> / <code>MAILBOX_EXTENSION</code></td><td>The group context extension that carries the mailbox list, the drop key and its holders.</td></tr>
+          <tr><td><code>0xff45</code></td><td><code>SCATTER_CAPABILITY</code></td><td><code>pointer</code> payloads: posts kept in pieces.</td></tr>
+          <tr><td><code>0xff46</code></td><td><code>COMMITTERS_CAPABILITY</code></td><td>Several committing devices in a group whose membership follows its records, and going back to an earlier committer's commit of the same epoch.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 id="mls-storage">Where MLS state lives</h3>
+    <p>The provider is <code>OpenMlsRustCrypto</code> with its in-memory storage. The core keeps that storage as a list of key–value pairs in <code>PrivateState.storage</code>: <code>provider()</code> copies them into a fresh provider for each operation and <code>save()</code> copies them back, zeroizing the old values first. The whole <code>PrivateState</code> is saved as the JSON blob <code>mls</code> (<a href="#local">what is stored</a>).</p>
+  </section>
+
+  <section class="wk-sec" id="credentials">
+    <h2>Credentials bound to hoi keys</h2>
+    <p>Each leaf uses an MLS <code>BasicCredential</code> whose identity is a small JSON document. A leaf cannot gain owner powers by naming the owner's root: the credential must carry the device's own delegation, signed by that root.</p>
+    <div class="wk-code" data-lang="rust" data-title="core/crates/hoi-core/src/private.rs"><pre><code>/// A BasicCredential's identity is cryptographically bound to the hoi root's signed device
+/// blessing. A leaf cannot acquire owner powers by merely claiming the owner's root in JSON.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BoundCredential {
+    device: String,
+    root: String,
+    delegation: String,
+}</code></pre></div>
+    <dl class="wk-defs">
+      <dt>device<small>hex</small></dt><dd>The device's Ed25519 key. It must equal the leaf's MLS signature key.</dd>
+      <dt>root<small>hex</small></dt><dd>The person's root key.</dd>
+      <dt>delegation<small>base64url</small></dt><dd>The wire bytes of the device's <code>delegation</code> record (<a href="/wiki/identity/">Keys &amp; identity</a>). It must decode, its signature must verify, its author must be the device, and its root's consent must name <code>root</code>.</dd>
+    </dl>
+    <p>Every message's sender is checked again (<code>private_sender</code>) against what the device knows now:</p>
+    <ul>
+      <li>The root must not be burned, and the device must not be revoked or blessed by another root. A revocation always wins.</li>
+      <li>An expired delegation is not the end of a leaf: <i>"MLS credentials bind a key, not a permanently frozen authorization lifetime."</i> A later root-signed renewal for the same device and root, made after the original and expiring after it, with the global stamp, extends it. The outbox always counts the device's identity and current delegation among what it sends, so a renewal reaches the others; a committer whose own leaf's delegation has expired sends its renewal ahead of a commit (<code>queue_membership_renewal</code>).</li>
+      <li>A commit is followed only from a committing device whose delegation scope covers <code>moderate:&lt;community hex&gt;</code>, in both the leaf's original credential and the delegation the device holds now. A broader renewal does not widen the original leaf's scope.</li>
+    </ul>
+    <div class="wk-note info"><b>Note</b><p>Device delegations last 180 days by default (<code>DELEGATION_LIFETIME</code>). A member who was offline past that is recognised again once a renewal arrives; a test covers an offline member recovering after its original blessing expired.</p></div>
+  </section>
+
+  <section class="wk-sec" id="create">
+    <h2>Creating a group</h2>
+    <ol class="wk-steps">
+      <li><b>Check the owners</b><p>One owner, threshold 1, no co-owners.</p></li>
+      <li><b>Renew and sign</b><p>The device renews its delegation if due and builds its MLS signer from its device key and the bound credential.</p></li>
+      <li><b>Mark it private first</b><p><code>create_community_with_privacy(draft, true)</code> adds the key to <code>state.private_communities</code> before the genesis exists, so the genesis never takes a public path. A private community does not get open-community pieces settings; its posts go in pieces through the group anyway.</p></li>
+      <li><b>Make the group</b><p><code>MlsGroup::new_with_group_id</code> with the configuration above, group id = community key. Epoch 0 has one leaf: this device.</p></li>
+      <li><b>Save</b><p>A <code>SavedGroup</code> with <code>owner: true</code>; registration and publication proofs for the key are dropped; rules are set if the draft had any.</p></li>
+      <li><b>Choose mailboxes</b><p>From then on the owner's device looks for public nodes that keep pieces and lists two to four of them in the group context by a commit (<a href="/wiki/mailboxes/">Mailboxes</a>).</p></li>
+    </ol>
+    <div class="wk-seq" data-title="Creating a private group">
+lanes: Owner's app | Owner's core | Holders
+Owner's app -> Owner's core: <code>createPrivateCommunity</code> {name, description, color, limits, threshold: 1}
+Owner's core: refuses co-owners and any threshold but 1
+Owner's core: marks the key private, then signs and stores the genesis
+Owner's core: MLS group, group id = community key, epoch 0
+Owner's core --> Owner's app: the community view
+-- Choosing mailboxes --
+Owner's core -> Holders: links to public nodes that keep pieces
+Owner's core: picks 2 to 4, each in a place of its own
+Owner's core: commit: extension <code>0xff44</code> lists them (next epoch)
+Owner's app: shows "Choosing mailboxes" until then
+    </div>
+    <p>The web app's form (<code>PrivateStart.svelte</code>) creates the community with color <code>lilac</code>, the default limits with <code>maxRetention</code> set to 30 days, and threshold 1, then starts syncing it.</p>
+  </section>
+
+  <section class="wk-sec" id="invite">
+    <h2>Inviting and joining</h2>
+    <p>Joining takes a request from the newcomer and an invitation back. The request binds the invitation to one device: the Welcome inside opens only with that device's key package.</p>
+    <h3 id="invite-request">The join request</h3>
+    <p><code>privateJoinRequest</code> returns <code>hoi:private-request:</code> followed by base64url (no padding) of this JSON:</p>
+    <dl class="wk-defs">
+      <dt>v<small>u8</small></dt><dd><code>1</code>.</dd>
+      <dt>package<small>base64url</small></dt><dd>The TLS-serialized MLS <code>KeyPackage</code>: suite <code>SUITE</code>, leaf capabilities listing all five required types, the bound credential.</dd>
+      <dt>records<small>2 × base64url</small></dt><dd>The person's <code>identity</code> record and the device's <code>delegation</code>.</dd>
+      <dt>pickup<small>{key, holders}</small></dt><dd>A fresh one-time X25519 public key and up to 4 holders (endpoint, up to 4 routes of at most 128 bytes each, no endpoint twice) that the newcomer's app reaches. The committer stores the invitation there, sealed to the key (<a href="/wiki/mailboxes/">picking it up</a>).</dd>
+    </dl>
+    <p>A device has one request out at a time. Asking again within 7 days returns the same request; after that its key package is deleted and a new one built. The pickup key's seed stays on the device (and is zeroized when the request goes).</p>
+    <h3 id="invite-check">The owner's check</h3>
+    <p><code>privatePreviewRequest</code> runs <code>checked_request</code> and returns <code>{device, root}</code>. It refuses a request unless: <code>v</code> is 1; there are exactly two records; the pickup reads well; the key package validates for MLS 1.0 in <code>SUITE</code> and lists every capability; its credential is bound and its signature key is the device; the identity is authored by the root and passes its identity-work check; the delegation is authored by the device, consents to the root and has not expired; both records are within the clock window; and the device is not revoked. The app shows the person key and device key and asks the owner to verify the key through a trusted conversation before approving.</p>
+    <h3 id="invite-commit">Adding the device</h3>
+    <ol class="wk-steps">
+      <li><b>May this device commit?</b><p>The owner's device, or in a group that follows its records a committer in line once the group has mailboxes (<a href="#invite-follows">below</a>).</p></li>
+      <li><b>Admit first, where records decide</b><p>A banned person is refused. A person not yet admitted gets an <code>admit</code> ledger entry before the commit.</p></li>
+      <li><b>Room for one more</b><p>Refused at 128 members or for a device already in the group.</p></li>
+      <li><b>Nothing out of order</b><p>Anything waiting to go out must already have its place ahead of the commit (<code>ready_for_commit</code>): nothing pending, or every pending object assigned a mailbox slot. On a relay the app sends what waits first.</p></li>
+      <li><b>Commit</b><p><code>add_members</code> makes a commit and a Welcome. The commit is sealed for the room of the epoch it ends, so members still there read it; then it is merged.</p></li>
+      <li><b>Bootstrap</b><p>A <code>bootstrap</code> payload (v 2) with this device's identity and delegation and the community's genesis (and, from a moderator's device, the <code>mod-add</code> that made its person one, with its signer's records) is sealed for the new epoch's room and queued. The same sealed bytes go into the invitation.</p></li>
+      <li><b>History again</b><p>The newcomer's identity and delegation are ingested, and <code>send_all_again</code> makes this device resend the whole live history into the new room: the newcomer reads only from its own epoch on.</p></li>
+      <li><b>Invitation</b><p><code>hoi:private:</code> + base64url of <code>{"v": 2, "welcome": …, "bootstrap": …}</code>. It is also queued for pickup: sealed to the request's one-time key and stored on the holders the request named.</p></li>
+    </ol>
+    <h3 id="invite-join">Joining</h3>
+    <p><code>privateJoin</code> processes the Welcome on a temporary provider and changes nothing durable until every check passes:</p>
+    <ul>
+      <li>The invitation is v 2; the Welcome is a Welcome; its group id is a community this device does not know as public, and is not already an active group here.</li>
+      <li>Every member's credential in the new tree is bound and valid.</li>
+      <li>The bootstrap opens with the new epoch's room secret, is a <code>PrivateMessage</code> of this group, an application message, and a <code>bootstrap</code> payload v 2 for this community.</li>
+      <li>The genesis it carries has one owner and threshold 1. From the owner's device the bootstrap holds exactly three records (genesis, identity, delegation), each with the global stamp; from a moderator's device at most 16, which must include the moderator's identity and delegation and a <code>mod-add</code> naming them.</li>
+      <li>The records are ingested; if any fails (or the moderator's role does not replay), every record the join added is removed again and the community forgotten.</li>
+    </ul>
+    <div class="wk-seq" data-title="Inviting a device">
+lanes: Newcomer | Owner | Holders | Members
+Newcomer: <code>privateJoinRequest</code>: key package, identity, delegation, pickup key
+Newcomer -> Owner: <code>hoi:private-request:…</code>, over any channel the two trust
+Owner: <code>privatePreviewRequest</code>: checks it, shows the person and device keys
+Owner: <code>add_members</code>: a commit and a Welcome
+Owner => Holders: the commit, sealed for room <i>e</i>
+Owner => Holders: bootstrap and live history, sealed for room <i>e</i>+1
+Owner => Holders: the invitation sealed to the pickup key, at pickup slots
+Owner -> Newcomer: <code>hoi:private:…</code> {welcome, bootstrap}, or the app picks it up
+Newcomer: Welcome processed; bootstrap opened with epoch <i>e</i>+1's key
+Newcomer: genesis and the owner's records checked and stored
+Holders -> Members: the commit, read in room <i>e</i>
+Members: merge, move to room <i>e</i>+1, send their own records again
+Holders => Newcomer: the history, read in room <i>e</i>+1
+    </div>
+    <h3 id="invite-follows">When membership follows the records</h3>
+    <p>When a private community's admission limit is <code>invite</code> or <code>approve</code> (<code>follows_records</code>), who is in the MLS group is decided by the community's own records, as for any members-only community (<a href="/wiki/standing/">Standing &amp; review</a>):</p>
+    <ul>
+      <li><b>Every member checks every commit</b> (<code>check_record_commit</code>). Each person added must be admitted by the records this device holds and not banned; each member removed must be excluded: banned, identity burned, or device revoked or bound to another person. Otherwise the commit is <code>private-pending</code> (its records may be on the way) and is never followed if they do not come. The committer sends the backing records (identity, delegation, positive vouches and <code>admit</code> entries for an addition; bans and revocations for a removal, at most 64) in the old room ahead of the commit.</li>
+      <li><b>Anyone can pass a request on</b> (<code>privatePassRequest</code>). In an <code>invite</code> community the member who passes it vouches for the person: the vouch is the invitation. The request goes into the group as a <code>request</code> payload; committing devices keep up to 32 per group for 7 days; the member who passed it sends it again in each new epoch until the device is in the group.</li>
+      <li><b>Several devices commit, in a line.</b> The owner's devices first (since the community began), then moderators' devices by the time of the <code>mod-add</code> that made their person one, then by the age of the blessing in the leaf. Only leaves whose delegation covers <code>moderate:&lt;community&gt;</code> and that the records do not exclude count. Moderators' devices commit only once the group uses mailboxes. Every member holding the same records computes the same line.</li>
+      <li><b>Turns.</b> The first in line makes a change at once; the device at place <i>r</i> makes it only after <i>r</i> × <code>TURN</code> (3600 s) of silence from those ahead. A committer changes membership by itself only after reading the epoch at least <code>CATCH_UP</code> (60 s) with its mailboxes answering, and one back from a silence of more than 300 s catches up first.</li>
+      <li><b>Contested epochs.</b> A member that follows a later committer's commit keeps that epoch's MLS state for <code>CONTEST</code> (86,400 s) and keeps reading the slots of the committers ahead. If an earlier committer's commit of the same epoch turns up there and the records back it, it counts instead: the device goes back to that epoch, follows it, drops what it queued and sends everything again; invitations made in the abandoned branch are let go. A device added by the losing commit asks again, and within a day of first joining it takes a newer invitation.</li>
+      <li><b>Invitations travel in the group.</b> A committing device that adds someone whose request is waiting (<code>follow_records</code>, one change a round) also puts the invitation into the group as a <code>welcome</code> payload, so any member's app shows it ready to hand on in case the pickup fails.</li>
+      <li><b>The drop key.</b> The mailbox list also carries the group's drop key (Ed25519, public part) and the committer devices that hold its secret. Each committer device announces an X25519 seal key derived from its device key (<code>sealKey</code>) in each epoch it is in line; the secret is sealed to it with HPKE (<code>dropKey</code>, info <code>hoi drop key v1</code>, bound to the community, the device and the public key). It lets committers drop a removed post's pieces from holders (<a href="/wiki/scatter/">Scattered delivery</a>). A new key is made when a device it was given to leaves the line.</li>
+    </ul>
+  </section>
+
+  <section class="wk-sec" id="epochs">
+    <h2>Epochs, rooms and keys</h2>
+    <p>Every commit starts a new MLS epoch, and everything a carrier can see is derived from the epoch's exporter secret. A device that is not a member of the epoch derives none of it; knowing the community key derives nothing either (a test builds a room from the community key and checks it differs).</p>
+    <div class="wk-code" data-lang="rust" data-title="core/crates/hoi-core/src/private.rs (trimmed)"><pre><code>const RELAY_LABEL: &amp;str = "hoi relay v2";
+const SEAL_CONTEXT: &amp;str = "hoi relay v2 object";
+
+fn relay(p: &amp;OpenMlsRustCrypto, g: &amp;MlsGroup) -&gt; R&lt;Relay&gt; {
+    let mut exported = g.export_secret(p.crypto(), RELAY_LABEL, &amp;[], 32).map_err(mls)?;
+    let secret: [u8; 32] = exported.as_slice().try_into().map_err(mls)?;
+    exported.zeroize();
+    Ok(Relay::from_secret(secret))
+}
+impl Relay {
+    fn from_secret(secret: [u8; 32]) -&gt; Relay {
+        let mut seed = blake3::derive_key("hoi relay v2 room key", &amp;secret);
+        let key = Keypair::from_secret(&amp;seed);
+        seed.zeroize();
+        Relay { key, secret }
+    }
+}</code></pre></div>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Per-epoch values">
+      <table>
+        <thead><tr><th>Value</th><th>Derivation</th><th>Used for</th></tr></thead>
+        <tbody>
+          <tr><td>Relay secret</td><td>MLS exporter, label <code>hoi relay v2</code>, empty context, 32 bytes</td><td>The root of everything below; zeroized when dropped.</td></tr>
+          <tr><td>Room key</td><td>Ed25519 seeded by BLAKE3 <code>derive_key("hoi relay v2 room key", secret)</code></td><td>Its public half, in hex, is the room id. It signs every upload and read, for every member alike.</td></tr>
+          <tr><td>Object key</td><td>BLAKE3 <code>derive_key("hoi relay v2 object", secret)</code>, XChaCha20-Poly1305</td><td>Seals each padded MLS message (<code>hoi_crypto::sealed</code>, AAD = the context string).</td></tr>
+          <tr><td>Slot key</td><td>BLAKE3 <code>derive_key("hoi mailbox slot v1", secret)</code></td><td>Locators of the epoch's mailbox slots and bell.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 id="epochs-commit">What a commit changes</h3>
+    <ul>
+      <li>The commit is sealed for the room of the epoch it <em>ends</em>: members still in that epoch read it there and move on.</li>
+      <li>A newcomer's Welcome is for the new epoch; it never sees an earlier room.</li>
+      <li>A removed device reads its removal in the old room and cannot derive the next. It can still sign for the old room until those objects expire, which reveals nothing new and which other members no longer read.</li>
+      <li>A message from a later epoch than this device's is <code>private-pending</code> (<i>"An earlier encrypted membership update is still missing."</i>) and is tried again later; one from an earlier epoch is remembered and dropped.</li>
+    </ul>
+    <h3 id="epochs-resend">What goes again after a commit</h3>
+    <p>A message sent in an epoch may land after the commit that ended it, where members who moved on never read it. So each device remembers in which epoch each record or media item first went (<code>sent_in</code>) and sends some of it again:</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Resending after a commit">
+      <table>
+        <thead><tr><th>Event</th><th>What this device sends again</th></tr></thead>
+        <tbody>
+          <tr><td>It made a commit that adds someone</td><td>Everything it has (<code>send_all_again</code>).</td></tr>
+          <tr><td>It followed someone else's commit that adds</td><td>What it first sent in the ended epoch, and all of its own: its records, its person's identity, its delegation and its own posts' media.</td></tr>
+          <tr><td>It followed someone else's commit that removes, or changes the mailbox list</td><td>Only what it first sent in the ended epoch.</td></tr>
+          <tr><td>It made a commit that removes, or changes the mailbox list</td><td>Nothing: everything it queued went ahead of its commit, where members read it.</td></tr>
+          <tr><td>Objects in its outbox expired unsent</td><td>Everything.</td></tr>
+          <tr><td>It went back to an earlier committer's commit</td><td>Everything; its outbox is cleared.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="wk-sec" id="posting">
+    <h2>Posting: what leaves the device</h2>
+    <p>A post is written as usual and stored locally first. What leaves the device is made by <code>private_outbox</code>, which the app (or the mailbox loop, every 15 s) calls:</p>
+    <ol class="wk-steps">
+      <li><b>The record</b><p>A normal signed and stamped record (<a href="/wiki/stamps/">Stamps &amp; work</a>), in the local store. A device without the group's keys refuses to write one.</p></li>
+      <li><b>Gather</b><p>The outbox collects what has not gone out in this epoch: the device's identity and delegation, the carriers (identity and delegation records) of every record, the genesis, and every forwardable record of the community, ordered carriers first, then the genesis, then by <code>created_at</code>.</p></li>
+      <li><b>Pieces or whole</b><p>When the device can keep things in pieces now (<code>can_scatter</code>), each post, comment and edit becomes an object of its own, kept in pieces on holders, and attachments go in raw slices; the group then gets <code>pointer</code> payloads. Everything else (votes, deletions, profiles, a device's own authorization records) goes whole, in <code>records</code> payloads of at most 256 KiB of wire bytes each; attachments that go whole go in 256 KiB <code>media</code> chunks.</p></li>
+      <li><b>MLS</b><p>Each payload is JSON, made into an MLS application message (<code>create_message</code>: AES-128-GCM, signed by the device's leaf) and TLS-serialized.</p></li>
+      <li><b>Seal for the room</b><p><code>u32 length ‖ message ‖ zeros</code> to a padded size, sealed under the epoch's object key. The id is the SHA-256 of the sealed bytes; it expires 30 days on (<code>RETENTION</code>); the room key signs <code>hoi relay object v2\n&lt;room&gt;\n&lt;id&gt;\n&lt;expires&gt;\n&lt;size&gt;</code>.</p></li>
+      <li><b>Out</b><p>The <code>CipherObject</code> waits in the group's outbox (at most 64) until a mailbox quorum or every configured relay has it, then <code>privateAck</code> drops it.</p></li>
+    </ol>
+    <div class="wk-bytes" data-title="A sealed object, as mailboxes and relays store it">
+nonce | 24 B | sun | 2 | random XChaCha20 nonce
+length | 4 B | coral | 1 | u32 BE length of the MLS message
+MLS message | n B | lilac | 5 | TLS-serialized <code>PrivateMessage</code>: group id, epoch and content type stay inside
+zeros | to size | mute | 2 | padding, checked to be zero
+tag | 16 B | peach | 2 | Poly1305 tag; AAD is <code>hoi relay v2 object</code>
+    </div>
+    <p>Sizes are at least 4 KiB with at most four significant bits: 4,096, 4,608 … 7,680, 8,192, 9,216 … up to 1 MiB, 65 sizes in all, at most one eighth above the content past 4 KiB. The longest MLS message one object holds is 1,048,576 − 44 bytes.</p>
+    <div class="wk-code" data-lang="rust" data-title="core/crates/hoi-core/src/private.rs"><pre><code>/// The smallest size of at least 4 KiB with at most four significant bits that holds `size`.
+fn padded(size: usize) -&gt; usize {
+    let size = size.max(PAD_MIN);
+    let step = 1usize &lt;&lt; (usize::BITS - 4 - size.leading_zeros());
+    size.div_ceil(step) * step
+}</code></pre></div>
+    <h3 id="posting-payloads">Payloads</h3>
+    <p>Payloads are JSON objects tagged by <code>type</code>; unknown fields are refused. Records and bytes are base64url, ids hex.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Group payloads">
+      <table>
+        <thead><tr><th><code>type</code></th><th>Fields</th><th>Carries</th></tr></thead>
+        <tbody>
+          <tr><td><code>bootstrap</code></td><td><code>v</code> 2, <code>community</code>, <code>records</code></td><td>A newcomer's first records: the genesis and the inviting device's identity and delegation (and a moderator's role proof).</td></tr>
+          <tr><td><code>records</code></td><td><code>v</code> 1, <code>community</code>, <code>records</code> (at most 2048)</td><td>Signed records; each must belong to this community or be an identity, delegation or revoke.</td></tr>
+          <tr><td><code>media</code></td><td><code>v</code> 1, <code>community</code>, <code>hash</code>, <code>total</code> (at most 16 MiB), <code>index</code>, <code>bytes</code>, <code>posts</code> (at most 64)</td><td>One 256 KiB chunk of an attachment, for the posts that use it.</td></tr>
+          <tr><td><code>pointer</code></td><td><code>v</code> 1, <code>community</code>, <code>pointers</code> (at most 64)</td><td>Sealed manifests of objects kept in pieces, or a repair's update of one.</td></tr>
+          <tr><td><code>request</code></td><td><code>v</code> 1, <code>community</code>, <code>request</code> (at most 64 KiB)</td><td>A join request a member passes on.</td></tr>
+          <tr><td><code>welcome</code></td><td><code>v</code> 1, <code>community</code>, <code>device</code>, <code>invitation</code> (at most 256 KiB)</td><td>An invitation a committing device made, for anyone to hand on. Taken only from a committer.</td></tr>
+          <tr><td><code>sealKey</code></td><td><code>v</code> 1, <code>community</code>, <code>key</code></td><td>A committer device's 32-byte X25519 seal key.</td></tr>
+          <tr><td><code>dropKey</code></td><td><code>v</code> 1, <code>community</code>, <code>to</code>, <code>key</code>, <code>sealed</code></td><td>The group's drop key for one committer device: its public part and its sealed secret.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="wk-seq" data-title="Posting in a private group">
+lanes: Author's app | Author's core | Mailboxes or relay | Member's core
+Author's app -> Author's core: <code>createPost</code> {title, text, media}
+Author's core: signs and stamps the record, stores it
+Author's core: outbox: records, media chunks or pointers to pieces
+Author's core: MLS application message for epoch <i>e</i>
+Author's core: pads it, seals it for room <i>e</i>, signs with the room key
+Author's core => Mailboxes or relay: sealed object, 4 KiB to 1 MiB
+Mailboxes or relay --> Author's core: stored: the object is acknowledged
+Member's core -> Mailboxes or relay: reads room <i>e</i>: bell and slots, or a signed listing
+Mailboxes or relay => Member's core: the sealed object
+Member's core: opens it with room <i>e</i>'s key; MLS decrypts and checks the sender
+Member's core: validates every record, stores the post, rebuilds media from its chunks
+    </div>
+    <h3 id="posting-receive">Receiving</h3>
+    <p><code>privateReceive</code> takes one sealed object (base64url, at most 4/3 of 1 MiB plus 8 characters). Its SHA-256 id is skipped if already received. The object must have a padded size and open under this epoch's key with zero padding and a length inside it; the MLS message must be a <code>PrivateMessage</code> of this group and not from a later epoch. Then:</p>
+    <ul>
+      <li><b>Application messages</b>: the sender's credential is checked; a renewal riding in the same payload is taken first. <code>records</code> and <code>bootstrap</code> are ingested from <code>Source::PrivateRelay</code>, which runs full validation and never gossips; <code>media</code> chunks are kept until the item is whole (at most 32 MiB of partial attachments), and only while a forwardable post of this community uses the hash; <code>pointer</code>, <code>request</code>, <code>welcome</code>, <code>sealKey</code> and <code>dropKey</code> go to their own handlers.</li>
+      <li><b>Commits</b>: the sender must be a committer in this epoch's line with membership permission, and, where records decide, the records must back the commit. After merging, every member's credential is checked again; if this device is no longer active, its outbox and partial media are cleared: <i>"Data made before revocation must never be published after removal."</i></li>
+      <li><b>Anything else</b> is refused with <code>private-invalid</code>: <i>"This encrypted message could not be authenticated."</i></li>
+    </ul>
+    <h3 id="posting-limits">Limits</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Private group limits">
+      <table>
+        <thead><tr><th>Constant</th><th>Value</th><th>What it bounds</th></tr></thead>
+        <tbody>
+          <tr><td><code>MAX_OBJECT</code></td><td>1 MiB</td><td>One sealed object; codes longer than 2 MiB are refused before decoding.</td></tr>
+          <tr><td><code>PAD_MIN</code></td><td>4096 B</td><td>The smallest object.</td></tr>
+          <tr><td><code>MAX_PENDING</code></td><td>64</td><td>Objects waiting in one group's outbox (<code>private-pending</code>: <i>"Synchronize pending encrypted data first."</i>).</td></tr>
+          <tr><td><code>MAX_RECEIVED</code></td><td>4096</td><td>Object ids remembered as received, oldest dropped first.</td></tr>
+          <tr><td><code>CHUNK</code></td><td>256 KiB</td><td>A <code>records</code> batch, and a <code>media</code> chunk.</td></tr>
+          <tr><td><code>RETENTION</code></td><td>30 days</td><td>Expiry of every object this device makes.</td></tr>
+          <tr><td><code>MAX_READS</code></td><td>65</td><td>Read signatures one <code>privateRead</code> call makes.</td></tr>
+          <tr><td>Members</td><td>128</td><td>Leaves in one group.</td></tr>
+          <tr><td><code>MAX_REQUESTS</code>, <code>REQUEST_TTL</code></td><td>32, 7 days</td><td>Join requests a committer keeps per group, and for how long.</td></tr>
+          <tr><td><code>MAX_MEDIA_POSTS</code>, <code>MAX_POINTERS</code></td><td>64, 64</td><td>Posts one media payload names; pointers in one payload.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="wk-sec" id="removal">
+    <h2>Removing a member</h2>
+    <p><code>privateRemove(community, device)</code> takes one device out of the group:</p>
+    <ol class="wk-steps">
+      <li><b>Checks</b><p>Only a committing device; never its own device (<i>"Keep this device in the community while managing other devices."</i>). Where records decide, the person must already be excluded: <i>"Membership here follows the community's records: ban this person first, and their devices leave."</i> The committers' devices then remove excluded members by themselves, in their turns.</p></li>
+      <li><b>Order</b><p>As for an addition, everything pending must be ordered ahead of the change, and a renewal goes first if needed. Where records decide, the bans of the person and revocations by them go in the old room ahead of the commit.</p></li>
+      <li><b>Commit</b><p><code>remove_members</code>; the commit is sealed for the room it ends and merged. The group is in a new epoch with a new room. Nothing is sent again by the committer.</p></li>
+      <li><b>The removed device</b><p>It reads the commit in the old room, merges it, and is no longer active: <code>active</code> false, <code>room</code> empty. It cannot sign reads or open new objects, and its queued objects are cleared.</p></li>
+    </ol>
+    <div class="wk-seq" data-title="Removing a device">
+lanes: Owner | Mailboxes or relay | Removed device | Other members
+Owner: <code>privateRemove</code>: a committer, not its own device
+Owner: where records decide, the person is banned or revoked first
+Owner => Mailboxes or relay: backing records, then the commit, sealed for room <i>e</i>
+Owner: merges: epoch <i>e</i>+1, room <i>e</i>+1
+Mailboxes or relay -> Removed device: the commit, read in room <i>e</i>
+Removed device: merges: no longer active, no room, outbox cleared
+Mailboxes or relay -> Other members: the commit, read in room <i>e</i>
+Other members: merge, move to room <i>e</i>+1, resend what went in epoch <i>e</i>
+Owner => Mailboxes or relay: new posts, sealed for room <i>e</i>+1
+Removed device .. Other members: cannot derive room <i>e</i>+1 or open its objects
+    </div>
+    <div class="wk-note limit"><b>Limit</b><p>Removal changes future keys, not copies already received. A removed device keeps what it read while it was a member, and any member can keep copies. The app says so: <i>"Members can keep what they read. Removing a device protects new posts, not copies already received."</i></p></div>
+    <p>A removed device can come back only with a fresh request and a new invitation. A member can also leave on its own device (<code>leave</code>): its MLS group and group state are deleted and the community stays listed as a former membership; the owner's coordinating device cannot leave.</p>
+  </section>
+
+  <section class="wk-sec" id="local">
+    <h2>What is stored on the device</h2>
+    <p>Only invited devices ever hold readable content or keys. On each device the core keeps:</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="What a device stores">
+      <table>
+        <thead><tr><th>Where</th><th>What</th></tr></thead>
+        <tbody>
+          <tr><td>Blob <code>mls</code> (<code>PrivateState</code>)</td><td>The OpenMLS storage pairs: group states, epoch secrets, the device's leaf keys, the pending key package. Per group a <code>SavedGroup</code>. The pending join request with its pickup seed. Requests kept as a committer, requests passed on, committers' seal keys, invitations to hand on, when each change became due, and contested epochs' MLS state.</td></tr>
+          <tr><td><code>SavedGroup</code></td><td><code>owner</code>; <code>sent_records</code>, <code>sent_media</code> and <code>sent_in</code> (what went out, and in which epoch); <code>received</code> (up to 4096 object ids); <code>objects</code> (the outbox, at most 64 sealed objects); <code>partial</code> (attachments being rebuilt).</td></tr>
+          <tr><td>Local state</td><td><code>private_communities</code> (the marker that keeps a community private even without its keys), <code>private_carriers</code> (identity records first learned inside a group), <code>private_blobs</code> (attachment hashes learned privately).</td></tr>
+          <tr><td>Record store</td><td>The decrypted records and attachments themselves, as for any community, subject to the community's expiry (<a href="/wiki/expiry/">Expiry &amp; removal</a>).</td></tr>
+          <tr><td>Blob <code>scatter</code></td><td>Mailbox progress (slots being written, what was read, bells, rings), invitations stored for pickup, objects kept in pieces, and drop keys held.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Secrets are zeroized where they are dropped: the pickup seed, the relay secret, storage values replaced on save, contested epochs let go. In the browser these blobs live in IndexedDB behind the vault, which encrypts saved data under the person's passphrase (<a href="/wiki/storage/">Storage</a>, <a href="/wiki/web-app/">Web app</a>). Nothing private is in a device-link approval or an identity backup: both leave out private groups' geneses.</p>
+    <div class="wk-note warn"><b>Missing keys</b><p>If the <code>mls</code> blob is lost, the marker still stands: the community stays private, unlisted and unwritable on that device (<i>missing keys never allow new local private writes</i>), and its genesis cannot be imported in the clear.</p></div>
+  </section>
+
+  <section class="wk-sec" id="isolation">
+    <h2>Isolation from public communities</h2>
+    <p>Private records live in the same store as public ones, so the code keeps every plaintext path closed to them. <code>tests/private_isolation.rs</code> checks each:</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Isolation tests">
+      <table>
+        <thead><tr><th>Test</th><th>What it shows</th></tr></thead>
+        <tbody>
+          <tr><td><code>private_marker_hides_catalog_hello_and_routes_even_without_keys</code></td><td>No bootstrap hints, WebRTC candidates or community hints for it; not in discovery; registration, publication and public join refused; no hello names it, in the clear or as a salted hash; an unauthenticated client is told nothing.</td></tr>
+          <tr><td><code>hostile_peer_cannot_fetch_or_offer_private_records_by_known_ids</code></td><td>A peer that names the community, or knows record ids, gets no <code>have</code>, <code>range</code>, catalog entry or records; its <code>want</code>, <code>have</code> and <code>range</code> messages get no answer and cause no request.</td></tr>
+          <tr><td><code>raw_private_records_are_rejected_but_authenticated_decryption_keeps_validation</code></td><td>A record of the community from a peer, an import or local code without keys is refused; only <code>Source::PrivateRelay</code> takes it, and still validates it.</td></tr>
+          <tr><td><code>private_media_never_uses_raw_blob_or_fetch_messages</code></td><td>No <code>bwant</code> is answered or sent for its attachments, and a raw <code>blob</code> cannot add one.</td></tr>
+          <tr><td><code>decrypted_global_identity_records_do_not_gossip_to_public_connections</code></td><td>Identity and delegation records learned inside a group are not gossiped or served, unless they are published in full independently.</td></tr>
+          <tr><td><code>missing_mls_blob_does_not_erase_persisted_private_boundaries</code></td><td>Without the <code>mls</code> blob the community stays private and unwritable.</td></tr>
+          <tr><td><code>ordinary_device_link_and_identity_backup_exclude_private_group_geneses</code></td><td>A linked device or a restored backup gets public communities, not private ones.</td></tr>
+          <tr><td><code>public_media_references_cannot_exfiltrate_private_blob_bytes</code></td><td>A public post that names a private attachment's hash cannot make the device serve its bytes, even after a restart; only a deliberate public post with the bytes discloses them.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="wk-sec" id="who-reads">
+    <h2>Who can read what</h2>
+    <div class="wk-table" tabindex="0" role="region" aria-label="What each party can read">
+      <table>
+        <thead><tr><th>Party</th><th>Sees</th><th>Does not see</th></tr></thead>
+        <tbody>
+          <tr><td>Members of the current epoch</td><td>Every record and attachment, the member list (device and person keys), the mailboxes and the room.</td><td>Messages of epochs before they joined; members resend the live history into their epoch instead.</td></tr>
+          <tr><td>A removed device</td><td>What it received while a member, which it can keep.</td><td>The next room, anything sent after its removal, later members.</td></tr>
+          <tr><td>Mailbox holders</td><td>Sealed objects of padded sizes under random locators, their expiry days and stamps, and the address of the link a request came over (a forwarder's, where one is used).</td><td>The community key, the room, the MLS header, member keys, content, which locators belong to one group.</td></tr>
+          <tr><td>An encrypted relay's operator</td><td>One room key per epoch, padded sizes, object counts per room, upload and read times, expiry, and the network address and timing of each request.</td><td>The community key, member keys, MLS headers, content. Rooms of one group share no identifier, though uploads from the same addresses, and the number of objects resent after a commit, can hint at a group.</td></tr>
+          <tr><td>Network observers</td><td>Addresses, timing and sizes of encrypted links (<a href="/wiki/transports/">Transports</a>).</td><td>Anything inside them.</td></tr>
+          <tr><td>Someone with the community key, or an invitation meant for another device</td><td>Nothing: the room derives from the epoch secret, and a Welcome opens only with the key package's private keys.</td><td>Any room or object.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>The end-to-end browser test <code>scripts/e2e-private-relay.mjs</code> checks this against a real relay: stored bodies contain no title, text, community name, attachment bytes, community key or device key; an unrelated device cannot open an intercepted invitation, decrypt a message or sign a read.</p>
+  </section>
+
+  <section class="wk-sec" id="vendor">
+    <h2>Vendored crypto patches</h2>
+    <p>Two OpenMLS crates are local copies of their published 0.6.0 source (OpenMLS commit <code>3a3e35de</code>) with upstream changes applied, through <code>[patch.crates-io]</code> in both application workspaces. <code>vendor/README.md</code> calls them temporary, locally maintained patches, not new crypto implementations or an audited fork, to be replaced by reviewed upstream releases when compatible ones exist.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Vendored OpenMLS crates">
+      <table>
+        <thead><tr><th>Directory</th><th>Local change</th></tr></thead>
+        <tbody>
+          <tr><td><code>vendor/openmls_rust_crypto</code></td><td>The upstream crypto API migration (<code>055a2b4b</code>); HPKE dependencies upgraded to 0.8 as upstream did (<code>e0b21a70</code>); unused post-quantum dependencies feature-gated as upstream did (<code>27ddc74e</code>).</td></tr>
+          <tr><td><code>vendor/openmls_basic_credential</code></td><td>The same migration, optional ML-DSA feature-gated; the released serialization and storage APIs preserved.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p><code>vendor/openmls-crypto-migration.patch</code> is that upstream migration with paths adjusted. What it changes in the source:</p>
+    <ul>
+      <li>Randomness comes from <code>getrandom</code>'s <code>SysRng</code> (wrapped in <code>UnwrapErr</code>) instead of <code>rand_core::OsRng</code>; the provider's ChaCha20 generator is seeded from it, and the <code>rand_shim.rs</code> adapter is removed.</li>
+      <li>Elliptic-curve keys use the new APIs: <code>generate_from_rng</code>, <code>to_sec1_point</code> and <code>from_sec1_bytes</code> in place of <code>random</code> and <code>EncodedPoint</code>.</li>
+      <li>AEAD nonces and ECDSA private keys are converted with <code>try_into</code>, so a wrong length returns <code>InvalidLength</code> (or a signing error) instead of failing inside a conversion; new tests check wrong nonce and key lengths.</li>
+    </ul>
+    <p>Why a patch rather than OpenMLS main: applying the migration to the published 0.6.0 source keeps the 0.9.2 release's targeted-message security interface. With it, both lockfiles resolve <code>crypto-bigint</code> 0.7.8, above the 0.7.6 that fixes RUSTSEC-2026-0387; the provider's minimum Rust becomes 1.94, and hoi pins 1.97. <code>scripts/check-dependency-security.mjs</code> refuses removing the patches, and <code>cargo test --locked -p hoi-core -p hoi-net --test crypto_backend</code> checks every supported MLS suite, AEAD authentication, signing, HPKE exporters and tampering (<a href="/wiki/supply-chain/">Supply chain &amp; hardening</a>).</p>
+  </section>
+
+  <section class="wk-sec" id="ui">
+    <h2>In the web app</h2>
+    <p>The app calls the core through the JSON API (<a href="/wiki/api/">Core API</a>): <code>createPrivateCommunity</code>, <code>privateGroups</code>, <code>privateGroup</code>, <code>privateJoinRequest</code>, <code>privatePreviewRequest</code>, <code>privateInvite</code>, <code>privateJoin</code>, <code>privateRemove</code>, <code>privatePassRequest</code>, <code>privateCopy</code>, <code>privateOutbox</code>, <code>privateReceive</code>, <code>privateAck</code> and <code>privateRead</code>.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Private screens">
+      <table>
+        <thead><tr><th>Where</th><th>File</th><th>What it does</th></tr></thead>
+        <tbody>
+          <tr><td><code>#/private</code></td><td><code>routes/PrivateCommunities.svelte</code></td><td>"Join by invitation": <b>Create invitation request</b> (after the VPN reminder dialog), the request to copy to a member, a field or <code>.hoiprivate</code> file (at most 2 MiB) for an invitation received, <b>Open private invitation</b>, and a list of this device's groups, former ones marked.</td></tr>
+          <tr><td><code>#/new/private</code></td><td><code>lib/ui/PrivateStart.svelte</code></td><td>The create form: name (32 characters), description (2000), and the facts: invite only, encrypted on the device, mailboxes, unlisted, members can keep copies.</td></tr>
+          <tr><td>A private community's page</td><td><code>lib/ui/PrivateGroup.svelte</code></td><td>The membership panel: status line, who can read, leave on this device; for the owner "Invite someone or manage devices" (check a request, approve, copy or save the invitation, remove devices); where records decide, the line order and this device's place, "Pass it on" for members, and invitations ready to hand on. A <b>Sync private relay</b> button only while the group syncs through a relay.</td></tr>
+          <tr><td>Status words</td><td><code>lib/private-status.ts</code></td><td><code>privateLine</code> and <code>privateHelp</code>: the sentences below.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Status lines">
+      <table>
+        <thead><tr><th>State</th><th>Label</th><th>What the app says</th></tr></thead>
+        <tbody>
+          <tr><td>Not active</td><td>Former private member</td><td>This device is no longer a member. Messages it already received can remain here.</td></tr>
+          <tr><td>Mailboxes, none reachable</td><td>Private mailboxes unreachable</td><td>None of the group's mailboxes can be reached right now. Updates wait on this device and go out once one can.</td></tr>
+          <tr><td>Mailboxes</td><td>Private mailboxes reachable</td><td>Encrypted mailboxes: <i>n</i> of <i>m</i> reachable, and how many updates are still going out.</td></tr>
+          <tr><td>Relay, after a sync</td><td>Private relay checked, or Private sync needs attention</td><td>Encrypted updates checked with <i>n</i> of <i>m</i> relays, or the sync's error.</td></tr>
+          <tr><td>No mailboxes yet, owner</td><td>Choosing private mailboxes</td><td>The device picks public nodes in different places as soon as it reaches two. Keep hoi open.</td></tr>
+          <tr><td>No mailboxes yet, member</td><td>Waiting for private mailboxes</td><td>Waiting for the owner's device to choose the group's mailboxes.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Before a membership change the panel syncs first; on a relay, saved updates must be delivered before the change (<i>"Finish sending saved updates before changing membership."</i>), while on mailboxes they only need their place ahead of it.</p>
+  </section>
+
+  <section class="wk-sec" id="tests">
+    <h2>Tests</h2>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Private community tests">
+      <table>
+        <thead><tr><th>Where</th><th>What it covers</th></tr></thead>
+        <tbody>
+          <tr><td><code>tests/private_mls.rs</code></td><td>A round trip with a photo, tampering and replay; an invitation bound to its request; removal revoking future access; state and an identical outbox surviving a restart; a removed member rejoining; the owner unable to leave.</td></tr>
+          <tr><td><code>private.rs</code> (<code>mod adversarial</code>)</td><td>A non-owner's commit refused with the epoch unchanged; a claimed owner root without its blessing; requests without every capability; rooms following epochs for newcomers and not for removed devices; padding bounds and seal round trips; reads signed once per allowed target; renewals after expiry; revoked and restricted owner devices; resending only what went in the ended epoch.</td></tr>
+          <tr><td><code>relay_v2_shared_vector</code></td><td>Room, object and read signatures from the secret <code>[7; 32]</code>, checked by the relay's own tests too.</td></tr>
+          <tr><td><code>scripts/e2e-private-relay.mjs</code></td><td>Real browsers, the WASM core and IndexedDB through a local relay: membership, sealed padded objects, a PNG attachment, tamper and replay refusal, reload, removal and rejoin, and the rendered forms.</td></tr>
+          <tr><td><code>scripts/e2e-mailboxes.mjs</code></td><td>Two real <code>hoi-node</code> holders and two browsers: mailboxes chosen with no relay, invitation, posts both ways.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="wk-cards">
+      <a class="wk-card g-lilac" href="/wiki/mailboxes/"><i></i><b>Mailboxes &amp; encrypted relays</b><span>Slots, the bell, pickups and the relay protocol that carry sealed objects.</span></a>
+      <a class="wk-card g-sky" href="/wiki/scatter/"><i></i><b>Scattered delivery</b><span>How posts are kept in pieces that no single holder can read or stop.</span></a>
+      <a class="wk-card g-mint" href="/wiki/standing/"><i></i><b>Standing &amp; review</b><span>Admission, vouches and bans that membership follows.</span></a>
+      <a class="wk-card g-coral" href="/wiki/identity/"><i></i><b>Keys &amp; identity</b><span>Roots, devices, delegations and revocation behind every credential.</span></a>
+    </div>
+  </section>
+</article>
+<!-- @wiki-close -->
+<!-- @include footer.html -->
+<script type="module" src="/src/pages/wiki.ts"></script>
+</body>
+</html>

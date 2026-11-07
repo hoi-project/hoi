@@ -1,0 +1,9 @@
+{
+  "seed": "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a",
+  "name": "garden_1.v2-test",
+  "community": "197f6b23e16c8532c6abc838facd5ea789be0c76b2920334039bfa8b3d368d61",
+  "protocolVersion": "0.3",
+  "indexVersion": 1,
+  "statement": "hoi community index v2\ngarden_1.v2-test\n197f6b23e16c8532c6abc838facd5ea789be0c76b2920334039bfa8b3d368d61\n0.3\n1",
+  "signature": "65eaba7ecfcad9b64f3e995d5dd88d7f15f61d2305cadc0c15503bf8eadf0d9a3a0625775a248e70f32c875de0c5c549b7bd658f9a6fbdb324a201d5ee451e00"
+}

@@ -1,0 +1,11 @@
+packages:
+  - "apps/site"
+  - "apps/web"
+  - "apps/desktop"
+  - "apps/setup"
+  - "packages/*"
+
+# The published deepmerge has no fix for GHSA-gcqx-w48m-w2h4 yet.
+# Keep this build-only dependency on the reviewed local patch (vendor/README.md).
+overrides:
+  '@sveltejs/vite-plugin-svelte>deepmerge': file:./vendor/deepmerge

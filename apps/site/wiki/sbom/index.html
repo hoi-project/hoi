@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <!-- @include head.html title="SBOM · hoi wiki" description="The software bill of materials: every dependency of every hoi program, with versions, licenses, checksums and links, plus a CycloneDX download." -->
+</head>
+<body class="wiki">
+<!-- @include header.html nav="wiki" -->
+<!-- @wiki-open -->
+<article class="wk-doc wide">
+  <!-- @wiki-crumbs -->
+  <h1>Software bill <span class="acc">of materials</span></h1>
+  <p class="wk-lead">Everything hoi is built from: every Rust crate, npm package, vendored patch, toolchain, container image and CI action, with the exact version, its license, the program that uses it and how. Built from the lockfiles every time the site is built, so it can't drift from the code.</p>
+  <p class="wk-src-list">Source <a href="{{REPO_URL}}/blob/main/apps/site/scripts/sbom.mjs">apps/site/scripts/sbom.mjs</a> <a href="{{REPO_URL}}/blob/main/apps/site/plugins/sbom.ts">apps/site/plugins/sbom.ts</a> <a href="{{REPO_URL}}/blob/main/core/Cargo.lock">core/Cargo.lock</a> <a href="{{REPO_URL}}/blob/main/pnpm-lock.yaml">pnpm-lock.yaml</a></p>
+  <div class="wk-head-rule"></div>
+
+  <!-- @sbom -->
+
+  <section class="wk-sec" id="reading">
+    <h2>Reading it</h2>
+    <dl class="wk-defs">
+      <dt>runtime<small>mint tag</small></dt><dd><p>Compiled or bundled into the program you run: the node binary, the WebAssembly core, the app bundle, the desktop executable.</p></dd>
+      <dt>build time<small>sky tag</small></dt><dd><p>Runs only while compiling: build scripts and procedural macros. It shapes the binary but isn't in it.</p></dd>
+      <dt>development<small>grey tag</small></dt><dd><p>Bundlers, type checkers, test runners and fuzzers. Never shipped.</p></dd>
+      <dt>★<small>direct</small></dt><dd><p>The program's own manifest names it. Everything else arrives through another package.</p></dd>
+      <dt>platform list<small>after a tag</small></dt><dd><p>Present only when building for those platforms, for example a Windows-only system crate in the desktop app.</p></dd>
+      <dt>first-party<small>badge</small></dt><dd><p>hoi's own crates, which the desktop and setup workspaces use by path.</p></dd>
+      <dt>vendored<small>badge</small></dt><dd><p>A published package kept in <code>vendor/</code> with a small reviewed patch; the build uses that copy instead of the registry's. See <a href="/wiki/supply-chain/">Supply chain &amp; hardening</a>.</p></dd>
+    </dl>
+    <div class="wk-note info"><b>What this doesn't list</b><p>The operating system and browser you run hoi on, and the system libraries the desktop apps link against there (WebKitGTK on Linux, WebView2 on Windows, WebKit on macOS). Those come with your system, not with hoi.</p></div>
+  </section>
+</article>
+<!-- @wiki-close -->
+<!-- @include footer.html -->
+<script type="module" src="/src/pages/wiki.ts"></script>
+</body>
+</html>

@@ -1,0 +1,502 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <!-- @include head.html title="Communities &amp; the ledger · hoi wiki" description="Community records, limits, rules, the signed ledger and changes by consent." -->
+</head>
+<body class="wiki">
+<!-- @include header.html nav="wiki" -->
+<!-- @wiki-open -->
+<article class="wk-doc">
+  <!-- @wiki-crumbs -->
+  <h1>Communities <span class="acc">&amp; the ledger</span></h1>
+  <p class="wk-lead">A community is a key pair, one signed first record, and a signed list of moderation actions. This page covers the community record and every limit in it, the ledger and each of its actions, co-signatures, how a device replays the ledger into community state, removals and their veto window, and how rules and limits change only when the community agrees.</p>
+  <p class="wk-src-list">Source <a href="{{REPO_URL}}/blob/main/core/crates/hoi-moderation/src/lib.rs">hoi-moderation/src/lib.rs</a> · <a href="{{REPO_URL}}/blob/main/core/crates/hoi-moderation/src/ladder.rs">hoi-moderation/src/ladder.rs</a> · <a href="{{REPO_URL}}/blob/main/core/crates/hoi-types/src/record.rs">hoi-types/src/record.rs</a> · <a href="{{REPO_URL}}/blob/main/core/crates/hoi-validate/src/lib.rs">hoi-validate/src/lib.rs</a> · <a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/api.rs">hoi-core/src/api.rs</a> · <a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/wiki.rs">hoi-core/src/wiki.rs</a> · <a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/registration.rs">hoi-core/src/registration.rs</a></p>
+  <div class="wk-head-rule"></div>
+
+  <section class="wk-sec" id="community-record">
+    <h2>The community record</h2>
+    <p>Every community starts with one record of kind <code>community</code>, often called the genesis. Its body names the community, its owners, how many owners must sign big changes, and the limits every device enforces. The record is signed by the community's own key: <code>author</code> and <code>community</code> are the same 32 bytes, and the shape check refuses anything else (<code>genesis must be signed by the community key</code>).</p>
+    <p>A genesis never changes. A device that already holds one for a key refuses a second (<code>a community's genesis never changes</code>), so the first record a device sees for a key is the one it keeps. Changes after that go through the ledger.</p>
+
+    <h3 id="genesis-fields">Fields</h3>
+    <dl class="wk-defs">
+      <dt>name<small>text</small></dt><dd>Required, at most 40 characters, checked as a single line of text (<a href="/wiki/content-rules/">text rules</a>). The app also trims it. The name a public registry knows is a canonical form of it (<a href="#registration">registration</a>).</dd>
+      <dt>description<small>text</small></dt><dd>At most 300 characters, checked against the body-text character rules. It travels with every invite.</dd>
+      <dt>color<small>text</small></dt><dd>One of <code>mint</code>, <code>sky</code>, <code>lilac</code>, <code>peach</code>, <code>sun</code>, <code>coral</code>. Anything else is refused (<code>unknown community colour</code>).</dd>
+      <dt>owners<small>[bytes32]</small></dt><dd>1 to 16 root keys. Owners are never banned, blocked or retired, and they count as trusted members from the moment of the genesis.</dd>
+      <dt>threshold<small>u32</small></dt><dd>From 1 to the number of owners. It is how many distinct owners must sign a <code>rules</code>, <code>limits</code>, <code>mod-add</code>, <code>mod-remove</code> or <code>retire</code> entry.</dd>
+      <dt>rules_text_cid<small>bytes32, optional</small></dt><dd>Written only when present. The app leaves it out: first rules go into the ledger instead.</dd>
+      <dt>limits<small>map</small></dt><dd>Every dial the community sets. See <a href="#limits">limits</a>.</dd>
+    </dl>
+    <div class="wk-code" data-lang="rust" data-title="core/crates/hoi-types/src/record.rs"><pre><code>pub struct Genesis {
+    pub name: String,
+    pub description: String,
+    pub color: String,
+    pub owners: Vec&lt;Id&gt;,
+    pub threshold: u32,
+    pub rules_text_cid: Option&lt;Id&gt;,
+    pub limits: Limits,
+}</code></pre></div>
+
+    <h3 id="genesis-envelope">The envelope</h3>
+    <p>A genesis has no <code>parent</code>. Its <code>expires_at</code> is <code>created_at</code> plus <code>KEEP</code>, 100 years (<code>100 * 365 * 86_400</code> seconds), so it outlives every retention window. It is stamped to <code>GLOBAL_POW_BITS</code>, 16 bits, because it belongs to no community whose difficulty could apply. Its wire size cap is 64 KiB, like posts and ledger entries. See <a href="/wiki/records/">records</a> and <a href="/wiki/stamps/">stamps</a>.</p>
+
+    <h3 id="community-key">The community key</h3>
+    <p><code>create_community</code> generates a fresh Ed25519 key pair for the community. That key signs exactly three things: the genesis, and, when the name has a canonical public form, one name-claim statement and one publication statement (<a href="#registration">below</a>). Then the device forgets the secret. The code says why:</p>
+    <div class="wk-code" data-lang="rust" data-title="core/crates/hoi-core/src/api.rs (trimmed)"><pre><code>let published = self.publish(r);
+// The community key signs its genesis and, for registry-compatible names, one fixed
+// name-claim statement. The owners govern through the ledger. Forgetting the key means
+// nobody, not even a thief of this device, can sign a rival genesis or a different claim.
+self.community_kps.remove(&amp;c);</code></pre></div>
+    <p>So the community key is an address and a seal on the first record, nothing more. Nobody holds it afterwards. Governance comes from the owner keys named in the genesis.</p>
+
+    <h3 id="creating">What creating a community does</h3>
+    <ol class="wk-steps">
+      <li><b>Limits from the draft</b><p>The draft's limits patch is applied on top of <code>Limits::default()</code> and checked with <code>hoi_validate::limits</code>. For an open (non-private) community whose draft says nothing about it, <code>scatter_open</code> is set to <code>true</code>, so posts travel in pieces (<a href="/wiki/scatter/">scattered delivery</a>).</p></li>
+      <li><b>Owners and threshold</b><p>The creator's root key comes first, then any co-owner keys from the draft, each once. The threshold defaults to 1 and must be between 1 and the number of owners.</p></li>
+      <li><b>Sign and forget</b><p>The genesis is made, its content checked, the registration and publication statements signed if the name allows, the genesis published, and the community key dropped.</p></li>
+      <li><b>Joined and pinned</b><p>The creator's device joins with pinning on, so it keeps the whole live window.</p></li>
+      <li><b>First rules</b><p>If the draft has rules and the threshold is 1, they go in as a <code>rules</code> entry right away. With a higher threshold the draft rules are dropped; the owners set them together from the Manage tab.</p></li>
+    </ol>
+  </section>
+
+  <section class="wk-sec" id="limits">
+    <h2>Limits</h2>
+    <p>Limits live in the genesis and in later <code>limits</code> entries. Every device enforces them before it shows, stores or passes on anything. <code>hoi_validate::limits</code> checks every set of limits, in a genesis or in a ledger entry, against the ranges below; a set outside them is refused as a content error.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Community limits">
+      <table>
+        <thead><tr><th>Field</th><th>Type</th><th>Default</th><th>Allowed</th><th>What reads it</th></tr></thead>
+        <tbody>
+          <tr><td><code>pow_bits</code></td><td>u32</td><td>22</td><td>8–30</td><td>The stamp a post or comment needs; small actions need 8 less (<a href="/wiki/stamps/">stamps</a>).</td></tr>
+          <tr><td><code>max_retention</code></td><td>u64 s</td><td>15,552,000 (180 days)</td><td>3,600 (1 hour) – 315,360,000 (10 × 365 days)</td><td>The latest <code>expires_at</code> a record may carry; ledger entry expiry; the deadline of a proposal; the standing window (<a href="/wiki/expiry/">expiry</a>).</td></tr>
+          <tr><td><code>newcomer_posts_per_day</code></td><td>u32</td><td>2</td><td>0–1,000</td><td>The day window for posts by people the ladder hasn't admitted (<a href="/wiki/spam/#rate-windows">rate windows</a>).</td></tr>
+          <tr><td><code>newcomer_age</code></td><td>u64 s</td><td>2,592,000 (30 days)</td><td>0–31,536,000 (365 days)</td><td>Carried, checked and changed like the others. The pipeline itself treats "newcomer" as "not yet admitted" and doesn't read this field.</td></tr>
+          <tr><td><code>admission</code></td><td>text</td><td><code>open</code></td><td><code>open</code>, <code>approve</code>, <code>invite</code>, <code>age-proof</code></td><td>Who is shown and how people get in (<a href="#admission">admission</a>). <code>age-proof</code> needs at least one age issuer.</td></tr>
+          <tr><td><code>autoban_threshold</code></td><td>u32</td><td>12</td><td>1–10,000</td><td>The weighted sum of reports that bounces a key (<a href="/wiki/spam/#autoban">autobans</a>).</td></tr>
+          <tr><td><code>labelers</code></td><td>[bytes32]</td><td>none</td><td>at most 32</td><td>Default labelers whose labels count for everyone here (<a href="/wiki/trust/#labelers">labelers</a>).</td></tr>
+          <tr><td><code>ladder</code></td><td>map</td><td>see below</td><td>see below</td><td>The trust ladder (<a href="/wiki/standing/">standing</a>).</td></tr>
+          <tr><td><code>scatter</code></td><td>{<code>resist</code> u8, <code>open</code> bool}</td><td>resist 10, open false</td><td>resist 10, 15 or 20</td><td>How posts' pieces are placed, and whether an open community's posts travel in pieces (<a href="/wiki/scatter/">scattered delivery</a>).</td></tr>
+          <tr><td><code>trackers</code></td><td>[text]</td><td>none</td><td>1–2 https addresses (plain http only for this machine)</td><td>Registries where public nodes carrying the community announce themselves (<a href="/wiki/discovery/">discovery</a>).</td></tr>
+          <tr><td><code>age_issuers</code></td><td>[bytes]</td><td>none</td><td>1–8 keys of 32, 33 or 65 bytes</td><td>Credential issuers an age-proof community trusts (<a href="/wiki/trust/#age">age proofs</a>).</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3 id="ladder-limits">The ladder's settings</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Ladder limits">
+      <table>
+        <thead><tr><th>Field</th><th>Default</th><th>Allowed</th><th>Meaning</th></tr></thead>
+        <tbody>
+          <tr><td><code>identity_bits</code></td><td>8</td><td>0–20</td><td>Memory-hard identity work every author must carry (<a href="/wiki/identity/">identity</a>).</td></tr>
+          <tr><td><code>admit_vouches</code></td><td>2</td><td>1–16</td><td>Vouches from established members that make a newcomer a member.</td></tr>
+          <tr><td><code>established_age</code></td><td>1,209,600 s (14 days)</td><td>up to 365 days</td><td>Time as a member before someone counts as established.</td></tr>
+          <tr><td><code>trusted_posts</code></td><td>5</td><td>up to 1,000</td><td>Live posts and comments in the standing window needed for trusted.</td></tr>
+          <tr><td><code>media_score</code></td><td>10</td><td>up to 100,000</td><td>Response score over those contributions needed for trusted.</td></tr>
+          <tr><td><code>hide_quorum</code></td><td>3</td><td>2–100</td><td>Voices of hides that put a record to sleep.</td></tr>
+          <tr><td><code>block_quorum</code></td><td>5</td><td>2–100</td><td>Voices that block an admitted member from the community.</td></tr>
+          <tr><td><code>veto_quorum</code></td><td>5</td><td>2–100</td><td>Voices of vetoes that overturn a ledger entry.</td></tr>
+          <tr><td><code>contest_window</code></td><td>259,200 s (72 hours)</td><td>up to 1,209,600 s (14 days)</td><td>How long a removal naps before the body is deleted.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>The validator explains the quorum floor: quorums below two would let one person hide, block or overturn alone. The ladder also caps every quorum at a third of the established voice, so a quorum set high stays reachable (<a href="/wiki/standing/#quorums">quorums</a>).</p>
+
+    <h3 id="limits-encoding">One encoding per value</h3>
+    <p><code>scatter</code>, <code>trackers</code> and <code>age_issuers</code> are written only when they differ from the default. Communities on the default encode exactly as they did before those fields existed, so older decoders, which refuse unknown fields, still read them. The decoder refuses the default written out (<code>the default scatter setting is left out</code>) and an empty <code>trackers</code> or <code>age_issuers</code> list: one value, one encoding, stable ids and signatures. See <a href="/wiki/records/">records</a>.</p>
+
+    <h3 id="limits-for">Which limits a record answers to</h3>
+    <p>When limits change, records already made don't become invalid. <code>limits_for</code> takes, for four fields, the more lenient of the limits in effect when the record says it was made and the limits in effect now:</p>
+    <div class="wk-code" data-lang="rust" data-title="core/crates/hoi-core/src/node.rs"><pre><code>pub(crate) fn limits_for(c: &amp;Community, created_at: u64) -&gt; Limits {
+    let then = c.limits_at(created_at);
+    let mut l = c.limits.clone();
+    l.pow_bits = l.pow_bits.min(then.pow_bits);
+    l.max_retention = l.max_retention.max(then.max_retention);
+    l.newcomer_posts_per_day = l.newcomer_posts_per_day.max(then.newcomer_posts_per_day);
+    l.ladder.identity_bits = l.ladder.identity_bits.min(then.ladder.identity_bits);
+    l
+}</code></pre></div>
+    <p>Members took a post under the limits of its day, so a device that joins after the community tightened them takes it too. A record made since needs today's stamp and today's window: a test shows a device that joined late refusing a post stamped to the old difficulty and one that expires later than today's retention allows. <code>Community::limits_at(t)</code> answers from <code>limits_since</code>, the list of every limits change and when it took effect.</p>
+  </section>
+
+  <section class="wk-sec" id="admission">
+    <h2>Open, approve, invite, age proof, private</h2>
+    <p>Two separate questions decide what kind of place a community is. <code>limits.admission</code> decides who may post and whose posts are shown. Whether the community is private decides who can read at all. Joining rules alone never hide posts from readers: an open, approve or invite community's records are ordinary signed records, readable by every device that carries the community.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Admission modes">
+      <table>
+        <thead><tr><th><code>admission</code></th><th>What the code does with a newcomer's records</th><th>How a newcomer gets in</th></tr></thead>
+        <tbody>
+          <tr><td><code>open</code></td><td>Shown to everyone, marked <code>unvalidated</code> ("new here"). Text only: links are held until they are a member, media until they are trusted.</td><td><code>admit_vouches</code> vouches from established members, or an <code>admit</code> entry.</td></tr>
+          <tr><td><code>approve</code></td><td>Shown only to the author and to people at established or above (<code>visible_author</code>); everyone else sees nothing until they are admitted. The app shows them "waiting at the door".</td><td>The same: vouches or <code>admit</code>.</td></tr>
+          <tr><td><code>invite</code></td><td>Posts, comments, edits and profiles are held, shown to nobody and passed to nobody, while the author is a newcomer with no counted vouch (<code>this community needs a member to vouch for you first</code>). One counted vouch releases them.</td><td>The vouch is the invitation; membership still takes <code>admit_vouches</code>.</td></tr>
+          <tr><td><code>age-proof</code></td><td>Held until the author is admitted (<code>this community lets people in once a moderator saw a proof of their age</code>).</td><td>Only <code>admit</code> entries let people in. A moderator's device signs one after checking a proof of age (<a href="/wiki/trust/#age">age proofs</a>). Vouches still give voice, but admit nobody.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Holding is covered in detail on <a href="/wiki/standing/#holds">standing</a>. Owners and moderators are never held.</p>
+
+    <h3 id="private-axis">Private communities</h3>
+    <p>A private community is one this device marks private (<code>state.private_communities</code>) or holds an MLS group for. Its records travel encrypted to members through encrypted relays and never through plain sync (<a href="/wiki/private/">private communities</a>). A private group whose admission is <code>invite</code> or <code>approve</code> "follows its records": the owner's device adds the people the ledger and ladder admit and removes the people the ledger bans, and every member refuses a membership commit the records don't back. The owner of a public <code>invite</code> or <code>approve</code> community can make a private copy of it (<code>private_copy</code>): a new community with the same name and limits, kept as a private group.</p>
+
+    <h3 id="admission-elsewhere">Where admission matters elsewhere</h3>
+    <ul>
+      <li>Only open, non-private communities can be published in a public directory: <code>community_publication</code> refuses anything else (<code>Only open communities can be published in the public directory.</code>).</li>
+      <li>A node announcing itself to a registry lists only communities whose current limits and genesis both say <code>open</code>: at most 64, keeping the most recently joined when there are more.</li>
+      <li>Labels, trust statements, blocklists and tallies are for public communities; the app refuses to publish them in private ones.</li>
+      <li>The web app's New Community form offers <code>open</code> and <code>approve</code>, with <code>invite</code> and <code>age-proof</code> shown disabled; the Manage tab's limits form offers all four.</li>
+    </ul>
+  </section>
+
+  <section class="wk-sec" id="ledger">
+    <h2>The ledger</h2>
+    <p>Every moderation action is a record of kind <code>ledger</code> in the community. The ledger is not a separate file or log: it is all the <code>ledger</code> records a device holds for the community. Any device holding the genesis can verify all of it, and replaying it from the genesis gives the same state on every device (<a href="#replay">replay</a>).</p>
+
+    <h3 id="ledger-body">The entry's body</h3>
+    <dl class="wk-defs">
+      <dt>seq<small>u64</small></dt><dd>A sequence number. The app writes the highest <code>seq</code> it has replayed plus one (<a href="#seq">below</a>).</dd>
+      <dt>action<small>text</small></dt><dd>One of the 13 actions in the table below.</dd>
+      <dt>target<small>bytes32, optional</small></dt><dd>A record id (remove, label, pin, unpin) or a person's root key (ban, unban, admit, mod-add, mod-remove, retire). Required for those ten actions.</dd>
+      <dt>reason<small>text, optional</small></dt><dd>At most 500 characters. For <code>label</code> it is the label itself and must not be empty. The app asks for one on every removal (<code>Say why. The reason goes in the public ledger.</code>).</dd>
+      <dt>evidence<small>[bytes32], optional</small></dt><dd>At most 256 record ids. An automatic ban carries the ids of the reports behind it, never the posts.</dd>
+      <dt>cosign<small>[{key, sig}], optional</small></dt><dd>At most 16 co-signatures over the entry's proposal id (<a href="#threshold">co-signatures</a>).</dd>
+      <dt>text<small>text, optional</small></dt><dd>The full rules text, required on <code>rules</code>. Checked as markdown of at most 20,000 characters and 1,000 lines.</dd>
+      <dt>limits<small>map, optional</small></dt><dd>The full new limits, required on <code>limits</code> and checked like a genesis's.</dd>
+      <dt>drop_key<small>map, optional</small></dt><dd>Only on <code>drop-key</code>, and required there: a key and its secret sealed once to each of at most 64 devices (<a href="/wiki/scatter/">scattered delivery</a>). A <code>drop-key</code> entry has no target.</dd>
+      <dt>patch<small>bytes, optional</small></dt><dd>Only on <code>rules</code>, and required there: the change as a Loro update of 1 byte to 64 KiB (<a href="#rules-wiki">rules as a document</a>).</dd>
+    </dl>
+    <p>A ledger record has no <code>parent</code> and must name a community. Its wire cap is 64 KiB. Its stamp is the community's <code>pow_bits</code> minus 8, like votes and reviews. A device key signs it under a delegation scope of <code>*</code> or <code>moderate:&lt;community hex&gt;</code> (<a href="/wiki/identity/">devices</a>). At ingest the node refuses ledger records from anyone who isn't an owner or moderator now, or, for threshold actions, an owner (<code>only owners and moderators write the ledger</code>).</p>
+
+    <h3 id="actions">Every action</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Ledger actions">
+      <table>
+        <thead><tr><th>Action</th><th>Who signs</th><th>Owner threshold</th><th>Vetoable</th><th>Expires</th><th>Effect in replay</th></tr></thead>
+        <tbody>
+          <tr><td><span class="tag t-mint">rules</span></td><td>owners</td><td>yes</td><td>no</td><td>kept (100 years)</td><td>Becomes a proposal; applies once the community agrees (<a href="#consent">consent</a>).</td></tr>
+          <tr><td><span class="tag t-sun">limits</span></td><td>owners</td><td>yes</td><td>no</td><td>kept</td><td>Becomes a proposal; applies only the fields it changes.</td></tr>
+          <tr><td><span class="tag t-lilac">mod-add</span></td><td>owners</td><td>yes</td><td>yes</td><td>kept</td><td>Adds the target to <code>mods</code>, from the entry's time.</td></tr>
+          <tr><td><span class="tag t-soft">mod-remove</span></td><td>owners</td><td>yes</td><td>no</td><td>kept</td><td>Removes the target from <code>mods</code>.</td></tr>
+          <tr><td><span class="tag t-soft">retire</span></td><td>owners</td><td>yes</td><td>yes</td><td>kept</td><td>Says an elector left for good; their silence stops holding up proposals after a week's notice. Owners can't be retired.</td></tr>
+          <tr><td><span class="tag t-peach">remove</span></td><td>owners, mods</td><td>no</td><td>yes</td><td>retention</td><td>A tombstone for the target; the body is deleted when the contest window ends (<a href="#removals">removals</a>). Also unpins it.</td></tr>
+          <tr><td><span class="tag t-peach">ban</span></td><td>owners, mods</td><td>no</td><td>yes</td><td>retention</td><td>Refuses the target's records made from then on; takes away a moderator role. Owners can't be banned.</td></tr>
+          <tr><td><span class="tag t-mint">unban</span></td><td>owners, mods</td><td>no</td><td>yes</td><td>retention</td><td>Lifts a ban.</td></tr>
+          <tr><td><span class="tag t-sky">label</span></td><td>owners, mods</td><td>no</td><td>yes</td><td>retention</td><td>Adds a label to the target; a hiding label puts it to sleep.</td></tr>
+          <tr><td><span class="tag t-sun">pin</span></td><td>owners, mods</td><td>no</td><td>yes</td><td>retention</td><td>Pins the target to the top of the community's feed.</td></tr>
+          <tr><td><span class="tag t-soft">unpin</span></td><td>owners, mods</td><td>no</td><td>no</td><td>retention</td><td>Unpins it.</td></tr>
+          <tr><td><span class="tag t-mint">admit</span></td><td>owners, mods</td><td>no</td><td>yes</td><td>retention</td><td>Admits the target; counts as the signer's vouch for voice.</td></tr>
+          <tr><td><span class="tag t-soft">drop-key</span></td><td>any one owner</td><td>no</td><td>no</td><td>kept</td><td>Lists an open community's drop key; the last one counts.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="wk-code" data-lang="rust" data-title="core/crates/hoi-types/src/record.rs (trimmed)"><pre><code>pub fn needs_threshold(&amp;self) -&gt; bool {
+    matches!(self, LedgerAction::Rules | LedgerAction::Limits | LedgerAction::ModAdd | LedgerAction::ModRemove | LedgerAction::Retire)
+}
+
+/// Kept until superseded instead of expiring with the retention window.
+pub fn kept_until_superseded(&amp;self) -&gt; bool {
+    self.needs_threshold() || *self == LedgerAction::DropKey
+}
+
+pub fn vetoable(&amp;self) -&gt; bool {
+    matches!(
+        self,
+        LedgerAction::Remove
+            | LedgerAction::Ban
+            | LedgerAction::Unban
+            | LedgerAction::Label
+            | LedgerAction::Pin
+            | LedgerAction::Admit
+            | LedgerAction::ModAdd
+            | LedgerAction::Retire
+    )
+}</code></pre></div>
+    <p>"Kept" means the entry carries an expiry 100 years out (<code>KEEP</code>) and sits outside the retention window; nothing deletes it when a later entry replaces it, the replay simply applies the later one. Every other entry expires with the community's <code>max_retention</code> like a post, and when it expires its effect goes with it: a ban entry that fades stops banning. See <a href="/wiki/expiry/#exempt">what is exempt from expiry</a>.</p>
+
+    <h3 id="seq">Sequence numbers</h3>
+    <p><code>ledger_record</code> gives each new entry <code>seq: st.max_seq + 1</code>, where <code>max_seq</code> is the highest <code>seq</code> the replay has seen. Nothing requires the numbers to be gapless or unique: two moderators acting at once can write the same number. The replay orders entries by <code>(at, seq, id)</code>, so <code>seq</code> orders entries that share an effective time, and the id breaks any remaining tie the same way on every device.</p>
+
+    <h3 id="effective-time">Effective time</h3>
+    <p>An entry's <code>at</code> is its effective time: its <code>created_at</code>, or the time this device first saw it, if it arrived from elsewhere claiming a time more than an hour (<code>LATE_GRACE</code>) before this device last finished catching up with the community. It wasn't out there when this device looked, so it counts from when it turned up, and a backdated entry can't rewrite what already happened. The same rule covers vouches and reviews (<a href="/wiki/standing/#late">late records</a>).</p>
+  </section>
+
+  <section class="wk-sec" id="threshold">
+    <h2>Co-signatures and the owners' threshold</h2>
+    <p>With a threshold above 1, a threshold action needs that many distinct owner roots behind one entry. Owners can't each sign the final record, because its id depends on the author, the nonce and the co-signatures themselves. So co-signers sign something that stays fixed: the entry's <code>proposal_id</code>.</p>
+    <div class="wk-bytes" data-title="What a co-signer signs: proposal_id = BLAKE3 of this record, canonically encoded">
+v, kind, community, parent | as published | sky | 4 | unchanged
+created_at, expires_at | as published | sky | 3 | unchanged
+author | 32 B | coral | 3 | all zeros
+nonce | 0 | coral | 2 | the stamp is mined later
+
+body: seq, action, target, reason, text, limits, patch… | as published | mint | 8 | unchanged
+body.cosign | — | peach | 4 | left out
+</div>
+    <div class="wk-code" data-lang="rust" data-title="core/crates/hoi-types/src/record.rs"><pre><code>pub fn proposal_id(&amp;self) -&gt; Id {
+    let mut r = self.clone();
+    if let Body::Ledger(l) = &amp;mut r.body {
+        l.cosign = None;
+    }
+    r.nonce = 0;
+    r.author = Id::ZERO;
+    r.id()
+}</code></pre></div>
+    <p>Whichever owner collects the last signature publishes the entry under their own device key and signs its full id as usual. The conformance vector <a href="{{REPO_URL}}/blob/main/core/vectors/threshold.json">vectors/threshold.json</a> pins a rules entry with threshold 2 of 3 owners, published by one owner and co-signed by another, with its <code>proposal_id</code>.</p>
+
+    <h3 id="cosign-flow">Collecting signatures</h3>
+    <div class="wk-seq" data-title="A threshold entry, 2 of 3 owners">
+lanes: Owner A | Owner B | Every device
+-- Propose --
+Owner A: builds the entry, signs its <code>proposal_id</code>
+Owner A -> Owner B: <code>hoi:cosign:</code> code (base64url of the record), have 1, need 2
+-- Co-sign --
+Owner B: checks it is an owner, the action needs a threshold, the record is under 7 days old
+Owner B: keeps only co-signatures that verify, adds its own
+Owner B => Every device @mint: publishes under its own device key, freshly stamped
+-- Replay --
+Every device: counts distinct owner roots behind valid co-signatures, as of <code>created_at</code>
+</div>
+    <p>Each co-signature is <code>{key, sig}</code>: the signing key and an Ed25519 signature over the 32-byte proposal id. The app co-signs with the root key if this device holds it, otherwise with the device key. In the replay, <code>owner_signers</code> counts the publisher's root if it is an owner, then every co-signature that verifies and whose key maps to an owner root <em>as of the entry's creation time</em>: a device whose blessing had expired or been revoked by then counts for nothing, so a stolen and revoked laptop can't co-sign owner decisions. The publisher must itself be an owner (<code>only owners sign this</code>), and fewer distinct owners than the threshold leaves the entry refused (<code>not enough owner signatures</code>).</p>
+    <p>A threshold entry carrying co-signatures doesn't have to be fresh on arrival the way live gossip must be (within ten minutes), because collecting signatures takes time. But one published from this device, or arriving live, more than 7 days (<code>PROPOSAL_MAX_AGE</code>) after it was created is refused as too old, and <code>cosign</code> refuses codes older than a week (<code>That proposal is more than a week old. Start a new one.</code>).</p>
+  </section>
+
+  <section class="wk-sec" id="replay">
+    <h2>Replaying the ledger</h2>
+    <p>A community's state is a pure function of its genesis, the ledger entries a device holds and the community's own judgements. <code>hoi_moderation::Community</code> holds that state, and the node rebuilds it from scratch every time, so arrival order never matters.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Community state">
+      <table>
+        <thead><tr><th>Field</th><th>What it holds</th></tr></thead>
+        <tbody>
+          <tr><td><code>genesis</code>, <code>genesis_id</code>, <code>created_at</code></td><td>The first record and when it was made.</td></tr>
+          <tr><td><code>limits</code>, <code>limits_since</code></td><td>The limits in effect now, and every set a change put in effect, with when.</td></tr>
+          <tr><td><code>rules</code></td><td>Text, version, when, who signed, which entry.</td></tr>
+          <tr><td><code>mods</code></td><td>Moderators and since when.</td></tr>
+          <tr><td><code>bans</code></td><td>Banned roots with reason, time, signer, entry.</td></tr>
+          <tr><td><code>admitted</code>, <code>admits</code></td><td>People admitted by <code>admit</code> entries.</td></tr>
+          <tr><td><code>tombstones</code></td><td>Removed records: who, why, when, entry, and <code>effective_at</code>.</td></tr>
+          <tr><td><code>pins</code>, <code>labels</code></td><td>Pinned records; labels per record.</td></tr>
+          <tr><td><code>applied</code>, <code>refused</code></td><td>Entries that took effect (with every root that signed), and entries that didn't, with why.</td></tr>
+          <tr><td><code>max_seq</code></td><td>The highest <code>seq</code> seen.</td></tr>
+          <tr><td><code>proposals</code></td><td>Proposed rules and limits, whatever became of them.</td></tr>
+          <tr><td><code>standing</code></td><td>The trust ladder, settled together with the ledger (<a href="/wiki/standing/">standing</a>).</td></tr>
+          <tr><td><code>drop_keys</code>, <code>retired</code></td><td>Drop keys set, oldest first; retired electors.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3 id="replay-order">Order and checks</h3>
+    <div class="wk-code" data-lang="rust" data-title="core/crates/hoi-moderation/src/lib.rs (trimmed)"><pre><code>// entries at their effective time; accepted proposals take effect when they were decided
+// (a decision sorts right after its proposal's entry when both fall on the same moment)
+let mut steps: Vec&lt;(u64, u64, Id, u8, Step)&gt; =
+    entries.iter().map(|e| (e.at, e.body.seq, e.id, 0, Step::Entry(e))).collect();
+steps.extend(pen.passed.iter().map(|(id, t)| (*t, seq_of.get(id).copied().unwrap_or(0), *id, 1, Step::Decided(*id))));
+steps.sort_by_key(|a| (a.0, a.1, a.2, a.3));</code></pre></div>
+    <p>Each entry is checked against the state just before it:</p>
+    <ol class="wk-steps">
+      <li><b>Overturned?</b><p>If the community vetoed it, it is refused: <code>overturned by the community</code>.</p></li>
+      <li><b>Suspended signer?</b><p>If its signer is a moderator the community suspended and the entry is from on or after the suspension, it is refused: <code>the moderator was suspended by the community</code>. Owners are never suspended.</p></li>
+      <li><b>Threshold actions</b><p>The signer must be an owner and the distinct owner signers must reach the threshold. <code>rules</code> and <code>limits</code> become proposals (a <code>limits</code> entry without limits is refused: <code>no limits</code>); <code>mod-add</code>, <code>mod-remove</code> and <code>retire</code> take effect.</p></li>
+      <li><b><code>drop-key</code></b><p>Any one owner, carrying a drop key.</p></li>
+      <li><b>Everything else</b><p>The signer must be an owner or moderator at that moment (<code>only owners and moderators sign this</code>) and the entry must have a target (<code>no target</code>).</p></li>
+    </ol>
+    <p>After the replay, any moderator the community suspended who was added on or before the suspension is taken out of <code>mods</code>. An entry refused now can take effect later: if an earlier entry shows up (say, the <code>mod-add</code> that made its signer a moderator), the next replay applies both in order. The <code>threshold_and_mods</code> test feeds a moderator's removal before the <code>mod-add</code> that empowers it and gets the removal applied.</p>
+
+    <h3 id="settle">Replaying with the ladder</h3>
+    <p>The ladder decides which entries the community overturned, which moderators it suspended and which proposals it accepted, and those feed back into the replay. <code>Community::settle</code> runs <code>ladder::settle</code> for up to 6 rounds, replaying the ledger whenever a round changes the overturned entries, the suspensions or the passed proposals, until nothing changes, then replays once more with the final penalties so the ledger state matches the standing it keeps. A node settles a community whenever its records changed, and otherwise whenever it settles and a minute has passed since the last time, so removals ripen and people become established on time. The details are on <a href="/wiki/standing/#settle">standing</a>.</p>
+  </section>
+
+  <section class="wk-sec" id="removals">
+    <h2>Removals and the contest window</h2>
+    <p>A <code>remove</code> entry doesn't delete anything at once. The replay writes a tombstone whose <code>effective_at</code> is the entry's time plus the community's <code>contest_window</code> (72 hours by default, at most 14 days). Until then the record naps: it stays stored and readable, the feed marks it <code>removal pending: &lt;reason&gt;</code> by the moderator's name, and established members can veto the removal.</p>
+    <div class="wk-code" data-lang="rust" data-title="core/crates/hoi-moderation/src/lib.rs"><pre><code>/// Removals that can't wait for the contest window.
+pub fn removal_is_urgent(reason: &amp;str) -&gt; bool {
+    let r = reason.trim().to_ascii_lowercase();
+    r.starts_with("illegal") || r.starts_with("privacy")
+}</code></pre></div>
+    <p>A reason that starts with <code>illegal</code> or <code>privacy</code>, in any letter case, takes effect at once: <code>effective_at</code> is the entry's own time. For <code>illegal</code> removals the node also deletes the post's media and refuses those bytes, and pictures that look like them, from then on, before it deletes the body (once the body is gone there's nothing left to blocklist).</p>
+
+    <div class="wk-seq" data-title="A removal and its veto window">
+lanes: Moderator | Member devices | Established members
+-- Remove --
+Moderator -> Member devices: <code>ledger</code> {seq, action <code>remove</code>, target, reason "rule 4"}
+Member devices: replay: tombstone, <code>effective_at</code> = at + <code>contest_window</code>
+Member devices: the post naps, "removal pending: rule 4"; its body stays and is still passed on
+-- The window, 72 hours by default --
+Established members -> Member devices @coral: <code>review</code> {parent: the entry, verdict <code>veto</code>, reason}
+Member devices: tally: at least 2 people, voice at least the veto quorum, more than the support
+-- If overturned --
+Member devices: the entry is refused, "overturned by the community"; the post wakes up
+Member devices .. Established members: a moderator overturned three times is suspended
+-- If the window passes --
+Member devices: the body is deleted; id, place and reason stay (the Poof box)
+Member devices: the id is refused if anyone offers it again
+</div>
+
+    <h3 id="removal-effect">When the window ends</h3>
+    <p>At each sweep the node marks a community dirty when one of its removals has ripened, and the rebuild <em>skeletonizes</em> every record whose tombstone is effective: the body is removed from the store and from disk, and a <code>Skeleton</code> keeps the community, parent, author, kind, times, who removed it, why and which entry. Replies under it stay, under a "Poof." box. The id goes into the store's deleted set until the record's own <code>expires_at</code>, so reconciliation never asks for it again, and if the record arrives anyway, ingest refuses it as <code>removed</code>. See <a href="/wiki/expiry/#tombstones">tombstones</a>.</p>
+    <p>If the community overturns a removal after it took effect, the rebuild finds a skeleton whose removal entry no longer stands, drops the skeleton and forgets the id from the deleted set. The record isn't conjured back: it returns with the next sync from a device that still has it.</p>
+    <div class="wk-note info"><b>The vector</b><p><a href="{{REPO_URL}}/blob/main/core/vectors/tombstone.json">vectors/tombstone.json</a> holds a comment and an owner's <code>remove</code> entry for it with the reason "rule 4, undisclosed vendor". After the removal, compliant nodes delete the comment's body, keep its id and the entry, and refuse to ingest it again.</p></div>
+  </section>
+
+  <section class="wk-sec" id="bans">
+    <h2>Bans and unbans</h2>
+    <p>A <code>ban</code> targets a person's root key. From the ban's time on, every record that person signs in the community with a <code>created_at</code> at or after the ban is refused at ingest (<code>author is banned here</code>). What they posted before stays, subject to the usual expiry, hides and removals. A ban also removes a moderator role the target held. Owners can't be banned, in the replay (<code>owners can't be banned</code>) or in the app; nor can a person ban themselves from the app.</p>
+    <p>An <code>unban</code> is just another entry. Both are vetoable. Because ban and unban entries expire with the retention window, a ban lasts as long as its entry: after <code>max_retention</code> it fades unless someone bans again.</p>
+    <ul>
+      <li><b>Bans don't silence vetoers.</b> The ladder works out who may veto, and who decides proposals, as if ledger bans didn't exist, so a moderator can't ban the people who would overturn the ban (<a href="/wiki/standing/#vetoes">vetoes</a>).</li>
+      <li><b>Automatic bans.</b> When reports weighted by trust reach <code>autoban_threshold</code>, a device bounces the key locally; on an owner's or moderator's device the ban also goes into the ledger, with the report ids as evidence (<a href="/wiki/spam/#autoban">autobans</a>).</li>
+      <li><b>On this device only.</b> A key bounced by this device alone, not banned in the ledger, is let back in by <code>unban</code> without signing anything.</li>
+      <li><b>Private groups.</b> In a private group that follows its records, a ban is what makes the owner's device remove the member; a removal without a ban is refused (<a href="/wiki/private/">private communities</a>).</li>
+    </ul>
+  </section>
+
+  <section class="wk-sec" id="labels-pins">
+    <h2>Labels, pins and admissions</h2>
+    <h3 id="mod-labels">Labels</h3>
+    <p>A <code>label</code> entry puts its label text in <code>reason</code>. The replay keeps one label of each text per record: a newer entry with the same label replaces the older. Labels that hide are a fixed list, compared case-insensitively:</p>
+    <div class="wk-code" data-lang="rust" data-title="core/crates/hoi-moderation/src/lib.rs"><pre><code>/// Labels that make a record "napping" (hidden, peekable). Anything else is shown as a note.
+pub const HIDING_LABELS: [&amp;str; 6] = ["spam", "likely spam", "hide", "nsfw", "illegal", "off-topic"];</code></pre></div>
+    <p>A hiding label from the ledger makes the record nap, attributed to "the mods"; any other label shows as a note next to it. Ledger labels are separate from labels published by labelers, which count only where someone follows the labeler (<a href="/wiki/trust/#labelers">labelers</a>).</p>
+
+    <h3 id="pins">Pins</h3>
+    <p>A <code>pin</code> adds the target to <code>pins</code>; <code>unpin</code> and any removal of the target take it out. When a feed is asked for one community, pinned posts come first, then the chosen order. Pins are vetoable; unpins aren't.</p>
+
+    <h3 id="admits">Admissions</h3>
+    <p>An <code>admit</code> entry adds the target to <code>admitted</code> and becomes an admission the ladder reads. If the signer was an owner or moderator at that moment, the admission also counts as their vouch when voice is shared out (<a href="/wiki/standing/#voice">voice</a>). Admits are how <code>approve</code> communities let people in from the Manage tab, and the only way into an <code>age-proof</code> community, where the entry's reason is exactly <code>age proof</code>. Admits are vetoable.</p>
+  </section>
+
+  <section class="wk-sec" id="consent">
+    <h2>Changes by consent</h2>
+    <p>New rules and new limits don't apply when the owners sign them. A <code>rules</code> or <code>limits</code> entry that reaches the threshold becomes a <code>Proposal</code>, and the people who were established when it was proposed decide. The ladder's <code>decide</code> function works out where each proposal stands.</p>
+    <div class="wk-code" data-lang="rust" data-title="core/crates/hoi-moderation/src/lib.rs (trimmed)"><pre><code>pub struct Proposal {
+    pub id: Id,
+    pub action: LedgerAction,
+    pub at: u64,
+    pub signers: Vec&lt;Id&gt;,
+    pub base: Limits,           // the limits in effect when it was made
+    pub limits: Option&lt;Limits&gt;,
+    pub text: Option&lt;String&gt;,
+    pub patch: Option&lt;Vec&lt;u8&gt;&gt;,
+    pub deadline: u64,          // at + max_retention
+    pub applied_at: Option&lt;u64&gt;,
+}</code></pre></div>
+
+    <h3 id="limits-patches">A limits proposal is a patch</h3>
+    <p>A <code>limits</code> entry carries a full set of limits, but it changes only the fields in which it differs from <code>base</code>, the limits in effect when it was made. <code>patch_limits(base, want, cur)</code> applies just those fields to whatever is in effect when it passes, so two proposals about different things, decided in either order, don't undo each other. <code>Proposal::changes()</code> lists the changed fields as <code>(field, from, to)</code>, which is what the Rules tab shows. The fields it compares are every limit and ladder setting, <code>scatter_resist</code>, <code>scatter_open</code>, <code>trackers</code> and <code>age_issuers</code>.</p>
+
+    <h3 id="electors">Who decides</h3>
+    <p>The electors are the people established when the proposal was made, worked out with the ladder settings in effect then (its <code>admit_vouches</code> and <code>established_age</code>). Ledger bans are ignored for this, so a moderator can't ban the people who would object; burned identities, people the community blocked and struck vouchers are left out, except owners. People vouched in after the proposal don't decide it, however many there are: a test vouches in ten friends right after a proposal, has them object once established, and the proposal still passes. Each elector weighs their voice at the moment of the proposal (<a href="/wiki/standing/#voice">voice</a>).</p>
+
+    <h3 id="answers">Answers</h3>
+    <p>An elector answers with a <code>review</code> whose parent is the proposal's entry: <code>ok</code> to agree, <code>veto</code> with a reason (up to 200 characters) to object, <code>none</code> to take an answer back. The owners who signed the entry agree by signing; the app refuses an answer from them (<code>You proposed it: your signature already says yes.</code>). Every answer to a proposal is kept as long as the proposal, because when people agreed decides it; only the earliest 16 per person count (<code>MAX_ANSWERS</code>), and nodes refuse the rest. Answers made at or after the deadline don't count, and nodes refuse them (<code>answers to that proposal closed</code>). An established member's device shows a notice when a proposal arrives: "They apply only if everyone established agrees. Have your say on the Rules tab."</p>
+
+    <h3 id="proposal-status">Where a proposal stands</h3>
+    <p>Voices are integers: one voice is <code>VOICE</code> = 720,720. <code>DISSENT</code>, half a voice (360,360), is what it takes to stop a change.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Proposal statuses">
+      <table>
+        <thead><tr><th>Status</th><th>When</th><th>Effect</th></tr></thead>
+        <tbody>
+          <tr><td><span class="tag t-mint">passed</span>, unanimous</td><td>At the first moment the electors who hadn't agreed weighed less than half a voice. Retired electors who never answered don't count against it.</td><td>In effect from that moment, for good. Later answers don't undo it.</td></tr>
+          <tr><td><span class="tag t-sky">in-effect</span></td><td>Before the deadline, while the electors who object, plus those who are <em>around</em> (something of theirs is live and not hidden or removed) and haven't answered, weigh less than half a voice.</td><td>Applied for as long as that holds. If someone who was away comes back and objects, it stops again.</td></tr>
+          <tr><td><span class="tag t-sun">open</span></td><td>Before the deadline, otherwise.</td><td>Not applied.</td></tr>
+          <tr><td><span class="tag t-mint">passed</span> at the deadline</td><td>The deadline (proposal time plus <code>max_retention</code>) came with objections weighing less than half a voice. Silence counts as yes.</td><td>In effect from the deadline, for good.</td></tr>
+          <tr><td><span class="tag t-coral">lapsed</span></td><td>The deadline came with objections weighing half a voice or more.</td><td>Never takes effect.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>The deadline is one retention window after the proposal because by then everything anyone had posted before it has faded: everyone who was around had their chance. While nobody but the proposing owner is established, the proposer's own signature is unanimous, and the change applies at once; that's what the Manage tab means by "While nobody else is established, it applies at once."</p>
+    <div class="wk-note info"><b>The ladder vector</b><p><a href="{{REPO_URL}}/blob/main/core/vectors/ladder.json">vectors/ladder.json</a> pins a proposal with six electors: the owner agrees, one member agrees, one objects with a quarter of a voice, three are away. Its expected status is <code>in-effect</code>, with <code>agreed_voice</code> 900,900 and <code>objecting_voice</code> 180,180.</p></div>
+
+    <h3 id="retire">Retiring an elector</h3>
+    <p>Someone who left for good would hold up every change until its deadline. Owners can sign a <code>retire</code> entry (a threshold action) for an elector who has signed nothing in the community, and been a member, for at least 30 days before the entry (<code>RETIRE_AWAY</code>). It takes effect 7 days later (<code>RETIRE_NOTICE</code>), so the person can come back: anything they sign voids it. From then on their silence holds nothing up. It never takes away an answer they gave: someone who objected and then left keeps their objection. Owners can't be retired, and the app refuses to retire anyone who signed something or joined in the last 30 days. Retirements are vetoable.</p>
+
+    <h3 id="enacting">Taking effect</h3>
+    <p>A proposal that passed, or is in effect, enters the replay as a decision at its time, sorted right after the proposal's own entry when both fall on the same second. A <code>limits</code> decision patches the current limits and appends them to <code>limits_since</code>. A <code>rules</code> decision makes the rules version one higher (the first is version 1) with that proposal's signers. The app lists proposals on the Rules tab until 30 days after they passed or lapsed.</p>
+  </section>
+
+  <section class="wk-sec" id="rules-wiki">
+    <h2>Rules and the wiki as documents</h2>
+    <p>Rules text and wiki pages are Loro CRDT documents, so changes written against the same version merge instead of overwriting each other.</p>
+    <h3 id="rules-doc">Rules</h3>
+    <p>A <code>rules</code> entry carries the full text its proposers saw (<code>text</code>) and the change itself as a Loro update to the rules document as it stood when they wrote it (<code>patch</code>, at most 64 KiB). <code>rules_patch</code> builds it: it rebuilds the document from the passed proposals, sets a fresh random Loro peer id (never 0 or 1), replaces the text, commits, and exports the updates since the old version. The rules shown are the passed entries' patches imported in the order they passed:</p>
+    <div class="wk-code" data-lang="rust" data-title="core/crates/hoi-core/src/wiki.rs"><pre><code>pub(crate) fn rules_doc(&amp;self, c: &amp;Id) -&gt; Option&lt;LoroDoc&gt; {
+    let st = self.communities.get(c)?;
+    let mut passed: Vec&lt;_&gt; = st.proposals.values().filter(|p| p.action == LedgerAction::Rules &amp;&amp; p.applied_at.is_some() &amp;&amp; p.patch.is_some()).collect();
+    passed.sort_by_key(|p| (p.applied_at, p.id));
+    let doc = LoroDoc::new();
+    for p in passed {
+        let _ = doc.import(p.patch.as_deref().unwrap_or_default());
+    }
+    Some(doc)
+}</code></pre></div>
+    <p>The <code>two_rules_changes_written_against_the_same_version_both_count</code> test proposes two changes to "1. Be kind." from the same version; once both pass, the rules read both changes merged, at version 3.</p>
+
+    <h3 id="wiki">The wiki</h3>
+    <p>A community's wiki is a set of pages, each a Loro document built from records of kind <code>wiki</code>, each carrying one update. Edits merge whatever order they arrive in; an edit whose predecessors haven't arrived waits inside the document.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Wiki limits">
+      <table>
+        <thead><tr><th>Limit</th><th>Value</th><th>Where</th></tr></thead>
+        <tbody>
+          <tr><td>Page name</td><td>1–64 of <code>a-z</code>, <code>0-9</code>, <code>-</code>; not starting or ending with <code>-</code></td><td><code>is_wiki_page</code></td></tr>
+          <tr><td>One edit's update</td><td>1 byte to 32 KiB (<code>MAX_WIKI_UPDATE</code>); record cap 33 KiB</td><td>shape check</td></tr>
+          <tr><td>A page's edits together</td><td>1 MiB (<code>PAGE_BYTES</code>)</td><td><code>check_wiki</code>: <code>this wiki page is full</code></td></tr>
+          <tr><td>Pages in a community</td><td>256 (<code>PAGES</code>)</td><td><code>edit_wiki</code></td></tr>
+          <tr><td>A page's text as saved</td><td>64 KiB (<code>PAGE_TEXT</code>)</td><td><code>edit_wiki</code></td></tr>
+          <tr><td>Rate</td><td>60 an hour, 200 a day</td><td>rate windows</td></tr>
+          <tr><td>Expiry</td><td>100 years (<code>KEEP</code>): exempt from retention</td><td>a page is its whole history</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Members edit: owners, moderators and admitted people who aren't banned or blocked. Ingest checks the author may edit, that the update is a Loro update at all (<code>a wiki edit that isn't one</code>), and that the page has room. An edit can't be taken out without breaking the ones after it, so a bad edit is undone by editing; a banned person's later edits are refused at ingest, and while the community blocks someone, their edits are left out when the page is built. See <a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/tests/wiki.rs">tests/wiki.rs</a>.</p>
+  </section>
+
+  <section class="wk-sec" id="registration">
+    <h2>Registration and publication proofs</h2>
+    <p>A public registry maps names to community keys (<a href="/wiki/registry/">registry</a>). Only the community key can claim a name for itself, and it is forgotten at creation, so the creating device signs both statements up front and keeps them as proofs in its local state (<code>registration_proofs</code>, <code>publication_proofs</code>).</p>
+    <h3 id="public-name">The canonical name</h3>
+    <p><code>community_registration_name</code> trims the genesis name and lowercases it. It is valid if it is 1–32 bytes, starts with <code>a-z</code> or <code>0-9</code>, and uses only <code>a-z</code>, <code>0-9</code>, <code>.</code>, <code>_</code> and <code>-</code>. A name that doesn't qualify gets no proofs; the community still works and can be shared by invite.</p>
+    <h3 id="statements">The statements</h3>
+    <div class="wk-code" data-lang="rust" data-title="core/crates/hoi-core/src/registration.rs"><pre><code>pub fn community_registration_statement(name: &amp;str, community: &amp;Id) -&gt; String {
+    format!("hoi community name v1\n{name}\n{}", community.hex())
+}
+
+pub fn community_publication_statement(name: &amp;str, community: &amp;Id, protocol: &amp;str, index: u32) -&gt; String {
+    format!("hoi community index v2\n{name}\n{}\n{protocol}\n{index}", community.hex())
+}</code></pre></div>
+    <p>The community key signs the exact UTF-8 bytes with Ed25519. The publication statement also binds the protocol family and index edition this build was compiled with, read from <code>release.json</code> (<code>protocolVersion</code> and <code>indexVersion</code>), so runtime notice edits can't relabel a signed community. The vectors pin both with a fixed seed:</p>
+    <div class="wk-code" data-lang="json" data-title="core/vectors/community-publication.json (trimmed)"><pre><code>{
+  "name": "garden_1.v2-test",
+  "community": "197f6b23e16c8532c6abc838facd5ea789be0c76b2920334039bfa8b3d368d61",
+  "protocolVersion": "0.3",
+  "indexVersion": 1,
+  "statement": "hoi community index v2\ngarden_1.v2-test\n197f6b23…8d61\n0.3\n1",
+  "signature": "65eaba7e…451e00"
+}</code></pre></div>
+    <p><a href="{{REPO_URL}}/blob/main/core/vectors/community-registration.json">community-registration.json</a> holds the same name and key with the v1 name statement. Both vectors are read by the hoi-core discovery tests and the registry's protocol tests.</p>
+    <h3 id="proof-rules">When proofs are handed out and restored</h3>
+    <ul>
+      <li><code>community_registration</code> refuses private communities and names without a canonical form, and needs the stored proof (<code>Register from the device that created it</code>).</li>
+      <li><code>community_publication</code> also needs <code>admission</code> to be <code>open</code>.</li>
+      <li>A key file carries the proofs of public communities this device holds, at most 64 of each kind (<code>MAX_BACKUP_PROOFS</code>). On restore, a proof is kept only if the community is joined, not private, its genesis name canonicalizes to the proof's name, and the community key's signature over the statement verifies.</li>
+    </ul>
+  </section>
+
+  <section class="wk-sec" id="in-the-app">
+    <h2>In the web app</h2>
+    <ul>
+      <li><b>Ledger</b> (<a href="{{REPO_URL}}/blob/main/apps/web/src/routes/Ledger.svelte">Ledger.svelte</a>): every entry that took effect and every one the community overturned, newest first, tagged (<code>removed</code>, <code>banned</code>, <code>rules v3</code>, <code>new mod</code>, <code>left for good</code>…), with signers, vetoes and the time left on a pending removal ("text deleted in … unless vetoed"). Established members veto from here. "Export signed log" saves a <code>.hoibundle</code> of the community's signed records.</li>
+      <li><b>Manage</b> (<a href="{{REPO_URL}}/blob/main/apps/web/src/routes/Manage.svelte">Manage.svelte</a>): flags with their weight against the auto-bounce threshold, the door for <code>approve</code> communities, age-proof codes, bans and unbans, the limits and ladder forms (disabled for moderators, with the reason), moderators, and the co-sign box that takes a <code>hoi:cosign:</code> code.</li>
+      <li><b>Start a community</b> (<a href="{{REPO_URL}}/blob/main/apps/web/src/routes/NewCommunity.svelte">NewCommunity.svelte</a>): name, public name reservation, description, color, retention, joining, stamp, first rules, more owners and the threshold.</li>
+      <li><b>Community</b> (<a href="{{REPO_URL}}/blob/main/apps/web/src/routes/Community.svelte">Community.svelte</a>): the Posts, Rules, Wiki, Ladder, Ledger and Manage tabs.</li>
+    </ul>
+    <p>For the people side of running one (who is responsible, a checklist before inviting people), see <a href="/communities/">Running a community</a>.</p>
+    <div class="wk-cards">
+      <a class="wk-card g-mint" href="/wiki/standing/"><i></i><b>Standing &amp; review</b><span>The ladder, voice, hides, blocks, vetoes and suspensions.</span></a>
+      <a class="wk-card g-sky" href="/wiki/trust/"><i></i><b>Trust &amp; ranking</b><span>Weights, Hot, labelers, blocklists and age proofs.</span></a>
+      <a class="wk-card g-peach" href="/wiki/spam/"><i></i><b>Spam &amp; rate limits</b><span>Rate windows, strikes, reports and autobans.</span></a>
+      <a class="wk-card g-sun" href="/wiki/expiry/"><i></i><b>Expiry &amp; removal</b><span>Retention, tombstones and what stays.</span></a>
+    </div>
+  </section>
+</article>
+<!-- @wiki-close -->
+<!-- @include footer.html -->
+<script type="module" src="/src/pages/wiki.ts"></script>
+</body>
+</html>

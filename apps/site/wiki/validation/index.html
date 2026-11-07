@@ -1,0 +1,503 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <!-- @include head.html title="Validation pipeline · hoi wiki" description="The stages every record passes, in order, and what failing costs." -->
+</head>
+<body class="wiki">
+<!-- @include header.html nav="wiki" -->
+<!-- @wiki-open -->
+<article class="wk-doc">
+  <!-- @wiki-crumbs -->
+  <h1>Validation <span class="acc">pipeline</span></h1>
+  <p class="wk-lead">Every record a device stores, shows or passes on goes through one function first: <code>Node::ingest</code>. It runs the same stages whether the record was typed on this device, arrived live from a peer, came in during catch-up, or was read back from disk. This page walks the stages in the order the code runs them, names every refusal, and says who pays for it.</p>
+  <p class="wk-src-list">Source <a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/node.rs">hoi-core/src/node.rs</a> · <a href="{{REPO_URL}}/blob/main/core/crates/hoi-validate/src/lib.rs">hoi-validate/src/lib.rs</a> · <a href="{{REPO_URL}}/blob/main/core/crates/hoi-spam/src/lib.rs">hoi-spam/src/lib.rs</a> · <a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/net.rs">hoi-core/src/net.rs</a> · <a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/work.rs">hoi-core/src/work.rs</a></p>
+  <div class="wk-head-rule"></div>
+
+  <section class="wk-sec" id="overview">
+    <h2>One function, every record</h2>
+    <p>The checks are split in two. <a href="{{REPO_URL}}/blob/main/core/crates/hoi-validate/src/lib.rs">hoi-validate</a> holds the pure stages: functions of the record bytes and a few numbers, with no state (<code>decode</code>, <code>stamp</code>, <code>signature</code>, <code>delegation_consent</code>, <code>delegation</code>, <code>identity</code>, <code>time</code>, <code>rate_windows</code>, <code>window_ok</code>, <code>content</code>). <code>Node::ingest</code> in <a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/node.rs">hoi-core/src/node.rs</a> composes them with what the device knows: the store (identities, delegations, rotations, burns), each community's moderation state from hoi-moderation, and the strike counters from hoi-spam.</p>
+    <p>The order is the point. The cheapest checks run first, so a flood of junk costs a hash per record and never reaches a signature check, let alone an 8 MiB Argon2id run. A record that fails a stage stops there: nothing later runs, nothing is stored, nothing is passed on.</p>
+    <div class="wk-stage" data-demo="pipeline" data-title="Records through the stages">
+      <p class="nojs">Records enter on the left and pass decode, stamp floor, signature, stamp, identity, time, moderation, rate and content in turn. A malformed record stops at decode, an unstamped one at the stamp floor, a forged one at the signature, a flood at the rate stage; the good ones are accepted, and a newcomer's link is stored but held back.</p>
+      <p class="wk-stage-cap">The stages in the order <code>Node::ingest</code> runs them. Cheap checks first; a record stops at the first stage it fails.</p>
+    </div>
+    <h3 id="sources">Where a record comes from</h3>
+    <p>Every call to <code>ingest</code> names a <code>Source</code>. The source changes a few stages (which are skipped, whether a record must be fresh, whether anyone is blamed), never their order.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Record sources">
+      <table>
+        <thead><tr><th>Source</th><th>What it is</th><th>Passed on afterwards</th></tr></thead>
+        <tbody>
+          <tr><td><code>Local</code></td><td>Made and signed on this device (<code>Node::publish</code>).</td><td>Yes, through the injector where one is linked, else gossiped at once</td></tr>
+          <tr><td><code>Load</code></td><td>Read back from this device's storage at startup.</td><td>No</td></tr>
+          <tr><td><code>Import</code></td><td>From an invite, a bundle file, a key file or a device link code.</td><td>Yes</td></tr>
+          <tr><td><code>PrivateRelay</code></td><td>Decrypted and authenticated by the private-group transport.</td><td>Never as plaintext</td></tr>
+          <tr><td><code>Pieces</code></td><td>Rebuilt on this device from an open community's pieces.</td><td>Never whole</td></tr>
+          <tr><td><code>Peer { live: true }</code></td><td>From a peer, made within the last ten minutes: live gossip.</td><td>Yes, to every peer but the sender</td></tr>
+          <tr><td><code>Peer { live: false }</code></td><td>From a peer, older: catch-up sync.</td><td>Yes, to every peer but the sender</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>There is no separate gossip message. Live records and catch-up both arrive in <code>recs</code> messages on the sync link (<a href="/wiki/sync/">Sync &amp; gossip</a>), and the receiver decides per record: <code>live = created_at + CLOCK_SKEW &gt;= now</code>, with <code>CLOCK_SKEW = 600</code> seconds. Records that come in through the injector of an open community count as live too.</p>
+    <div class="wk-code" data-lang="rust" data-title="hoi-core/src/net.rs (trimmed)"><pre><code>Msg::Recs { recs } =&gt; {
+    let undecodable = recs.iter().filter(|w| Wire::decode(w).is_err()).count();
+    let mut drop = undecodable &gt; 0 &amp;&amp; self.peer_scores.penalize(peer, 2.0 * undecodable as f64);
+    // Recent records count as live gossip; older ones as catch-up.
+    self.ingest_batch(recs, &amp;|created| Source::Peer { peer: p.clone(), live: created + hoi_validate::CLOCK_SKEW &gt;= now }, …);</code></pre></div>
+  </section>
+
+  <section class="wk-sec" id="order">
+    <h2>The stages in order</h2>
+    <p>This is <code>Node::ingest</code> from top to bottom. The numbers are this page's; the code comments number the pure stages differently (they call the stamp floor stage 2 and content stage 7).</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Pipeline stages">
+      <table>
+        <thead><tr><th>#</th><th>Stage</th><th>What is checked</th><th>Code</th><th>Refusal</th></tr></thead>
+        <tbody>
+          <tr><td>1</td><td><a href="#decode">Decode</a></td><td>Canonical bytes, the id, the size cap for the kind</td><td><code>hoi_validate::decode</code></td><td><code>Decode</code>, <code>TooBig</code></td></tr>
+          <tr><td>2</td><td><a href="#gates">Gates</a></td><td>Private-community path, already here, removed or suppressed, community joined and known</td><td><code>Node::ingest</code></td><td><code>NotAllowed</code>, <code>Duplicate</code>, <code>Tombstoned</code>, <code>UnknownCommunity</code></td></tr>
+          <tr><td>3</td><td><a href="#stamp-floor">Stamp floor</a></td><td>The least work any key could need here; one hash</td><td><code>stamp_floor</code>, <code>stamp</code></td><td><code>WeakStamp</code></td></tr>
+          <tr><td>4</td><td><a href="#signature">Signature</a></td><td>Ed25519 over the id by <code>author</code></td><td><code>signature</code></td><td><code>BadSignature</code></td></tr>
+          <tr><td>5</td><td><a href="#speaker">Who speaks</a></td><td>Device blessing and consent, scope, revocation, rotation, burns, first root wins, strangers' keys, device cap</td><td><code>Node::speaker</code>, <code>delegation_consent</code>, <code>delegation</code></td><td><code>NoDelegation</code>, <code>DelegationExpired</code>, <code>Revoked</code>, <code>Scope</code>, <code>Burned</code>, <code>NotAllowed</code></td></tr>
+          <tr><td>6</td><td><a href="#stamp">Stamp</a></td><td>The community's difficulty for this kind and this key's age</td><td><code>bits_for</code>, <code>stamp</code></td><td><code>WeakStamp</code></td></tr>
+          <tr><td>7</td><td><a href="#identity">Identity</a></td><td>Argon2id work of identity records; the author's identity work against the community's ask</td><td><code>identity_work</code>, <code>hoi_validate::identity</code></td><td><code>BadIdentity</code>, <code>NoIdentity</code>, <code>WeakIdentity</code></td></tr>
+          <tr><td>8</td><td><a href="#time">Time</a></td><td>Not from the future, fresh if live, not expired, within retention</td><td><code>hoi_validate::time</code></td><td><code>FromTheFuture</code>, <code>TooOld</code>, <code>Expired</code>, <code>ExpiryTooFar</code></td></tr>
+          <tr><td>9</td><td><a href="#moderation">Moderation</a></td><td>Ban, removal, this device's bounce</td><td><code>Node::ingest</code></td><td><code>Banned</code>, <code>Tombstoned</code></td></tr>
+          <tr><td>10</td><td><a href="#rate">Rate</a></td><td>Rolling windows per key, kind and community, by <code>created_at</code></td><td><code>check_rate</code>, <code>rate_windows</code>, <code>window_ok</code></td><td><code>RateLimited</code></td></tr>
+          <tr><td>11</td><td><a href="#content">Content</a></td><td>Text, links, names, media references, field shapes; copy-paste floods</td><td><code>hoi_validate::content</code>, <code>check_duplicate</code></td><td><code>Content</code></td></tr>
+          <tr><td>12</td><td><a href="#semantic">Context</a></td><td>Parents exist and fit, authors own what they edit, ledger authority, followed labelers; public joins; supersession</td><td><code>semantic</code>, <code>check_public_join</code>, <code>superseded</code></td><td><code>NotAllowed</code>, <code>Duplicate</code></td></tr>
+          <tr><td>13</td><td><a href="#accept">Accept</a></td><td>Stored, indexed, effects applied, passed on</td><td><code>Node::ingest</code>, <code>after_accept</code></td><td>—</td></tr>
+          <tr><td>14</td><td><a href="#holds">Standing</a></td><td>Stored, but held back until the author may share it</td><td><code>Node::held</code></td><td>not a refusal</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="wk-note info"><b>Standing is not a stage that refuses</b><p>A record that is valid but beyond its author's standing (a newcomer's link, a member's picture) passes every stage and is stored. Standing decides afterwards whether anyone but its author sees it and whether it is passed on (<a href="#holds">Standing and holds</a>).</p></div>
+  </section>
+
+  <section class="wk-sec" id="decode">
+    <h2>1 · Decode</h2>
+    <p><code>hoi_validate::decode</code> refuses anything over 64 KiB + 256 bytes before parsing, so a huge blob never reaches the CBOR decoder. Then <code>Wire::decode</code> reads the wire map <code>{r, sig}</code> strictly: canonical DAG-CBOR only (shortest integers, definite lengths, sorted text keys, no floats, no tags), every field present and typed, no unknown keys, a known kind, protocol version 1, and the shape rules of <code>Record::check_shape</code> (which kinds carry a community and a parent, a genesis signed by its own key, a delegation that expires with its record, and so on). The id is BLAKE3 of the record's canonical bytes, computed here once. Last, the encoded size must fit the kind's cap.</p>
+    <div class="wk-code" data-lang="rust" data-title="hoi-validate/src/lib.rs"><pre><code>pub fn decode(bytes: &amp;[u8]) -&gt; Result&lt;Decoded, Reject&gt; {
+    if bytes.len() &gt; 64 * 1024 + 256 {
+        return Err(Reject::TooBig);
+    }
+    let (wire, id) = Wire::decode(bytes).map_err(|e| Reject::Decode(e.to_string()))?;
+    if bytes.len() &gt; wire.record.kind().max_size() {
+        return Err(Reject::TooBig);
+    }
+    Ok(Decoded { wire, id, size: bytes.len() })
+}</code></pre></div>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Size caps by kind">
+      <table>
+        <thead><tr><th>Cap</th><th>Kinds</th></tr></thead>
+        <tbody>
+          <tr><td>512 B</td><td><code>profile-color</code>, <code>vote</code>, <code>label</code>, <code>delete</code>, <code>revoke</code>, <code>identity</code>, <code>vouch</code>, <code>rotate</code></td></tr>
+          <tr><td>1 KiB</td><td><code>review</code></td></tr>
+          <tr><td>2 KiB</td><td><code>delegation</code>, <code>report</code>, <code>roster</code></td></tr>
+          <tr><td>4 KiB</td><td><code>share</code></td></tr>
+          <tr><td>5 KiB</td><td><code>profile</code></td></tr>
+          <tr><td>10 KiB</td><td><code>trust</code></td></tr>
+          <tr><td>16 KiB</td><td><code>comment</code>, <code>pointer</code></td></tr>
+          <tr><td>32 KiB</td><td><code>tally</code></td></tr>
+          <tr><td>33 KiB</td><td><code>wiki</code> (a 32 KiB update plus 1 KiB)</td></tr>
+          <tr><td>64 KiB</td><td><code>post</code>, <code>edit</code>, <code>ledger</code>, <code>community</code></td></tr>
+          <tr><td>72 KiB</td><td><code>blocklist</code> (larger than the 64 KiB + 256 B pre-check, so the pre-check is what binds)</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>The encoding and the id are described in full on <a href="/wiki/records/">Records &amp; encoding</a>; the fields of every kind on <a href="/wiki/kinds/">Record kinds</a>.</p>
+  </section>
+
+  <section class="wk-sec" id="gates">
+    <h2>2 · Gates before any signature</h2>
+    <p>Four questions are answered from the decoded record and the device's state, still without verifying anything:</p>
+    <ol class="wk-steps">
+      <li><b>Private communities take the encrypted path</b><p>A record of a community this device knows to be private, arriving as <code>Peer</code> or <code>Import</code>, is refused: <code>NotAllowed("Private community records require the encrypted group connection.")</code>. A <code>Local</code> record for a private community this device can no longer write to (its encrypted membership ended) is refused too, unless it is the community's own genesis signed with a community key this device holds. See <a href="/wiki/private/">Private communities</a>.</p></li>
+      <li><b>Already here</b><p>If the store holds the id, the answer is <code>Duplicate</code>, with three side effects: a copy from a peer bumps the stored record's <code>from_peers</code> count; one of this device's own records that comes back from a peer is offered like any other from then on (the injector's hold ends); and a complete public copy can clear a record's private-carrier mark. No blame either way.</p></li>
+      <li><b>Removed or suppressed</b><p>Ids whose bodies were deleted (removed, deleted by their author, superseded, burned), ids kept as a "Poof" skeleton, and records or communities the node's operator suppressed are refused as <code>Tombstoned</code>, however they arrive. A removed post stays gone even if a peer still offers it.</p></li>
+      <li><b>Joined and known</b><p>A record for a community this device has not joined is refused, <code>NotAllowed("not subscribed to this community")</code>. If the community is joined but its genesis hasn't arrived yet, anything but the genesis is refused as <code>UnknownCommunity</code>. A stranger's records for communities this device doesn't hold cost one hash and nothing more.</p></li>
+    </ol>
+  </section>
+
+  <section class="wk-sec" id="stamp-floor">
+    <h2>3 · The stamp floor</h2>
+    <p>Before the signature, the record's proof of work is checked against a floor: the least any key could ever need for this kind here. Checking a stamp is one BLAKE3 hash of <code>id ‖ u64be(nonce)</code> (<a href="/wiki/stamps/">Stamps &amp; work</a>), much cheaper than an Ed25519 verification, so unstamped junk is turned away for one hash each. Records read back at startup (<code>Load</code>) skip it.</p>
+    <div class="wk-code" data-lang="rust" data-title="hoi-validate/src/lib.rs"><pre><code>pub fn stamp_floor(kind: Kind) -&gt; u32 {
+    match kind {
+        Kind::Community | Kind::Delegation | Kind::Revoke | Kind::Identity | Kind::Rotate =&gt; hoi_types::GLOBAL_POW_BITS,
+        k =&gt; 8u32.saturating_sub(k.pow_discount()).saturating_sub(6),
+    }
+}</code></pre></div>
+    <p>The protocol-wide floor assumes the lowest difficulty a community may set (8 bits), minus the kind's discount and the largest key-age discount (6). For a community the device holds, <code>ingest</code> raises it to that community's own floor: <code>required_bits(pow_bits, kind discount, 366 days)</code>, the stamp a key older than a year would need, under the most lenient limits that apply to the record's time.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Stamp floors">
+      <table>
+        <thead><tr><th>Kind</th><th>Protocol floor</th><th>Floor in a community at the default 22 bits</th></tr></thead>
+        <tbody>
+          <tr><td><code>community</code>, <code>delegation</code>, <code>revoke</code>, <code>identity</code>, <code>rotate</code></td><td>16 bits</td><td>16 bits (they belong to no community; a genesis is always 16)</td></tr>
+          <tr><td><code>post</code>, <code>comment</code>, <code>edit</code>, <code>pointer</code></td><td>2 bits</td><td>16 bits (22 − 6)</td></tr>
+          <tr><td>Kinds with the 8-bit discount: <code>vote</code>, <code>label</code>, <code>ledger</code>, <code>report</code>, <code>delete</code>, <code>vouch</code>, <code>review</code>, <code>profile</code>, <code>profile-color</code>, <code>roster</code>, <code>share</code>, <code>trust</code>, <code>wiki</code>, <code>tally</code>, <code>blocklist</code></td><td>0 bits</td><td>8 bits (22 − 8 − 6)</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="wk-sec" id="signature">
+    <h2>4 · The signature</h2>
+    <p><code>hoi_validate::signature</code> verifies <code>sig</code> over the 32-byte record id with the record's <code>author</code> key, using ed25519-dalek's <code>verify_strict</code>. Strict verification refuses non-canonical signatures and small-order points, so one signature can't be made to verify for many messages. A failure is <code>BadSignature</code>, and the peer that sent it is blamed.</p>
+    <p>A valid signature only says the <code>author</code> key signed it. Who that key speaks for is the next stage.</p>
+  </section>
+
+  <section class="wk-sec" id="speaker">
+    <h2>5 · Who is speaking</h2>
+    <p><code>Node::speaker</code> turns the signing key into a person: the root key the record counts for. It keeps identities apart, so nobody can claim someone else's device and a replaced or burned root can't speak. The rules depend on the body:</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Speaker rules">
+      <table>
+        <thead><tr><th>Body</th><th>Speaker</th><th>Refused when</th></tr></thead>
+        <tbody>
+          <tr><td><code>community</code></td><td>the community key itself</td><td>— (and later: a second genesis for the same key, <code>NotAllowed("a community's genesis never changes")</code>)</td></tr>
+          <tr><td><code>identity</code></td><td>the author</td><td>the author is a known device (<code>NotAllowed</code>); <code>of</code> names the author itself; the record was made at or after a rotation replaced the author (<code>Revoked</code>)</td></tr>
+          <tr><td><code>rotate</code></td><td>the person named</td><td>any rule of <a href="/wiki/identity/">a rotation</a> fails: weak recovery key, no first identity, not the committed recovery key, the new root doesn't name the person, the new root is already someone's, the root it replaces took over later or was already replaced</td></tr>
+          <tr><td><code>delegation</code></td><td>the root that blessed it</td><td><code>delegation_consent</code> fails (<code>BadSignature</code>, or <code>Content</code> past 400 days); the device is an identity; the device already belongs to another root; made at or after that root was replaced (<code>Revoked</code>)</td></tr>
+          <tr><td><code>revoke</code></td><td>the author</td><td>the author is a device ("only a root revokes"); the revoked device belongs to another root; made at or after the author was replaced (<code>Revoked</code>)</td></tr>
+          <tr><td>anything else</td><td>the device's root, or the author if it is a root; then the person that root speaks for</td><td>a device with no delegation known here (<code>NoDelegation</code>), made after the delegation expired (<code>DelegationExpired</code>) or at or after its revocation (<code>Revoked</code>), outside its scope (<code>Scope</code>); made at or after its root was replaced (<code>Revoked</code>); a new root that continues someone whose rotation hasn't arrived (<code>NoIdentity</code>)</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 id="consent">Two signatures on a delegation</h3>
+    <p>A delegation is signed by the device it blesses: that is the device's consent. Inside it, <code>root_sig</code> is the root's blessing over <code>delegation_statement(root, device, scope, expires_at)</code>. <code>delegation_consent</code> checks that both keys are strong (valid curve points outside the small-order subgroup), that the root really signed the statement, and that the blessing lasts at most <code>MAX_DELEGATION</code>, 400 days, past the record's <code>created_at</code>.</p>
+    <div class="wk-code" data-lang="rust" data-title="hoi-validate/src/lib.rs"><pre><code>pub fn delegation(record: &amp;Record, deleg: Option&lt;&amp;DelegationInfo&gt;) -&gt; Result&lt;Id, Reject&gt; {
+    let d = deleg.ok_or(Reject::NoDelegation)?;
+    if record.created_at &gt; d.expires_at {
+        return Err(Reject::DelegationExpired);
+    }
+    if let Some(rv) = d.revoked_at
+        &amp;&amp; record.created_at &gt;= rv
+    {
+        return Err(Reject::Revoked);
+    }
+    let needed = scope_needed(record.kind(), record.community.as_ref()).ok_or(Reject::Scope)?;
+    if !scope_covers(&amp;d.scope, &amp;needed) {
+        return Err(Reject::Scope);
+    }
+    Ok(d.root)
+}</code></pre></div>
+    <p>Both tests use the record's own <code>created_at</code>, so a device's records from before its revocation stay valid everywhere. The scope a device needs for each kind:</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Scopes by kind">
+      <table>
+        <thead><tr><th>Kind</th><th>Any of these scopes (or <code>*</code>)</th></tr></thead>
+        <tbody>
+          <tr><td><code>post</code>, <code>wiki</code></td><td><code>post</code></td></tr>
+          <tr><td><code>comment</code></td><td><code>comment</code></td></tr>
+          <tr><td><code>edit</code>, <code>delete</code>, <code>pointer</code>, <code>profile</code>, <code>profile-color</code></td><td><code>post</code> or <code>comment</code></td></tr>
+          <tr><td><code>vote</code>, <code>label</code>, <code>report</code>, <code>vouch</code>, <code>review</code>, <code>roster</code>, <code>share</code>, <code>trust</code>, <code>tally</code>, <code>blocklist</code></td><td><code>vote</code></td></tr>
+          <tr><td><code>ledger</code></td><td><code>moderate:&lt;community hex&gt;</code></td></tr>
+          <tr><td><code>community</code>, <code>delegation</code>, <code>revoke</code>, <code>identity</code>, <code>rotate</code></td><td>none: only a root (or the community key) signs these</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>The apps bless every device with <code>["*"]</code>. Keys, blessings, revocations, rotations and burns are explained on <a href="/wiki/identity/">Keys &amp; identity</a>.</p>
+    <h3 id="after-speaker">Right after the speaker is known</h3>
+    <ul>
+      <li><b>Burned.</b> If the person's root was burned, everything they sign is <code>Burned</code>, except the burn record itself.</li>
+      <li><b>A genesis never changes.</b> A second <code>community</code> record for a key that already has one is <code>NotAllowed</code>.</li>
+      <li><b>Strangers' keys.</b> Identities, delegations and revocations have no community and are kept up to a hundred years. From a peer that is not one of this person's own devices nor their home node, they are taken only for roots this device already knows (it holds their identity or a device of theirs, records of theirs in a community it carries, or they own or moderate a community here), for roots the same batch carries community records of, or for a new root that continues someone known. Otherwise: <code>NotAllowed("an identity, device or revocation of a key nobody here has heard from")</code>. Without this rule anyone could fill every node with keys nobody uses, for good.</li>
+      <li><b>Sixteen live devices.</b> A new delegation for a root that already has <code>MAX_LIVE_DEVICES</code> (16) live, unrevoked devices is <code>NotAllowed</code>. Renewals of a known device, this person's own root, and records loaded from disk are exempt.</li>
+    </ul>
+  </section>
+
+  <section class="wk-sec" id="stamp">
+    <h2>6 · The full stamp</h2>
+    <p>Now the stamp is checked against what this community actually asks of this key. <code>bits_for</code> applies <code>required_bits(pow_bits, kind discount, key age)</code> for records in a community this device holds, and <code>GLOBAL_POW_BITS</code> (16) for everything else, genesis included. Records loaded from disk need 0.</p>
+    <div class="wk-code" data-lang="rust" data-title="hoi-crypto/src/pow.rs"><pre><code>pub fn required_bits(pow_bits: u32, kind_discount: u32, key_age_secs: u64) -&gt; u32 {
+    let d = key_age_secs / 86_400;
+    let age = if d &lt; 30 { 0 } else if d &lt; 90 { 2 } else if d &lt; 365 { 4 } else { 6 };
+    pow_bits.saturating_sub(kind_discount).saturating_sub(age)
+}</code></pre></div>
+    <p>Key age counts from <code>first_seen</code>: when this device first accepted anything from that person, never from what a record claims. Nobody can backdate their way to a discount, and two devices may disagree about a key's age. That is why an author stamps for the full difficulty: <code>bits_to_stamp</code> is <code>bits_for(record, 0)</code>.</p>
+    <p>The difficulty is <code>limits_for(community, created_at)</code>: the lower of the community's current <code>pow_bits</code> and the one in effect when the record says it was made. Records members took under looser limits stay valid on devices that join after the limits tightened. The same rule gives the longer retention, the higher newcomer rate and the lower identity work.</p>
+  </section>
+
+  <section class="wk-sec" id="identity">
+    <h2>7 · Identity work</h2>
+    <p>Two checks, both about the person's memory-hard work (<a href="/wiki/stamps/">Stamps &amp; work</a>):</p>
+    <ol class="wk-steps">
+      <li><b>An identity record's own work</b><p>For an <code>identity</code> record, <code>hoi_validate::identity</code> refuses weak keys and runs one Argon2id evaluation (8 MiB, one pass) over <code>root ‖ u64be(work)</code>. Fewer than <code>MIN_BITS</code> (4) leading zero bits is <code>BadIdentity</code>. The answer is cached per (root, work) in the node's state, so each nonce is checked once.</p></li>
+      <li><b>The author's identity in this community</b><p>For every other record in a community (not the genesis, not on load), the person's best identity record must exist (<code>NoIdentity</code>) and carry at least the community's <code>ladder.identity_bits</code> (default 8; <code>WeakIdentity { have, need }</code>). "Best" is the most work along the person's chain of roots, so a person whose root was replaced keeps the work they did.</p></li>
+    </ol>
+    <p>Argon2id is the only expensive step, so it comes after the stamp and the signature. Native hosts keep the node behind a lock that every connection waits for; <a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/work.rs">work.rs</a> lets them check a <code>recs</code> message's identity records first, outside the lock: scan (stamp floor and signature only), ask the node under a short lock which ones are new, run Argon2id with no lock held, stop at the first forgery, then hand the message in with the answers for the pipeline to look up. The order of the stages doesn't change; the browser's worker has no lock and checks inline.</p>
+    <div class="wk-note warn"><b>Forged work ends the link</b><p>A <code>BadIdentity</code> from a peer costs that peer <code>MAX_SCORE − DISCONNECT_AT</code> (30) points, enough to disconnect any peer at once, and <code>ingest_batch</code> stops taking the rest of its batch: nothing more from it is worth another Argon2id run.</p></div>
+  </section>
+
+  <section class="wk-sec" id="time">
+    <h2>8 · Time</h2>
+    <div class="wk-code" data-lang="rust" data-title="hoi-validate/src/lib.rs"><pre><code>pub fn time(record: &amp;Record, now: u64, live: bool, max_retention: Option&lt;u64&gt;) -&gt; Result&lt;(), Reject&gt; {
+    if record.created_at &gt; now + CLOCK_SKEW {
+        return Err(Reject::FromTheFuture);
+    }
+    if live &amp;&amp; record.created_at + CLOCK_SKEW &lt; now {
+        return Err(Reject::TooOld);
+    }
+    if record.expires_at &lt;= now {
+        return Err(Reject::Expired);
+    }
+    let cap = max_retention.unwrap_or(KEEP);
+    if record.expires_at &gt; record.created_at.saturating_add(cap) {
+        return Err(Reject::ExpiryTooFar);
+    }
+    Ok(())
+}</code></pre></div>
+    <dl class="wk-defs">
+      <dt>CLOCK_SKEW<small>600 s</small></dt><dd>How far in the future a record may say it was made, and how old a live record may be.</dd>
+      <dt>live<small>bool</small></dt><dd><code>Source::Peer { live: true }</code>, except a ledger entry carrying co-signatures (a threshold proposal), which may travel for a while before enough owners sign.</dd>
+      <dt>max_retention<small>Option&lt;u64&gt;</small></dt><dd>The community's <code>max_retention</code> (180 days by default) under <code>limits_for</code>; <code>None</code> means <code>KEEP</code>, a hundred years, for records outside the retention window.</dd>
+    </dl>
+    <p>Kept outside the window (<code>exempt_from_retention</code>): the genesis, delegations, revocations, identities, rotations, vouches, shares, wiki edits, and ledger entries kept until superseded (rules, limits, moderators). A review that answers a proposal is kept as long as the proposal, since the answers decide it. Threshold proposals made here or arriving live are refused as <code>TooOld</code> once they are more than <code>PROPOSAL_MAX_AGE</code> (7 days) old. Records that pass carry their own end: past <code>expires_at</code>, every device deletes them (<a href="/wiki/expiry/">Expiry &amp; removal</a>).</p>
+  </section>
+
+  <section class="wk-sec" id="moderation">
+    <h2>9 · Moderation state</h2>
+    <p>For a community this device holds, read from the community's ledger as hoi-moderation settled it (<a href="/wiki/communities/">Communities &amp; the ledger</a>):</p>
+    <ul>
+      <li><b>Banned.</b> A ban on the person counts for records made at or after the ban: <code>Banned</code>. What they wrote before stays.</li>
+      <li><b>Removed.</b> If a removal of this very record is in effect (its contest window passed, or it was urgent), the id is marked deleted until the record's own expiry and the record is <code>Tombstoned</code>.</li>
+      <li><b>Bounced here.</b> If this device bounced the person (<a href="#blame">strikes</a>) and the bounce hasn't lifted, the record is refused as <code>Banned</code> and counted in <code>bounced_records</code>. A bounce never applies to this person's own records or to loading: what was stored before a bounce stays stored (and hidden) over a restart, since deleting it would outlast the bounce.</li>
+    </ul>
+  </section>
+
+  <section class="wk-sec" id="rate">
+    <h2>10 · Rate</h2>
+    <p>Each key may have so many records of a kind in a community within rolling windows. The windows count records by their own <code>created_at</code>, not by arrival, so every device reaches the same answer, and backdated records arriving as catch-up can't skip the limit. Owners and moderators are exempt, and the check is skipped for records loaded from disk. "Newcomer" means not yet admitted on the community's ladder (<a href="/wiki/standing/">Standing &amp; review</a>).</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Rate windows">
+      <table>
+        <thead><tr><th>Kind</th><th>Newcomer</th><th>Admitted</th></tr></thead>
+        <tbody>
+          <tr><td><code>post</code></td><td><code>newcomer_posts_per_day</code> a day (default 2)</td><td>12 an hour, 48 a day; with media 4 an hour, 6 a day</td></tr>
+          <tr><td><code>comment</code></td><td>10 an hour, 30 a day</td><td>60 an hour, 400 a day</td></tr>
+          <tr><td><code>edit</code>, <code>delete</code></td><td colspan="2">30 an hour, 100 a day</td></tr>
+          <tr><td><code>vote</code></td><td colspan="2">300 an hour, 2000 a day</td></tr>
+          <tr><td><code>vouch</code>, <code>review</code></td><td>20 a day</td><td>60 an hour, 300 a day</td></tr>
+          <tr><td><code>label</code>, <code>report</code></td><td>20 a day</td><td>200 a day</td></tr>
+          <tr><td><code>pointer</code></td><td>20 an hour, 60 a day</td><td>120 an hour, 1000 a day</td></tr>
+          <tr><td><code>profile</code>, <code>profile-color</code></td><td colspan="2">2 an hour, 6 a day</td></tr>
+          <tr><td><code>roster</code></td><td colspan="2">8 a day</td></tr>
+          <tr><td><code>share</code></td><td colspan="2">20 a day</td></tr>
+          <tr><td><code>trust</code>, <code>blocklist</code></td><td colspan="2">4 an hour, 12 a day</td></tr>
+          <tr><td><code>wiki</code></td><td colspan="2">60 an hour, 200 a day</td></tr>
+          <tr><td><code>tally</code></td><td colspan="2">4 an hour, 48 a day</td></tr>
+          <tr><td>everything else</td><td colspan="2">no windows</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Kinds count in groups (<code>rate_group</code>): edits and deletes share one, vouches and reviews another, labels and reports a third. <code>window_ok</code> takes the author's other record times in that group and accepts a new one only if every window-long span containing it holds at most the limit, wherever the new record lands in time. A limit of 0 accepts nothing.</p>
+    <div class="wk-code" data-lang="rust" data-title="hoi-validate/src/lib.rs"><pre><code>pub fn window_ok(times: &amp;[u64], t: u64, w: u64, max: u32) -&gt; bool {
+    if max == 0 {
+        return false;
+    }
+    let mut near: Vec&lt;u64&gt; = times.iter().copied().filter(|x| x.abs_diff(t) &lt; w).collect();
+    near.push(t);
+    near.sort_unstable();
+    // every span [s, s + w) that contains t starts at a record time in (t - w, t]
+    near.iter().filter(|s| **s &lt;= t).all(|s| near.iter().filter(|x| **x &gt;= *s &amp;&amp; **x &lt; s.saturating_add(w)).count() &lt;= max as usize)
+}</code></pre></div>
+    <div class="wk-stage" data-demo="ratelimit" data-title="Rolling rate windows">
+      <p class="nojs">One key's posts on a timeline, with an hour window and a day window sliding over them. A post that would put more than the limit inside any window-long span is dropped.</p>
+      <p class="wk-stage-cap">A key's posts against rolling windows; the over-budget ones are dropped, wherever their <code>created_at</code> puts them.</p>
+    </div>
+    <p>Only a <em>live</em> record from a peer that breaks a window earns its key a strike (weight 1). Catch-up records over the limit are refused without blame. More on <a href="/wiki/spam/">Spam &amp; rate limits</a>.</p>
+  </section>
+
+  <section class="wk-sec" id="content">
+    <h2>11 · Content and copy-paste floods</h2>
+    <p><code>hoi_validate::content</code> checks the body of every kind: text through the rules of <a href="/wiki/content-rules/">Text, links &amp; names</a>, media references through those of <a href="/wiki/media/">Media</a>, and the shape of every other field (a vote is −1, 0 or 1; an objection carries one of the allowed reasons; a delegation's scope is known; a community has 1–16 owners and a threshold between 1 and their number; limits within range; a share is 81 bytes per device; and so on). Any failure is <code>Content(message)</code>. From a peer, it costs the author's key a strike of weight 3.</p>
+    <p>Then, for posts and comments in a community (not on load), <code>check_duplicate</code> looks for copy-paste floods using <code>text_fingerprint</code>: the words lowercased, runs of whitespace collapsed, BLAKE3, first 16 bytes. Texts shorter than 12 characters after that have no fingerprint.</p>
+    <ul>
+      <li>The same words from the same person within 7 days: <code>Content("the same words again")</code>.</li>
+      <li>From a newcomer, the same words that two or more other newcomers used within a day: <code>Content("the same words from several newcomers: a copy-paste flood")</code>.</li>
+    </ul>
+    <p>A flood from a peer costs the key a strike of weight 0.25 (<code>Offence::Duplicate</code>).</p>
+  </section>
+
+  <section class="wk-sec" id="semantic">
+    <h2>12 · Checks that need other records</h2>
+    <p><code>Node::semantic</code> checks what a record says against the records it refers to. Every failure is <code>NotAllowed</code>, without blame: a parent may simply not have arrived yet.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Context checks">
+      <table>
+        <thead><tr><th>Kind</th><th>Requires</th></tr></thead>
+        <tbody>
+          <tr><td><code>comment</code></td><td>its parent is a post or comment of the same community, held here, held by a pointer record, or kept as a removed skeleton (a reply under something removed since stays, under the Poof box)</td></tr>
+          <tr><td><code>vote</code></td><td>its parent is a post or comment of the same community</td></tr>
+          <tr><td><code>edit</code>, <code>delete</code></td><td>its parent is a post or comment of the same community by the same person</td></tr>
+          <tr><td><code>vouch</code></td><td>nobody vouches for themselves</td></tr>
+          <tr><td><code>review</code></td><td>its parent is held here (or by a pointer), in the same community; never one's own post, comment or ledger entry (co-signers count as authors); vetoes only of vetoable ledger entries or proposals; ledger entries are vetoed, never hidden; answers to a proposal close at its deadline</td></tr>
+          <tr><td><code>ledger</code></td><td>an owner for actions that need the owners' threshold, an owner or moderator for the rest (not checked on load)</td></tr>
+          <tr><td><code>wiki</code></td><td>the update fits the page (checked in <code>crate::wiki</code>)</td></tr>
+          <tr><td><code>label</code></td><td>from this person, a labeler they follow, or one the community's limits list</td></tr>
+          <tr><td><code>tally</code>, <code>blocklist</code></td><td>from an aggregator or list keeper someone here follows (or this person)</td></tr>
+          <tr><td><code>roster</code></td><td>from an established member who isn't banned</td></tr>
+          <tr><td><code>profile</code></td><td>its picture isn't blocked on this device</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Two more steps before the record is stored:</p>
+    <ul>
+      <li><b>Public joins.</b> If the person is joining this community from a directory result, its genesis must say <code>admission: open</code> and its name must match the result; otherwise the join is undone and the genesis is <code>NotAllowed</code>.</li>
+      <li><b>Supersession.</b> Only the latest vouch and review per (author, target) count, by <code>(seq, created_at, id)</code>; only the latest trust statement, tally and blocklist per person and community, and the latest roster per device, by <code>(created_at, id)</code>. A record older than the one held is <code>Duplicate</code> and its id is marked deleted, so peers offering it aren't asked again; a newer one drops the older ones once it is stored. Answers to a proposal are all kept, up to <code>MAX_ANSWERS</code> (16) per person; one more is <code>NotAllowed</code>.</li>
+    </ul>
+  </section>
+
+  <section class="wk-sec" id="accept">
+    <h2>13 · Accept, and what follows</h2>
+    <p>A record that reached here is stored as a <code>Stored</code> entry: its id, record, signature, the exact wire bytes, the person it counts for (<code>author_root</code>), when it arrived, how many peers sent it, and the stamp and identity bits it carried. Then, in order:</p>
+    <ol class="wk-steps">
+      <li><b>Late judgements</b><p>A vouch, review or ledger entry from a peer, an import, the private relay or pieces that says it was made more than <code>LATE_GRACE</code> (one hour) before this device last caught up with the community counts from when it turned up, not from its <code>created_at</code>. Nobody wins a decision by backdating.</p></li>
+      <li><b>Provenance</b><p>Records without a community that came through the private relay are marked as private carriers; media of posts in private communities is marked private unless the same bytes were public before. Raw sync never carries either.</p></li>
+      <li><b>Store and persist</b><p>The record goes into the in-memory index and a <code>Change::Put</code> is queued for storage (not on load). Records it supersedes are dropped. Trust statements and blocklists mark the friend ring and the followed lists for recomputing.</p></li>
+      <li><b>Note the author</b><p><code>first_seen</code> is set for the person if it wasn't. Profile pictures and colors update their heads. A post's or comment's <code>name</code> becomes the person's display name if it is the newest, and a name that is a domain is queued for a <a href="/wiki/identity/">handle check</a>.</p></li>
+      <li><b>Kind effects</b><p><code>after_accept</code>: a genesis creates the community's state; a <code>delete</code> turns its parent into a skeleton ("deleted by the author"); new rules or limits from a peer tell an established person they have a say; a report checks the autoban weight; a burn purges everything the burned root signed; a pointer is taken in for its object.</p></li>
+      <li><b>Settle and pass on</b><p>The community is marked dirty for the next settle. This device's own new record goes through an injector where one is linked, and is kept from its own links until it comes back from elsewhere. Then it is gossiped to every peer that shares the community, except the one it came from, together with its carriers (the author's identity and device blessing, and a replaced person's chain), unless it is held, private, kept in pieces, or came through the private relay or pieces.</p></li>
+    </ol>
+  </section>
+
+  <section class="wk-sec" id="holds">
+    <h2>14 · Standing and holds</h2>
+    <p>A stored record may still be held back: shown to nobody but its author, passed on to nobody, until its author's standing allows it. <code>Node::held</code> answers why, or <code>None</code>. It runs whenever the record is shown, counted or offered, so a hold lifts on its own the moment the author earns the standing.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Reasons a record is held">
+      <table>
+        <thead><tr><th>Held when</th><th>Reason shown</th><th>Applies to</th></tr></thead>
+        <tbody>
+          <tr><td>a newer profile record of the same person is known</td><td>a newer profile is known</td><td><code>profile</code>, <code>profile-color</code></td></tr>
+          <tr><td>a media item is refused here, or its bytes failed the checks</td><td>its media failed the checks</td><td><code>post</code></td></tr>
+          <tr><td>its profile picture is blocked on this device</td><td>its profile picture is blocked</td><td><code>profile</code></td></tr>
+          <tr><td>invite-only community, the author is a newcomer nobody vouched for yet</td><td>this community needs a member to vouch for you first</td><td>profiles, posts, comments, edits</td></tr>
+          <tr><td>age-proof community, the author isn't admitted yet</td><td>this community lets people in once a moderator saw a proof of their age</td><td>profiles, posts, comments, edits</td></tr>
+          <tr><td>it carries a link and the author is below member</td><td>links unlock once the community has vouched for you</td><td>posts, comments, edits</td></tr>
+          <tr><td>it carries media and the author is below trusted</td><td>media unlocks for trusted members</td><td>posts, profiles</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>The first three apply to everyone; the standing holds never apply to owners and moderators, nor to kinds other than profiles, posts, comments and edits. On top of holds, a person the community blocked (<a href="/wiki/standing/">Standing &amp; review</a>) has nothing passed on. The three views built on this:</p>
+    <dl class="wk-defs">
+      <dt>shown</dt><dd>The author is visible here, and the record isn't held, or this person wrote it.</dd>
+      <dt>usable</dt><dd>Not held, and its author not blocked by the community: it counts (votes, standing, media fetching).</dd>
+      <dt>forwardable</dt><dd>Usable, not kept in pieces, not held by the injector: it may be offered and gossiped.</dd>
+    </dl>
+    <p>When a community settles, this person's own records that were held and no longer are (an age proof was accepted, a vouch arrived) are gossiped right away rather than waiting for the next sync. The app also refuses up front what a person's standing wouldn't let out: <code>check_standing</code> stops a newcomer's link or a member's media before anything is stamped.</p>
+  </section>
+
+  <section class="wk-sec" id="errors">
+    <h2>Every refusal</h2>
+    <p>The <code>Reject</code> enum in hoi-validate, with its machine code (<code>Reject::code</code>, used in counters and import reports) and whom it blames (<code>Reject::strike</code>):</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Rejections">
+      <table>
+        <thead><tr><th>Variant</th><th>Code</th><th>Message</th><th>Blame</th></tr></thead>
+        <tbody>
+          <tr><td><code>Decode(String)</code></td><td><code>decode</code></td><td>undecodable: …</td><td>peer</td></tr>
+          <tr><td><code>TooBig</code></td><td><code>too-big</code></td><td>too big for its kind</td><td>peer</td></tr>
+          <tr><td><code>BadSignature</code></td><td><code>signature</code></td><td>bad signature</td><td>peer</td></tr>
+          <tr><td><code>NoDelegation</code></td><td><code>delegation</code></td><td>signed by a device key we hold no delegation for</td><td>—</td></tr>
+          <tr><td><code>DelegationExpired</code></td><td><code>delegation</code></td><td>the device's delegation expired</td><td>—</td></tr>
+          <tr><td><code>Revoked</code></td><td><code>delegation</code></td><td>the device was revoked</td><td>—</td></tr>
+          <tr><td><code>Scope</code></td><td><code>delegation</code></td><td>the device may not sign this kind of record</td><td>—</td></tr>
+          <tr><td><code>WeakStamp { have, need }</code></td><td><code>stamp</code></td><td>stamp too weak: have of need bits</td><td>—</td></tr>
+          <tr><td><code>NoIdentity</code></td><td><code>identity</code></td><td>the author has no identity yet</td><td>—</td></tr>
+          <tr><td><code>WeakIdentity { have, need }</code></td><td><code>identity</code></td><td>identity work too weak for this community</td><td>—</td></tr>
+          <tr><td><code>BadIdentity(String)</code></td><td><code>identity</code></td><td>invalid identity: …</td><td>peer (and disconnect)</td></tr>
+          <tr><td><code>Burned</code></td><td><code>burned</code></td><td>that identity was burned by its owner</td><td>—</td></tr>
+          <tr><td><code>FromTheFuture</code></td><td><code>time</code></td><td>from the future</td><td>—</td></tr>
+          <tr><td><code>TooOld</code></td><td><code>time</code></td><td>too old to arrive live</td><td>—</td></tr>
+          <tr><td><code>ExpiryTooFar</code></td><td><code>time</code></td><td>expires later than the community allows</td><td>—</td></tr>
+          <tr><td><code>Expired</code></td><td><code>time</code></td><td>already expired</td><td>—</td></tr>
+          <tr><td><code>RateLimited</code></td><td><code>rate</code></td><td>rate limited</td><td>key</td></tr>
+          <tr><td><code>Content(String)</code></td><td><code>content</code></td><td>content rules: …</td><td>key</td></tr>
+          <tr><td><code>UnknownCommunity</code></td><td><code>unknown-community</code></td><td>unknown community</td><td>—</td></tr>
+          <tr><td><code>Banned</code></td><td><code>banned</code></td><td>author is banned here</td><td>—</td></tr>
+          <tr><td><code>Tombstoned</code></td><td><code>removed</code></td><td>removed</td><td>—</td></tr>
+          <tr><td><code>Duplicate</code></td><td><code>duplicate</code></td><td>already have it</td><td>—</td></tr>
+          <tr><td><code>NotAllowed(String)</code></td><td><code>not-allowed</code></td><td>not allowed: …</td><td>—</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>"Key" blame is not applied uniformly: the node strikes for <code>RateLimited</code> only on live peer records, and for <code>Content</code> on any peer record. Records made on this device, loaded, imported or rebuilt never strike anyone.</p>
+  </section>
+
+  <section class="wk-sec" id="blame">
+    <h2>What failing costs</h2>
+    <h3 id="peer-scores">The peer that sent it</h3>
+    <p>Each connection has a score in hoi-spam's <code>PeerScores</code>. An accepted record rewards the peer 0.1, up to <code>MAX_SCORE</code> (10). Penalties on the sync link:</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Peer penalties">
+      <table>
+        <thead><tr><th>What the peer did</th><th>Penalty</th></tr></thead>
+        <tbody>
+          <tr><td>Wires in a <code>recs</code> message that don't decode at all</td><td>2 each, counted before any is taken in</td></tr>
+          <tr><td>A record refused with peer blame (<code>Decode</code>, <code>TooBig</code>, <code>BadSignature</code>)</td><td>2</td></tr>
+          <tr><td>Forged identity work (<code>BadIdentity</code>)</td><td>30, so any peer is dropped</td></tr>
+          <tr><td>Media bytes that don't hash to what they claim</td><td>5</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>At <code>DISCONNECT_AT</code> (−20) the node says <code>bye</code> ("too many invalid records", or "media that doesn't match its hash") and closes the link. Peers that forward junk talk to fewer and fewer devices.</p>
+    <h3 id="key-strikes">The key that signed it</h3>
+    <p>hoi-spam's <code>Strikes</code> keep a score per (key, community), halving every hour (<code>HALF_LIFE_SECS</code> = 3600):</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Strike weights">
+      <table>
+        <thead><tr><th>Offence</th><th>Weight</th><th>When</th></tr></thead>
+        <tbody>
+          <tr><td><code>Rate</code></td><td>1</td><td>a live peer record over a rate window</td></tr>
+          <tr><td><code>Content</code></td><td>3</td><td>a peer record failing the content rules; media bytes that hash right but fail the checks or can't be decoded</td></tr>
+          <tr><td><code>Duplicate</code></td><td>0.25</td><td>a copy-paste flood from a peer</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Up to 16 offending record ids are kept as evidence. When the score crosses <code>BAN_AT</code> (10), this device <b>bounces</b> the person: for a day the first time (<code>BOUNCE_FOR</code>), twice as long each time again while the last bounce is remembered, never more than <code>BOUNCE_MAX</code> (30 days); a lifted bounce is remembered for 30 days. It tells its person ("Bounced … for a day: too many bad records. Until then your device won't store or pass on anything it signs.") and publishes a signed <code>report</code> with reason <code>rate</code>, <code>dup</code> or <code>spam</code> and the evidence ids, never the posts themselves. A bounce is one device's verdict and lifts on its own; reports from members with weight can lead to a community ban (<a href="/wiki/spam/">Spam &amp; rate limits</a>).</p>
+    <div class="wk-note info"><b>Old records under new rules</b><p>A record made before the rule it broke took effect is refused and nothing more: its author's client may have judged it by the rules of its day. <code>strikes_from</code> is <code>RULES_SINCE</code> (0 in this build) and, for rate offences, the time the community's current limits took effect.</p></div>
+  </section>
+
+  <section class="wk-sec" id="paths">
+    <h2>Own, received, synced, loaded</h2>
+    <p>The same stages, with these differences:</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Differences by source">
+      <table>
+        <thead><tr><th>Stage</th><th>Own (<code>Local</code>)</th><th>Live from a peer</th><th>Catch-up from a peer</th><th>Import</th><th>Load</th></tr></thead>
+        <tbody>
+          <tr><td>Before ingest</td><td>posts, replies and edits: content and standing checked by the API; every record stamped at full difficulty</td><td>identity work may be checked outside the lock</td><td>same as live</td><td>—</td><td>—</td></tr>
+          <tr><td>Stamp floor and stamp</td><td>yes</td><td>yes</td><td>yes</td><td>yes</td><td>skipped</td></tr>
+          <tr><td>Identity in the community</td><td>yes</td><td>yes</td><td>yes</td><td>yes</td><td>skipped</td></tr>
+          <tr><td>Fresh within 10 min</td><td>no</td><td>yes</td><td>no</td><td>no</td><td>no</td></tr>
+          <tr><td>Bounce</td><td>never for one's own</td><td>yes</td><td>yes</td><td>yes</td><td>skipped</td></tr>
+          <tr><td>Rate and floods</td><td>yes, no strike</td><td>yes, strike</td><td>yes; flood strikes, rate doesn't</td><td>yes, no strike</td><td>skipped</td></tr>
+          <tr><td>Content</td><td>yes, no strike</td><td>yes, strike</td><td>yes, strike</td><td>yes, no strike</td><td>yes</td></tr>
+          <tr><td>Ledger authority, rosters, tallies</td><td>yes</td><td>yes</td><td>yes</td><td>yes</td><td>skipped</td></tr>
+          <tr><td>Afterwards</td><td>profile and color published with posts and comments; injected or gossiped</td><td>gossiped to others</td><td>gossiped to others</td><td>gossiped</td><td>nothing persisted again, nothing gossiped</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 id="batches">Batches</h3>
+    <p>Sync messages, bundles and imports go through <code>ingest_batch</code>. It first notes which roots the batch carries community records of (device keys resolved through the batch's own delegations), so their identities may come along, then takes records in an order that puts dependencies first, by <code>(priority(kind), created_at)</code>:</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Batch order">
+      <table>
+        <thead><tr><th>Priority</th><th>Kinds</th></tr></thead>
+        <tbody>
+          <tr><td>0–6</td><td><code>community</code>, <code>identity</code>, <code>rotate</code>, <code>delegation</code>, <code>revoke</code>, <code>ledger</code>, <code>vouch</code></td></tr>
+          <tr><td>7–17</td><td><code>post</code>, <code>comment</code>, <code>edit</code>, <code>review</code>, <code>vote</code>, <code>label</code>, <code>report</code>, <code>delete</code>, <code>profile</code>, <code>profile-color</code>, <code>pointer</code></td></tr>
+          <tr><td>18–23</td><td><code>roster</code>, <code>share</code>, <code>trust</code>, <code>wiki</code>, <code>tally</code>, <code>blocklist</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Before the first record of priority 7 (<code>SETTLE_BEFORE</code>), the ladder is settled, so people admitted by vouches in the same batch post with their new standing. After the batch: settle again, catch up a recovery rotation if this device is restoring, and write any autobans due on a moderator's device.</p>
+  </section>
+
+  <section class="wk-sec" id="next">
+    <h2>Read next</h2>
+    <div class="wk-cards">
+      <a class="wk-card g-peach" href="/wiki/content-rules/"><i></i><b>Text, links &amp; names</b><span>What the content stage refuses, character by character.</span></a>
+      <a class="wk-card g-peach" href="/wiki/media/"><i></i><b>Media</b><span>The checks on media bytes, which arrive after their record.</span></a>
+      <a class="wk-card g-coral" href="/wiki/stamps/"><i></i><b>Stamps &amp; work</b><span>Mining, difficulty and identity work.</span></a>
+      <a class="wk-card g-coral" href="/wiki/identity/"><i></i><b>Keys &amp; identity</b><span>Devices, delegations, revocation, rotation and burns.</span></a>
+      <a class="wk-card g-mint" href="/wiki/spam/"><i></i><b>Spam &amp; rate limits</b><span>Strikes, reports, autobans and peer scores.</span></a>
+      <a class="wk-card g-mint" href="/wiki/standing/"><i></i><b>Standing &amp; review</b><span>The ladder that decides what is held.</span></a>
+    </div>
+  </section>
+</article>
+<!-- @wiki-close -->
+<!-- @include footer.html -->
+<script type="module" src="/src/pages/wiki.ts"></script>
+</body>
+</html>

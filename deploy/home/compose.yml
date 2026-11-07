@@ -1,0 +1,60 @@
+name: hoi-home
+
+# A home node, which is a public relay too (hoi-node's default), for a Raspberry Pi, a NAS or any
+# always-on computer with Docker. It keeps serving your own phone and browser, carries open
+# communities anyone asks it to, has your router forward its UDP ports (UPnP, NAT-PMP or PCP),
+# and tells whoever connects about the other public nodes it reached. No registry is needed:
+# people find it through its node link and the invites of the communities it carries. Put the
+# settings in deploy/home/.env (both optional):
+#
+#   HOI_NODE_NAME=lena's pi                    what your devices call this node
+#   HOI_DAILY_CAP_GB=5                         gigabytes a day it may relay for others
+#
+#   docker compose -f deploy/home/compose.yml up -d --build
+#   docker compose -f deploy/home/compose.yml logs -f        # port mapping and its node link
+#   docker compose -f deploy/home/compose.yml exec hoi-node cat /data/pairing-link
+#   docker compose -f deploy/home/compose.yml exec hoi-node cat /data/node-link
+#
+# To also announce it to a registry, add "--index" and the registry's URL to the command below.
+#
+# Host networking is what lets the node find the router (SSDP is multicast) and know the
+# address on your network the router forwards to. The paired-device listener stays on
+# 127.0.0.1:7842, the host's own loopback in this mode; only UDP 7843 and 7844 face outward.
+services:
+  hoi-node:
+    build:
+      context: ../..
+      dockerfile: core/crates/hoi-node/Dockerfile
+    image: ${HOI_NODE_IMAGE:-hoi-node:local}
+    entrypoint: ["hoi-node"]
+    command:
+      - --data
+      - /data
+      - --name
+      - ${HOI_NODE_NAME:-home node}
+      - --peer-bind
+      - 0.0.0.0:7843
+      - --rtc-port
+      - "7844"
+      - --daily-cap-gb
+      - ${HOI_DAILY_CAP_GB:-5}
+    network_mode: host
+    volumes:
+      - hoi-node-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 512m
+    pids_limit: 128
+    restart: unless-stopped
+    stop_grace_period: 30s
+    logging:
+      driver: local
+      options:
+        max-size: "1m"
+        max-file: "1"
+
+volumes:
+  hoi-node-data:

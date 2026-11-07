@@ -1,0 +1,668 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <!-- @include head.html title="Crates · hoi wiki" description="Every Rust crate in core/: what it does, its modules, features, dependencies, what depends on it, and the tests and fuzz targets that cover it." -->
+</head>
+<body class="wiki">
+<!-- @include header.html nav="wiki" -->
+<!-- @wiki-open -->
+<article class="wk-doc">
+  <!-- @wiki-crumbs -->
+  <h1>Crates <span class="acc">in core/</span></h1>
+  <p class="wk-lead">The Rust workspace in <code>core/</code> holds fourteen crates. Eight small ones each do one job without I/O (records, crypto, validation, storage, moderation, trust, spam, sync), <code>hoi-core</code> puts them behind one <code>Node</code>, and five more carry that node to sockets, browsers, phones, servers and the simulator. This page goes through every crate: its files, its public items, its Cargo features, what it pulls in and what pulls it in.</p>
+  <p class="wk-src-list">Source <a href="{{REPO_URL}}/blob/main/core/Cargo.toml">core/Cargo.toml</a> · <a href="{{REPO_URL}}/blob/main/core/README.md">core/README.md</a> · <a href="{{REPO_URL}}/tree/main/core/crates">core/crates/</a> · <a href="{{REPO_URL}}/blob/main/core/fuzz/Cargo.toml">core/fuzz/Cargo.toml</a> · <a href="{{REPO_URL}}/blob/main/core/rust-toolchain.toml">core/rust-toolchain.toml</a></p>
+  <div class="wk-head-rule"></div>
+
+  <section class="wk-sec" id="graph">
+    <h2>How the crates depend on each other</h2>
+    <p>Every arrow points from a crate to a crate it depends on. Only the edges that no longer path already implies are drawn (the transitive reduction): <code>hoi-core</code> also depends on <code>hoi-types</code> and <code>hoi-crypto</code> directly, for example, but it reaches them through <code>hoi-validate</code> anyway. The table under the figure lists every direct dependency from the manifests.</p>
+    <figure class="wk-fig">
+      <svg viewBox="0 0 760 520" role="img" aria-label="Dependency graph of the fourteen crates: hosts on top, hoi-net, then hoi-core, then the pure crates, hoi-types at the bottom">
+        <text class="d-tag c-coral" x="16" y="22">hosts</text>
+        <rect class="d-box acc c-coral" x="30" y="32" width="150" height="40" rx="10"/>
+        <text class="d-text" x="105" y="57" text-anchor="middle">hoi-wasm</text>
+        <rect class="d-box acc c-coral" x="210" y="32" width="150" height="40" rx="10"/>
+        <text class="d-text" x="285" y="57" text-anchor="middle">hoi-sim</text>
+        <rect class="d-box acc c-coral" x="400" y="32" width="150" height="40" rx="10"/>
+        <text class="d-text" x="475" y="57" text-anchor="middle">hoi-node</text>
+        <rect class="d-box acc c-coral" x="580" y="32" width="150" height="40" rx="10"/>
+        <text class="d-text" x="655" y="57" text-anchor="middle">hoi-ffi</text>
+
+        <text class="d-tag c-sky" x="16" y="112">sockets</text>
+        <rect class="d-box acc c-sky" x="540" y="122" width="150" height="40" rx="10"/>
+        <text class="d-text" x="615" y="147" text-anchor="middle">hoi-net</text>
+
+        <text class="d-tag c-sun" x="16" y="202">the node</text>
+        <rect class="d-box acc c-sun" x="290" y="212" width="180" height="40" rx="10"/>
+        <text class="d-text" x="380" y="237" text-anchor="middle">hoi-core</text>
+
+        <text class="d-tag c-mint" x="16" y="292">pure</text>
+        <rect class="d-box" x="20" y="302" width="130" height="40" rx="10"/>
+        <text class="d-text" x="85" y="327" text-anchor="middle">hoi-store</text>
+        <rect class="d-box" x="165" y="302" width="130" height="40" rx="10"/>
+        <text class="d-text" x="230" y="327" text-anchor="middle">hoi-trust</text>
+        <rect class="d-box" x="310" y="302" width="140" height="40" rx="10"/>
+        <text class="d-text" x="380" y="327" text-anchor="middle">hoi-moderation</text>
+        <rect class="d-box" x="465" y="302" width="130" height="40" rx="10"/>
+        <text class="d-text" x="530" y="327" text-anchor="middle">hoi-spam</text>
+        <rect class="d-box" x="610" y="302" width="130" height="40" rx="10"/>
+        <text class="d-text" x="675" y="327" text-anchor="middle">hoi-sync</text>
+        <rect class="d-box" x="20" y="382" width="130" height="40" rx="10"/>
+        <text class="d-text" x="85" y="407" text-anchor="middle">hoi-validate</text>
+        <rect class="d-box" x="190" y="382" width="130" height="40" rx="10"/>
+        <text class="d-text" x="255" y="407" text-anchor="middle">hoi-crypto</text>
+        <rect class="d-box acc c-mint" x="290" y="462" width="180" height="40" rx="10"/>
+        <text class="d-text" x="380" y="487" text-anchor="middle">hoi-types</text>
+
+        <line class="d-line" x1="105" y1="72" x2="350" y2="208"/>
+        <line class="d-line" x1="285" y1="72" x2="370" y2="208"/>
+        <line class="d-line" x1="475" y1="72" x2="395" y2="208"/>
+        <line class="d-line" x1="595" y1="72" x2="425" y2="208"/>
+        <line class="d-line" x1="300" y1="72" x2="570" y2="118"/>
+        <line class="d-line" x1="490" y1="72" x2="595" y2="118"/>
+        <line class="d-line" x1="655" y1="72" x2="630" y2="118"/>
+        <line class="d-line" x1="580" y1="162" x2="440" y2="208"/>
+        <line class="d-line" x1="310" y1="252" x2="100" y2="298"/>
+        <line class="d-line" x1="340" y1="252" x2="240" y2="298"/>
+        <line class="d-line" x1="380" y1="252" x2="380" y2="298"/>
+        <line class="d-line" x1="420" y1="252" x2="520" y2="298"/>
+        <line class="d-line" x1="450" y1="252" x2="660" y2="298"/>
+        <line class="d-line" x1="85" y1="342" x2="85" y2="378"/>
+        <line class="d-line" x1="150" y1="402" x2="186" y2="402"/>
+        <line class="d-line" x1="360" y1="342" x2="280" y2="378"/>
+        <line class="d-line" x1="255" y1="422" x2="330" y2="458"/>
+        <line class="d-line" x1="530" y1="342" x2="420" y2="458"/>
+        <line class="d-line" x1="675" y1="342" x2="450" y2="458"/>
+        <polygon class="d-head" points="350,208 340.2,207.1 344.1,200.1"/>
+        <polygon class="d-head" points="370,208 361.8,202.5 368.6,198.2"/>
+        <polygon class="d-head" points="395,208 396.1,198.2 403.0,202.3"/>
+        <polygon class="d-head" points="425,208 429.5,199.3 434.5,205.5"/>
+        <polygon class="d-head" points="570,118 560.5,120.4 561.8,112.5"/>
+        <polygon class="d-head" points="595,118 585.2,118.1 588.4,110.7"/>
+        <polygon class="d-head" points="630,118 630.8,108.2 637.8,112.0"/>
+        <polygon class="d-head" points="440,208 447.3,201.4 449.8,209.0"/>
+        <polygon class="d-head" points="100,298 107.9,292.2 109.6,300.0"/>
+        <polygon class="d-head" points="240,298 246.5,290.6 249.8,297.9"/>
+        <polygon class="d-head" points="380,298 376.0,289.0 384.0,289.0"/>
+        <polygon class="d-head" points="520,298 510.2,297.9 513.5,290.6"/>
+        <polygon class="d-head" points="660,298 650.4,300.0 652.1,292.2"/>
+        <polygon class="d-head" points="85,378 81.0,369.0 89.0,369.0"/>
+        <polygon class="d-head" points="186,402 177.0,406.0 177.0,398.0"/>
+        <polygon class="d-head" points="280,378 286.6,370.7 289.8,378.0"/>
+        <polygon class="d-head" points="330,458 320.2,457.7 323.6,450.5"/>
+        <polygon class="d-head" points="420,458 423.3,448.7 429.1,454.2"/>
+        <polygon class="d-head" points="450,458 456.2,450.3 459.8,457.4"/>
+      </svg>
+      <figcaption>The transitive reduction of the internal dependency graph, from the fourteen <code>Cargo.toml</code> files. <code>hoi-trust</code> depends on nothing at all; <code>hoi-types</code> depends on no other hoi crate.</figcaption>
+    </figure>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Direct internal dependencies">
+      <table>
+        <thead><tr><th>Crate</th><th>Depends on (direct, normal)</th><th>Depended on by</th></tr></thead>
+        <tbody>
+          <tr><td><a href="#hoi-types"><code>hoi-types</code></a></td><td>none</td><td>every other crate except <code>hoi-trust</code>; the fuzz workspace</td></tr>
+          <tr><td><a href="#hoi-crypto"><code>hoi-crypto</code></a></td><td><code>hoi-types</code></td><td>validate, store, moderation, core, net, wasm, ffi, node, sim; fuzz; desktop</td></tr>
+          <tr><td><a href="#hoi-validate"><code>hoi-validate</code></a></td><td><code>hoi-types</code>, <code>hoi-crypto</code></td><td>store, core, wasm, sim; fuzz</td></tr>
+          <tr><td><a href="#hoi-store"><code>hoi-store</code></a></td><td><code>hoi-crypto</code>, <code>hoi-types</code>, <code>hoi-validate</code></td><td>core, net, wasm, ffi, node, sim; desktop</td></tr>
+          <tr><td><a href="#hoi-moderation"><code>hoi-moderation</code></a></td><td><code>hoi-types</code>, <code>hoi-crypto</code></td><td>core, sim (and validate's tests)</td></tr>
+          <tr><td><a href="#hoi-trust"><code>hoi-trust</code></a></td><td>none</td><td>core</td></tr>
+          <tr><td><a href="#hoi-spam"><code>hoi-spam</code></a></td><td><code>hoi-types</code></td><td>core</td></tr>
+          <tr><td><a href="#hoi-sync"><code>hoi-sync</code></a></td><td><code>hoi-types</code></td><td>core, net, sim (and validate's tests); fuzz</td></tr>
+          <tr><td><a href="#hoi-core"><code>hoi-core</code></a></td><td>types, crypto, validate, store, sync, moderation, trust, spam</td><td>net, wasm, ffi, node, sim; desktop</td></tr>
+          <tr><td><a href="#hoi-net"><code>hoi-net</code></a></td><td><code>hoi-core</code>, <code>hoi-sync</code>, <code>hoi-types</code>, <code>hoi-crypto</code>, <code>hoi-store</code> (sqlite)</td><td>ffi, node, sim; desktop</td></tr>
+          <tr><td><a href="#hoi-wasm"><code>hoi-wasm</code></a></td><td>core, store, crypto, types, validate</td><td>the web app, through the generated JS package</td></tr>
+          <tr><td><a href="#hoi-ffi"><code>hoi-ffi</code></a></td><td>core (sqlite, ffi), store (sqlite), net, types, crypto</td><td>the iOS and Android packages</td></tr>
+          <tr><td><a href="#hoi-node"><code>hoi-node</code></a></td><td>core (sqlite), store (sqlite), net, crypto, types</td><td>nothing (a binary)</td></tr>
+          <tr><td><a href="#hoi-sim"><code>hoi-sim</code></a></td><td>types, crypto, validate, moderation, store (sqlite), sync, core (sqlite), net</td><td>nothing (a binary and a library for its tests)</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>"desktop" is <code>apps/desktop/src-tauri</code> (<code>hoi-desktop</code>), a Cargo workspace of its own that takes <code>hoi-core</code> and <code>hoi-store</code> with <code>sqlite</code>, plus <code>hoi-net</code>, <code>hoi-crypto</code> and <code>hoi-types</code> by path. It repeats the same <code>[patch.crates-io]</code> entries as <code>core/</code>. The full list of external crates, with versions and licenses, is on the <a href="/wiki/sbom/">SBOM page</a>.</p>
+  </section>
+
+  <section class="wk-sec" id="workspace">
+    <h2>The workspace</h2>
+    <p><code>core/Cargo.toml</code> declares <code>resolver = "3"</code> and <code>members = ["crates/*"]</code>, so every directory under <code>core/crates/</code> is a member. Every crate inherits its package metadata from <code>[workspace.package]</code>:</p>
+    <dl class="wk-defs">
+      <dt>version<small>1.0.0-preview.1</small></dt><dd>One version for the whole workspace. <code>hoi_core::VERSION</code> is <code>env!("CARGO_PKG_VERSION")</code>, so <code>boot()</code> reports it.</dd>
+      <dt>edition<small>2024</small></dt><dd>Rust 2024 edition everywhere (the fuzz crate says so on its own too).</dd>
+      <dt>rust-version<small>1.94</small></dt><dd>The minimum Rust the manifests accept. The vendored OpenMLS provider migration raised it to 1.94.</dd>
+      <dt>license<small>AGPL-3.0-only</small></dt><dd>Every crate.</dd>
+      <dt>publish<small>false</small></dt><dd>Nothing goes to crates.io; <code>hoi-ffi</code> repeats <code>publish = false</code> in its own manifest.</dd>
+    </dl>
+
+    <h3 id="workspace-toolchain">Toolchain and formatting</h3>
+    <div class="wk-code" data-lang="toml" data-title="core/rust-toolchain.toml"><pre><code>[toolchain]
+channel = "1.97.0"
+components = ["rustfmt", "clippy"]
+targets = ["wasm32-unknown-unknown"]</code></pre></div>
+    <p>So a checkout builds with Rust 1.97.0 exactly, with the browser target installed. <code>core/rustfmt.toml</code> sets <code>max_width = 160</code> and <code>use_small_heuristics = "Max"</code>: lines run long, and short expressions stay on one line. Building and testing are on <a href="/wiki/development/">Building &amp; testing</a>.</p>
+
+    <h3 id="workspace-deps">Shared dependency versions</h3>
+    <p><code>[workspace.dependencies]</code> pins every external crate two or more members use, and the ten library crates by path. Members then write <code>blake3.workspace = true</code>. Notable choices the manifest spells out:</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Workspace dependency pins">
+      <table>
+        <thead><tr><th>Crate</th><th>Requirement</th><th>Features and why</th></tr></thead>
+        <tbody>
+          <tr><td><code>blake3</code></td><td>1.8</td><td>no default features, <code>std</code>: ids, stamps, key derivation</td></tr>
+          <tr><td><code>ed25519-dalek</code></td><td>3</td><td><code>zeroize</code>: signatures</td></tr>
+          <tr><td><code>argon2</code></td><td>0.6</td><td>no defaults, <code>alloc</code>: identity work and the keystore</td></tr>
+          <tr><td><code>chacha20poly1305</code> / <code>chacha20</code></td><td>0.11 / 0.10</td><td>sealing; the stream cipher of scattered delivery's all-or-nothing transform</td></tr>
+          <tr><td><code>hpke-rs</code>, <code>hpke-rs-crypto</code>, <code>hpke-rs-rust-crypto</code></td><td>0.8</td><td>no defaults: sealed envelopes</td></tr>
+          <tr><td><code>openmls</code> and its provider crates</td><td>=0.9.2, =0.6.0</td><td>exact pins: private communities</td></tr>
+          <tr><td><code>rusqlite</code></td><td>0.40</td><td><code>bundled</code>: SQLite compiled in</td></tr>
+          <tr><td><code>proptest</code></td><td>1.12</td><td>no defaults, <code>std</code>, <code>bit-set</code>: without <code>fork</code> and <code>timeout</code>, so tests also run under wasm32-wasip1</td></tr>
+          <tr><td><code>wasm-bindgen</code> / <code>js-sys</code></td><td>0.2.129 / 0.3.106</td><td>the browser build; <code>wasm-bindgen-cli</code> must match</td></tr>
+          <tr><td><code>tokio</code></td><td>1.54</td><td><code>rt-multi-thread</code>, <code>net</code>, <code>sync</code>, <code>time</code>, <code>macros</code>, <code>signal</code>, <code>io-util</code></td></tr>
+          <tr><td><code>iroh</code></td><td>=1.4.1</td><td>no defaults, <code>tls-ring</code>: authenticated QUIC, no default infrastructure</td></tr>
+          <tr><td><code>mainline</code></td><td>=8.0.1</td><td>no defaults, <code>async</code>: the DHT among public nodes</td></tr>
+          <tr><td><code>str0m</code>, <code>str0m-proto</code>, <code>dimpl</code>, <code>rcgen</code></td><td>0.24.1, 0.7.0, 0.7.6, 0.14</td><td>WebRTC data channels, DTLS on RustCrypto, certificates on <code>ring</code> (no <code>aws-lc-rs</code>)</td></tr>
+          <tr><td><code>loro</code></td><td>1.17.1</td><td>no defaults: rules and wiki text as CRDT documents</td></tr>
+          <tr><td><code>p256</code></td><td>0.14</td><td><code>ecdsa</code>, <code>alloc</code>: verifying age credentials (ES256), verification only</td></tr>
+          <tr><td><code>netdev</code></td><td>0.46.3</td><td><code>gateway</code>: local addresses and the default gateway</td></tr>
+          <tr><td><code>image</code></td><td>0.25</td><td>no defaults, <code>png</code>, <code>jpeg</code>, <code>gif</code>, <code>webp</code>: decoding pictures for perceptual fingerprints, no rayon</td></tr>
+          <tr><td><code>miniz_oxide</code></td><td>0.8</td><td>no defaults, <code>with-alloc</code>: deflate for node links carrying a notice</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3 id="workspace-profiles">Build profiles</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Cargo profiles">
+      <table>
+        <thead><tr><th>Profile</th><th>Settings</th><th>Why</th></tr></thead>
+        <tbody>
+          <tr><td><code>dev</code>, every package</td><td><code>opt-level = 2</code></td><td>Tests mine real stamps; hashing has to be fast in debug builds.</td></tr>
+          <tr><td><code>dev</code>, <code>hoi-crypto</code></td><td><code>opt-level = 3</code></td><td>The hashing itself at full speed.</td></tr>
+          <tr><td><code>release</code></td><td><code>lto = true</code>, <code>codegen-units = 1</code>, <code>opt-level = 3</code>, <code>strip = "debuginfo"</code>; every package <code>opt-level = 3</code></td><td>Small, fast native binaries.</td></tr>
+          <tr><td><code>wasm</code></td><td><code>inherits = "release"</code>, <code>opt-level = "s"</code>, <code>panic = "abort"</code></td><td>The browser build: small. <code>scripts/build-wasm.mjs</code> builds <code>hoi-wasm</code> with <code>--profile wasm</code> for <code>wasm32-unknown-unknown</code>.</td></tr>
+          <tr><td><code>wasm</code>, <code>blake3</code> and <code>hoi-crypto</code></td><td><code>opt-level = 3</code></td><td>Keeps hashing fast inside the small build.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="wk-note info"><b>panic = "abort" in the browser</b><p>Because the wasm profile aborts on panic, a decoder bug inside the worker would take the whole node down. That is why the browser core sets <code>set_look_elsewhere(true)</code> and decodes pictures in a separate look worker (see <a href="#hoi-wasm">hoi-wasm</a>).</p></div>
+
+    <h3 id="workspace-patches">Vendored patches</h3>
+    <p><code>[patch.crates-io]</code> replaces five published crates with reviewed local copies under <code>vendor/</code>:</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Patched crates">
+      <table>
+        <thead><tr><th>Crate</th><th>Path</th><th>Change, per vendor/README.md</th></tr></thead>
+        <tbody>
+          <tr><td><code>openmls_rust_crypto</code></td><td><code>vendor/openmls_rust_crypto</code></td><td>0.6.0 with the upstream crypto API migration and HPKE 0.8; unused post-quantum dependencies made optional</td></tr>
+          <tr><td><code>openmls_basic_credential</code></td><td><code>vendor/openmls_basic_credential</code></td><td>the same migration; optional ML-DSA feature-gated</td></tr>
+          <tr><td><code>dimpl</code></td><td><code>vendor/dimpl</code></td><td>0.7.6 with P-256/P-384 0.14 and ECDSA 0.17; DTLS state machine unchanged</td></tr>
+          <tr><td><code>core-models</code></td><td><code>vendor/core-models</code></td><td>0.0.7 with <code>hax-lib</code> 0.4.1; only active under <code>cfg(hax)</code></td></tr>
+          <tr><td><code>netdev</code></td><td><code>vendor/netdev-0.46.3</code></td><td>a local Darwin IPv6 ioctl request layout, because libc exposes it only on macOS</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>The comment above the block gives the reason: the published providers still select the vulnerable RustCrypto 0.13 curve stack. <code>cargo test -p hoi-core -p hoi-net --test crypto_backend</code> checks the patched providers. Supply-chain policy is on <a href="/wiki/supply-chain/">Supply chain &amp; hardening</a>.</p>
+
+    <h3 id="workspace-other">Workspaces next to this one</h3>
+    <ul>
+      <li><code>core/fuzz</code> is a workspace of its own (<code>[workspace] members = ["."]</code>), so <code>libfuzzer-sys</code> stays out of <code>core/Cargo.lock</code>. It needs nightly. See <a href="#fuzz">Fuzz targets</a>.</li>
+      <li><code>apps/desktop/src-tauri</code> (<code>hoi-desktop</code>) and <code>apps/setup/src-tauri</code> (<code>hoi-setup</code>, with its <code>engine</code>) each declare <code>[workspace]</code>. Only the desktop uses core crates.</li>
+    </ul>
+  </section>
+
+  <section class="wk-sec" id="hoi-types">
+    <h2>hoi-types</h2>
+    <p>Records, ids, canonical DAG-CBOR and links. Pure and free of I/O: it decides what bytes a record is and what a link says, and nothing else. Everything else in hoi stands on it. Details are on <a href="/wiki/records/">Records &amp; encoding</a>, <a href="/wiki/kinds/">Record kinds</a> and <a href="/wiki/links/">Links &amp; URIs</a>.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="hoi-types at a glance">
+      <table>
+        <tbody>
+          <tr><th>Path</th><td><a href="{{REPO_URL}}/tree/main/core/crates/hoi-types">core/crates/hoi-types</a></td></tr>
+          <tr><th>Features</th><td>none</td></tr>
+          <tr><th>Internal deps</th><td>none</td></tr>
+          <tr><th>External deps</th><td><code>blake3</code> 1.8, <code>bs58</code> 0.5, <code>base64</code> 0.23, <code>serde</code> 1 (derive), <code>thiserror</code> 2, <code>zeroize</code> 1, <code>miniz_oxide</code> 0.8. Dev: <code>proptest</code> 1.12, <code>serde_json</code> 1</td></tr>
+          <tr><th>Tests</th><td>46 <code>#[test]</code> functions and two <code>proptest!</code> blocks in the module files; fuzzed by <code>record</code>, <code>manifest</code> and <code>links</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 id="hoi-types-modules">Modules</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="hoi-types modules">
+      <table>
+        <thead><tr><th>File</th><th>What it holds</th><th>Main public items</th></tr></thead>
+        <tbody>
+          <tr><td><code>lib.rs</code></td><td>Re-exports and the crate error.</td><td><code>TypesError</code> (<code>Cbor</code>, <code>Length</code>, <code>Hex</code>, <code>Did</code>, <code>Field</code>, <code>Version</code>, <code>Uri</code>)</td></tr>
+          <tr><td><code>cbor.rs</code></td><td>Canonical DAG-CBOR restricted to what records use: shortest integers, definite lengths, text keys sorted length-first then bytewise, no floats, no tags. The strict decoder rejects anything the encoder would not write, so <code>encode(decode(b)) == b</code>.</td><td><code>Value</code>, <code>CborError</code>, <code>encode_into</code>, <code>decode</code>, <code>key_cmp</code>, <code>MAX_DEPTH = 16</code></td></tr>
+          <tr><td><code>id.rs</code></td><td>32-byte ids (record ids and public keys) and 64-byte signatures, hex.</td><td><code>Id</code>, <code>Sig</code>, <code>hex_encode</code>, <code>hex_decode</code></td></tr>
+          <tr><td><code>did.rs</code></td><td><code>did:key</code> for Ed25519 (multicodec <code>0xed01</code>, base58btc) and parsing of keys people paste.</td><td><code>did_key</code>, <code>parse_did_key</code>, <code>parse_key</code></td></tr>
+          <tr><td><code>record.rs</code></td><td>The envelope, all 24 kinds and their bodies, community limits and the ladder, ledger actions, the delegation statement and the wire form.</td><td><code>Record</code>, <code>Wire</code>, <code>Kind</code>, <code>Body</code>, <code>Limits</code>, <code>Ladder</code>, <code>Admission</code>, <code>LedgerAction</code>, <code>LedgerBody</code>, <code>Genesis</code>, <code>MediaRef</code>, <code>Verdict</code>, <code>delegation_statement</code>, <code>PROTOCOL_VERSION = 1</code>, <code>GLOBAL_POW_BITS = 16</code>, <code>MAX_MEDIA = 4</code></td></tr>
+          <tr><td><code>scatter.rs</code></td><td>Scattered delivery's shapes: the seven size classes from 4 KiB to 4 MiB, the limits every generation keeps, the manifest a pointer carries.</td><td><code>Class</code>, <code>Manifest</code>, <code>Update</code>, <code>Pointer</code>, <code>fit</code>, <code>CLASSES</code>, <code>MAX_PIECE</code> (1 MiB), <code>MIN_K = 3</code>, <code>MAX_N = 160</code>, <code>MAX_M = 200</code>, <code>LEVELS = [10, 15, 20]</code></td></tr>
+          <tr><td><code>uri.rs</code></td><td><code>hoi://join</code>, <code>hoi://pair</code> and <code>hoi://node</code> links: packed, deflated where a notice rides along, masked (reversible obfuscation, not encryption).</td><td><code>Invite</code>, <code>Pair</code>, <code>NodeLink</code>, <code>zbase32_encode</code>/<code>_decode</code>, <code>b64</code>/<code>unb64</code>, <code>deflate</code>/<code>inflate</code>, <code>tracker_ok</code>, <code>MAX_TRACKERS = 2</code>, <code>MAX_PAIR_ROUTES = 4</code></td></tr>
+          <tr><td><code>notice.rs</code></td><td>An operator's notice: JSON with camelCase keys as the operator writes it, canonical CBOR with one-letter keys as it travels, hashed with BLAKE3.</td><td><code>NodeNotice</code>, <code>hash_of</code>, <code>statement</code>, <code>NOTICE_VERSION = 1</code>, <code>MAX_NOTICE_BYTES = 1536</code>, <code>MAX_NOTICE_WIRE = 2048</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="wk-sec" id="hoi-crypto">
+    <h2>hoi-crypto</h2>
+    <p>Keys, signatures, work and sealing: strict Ed25519 with weak-key refusal, BLAKE3 stamps, Argon2id identity work, the passphrase keystore, the local vault, the recovery line and Shamir shares, and scattered delivery's pieces and HPKE envelopes. See <a href="/wiki/identity/">Keys &amp; identity</a>, <a href="/wiki/stamps/">Stamps &amp; work</a> and <a href="/wiki/scatter/">Scattered delivery</a>.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="hoi-crypto at a glance">
+      <table>
+        <tbody>
+          <tr><th>Path</th><td><a href="{{REPO_URL}}/tree/main/core/crates/hoi-crypto">core/crates/hoi-crypto</a></td></tr>
+          <tr><th>Features</th><td><code>deterministic</code>: explicit nonces, transform keys and ephemeral seeds, so <code>core/vectors/scatter.json</code> reproduces. Only the vectors generator and the conformance tests turn it on; a nonce, key or seed used twice breaks the seal it was given to.</td></tr>
+          <tr><th>Internal deps</th><td><code>hoi-types</code></td></tr>
+          <tr><th>External deps</th><td><code>blake3</code>, <code>ed25519-dalek</code> 3, <code>argon2</code> 0.6, <code>chacha20poly1305</code> 0.11, <code>chacha20</code> 0.10, <code>hpke-rs</code>/<code>-crypto</code>/<code>-rust-crypto</code> 0.8, <code>getrandom</code> 0.4, <code>subtle</code> 2, <code>thiserror</code> 2, <code>zeroize</code> 1. Dev: <code>proptest</code>, <code>serde_json</code></td></tr>
+          <tr><th>Tests</th><td>57 <code>#[test]</code> functions and four <code>proptest!</code> blocks; fuzzed by <code>envelope_plaintext</code>, <code>rebuild</code>, <code>sizing</code> and <code>links</code> (recovery lines)</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 id="hoi-crypto-modules">Modules</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="hoi-crypto modules">
+      <table>
+        <thead><tr><th>File</th><th>What it holds</th><th>Main public items</th></tr></thead>
+        <tbody>
+          <tr><td><code>lib.rs</code></td><td>Ed25519 keys; the secret leaves <code>Keypair</code> only through <code>secret()</code> for storage. Weak (small-order) public keys are refused.</td><td><code>Keypair</code> (<code>generate</code>, <code>generate_stirred</code>, <code>from_secret</code>, <code>sign</code>, <code>sign_record</code>), <code>verify</code>, <code>key_is_strong</code>, <code>bless</code>, <code>fingerprint</code>, <code>random_bytes</code>, <code>CryptoError</code> (<code>Rng</code>, <code>Key</code>, <code>Open</code>, <code>Format</code>)</td></tr>
+          <tr><td><code>pow.rs</code></td><td>Stamps: <code>leading_zero_bits(BLAKE3(id ‖ u64be(nonce)))</code>. A <code>Puzzle</code> hashes the canonical prefix once and only the nonce and suffix per try. <code>mine</code> runs single-threaded up to 12 bits, else on up to 16 threads in chunks of 4,096.</td><td><code>stamp_hash</code>, <code>stamp_bits</code>, <code>Puzzle</code> (<code>new</code>, <code>search</code>), <code>mine</code>, <code>mine_single</code>, <code>benchmark</code>, <code>required_bits</code></td></tr>
+          <tr><td><code>identity.rs</code></td><td>Identity work: Argon2id over <code>root ‖ u64be(work)</code>, salt <code>"hoi/identity/v1\0"</code>, 8 MiB, one pass, one lane.</td><td><code>Miner</code>, <code>mine</code>, <code>mine_watched</code>, <code>Watch</code>, <code>work_bits</code>, <code>search</code>, <code>MIN_BITS = 4</code>, <code>DEFAULT_BITS = 10</code>, <code>MAX_BITS = 20</code></td></tr>
+          <tr><td><code>keystore.rs</code></td><td>Passphrase files: <code>"HOIK" ‖ 1 ‖ m u32le ‖ t u32le ‖ p u8 ‖ salt[16] ‖ nonce[24] ‖ ciphertext</code>, the header authenticated as associated data. Default cost 64 MiB, 3 passes.</td><td><code>seal</code>, <code>open</code>, <code>Cost</code></td></tr>
+          <tr><td><code>sealed.rs</code></td><td>Short messages under a shared secret: key from BLAKE3 <code>derive_key(context, secret)</code>, XChaCha20-Poly1305, <code>nonce[24] ‖ ciphertext</code>, the context as associated data.</td><td><code>seal</code>, <code>open</code></td></tr>
+          <tr><td><code>vault.rs</code></td><td>The local storage envelope: a random data key wrapped once per way in. <code>HOIV\x03</code> has one passphrase slot and up to four passkey slots; <code>HOIV\x02</code> holds a key an operating system's keystore keeps. Cells are sealed under <code>"hoi local vault cell v1:&lt;address&gt;"</code>.</td><td><code>LocalVault</code> (<code>create</code>, <code>unlock</code>, <code>unlock_passkey</code>, <code>add_passkey</code>, <code>remove_passkeys</code>, <code>create_platform</code>, <code>unlock_platform</code>, <code>seal</code>, <code>unseal</code>, <code>fingerprint</code>), <code>Passkey</code>, <code>passkeys</code>, <code>MAX_PASSKEYS = 4</code></td></tr>
+          <tr><td><code>recovery.rs</code></td><td>The recovery line <code>hoi-key-1-…</code> in z-base-32: a master secret from which every root and every recovery key are derived per generation.</td><td><code>root_at</code>, <code>recovery_at</code>, <code>commitment</code>, <code>encode</code>, <code>decode</code>, <code>looks_like</code>, <code>PREFIX</code></td></tr>
+          <tr><td><code>shamir.rs</code></td><td>Shamir's sharing over GF(2⁸) with the AES polynomial, constant-time; the same field as the app's first-run rehearsal.</td><td><code>split</code>, <code>split_with</code>, <code>combine</code>, <code>Share</code></td></tr>
+          <tr><td><code>scatter/mod.rs</code></td><td>Sealing an object, locators, piece hashes, drop tokens, and the small stamps holders ask for.</td><td><code>seal_object</code>, <code>open_object</code>, <code>locator</code>, <code>piece_hash</code>, <code>drop_token</code>, <code>drop_hash</code>, <code>drop_key_id</code>, <code>mine_stamp</code>, <code>Shards</code></td></tr>
+          <tr><td><code>scatter/aont.rs</code></td><td>The all-or-nothing transform: <code>package = C ‖ (K ⊕ H(C))</code>, ChaCha20 keystream, a 16-byte zero canary.</td><td><code>package</code>, <code>package_random</code>, <code>unpackage</code>, <code>OVERHEAD</code></td></tr>
+          <tr><td><code>scatter/rs.rs</code></td><td>Systematic Reed–Solomon over GF(2⁸) (polynomial <code>0x11D</code>), the Backblaze construction; row r depends only on r and k.</td><td><code>Code</code>, <code>MAX_INDEXES = 256</code></td></tr>
+          <tr><td><code>scatter/size.rs</code></td><td>How many pieces: exact integer arithmetic for k, n and the index budget m for a level, a generation and a number of places.</td><td><code>size</code>, <code>size_at_least</code>, <code>meets</code>, <code>reading</code>, <code>repair_margin</code>, <code>Size</code>, <code>LINKS = 3</code>, <code>LIFE = 1_000_000</code></td></tr>
+          <tr><td><code>envelope.rs</code></td><td>HPKE envelopes (RFC 9180 base mode, DHKEM(X25519, HKDF-SHA256), ChaCha20-Poly1305) between a device and a holder through a forwarder; fixed sizes per kind of message.</td><td><code>Kind</code>, <code>Request</code>, <code>Reply</code>, <code>XKey</code>, <code>key_id</code>, <code>REQUEST_LEN = 256</code>, <code>SHORT_REPLY_LEN = 64</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="wk-sec" id="hoi-validate">
+    <h2>hoi-validate</h2>
+    <p>The pure stages every record passes, on the device that writes it and on every device that receives it: decode, stamp floor, signature and consent, identity, time, rate windows and content. Stage 6, moderation state and the ladder, lives in <code>hoi-moderation</code>; <code>hoi-core</code> composes them. The order and the cost of each stage are on <a href="/wiki/validation/">Validation pipeline</a>; the text and media rules on <a href="/wiki/content-rules/">Text, links &amp; names</a> and <a href="/wiki/media/">Media</a>.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="hoi-validate at a glance">
+      <table>
+        <tbody>
+          <tr><th>Path</th><td><a href="{{REPO_URL}}/tree/main/core/crates/hoi-validate">core/crates/hoi-validate</a></td></tr>
+          <tr><th>Features</th><td>none</td></tr>
+          <tr><th>Internal deps</th><td><code>hoi-types</code>, <code>hoi-crypto</code>. Dev: <code>hoi-crypto</code> with <code>deterministic</code>, <code>hoi-sync</code>, <code>hoi-moderation</code></td></tr>
+          <tr><th>External deps</th><td><code>blake3</code>, <code>thiserror</code>, <code>image</code> 0.25 (png, jpeg, gif, webp). Dev: <code>serde_json</code>, <code>proptest</code></td></tr>
+          <tr><th>Example</th><td><code>examples/vectors.rs</code>: writes <code>core/vectors/*.json</code> (<code>cargo run -p hoi-validate --example vectors</code>; <code>-- --check</code> fails if they would change)</td></tr>
+          <tr><th>Tests</th><td>53 <code>#[test]</code> functions and four <code>proptest!</code> blocks; <code>tests/vectors.rs</code> checks every record in <code>core/vectors/</code> and that the generator reproduces the committed files. Fuzzed by <code>record</code>, <code>media</code> and <code>picture</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 id="hoi-validate-modules">Modules</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="hoi-validate modules">
+      <table>
+        <thead><tr><th>File</th><th>What it holds</th><th>Main public items</th></tr></thead>
+        <tbody>
+          <tr><td><code>lib.rs</code></td><td>The stage functions, the reasons a record is refused, rate windows, limit checks, the avatar check and the text fingerprint used for copy-paste floods.</td><td><code>decode</code>, <code>Decoded</code>, <code>stamp</code>, <code>stamp_floor</code>, <code>signature</code>, <code>delegation_consent</code>, <code>delegation</code>, <code>DelegationInfo</code>, <code>identity</code>, <code>time</code>, <code>rate_windows</code>, <code>window_ok</code>, <code>rate_group</code>, <code>limits</code>, <code>content</code>, <code>avatar</code>, <code>text_fingerprint</code>, <code>Reject</code>, <code>Strike</code>, <code>CLOCK_SKEW = 600</code>, <code>MAX_DELEGATION</code> (400 days)</td></tr>
+          <tr><td><code>text.rs</code></td><td>Text people read: control and invisible characters, direction overrides, stacked accents, raw HTML, links that hide where they lead; the markdown subset.</td><td><code>chars</code>, <code>line</code>, <code>name</code>, <code>url</code>, <code>host_of</code>, <code>markdown</code>, <code>has_links</code>, <code>Field</code>, <code>MAX_LINKS</code></td></tr>
+          <tr><td><code>media.rs</code></td><td>Sniffing from bytes, stripping metadata on the sharing device (<code>sanitize</code>), and accepting only what <code>sanitize</code> would produce on every receiving device (<code>check</code>).</td><td><code>sniff</code>, <code>sanitize</code>, <code>check</code>, <code>Info</code>, <code>max_size</code>, <code>is_image</code></td></tr>
+          <tr><td><code>similar.rs</code></td><td>PDQ perceptual fingerprints (256 bits) of pictures and video frames, decoded only after <code>media::check</code> passed, with EXIF orientation applied.</td><td><code>fingerprint</code>, <code>examine</code>, <code>examine_variants</code>, <code>luma_variants</code>, <code>Variants</code>, <code>distance</code>, <code>matches</code>, <code>to_hex</code>, <code>from_hex</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="wk-sec" id="hoi-store">
+    <h2>hoi-store</h2>
+    <p>The records this device holds: an in-memory index with the lookups the node needs, and the <code>Persist</code> trait that makes it durable. SQLite natively (feature <code>sqlite</code>), a change journal the browser drains into IndexedDB or OPFS, and an encrypted SQLite adapter over the vault. Every table and every byte is on <a href="/wiki/storage/">Storage</a>.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="hoi-store at a glance">
+      <table>
+        <tbody>
+          <tr><th>Path</th><td><a href="{{REPO_URL}}/tree/main/core/crates/hoi-store">core/crates/hoi-store</a></td></tr>
+          <tr><th>Features</th><td><code>default = []</code>; <code>sqlite = ["dep:rusqlite"]</code> adds the <code>sqlite</code> and <code>vault</code> modules and <code>SqlitePieces</code></td></tr>
+          <tr><th>Internal deps</th><td><code>hoi-crypto</code>, <code>hoi-types</code>, <code>hoi-validate</code></td></tr>
+          <tr><th>External deps</th><td><code>rusqlite</code> 0.40 with <code>bundled</code> (optional)</td></tr>
+          <tr><th>Tests</th><td>10 <code>#[test]</code> functions: SQLite put/load/delete, pieces in memory and in SQLite across restarts, and seven vault tests (deleted, swapped, replayed and injected cells, a failed transaction, an interrupted migration, plaintext gone from the database and WAL)</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 id="hoi-store-modules">Modules</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="hoi-store modules">
+      <table>
+        <thead><tr><th>File</th><th>What it holds</th><th>Main public items</th></tr></thead>
+        <tbody>
+          <tr><td><code>lib.rs</code></td><td>The in-memory index (records, per-community and per-parent order, per-author times, text fingerprints, media references, a word index for search, delegations, early revocations, identities, burns, rotations, geneses, deleted ids, media blobs), expiry, and persistence.</td><td><code>Store</code>, <code>Stored</code>, <code>Delegation</code>, <code>IdentityInfo</code>, <code>Rotation</code>, <code>words</code>, <code>Change</code>, <code>Loaded</code>, <code>Persist</code>, <code>Journal</code>, <code>Ephemeral</code></td></tr>
+          <tr><td><code>sqlite.rs</code></td><td>One SQLite file, tables <code>records</code> and <code>blobs</code>, WAL, <code>synchronous = FULL</code>, <code>secure_delete = ON</code>.</td><td><code>Sqlite</code> (<code>open</code>, <code>memory</code>, <code>snapshot</code>, <code>checkpoint</code>)</td></tr>
+          <tr><td><code>vault.rs</code></td><td>Encrypted payloads in that file plus a sealed inventory that binds every cell's address and hash, so deletion, injection and replay of single old cells fail.</td><td><code>EncryptedSqlite</code> (<code>header</code>, <code>open</code>), <code>HEADER_KEY</code>, <code>MANIFEST_KEY</code>, <code>GUARD</code></td></tr>
+          <tr><td><code>pieces.rs</code></td><td>Pieces a holder keeps for others: opaque bytes under a locator with an expiry day, read on demand, shed when full.</td><td><code>PieceStore</code>, <code>MemPieces</code>, <code>SqlitePieces</code>, <code>PieceMeta</code>, <code>PutOutcome</code>, <code>PieceStats</code>, <code>IDLE_DAYS = 30</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="wk-sec" id="hoi-moderation">
+    <h2>hoi-moderation</h2>
+    <p>A community's state as a pure function of its genesis, its ledger entries and the community's own vouches and reviews. Entries are replayed in <code>(at, seq, id)</code> order, each checked against the state before it; the ladder then settles who stands where, and overturned entries, suspended moderators and accepted proposals feed back until nothing changes. Replaying from scratch makes the result independent of arrival order. See <a href="/wiki/communities/">Communities &amp; the ledger</a> and <a href="/wiki/standing/">Standing &amp; review</a>.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="hoi-moderation at a glance">
+      <table>
+        <tbody>
+          <tr><th>Path</th><td><a href="{{REPO_URL}}/tree/main/core/crates/hoi-moderation">core/crates/hoi-moderation</a></td></tr>
+          <tr><th>Features</th><td>none</td></tr>
+          <tr><th>Internal deps</th><td><code>hoi-types</code>, <code>hoi-crypto</code></td></tr>
+          <tr><th>External deps</th><td>none; dev <code>proptest</code></td></tr>
+          <tr><th>Tests</th><td>23 <code>#[test]</code> functions and one <code>proptest!</code> block; <code>hoi-sim ladder</code> runs <code>ladder::settle</code> with hundreds of members</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 id="hoi-moderation-modules">Modules</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="hoi-moderation modules">
+      <table>
+        <thead><tr><th>File</th><th>What it holds</th><th>Main public items</th></tr></thead>
+        <tbody>
+          <tr><td><code>lib.rs</code></td><td>The replay: owners with cosignatures reaching the threshold propose rules and limits and change moderators; owners and moderators remove, ban, label, pin and admit.</td><td><code>Community</code> (methods <code>settle</code>, <code>limits_at</code>; fields <code>tombstones</code>, <code>standing</code>), <code>Entry</code>, <code>Role</code>, <code>Rules</code>, <code>Ban</code>, <code>Removal</code>, <code>ModLabel</code>, <code>Proposal</code>, <code>patch_limits</code>, <code>removal_is_urgent</code>, <code>label_hides</code>, <code>HIDING_LABELS</code></td></tr>
+          <tr><td><code>ladder.rs</code></td><td>The trust ladder newcomer → member → established → trusted, settled as a fixpoint: standing, holds, hides, blocks, vetoes, strikes, suspensions.</td><td><code>settle</code>, <code>decide</code>, <code>Inputs</code>, <code>Standing</code>, <code>Level</code>, <code>Penalties</code>, <code>quorum</code>, <code>VOICE = 720_720</code>, <code>VOUCH_EPOCH</code> (90 days), <code>STANDING_WINDOW</code> (90 days), <code>MIN_HEADS = 2</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="wk-sec" id="hoi-trust">
+    <h2>hoi-trust</h2>
+    <p>How much a key counts on this device, and the three local orderings. Nothing here is ever sent: two devices may rank the same community differently. It is the only crate with no dependencies at all. See <a href="/wiki/trust/">Trust &amp; ranking</a>.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="hoi-trust at a glance">
+      <table>
+        <tbody>
+          <tr><th>Path</th><td><a href="{{REPO_URL}}/blob/main/core/crates/hoi-trust/src/lib.rs">core/crates/hoi-trust/src/lib.rs</a> (one file)</td></tr>
+          <tr><th>Deps</th><td>none, internal or external</td></tr>
+          <tr><th>Public items</th><td><code>Level</code> (<code>Me</code>, <code>Friend</code>, <code>Fof</code>, <code>Member</code>, <code>Newcomer</code>) with <code>of</code>, <code>weight</code> (1.0, 1.0, 0.5, 0.25, 0.05) and <code>as_str</code>; <code>MEMBER_AGE</code> (90 days); <code>wilson</code> (lower bound of the 95% Wilson interval); <code>hot</code> = <code>(wilson + 0.02) / (age_hours + 2)^1.5</code>; <code>loudest</code> = <code>up − down</code></td></tr>
+          <tr><th>Tests</th><td>one <code>#[test]</code> (<code>ranking</code>)</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="wk-sec" id="hoi-spam">
+    <h2>hoi-spam</h2>
+    <p>Every device is the bouncer. Keys collect decaying strikes for rate violations and bad records; past the threshold the key is bounced on this device for a while. Peers that forward junk lose score and are disconnected. See <a href="/wiki/spam/">Spam &amp; rate limits</a>.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="hoi-spam at a glance">
+      <table>
+        <tbody>
+          <tr><th>Path</th><td><a href="{{REPO_URL}}/blob/main/core/crates/hoi-spam/src/lib.rs">core/crates/hoi-spam/src/lib.rs</a> (one file)</td></tr>
+          <tr><th>Internal deps</th><td><code>hoi-types</code></td></tr>
+          <tr><th>Public items</th><td><code>Strikes</code> (keyed by key and community, halving every <code>HALF_LIFE_SECS = 3600</code>), <code>Offence</code> (<code>Rate</code> 1.0, <code>Content</code> 3.0, <code>Duplicate</code> 0.25), <code>BAN_AT = 10.0</code>, <code>BOUNCE_FOR</code> (one day), <code>BOUNCE_MAX</code> (30 days), <code>bounce_lasts</code> (doubling per repeat), <code>PeerScores</code>, <code>DISCONNECT_AT = -20.0</code>, <code>MAX_SCORE = 10.0</code></td></tr>
+          <tr><th>Tests</th><td>three <code>#[test]</code> functions</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="wk-sec" id="hoi-sync">
+    <h2>hoi-sync</h2>
+    <p>What two nodes say to each other over any byte pipe: the home-node WebSocket, <code>hoi/sync/1</code> on iroh, and WebRTC data channels. Live records ride the same link, so there is no separate gossip protocol. The crate also holds range reconciliation, the placement rules for pieces, and the warmth arithmetic. Every message is on <a href="/wiki/sync/">Sync &amp; gossip</a>.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="hoi-sync at a glance">
+      <table>
+        <tbody>
+          <tr><th>Path</th><td><a href="{{REPO_URL}}/tree/main/core/crates/hoi-sync">core/crates/hoi-sync</a></td></tr>
+          <tr><th>Internal deps</th><td><code>hoi-types</code></td></tr>
+          <tr><th>External deps</th><td><code>blake3</code> (salted community hashes in hellos)</td></tr>
+          <tr><th>Tests</th><td>42 <code>#[test]</code> functions; fuzzed by <code>sync_msg</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 id="hoi-sync-modules">Modules</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="hoi-sync modules">
+      <table>
+        <thead><tr><th>File</th><th>What it holds</th><th>Main public items</th></tr></thead>
+        <tbody>
+          <tr><td><code>lib.rs</code></td><td>The message enum, its CBOR encoding and every cap.</td><td><code>Msg</code> with 22 variants (<code>Hello</code>, <code>Have</code>, <code>Want</code>, <code>Recs</code>, <code>BWant</code>, <code>Blob</code>, <code>Bye</code>, <code>Link</code>, <code>Catalog</code>, <code>Carry</code>, <code>Nodes</code>, <code>Carried</code>, <code>Piece</code>, <code>Rebuild</code>, <code>Rebuilt</code>, <code>Find</code>, <code>Found</code>, <code>Dht</code>, <code>Here</code>, <code>Sig</code>, <code>Bind</code>, <code>Range</code>), <code>PieceOp</code>, <code>community_hash</code>, <code>batches</code>, <code>missing</code>, <code>SYNC_VERSION = 2</code>, <code>MAX_RECS = 500</code>, <code>MAX_BLOB</code> (16 MiB), <code>MAX_MESSAGE</code> (16 MiB + 64 KiB), the <code>FEATURE_*</code> names</td></tr>
+          <tr><td><code>range.rs</code></td><td>Range-based set reconciliation over <code>(created_at, id)</code>: 16-byte fingerprints of ranges, split in sixteen where they differ, ids when few.</td><td><code>Item</code>, <code>IDS_THRESHOLD = 64</code>, <code>BRANCHES = 16</code>, <code>MAX_RANGES = 8192</code></td></tr>
+          <tr><td><code>place.rs</code></td><td>Where a generation's pieces go: one per independent place, never a place that held a sibling, caps per network block and introducer. Pure: the caller brings candidates and randomness, so the core and the simulator place with the same rules.</td><td><code>Candidate</code>, <code>place</code>, <code>places</code>, <code>count_places</code></td></tr>
+          <tr><td><code>warmth.rs</code></td><td>Cold, cool, warm, hot: copies counted by place, not by node.</td><td>the warmth arithmetic <code>hoi-core</code>'s <code>warmth.rs</code> feeds</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="wk-sec" id="hoi-core">
+    <h2>hoi-core</h2>
+    <p>The one crate that does all the thinking. It owns a <code>Node</code>: the store, every community's state, local state and keys. Every record goes through the pipeline, its effects are applied, changes are persisted and gossip is queued. UIs call it directly, through <code>Node::call</code> JSON dispatch, through <code>hoi-wasm</code> or through <code>hoi-ffi</code>; they never touch keys, storage or the network themselves. The API is documented on <a href="/wiki/api/">Core API</a>.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="hoi-core at a glance">
+      <table>
+        <tbody>
+          <tr><th>Path</th><td><a href="{{REPO_URL}}/tree/main/core/crates/hoi-core">core/crates/hoi-core</a></td></tr>
+          <tr><th>Features</th><td><code>default = []</code>; <code>sqlite = ["hoi-store/sqlite"]</code>; <code>ffi = ["dep:uniffi"]</code> derives UniFFI records and enums on the DTOs and runs <code>uniffi::setup_scaffolding!()</code></td></tr>
+          <tr><th>Internal deps</th><td><code>hoi-types</code>, <code>hoi-crypto</code>, <code>hoi-validate</code>, <code>hoi-store</code>, <code>hoi-sync</code>, <code>hoi-moderation</code>, <code>hoi-trust</code>, <code>hoi-spam</code></td></tr>
+          <tr><th>External deps</th><td><code>blake3</code>, <code>serde</code>, <code>serde_json</code>, <code>zeroize</code>, <code>subtle</code>, <code>openmls</code> =0.9.2, <code>openmls_rust_crypto</code>, <code>openmls_basic_credential</code>, <code>openmls_traits</code> (=0.6.0), <code>sha2</code> 0.10, <code>loro</code> 1.17.1, <code>p256</code> 0.14, <code>uniffi</code> 0.32 (optional). On <code>wasm32</code>: <code>openmls</code> with <code>js</code>, and <code>getrandom</code> 0.2 with <code>js</code> renamed <code>getrandom02</code> (RustCrypto's rand 0.8 stack). Dev: <code>hoi-store</code> with <code>sqlite</code>, <code>image</code></td></tr>
+          <tr><th>Re-exports</th><td><code>Node</code>, <code>Clock</code>, <code>Source</code>, <code>ApiError</code>, <code>Published</code>, <code>VERSION</code>, <code>CarryPolicy</code>, <code>PeerMeta</code>, <code>Role</code>, <code>ScatterOutcome</code>, <code>IdentityWork</code>, the registration statement helpers, and <code>system_clock()</code> on native targets</td></tr>
+          <tr><th>Tests</th><td>317 <code>#[test]</code> functions: <code>src/tests.rs</code> and 35 topic files under <code>src/tests/</code>, plus <code>tests/persistence.rs</code> and <code>tests/crypto_backend.rs</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 id="hoi-core-api-modules">The API, its data and the node</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="hoi-core API modules">
+      <table>
+        <thead><tr><th>File</th><th>What it holds</th></tr></thead>
+        <tbody>
+          <tr><td><code>lib.rs</code></td><td>Module list, re-exports, <code>system_clock()</code>, UniFFI scaffolding under <code>ffi</code>.</td></tr>
+          <tr><td><code>node.rs</code></td><td><code>Node</code>: <code>open</code> (replay from storage), <code>ingest</code> (the pipeline, cheapest checks first), <code>commit</code>, <code>sweep</code>, <code>rebuild</code> of a community's state, ingest priorities, <code>MAX_LIVE_DEVICES = 16</code>.</td></tr>
+          <tr><td><code>api.rs</code></td><td>The typed methods every shell calls, mirroring <code>HoiCore</code>; <code>Published</code>; <code>DELEGATION_LIFETIME</code> (180 days); limit patches.</td></tr>
+          <tr><td><code>dispatch.rs</code></td><td><code>Node::call(method, args)</code>: one JSON entry point, then <code>commit</code>; <code>mine_puzzle</code> on every core.</td></tr>
+          <tr><td><code>dto.rs</code></td><td>Every data type handed to UIs, camelCase, mirroring <code>packages/core-api/src/types.ts</code>; the <code>Event</code> enum.</td></tr>
+          <tr><td><code>error.rs</code></td><td><code>ApiError { code, message }</code> and the conversions from <code>Reject</code>, <code>TypesError</code>, <code>CborError</code> and <code>CryptoError</code>.</td></tr>
+          <tr><td><code>state.rs</code></td><td><code>LocalState</code> and <code>Secrets</code>, persisted as the <code>state</code> and <code>keys</code> blobs; <code>STORAGE_FORMAT_VERSION = 3</code>.</td></tr>
+          <tr><td><code>views.rs</code></td><td>Turning records and community state into what UIs draw.</td></tr>
+          <tr><td><code>work.rs</code></td><td><code>IdentityWork</code>: checking the Argon2id work a peer's message carries outside the node lock.</td></tr>
+          <tr><td><code>net.rs</code></td><td>The conversation over whatever pipe the host provides: <code>net_connect</code>, <code>net_receive</code>, <code>net_disconnect</code>, <code>take_outbox</code>, roles, routes, pairing, <code>net_status</code>.</td></tr>
+          <tr><td><code>traffic.rs</code></td><td>Amounts and times per connection and per minute, in memory only.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 id="hoi-core-feature-modules">Feature modules</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="hoi-core feature modules">
+      <table>
+        <thead><tr><th>File</th><th>What it does</th></tr></thead>
+        <tbody>
+          <tr><td><code>private.rs</code></td><td>Client-held MLS state for private communities and the opaque relay outbox; relay protocol 2 room keys from each epoch's exporter secret.</td></tr>
+          <tr><td><code>mailbox.rs</code></td><td>Private groups without a relay: each member writes sealed MLS messages to numbered slots on a few holders.</td></tr>
+          <tr><td><code>pickup.rs</code></td><td>Invitations a newcomer picks up itself from holders it named in its join request.</td></tr>
+          <tr><td><code>scatter.rs</code></td><td>Holding pieces (<code>set_piece_store</code>), answering sealed requests, storing and fetching objects in pieces through forwarders.</td></tr>
+          <tr><td><code>forward.rs</code></td><td>A public node passing sealed <code>piece</code> requests to holders and answers back.</td></tr>
+          <tr><td><code>keep.rs</code></td><td>Objects kept in pieces over their whole life: generations, probes, repairs, checked updates.</td></tr>
+          <tr><td><code>open.rs</code></td><td>Open communities in pieces: posts become small signed pointer records.</td></tr>
+          <tr><td><code>inject.rs</code></td><td>The injector: a device's own new records go sealed through another link to an injector instead of to its own links first.</td></tr>
+          <tr><td><code>rebuild.rs</code></td><td>A home node rebuilding objects kept in pieces for its own phones and browsers (<code>rb</code> in its hello).</td></tr>
+          <tr><td><code>carry.rs</code></td><td>Public nodes keeping communities available on request (<code>CarryPolicy</code>).</td></tr>
+          <tr><td><code>directory.rs</code></td><td>A directory of open communities heard from connected nodes.</td></tr>
+          <tr><td><code>nodes.rs</code></td><td>Public nodes passing each other on; <code>open_node_link</code>.</td></tr>
+          <tr><td><code>find.rs</code></td><td>Finding who carries a community when every route went quiet: <code>find</code>, the DHT, trackers.</td></tr>
+          <tr><td><code>lan.rs</code></td><td>UDP multicast beacons every half minute to find members on the same network.</td></tr>
+          <tr><td><code>signal.rs</code></td><td>Direct WebRTC links between members' browsers through a native node's signalling.</td></tr>
+          <tr><td><code>bind.rs</code></td><td>Binding a WebRTC channel to the node's endpoint key (<code>bind</code> after <code>hello</code>).</td></tr>
+          <tr><td><code>blobs.rs</code></td><td>Media between native nodes over iroh-blobs, checked as it streams.</td></tr>
+          <tr><td><code>link.rs</code></td><td>Linking a new device through the shared home node, with four check digits.</td></tr>
+          <tr><td><code>remote.rs</code></td><td>Remote signing: a browser without a signing key asks the person's computer to sign.</td></tr>
+          <tr><td><code>recover.rs</code></td><td>Recovery lines, root rotation and friends' shares.</td></tr>
+          <tr><td><code>notice.rs</code></td><td>Operators' notices and the consent gate (<code>set_notice</code>, <code>set_consent_gate</code>).</td></tr>
+          <tr><td><code>suppress.rs</code></td><td>Operator suppression of a community, record or blob; not reachable through dispatch.</td></tr>
+          <tr><td><code>look.rs</code></td><td>Perceptual fingerprints of media, decoded here behind <code>catch_unwind</code> or elsewhere (<code>set_look_elsewhere</code>).</td></tr>
+          <tr><td><code>preview.rs</code></td><td>Link previews fetched by the native side and kept on this device.</td></tr>
+          <tr><td><code>handle.rs</code></td><td>Verified DNS handles (<code>_hoi.&lt;domain&gt;</code> TXT or <code>/.well-known/hoi</code>).</td></tr>
+          <tr><td><code>trust.rs</code>, <code>labelers.rs</code>, <code>blocklists.rs</code>, <code>tally.rs</code></td><td>Trust statements, followed labelers, open blocklists and vote-count aggregators.</td></tr>
+          <tr><td><code>wiki.rs</code></td><td>Rules and wiki pages as Loro documents.</td></tr>
+          <tr><td><code>age.rs</code></td><td>Anonymous age credentials (SD-JWT VC, ES256) checked on a moderator's device.</td></tr>
+          <tr><td><code>profile.rs</code>, <code>profile_color.rs</code></td><td>Signed profile pictures and palette choices as sidecar records.</td></tr>
+          <tr><td><code>public_join.rs</code>, <code>registration.rs</code></td><td>Joining an open community by key; proofs for a public name registry.</td></tr>
+          <tr><td><code>warmth.rs</code></td><td>Gathering what this node saw on its own links for <code>hoi_sync::warmth</code>.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Modules declared <code>pub</code> in <code>lib.rs</code> are <code>age</code>, <code>api</code>, <code>bind</code>, <code>blobs</code>, <code>carry</code>, <code>dispatch</code>, <code>dto</code>, <code>error</code>, <code>find</code>, <code>handle</code>, <code>lan</code>, <code>link</code>, <code>look</code>, <code>net</code>, <code>node</code>, <code>notice</code>, <code>preview</code>, <code>private</code>, <code>recover</code>, <code>remote</code>, <code>signal</code>, <code>state</code>, <code>suppress</code> and <code>traffic</code>; the rest are private and reached only through <code>Node</code> methods.</p>
+  </section>
+
+  <section class="wk-sec" id="hoi-net">
+    <h2>hoi-net</h2>
+    <p>Moving sync messages between nodes. The node decides what to say; this crate owns sockets. <code>Shared</code> keeps one <code>Node</code> behind a mutex with an outbox router and an event callback, and every host goes through <code>Shared::with</code>, which runs a closure, commits, routes queued messages and reports events. The transports themselves are on <a href="/wiki/transports/">Transports</a>.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="hoi-net at a glance">
+      <table>
+        <tbody>
+          <tr><th>Path</th><td><a href="{{REPO_URL}}/tree/main/core/crates/hoi-net">core/crates/hoi-net</a></td></tr>
+          <tr><th>Features</th><td>none</td></tr>
+          <tr><th>Internal deps</th><td><code>hoi-core</code>, <code>hoi-sync</code>, <code>hoi-types</code>, <code>hoi-crypto</code>, <code>hoi-store</code> with <code>sqlite</code> (for the piece store a desktop keeps for others)</td></tr>
+          <tr><th>External deps</th><td><code>tokio</code> 1.54, <code>tokio-tungstenite</code> 0.30, <code>futures-util</code> 0.3, <code>iroh</code> =1.4.1, <code>iroh-blobs</code> =0.103.1 (no defaults: no disk store, no RPC), <code>str0m</code> 0.24.1, <code>str0m-proto</code> 0.7.0, <code>dimpl</code> 0.7.6, <code>rcgen</code> 0.14, <code>aes</code> 0.8, <code>aes-gcm</code> 0.10, <code>ctr</code> 0.9, <code>hmac</code> 0.12.1, <code>sha1</code>/<code>sha2</code> 0.10, <code>netdev</code> 0.46.3, <code>base64</code>, <code>reqwest</code> 0.13 (<code>rustls-no-provider</code>), <code>rustls</code> 0.23 (ring), <code>url</code> 2, <code>socket2</code> 0.6, <code>mainline</code> =8.0.1, <code>webpki-roots</code> 1, <code>simple-dns</code> 0.12. Dev: <code>image</code></td></tr>
+          <tr><th>Tests</th><td>21 <code>#[test]</code> functions, including <code>storage_tests.rs</code> (storage failure pauses the network) and <code>tests/crypto_backend.rs</code> (DTLS key exchange on the patched <code>dimpl</code> against <code>rcgen</code> certificates)</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 id="hoi-net-modules">Modules</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="hoi-net modules">
+      <table>
+        <thead><tr><th>File</th><th>What it holds</th><th>Main public items</th></tr></thead>
+        <tbody>
+          <tr><td><code>lib.rs</code></td><td><code>Shared</code>, the home-node WebSocket server and dialer, the sweeper, the piece store switch.</td><td><code>Shared</code> (<code>new</code>, <code>with</code>, <code>receive</code>), <code>serve</code>, <code>dial</code>, <code>spawn_sweeper</code> (every 5 s; <code>sweep</code> every 36th tick), <code>sync_piece_store</code>, <code>origins_from_env</code>, <code>web_origin</code>, <code>public_ip</code>, <code>MAX_CLIENTS = 32</code></td></tr>
+          <tr><td><code>p2p.rs</code></td><td>Authenticated native peers on iroh QUIC; no default discovery or relay.</td><td><code>start_p2p</code>, <code>P2pConfig</code>, <code>P2pHandle</code>, <code>SYNC_ALPN = b"hoi/sync/1"</code></td></tr>
+          <tr><td><code>rtc.rs</code></td><td>WebRTC data channels from browsers and phones, ICE-lite, no signalling server: routes <code>rtc:&lt;fingerprint&gt;@&lt;addr&gt;</code>.</td><td><code>start_rtc</code>, <code>RtcConfig</code>, <code>RtcHandle</code>, <code>route</code>, <code>RTC_PORT</code> (7844)</td></tr>
+          <tr><td><code>rtc_crypto/</code></td><td>str0m's RustCrypto backend (DTLS via dimpl, SRTP, STUN HMAC, SHA-256), vendored so certificates come from <code>rcgen</code> on <code>ring</code>. Files: <code>mod.rs</code>, <code>dtls.rs</code>, <code>srtp.rs</code>, <code>sha1.rs</code>, <code>sha256.rs</code>.</td><td>internal</td></tr>
+          <tr><td><code>blobs.rs</code></td><td>Media between native nodes over iroh-blobs; serving from a small in-memory cache.</td><td><code>SERVE_CACHE</code> (64 MiB), <code>FETCH_SECS = 60</code></td></tr>
+          <tr><td><code>dht.rs</code></td><td>A Mainline DHT node public nodes run, bootstrapped only from hoi's own links unless the operator bridges.</td><td><code>start_dht</code>, <code>lookup</code>, <code>DhtConfig</code>, <code>DEFAULT_PORT = 7846</code>, <code>DEFAULT_ANSWER_PORT = 7847</code></td></tr>
+          <tr><td><code>lan.rs</code></td><td>The multicast socket for LAN beacons.</td><td><code>start_lan</code>, <code>LanHandle</code></td></tr>
+          <tr><td><code>limit.rs</code></td><td>Per-source limits for listeners strangers reach, counting only addresses that proved they receive.</td><td>internal</td></tr>
+          <tr><td><code>portmap.rs</code></td><td>Asking the router to forward UDP ports: PCP, NAT-PMP (gateway port 5351), then UPnP IGD.</td><td><code>PortMapper</code>, <code>Router</code>, <code>Forward</code>, <code>Method</code>, <code>Status</code></td></tr>
+          <tr><td><code>vpn.rs</code></td><td>"Only through my VPN": sockets bound and pinned to one interface.</td><td><code>NetPolicy</code>, <code>VpnState</code>, <code>interfaces</code>, <code>may_send</code>, <code>home_network</code></td></tr>
+          <tr><td><code>preview.rs</code></td><td>Fetching link previews under strict rules (https, public addresses, at most three redirects).</td><td><code>start_previews</code>, <code>fetch</code>, <code>fetch_as</code></td></tr>
+          <tr><td><code>handle.rs</code></td><td>TXT lookups for handles from the system resolver, then HTTPS.</td><td><code>start_handle_checks</code>, <code>check</code></td></tr>
+          <tr><td><code>storage_tests.rs</code></td><td>Test-only: a failing <code>Persist</code> stops network traffic and recovers cleanly.</td><td>tests</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="wk-sec" id="hoi-wasm">
+    <h2>hoi-wasm</h2>
+    <p>The core for browsers. The web app runs <code>WasmNode</code> in a dedicated Web Worker; storage and sockets stay in JavaScript, which drains <code>take_changes</code> and <code>take_outbox</code> after every call. A pool of mining workers calls <code>mine_range</code>, and a separate look worker fingerprints media. Its exports are listed on <a href="/wiki/api/">Core API</a>; the app around it on <a href="/wiki/web-app/">Web app</a>.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="hoi-wasm at a glance">
+      <table>
+        <tbody>
+          <tr><th>Path</th><td><a href="{{REPO_URL}}/blob/main/core/crates/hoi-wasm/src/lib.rs">core/crates/hoi-wasm/src/lib.rs</a> (one file)</td></tr>
+          <tr><th>Crate type</th><td><code>cdylib</code> and <code>rlib</code></td></tr>
+          <tr><th>Internal deps</th><td><code>hoi-core</code>, <code>hoi-store</code>, <code>hoi-crypto</code>, <code>hoi-types</code>, <code>hoi-validate</code> (none with <code>sqlite</code>)</td></tr>
+          <tr><th>External deps</th><td><code>wasm-bindgen</code> 0.2.129, <code>js-sys</code> 0.3.106, <code>serde</code>, <code>serde_json</code>; on <code>wasm32</code>, <code>getrandom</code> 0.4 with <code>wasm_js</code></td></tr>
+          <tr><th>Exports</th><td><code>WasmNode</code>, <code>WasmVault</code>, <code>IdentityMiner</code>, <code>mine_range</code>, <code>look_media</code>, <code>sanitize_and_look</code>, <code>look_luma</code>, <code>core_version</code></td></tr>
+          <tr><th>Build</th><td><code>node scripts/build-wasm.mjs</code>: <code>cargo build -p hoi-wasm --target wasm32-unknown-unknown --profile wasm</code>, then <code>wasm-bindgen --target web</code> into <code>apps/web/src/lib/core/wasm/pkg</code>, then <code>wasm-opt -O3</code> when present</td></tr>
+          <tr><th>Tests</th><td>none in the crate; the browser tests drive it through the worker</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="wk-sec" id="hoi-ffi">
+    <h2>hoi-ffi</h2>
+    <p><code>hoi-core</code> for the native phone apps through UniFFI. <code>HoiNode</code> is one object per app process: it opens SQLite at <code>&lt;data_dir&gt;/hoi.db</code>, keeps a small tokio runtime for the home-node link and the sweeper, and exposes the whole <code>HoiCore</code> API as typed methods. The app implements <code>KeyStore</code> and <code>EventListener</code>. See <a href="/wiki/mobile/">Mobile libraries</a>.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="hoi-ffi at a glance">
+      <table>
+        <tbody>
+          <tr><th>Path</th><td><a href="{{REPO_URL}}/tree/main/core/crates/hoi-ffi">core/crates/hoi-ffi</a></td></tr>
+          <tr><th>Crate type</th><td>library <code>hoi_ffi</code> as <code>cdylib</code> (Android, and for generating bindings), <code>staticlib</code> (the iOS xcframework) and <code>lib</code> (tests)</td></tr>
+          <tr><th>Binary</th><td><code>uniffi-bindgen</code> (<code>src/bin/uniffi-bindgen.rs</code>), <code>required-features = ["cli"]</code>, so the generator always matches the library's UniFFI version</td></tr>
+          <tr><th>Features</th><td><code>default = []</code>; <code>cli = ["uniffi/cli"]</code></td></tr>
+          <tr><th>Internal deps</th><td><code>hoi-core</code> with <code>sqlite</code> and <code>ffi</code>, <code>hoi-store</code> with <code>sqlite</code>, <code>hoi-net</code>, <code>hoi-types</code>, <code>hoi-crypto</code></td></tr>
+          <tr><th>External deps</th><td><code>uniffi</code> 0.32, <code>tokio</code>, <code>serde_json</code></td></tr>
+          <tr><th>Config</th><td><code>uniffi.toml</code> renames <code>HoiError.Api.message</code> to <code>reason</code> in Kotlin. <code>bindgen.toml</code> (passed with <code>--config</code> by the mobile build scripts) puts both crates' C declarations in one Clang module, <code>HoiCoreFFI</code>, and sets Kotlin <code>android = true</code>, <code>kotlin_target_version = "2.0.0"</code></td></tr>
+          <tr><th>Tests</th><td>9 <code>#[test]</code> functions: <code>tests.rs</code> (keys in the keystore, records in SQLite, events as JSON, a sync burst through a home node) and four in <code>keys.rs</code> (migration from older key storage)</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 id="hoi-ffi-modules">Modules</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="hoi-ffi modules">
+      <table>
+        <thead><tr><th>File</th><th>What it holds</th></tr></thead>
+        <tbody>
+          <tr><td><code>lib.rs</code></td><td><code>HoiError::Api { code, message }</code>, the foreign traits <code>KeyStore</code> (<code>get</code>, <code>set</code>) and <code>EventListener</code> (<code>on_event(json)</code>), UniFFI scaffolding.</td></tr>
+          <tr><td><code>node.rs</code></td><td><code>HoiNode</code>: <code>open</code>, the foreground link (<code>start_home_link</code>, <code>stop_home_link</code>), <code>sync_burst</code>, <code>last_synced_at</code>, every typed API method, and <code>call</code> for anything untyped.</td></tr>
+          <tr><td><code>keys.rs</code></td><td><code>Split</code>, the <code>Persist</code> adapter that keeps a random 32-byte vault key under <code>vault-key-v1</code> in the platform keystore and every SQLite payload encrypted.</td></tr>
+          <tr><td><code>link.rs</code></td><td>The phone's WebSocket to its home node, kept up by <code>hoi_net::dial</code> in the foreground and wound down within two seconds when stopped.</td></tr>
+          <tr><td><code>events.rs</code></td><td>Core events to the listener as JSON, deduplicated <code>net</code> events, and the <code>last-sync</code> file written at most every 30 s.</td></tr>
+          <tr><td><code>bin/uniffi-bindgen.rs</code></td><td><code>uniffi::uniffi_bindgen_main()</code>.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="wk-sec" id="hoi-node">
+    <h2>hoi-node</h2>
+    <p>The core without a window, in roles that compose: a home node for your phone and browser (by default also a public relay carrying open communities for anyone), a public node, and a registry node naming communities. Every flag and route is on <a href="/wiki/hoi-node/">hoi-node</a> and <a href="/wiki/registry/">Registry</a>.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="hoi-node at a glance">
+      <table>
+        <tbody>
+          <tr><th>Path</th><td><a href="{{REPO_URL}}/tree/main/core/crates/hoi-node">core/crates/hoi-node</a>, with <code>README.md</code>, <code>Dockerfile</code> and <code>hoi-node.service</code></td></tr>
+          <tr><th>Binary</th><td><code>hoi-node</code> (<code>src/main.rs</code>)</td></tr>
+          <tr><th>Internal deps</th><td><code>hoi-core</code> with <code>sqlite</code>, <code>hoi-store</code> with <code>sqlite</code>, <code>hoi-net</code>, <code>hoi-crypto</code>, <code>hoi-types</code></td></tr>
+          <tr><th>External deps</th><td><code>iroh-relay</code> =1.4.1 (<code>server</code>, <code>tls-ring</code>), <code>tokio</code>, <code>serde</code>, <code>serde_json</code>, <code>sha2</code>, <code>url</code> 2, <code>reqwest</code> 0.13 (<code>rustls-no-provider</code>, <code>json</code>), <code>rustls</code> 0.23, <code>webpki-roots</code> 1, <code>hyper</code> 1 (<code>server</code>, <code>http1</code> only), <code>hyper-util</code> 0.1, <code>http-body-util</code> 0.1, <code>rusqlite</code>, <code>netdev</code>. Dev: <code>iroh-base</code> =1.4.1</td></tr>
+          <tr><th>Tests</th><td>36 <code>#[test]</code> functions: 21 in the registry modules (9 in <code>protocol.rs</code>, 8 in <code>store.rs</code>), the rest in <code>admin.rs</code>, <code>main.rs</code>, <code>routes.rs</code>, <code>index.rs</code>, <code>http.rs</code> and <code>packet_relay.rs</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 id="hoi-node-modules">Modules</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="hoi-node modules">
+      <table>
+        <thead><tr><th>File</th><th>What it holds</th></tr></thead>
+        <tbody>
+          <tr><td><code>main.rs</code></td><td>Flags, opening <code>DIR/hoi.db</code> and (with <code>--hold-pieces</code>) <code>DIR/pieces.db</code>, the data-directory lock, the node link, pairing link and notice-hash files, and starting every transport.</td></tr>
+          <tr><td><code>admin.rs</code></td><td><code>hoi-node admin</code>: suppressing, evidence export, the registry's lists and the packet relay's block list; works on the data directory, never over the network. Lock file <code>hoi-node.lock</code>.</td></tr>
+          <tr><td><code>http.rs</code></td><td>The one HTTPS client for registries: ring-backed rustls with Mozilla's roots compiled in, bounded answers.</td></tr>
+          <tr><td><code>index.rs</code></td><td>Mirroring a public index (<code>--index URL</code>): announcing routes, carrying listed communities.</td></tr>
+          <tr><td><code>trackers.rs</code></td><td>Announcing to the trackers the carried communities name.</td></tr>
+          <tr><td><code>packet_relay.rs</code></td><td>The embedded iroh relay server (<code>--packet-relay</code>) with the operator's block list.</td></tr>
+          <tr><td><code>routes.rs</code></td><td>Route syntax and the two address rules: what a node announces about itself, what a registry accepts.</td></tr>
+          <tr><td><code>registry/mod.rs</code></td><td>The registry role (<code>--registry ADDR</code>): the public-name API on hyper.</td></tr>
+          <tr><td><code>registry/protocol.rs</code>, <code>store.rs</code>, <code>log.rs</code>, <code>mirror.rs</code>, <code>release.rs</code></td><td>What a registry accepts; its SQLite database (<code>registry.db</code>, STRICT tables, <code>user_version</code> 5); the signed Merkle log of names; mirroring and auditing another registry; the release manifest it serves.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="wk-sec" id="hoi-sim">
+    <h2>hoi-sim</h2>
+    <p>A harness for pentesting the protocol and watching it hold. It drives the real <code>hoi-core</code>, so every result is the protocol's own verdict. Not part of any release. Every scenario is on <a href="/wiki/simulator/">Simulator</a>.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="hoi-sim at a glance">
+      <table>
+        <tbody>
+          <tr><th>Path</th><td><a href="{{REPO_URL}}/tree/main/core/crates/hoi-sim">core/crates/hoi-sim</a></td></tr>
+          <tr><th>Binary</th><td><code>hoi-sim</code> (<code>src/bin/hoi-sim.rs</code>): <code>battle</code>, <code>agent</code>, <code>referee</code>, <code>scatter</code>, <code>ladder</code></td></tr>
+          <tr><th>Internal deps</th><td><code>hoi-types</code>, <code>hoi-crypto</code>, <code>hoi-validate</code>, <code>hoi-moderation</code>, <code>hoi-store</code> with <code>sqlite</code>, <code>hoi-sync</code>, <code>hoi-core</code> with <code>sqlite</code>, <code>hoi-net</code></td></tr>
+          <tr><th>External deps</th><td><code>serde</code>, <code>serde_json</code>, <code>tokio</code>, <code>tokio-tungstenite</code>, <code>futures-util</code></td></tr>
+          <tr><th>Modules</th><td><code>scenario.rs</code> (the battle), <code>forge.rs</code> (forged records), <code>report.rs</code> (the scorecard), <code>wire.rs</code> (one-shot WebSocket client), <code>scatter.rs</code>, <code>life.rs</code>, <code>load.rs</code>, <code>address.rs</code> (scattered delivery models), <code>ladder.rs</code> (the ladder with hundreds of members)</td></tr>
+          <tr><th>Tests</th><td>26 <code>#[test]</code> functions; two are <code>#[ignore]</code>d: a siege of two hundred nodes with churn (minutes) and a comparison of repair triggers</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="wk-sec" id="fuzz">
+    <h2>Fuzz targets</h2>
+    <p><code>core/fuzz</code> (<code>hoi-fuzz</code>) holds ten <code>libfuzzer-sys</code> 0.4 targets for the decoders: anything that takes bytes or text from strangers. It depends on <code>hoi-types</code>, <code>hoi-crypto</code>, <code>hoi-validate</code>, <code>hoi-sync</code> and <code>loro</code> =1.17.1 by path, needs nightly, and runs from <code>core/fuzz</code>:</p>
+    <div class="wk-code" data-lang="sh" data-title="core/fuzz"><pre><code>cargo +nightly fuzz list            # the ten targets
+cargo +nightly fuzz run manifest    # fuzz one</code></pre></div>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Fuzz targets">
+      <table>
+        <thead><tr><th>Target</th><th>Crate under test</th><th>What it asserts</th></tr></thead>
+        <tbody>
+          <tr><td><code>record</code></td><td><code>hoi-types::Wire</code>, <code>hoi-validate</code></td><td>Decoding never panics; whatever decodes re-encodes to bytes that decode to the same record and id; <code>decode</code>, <code>signature</code> and <code>content</code> run on it.</td></tr>
+          <tr><td><code>sync_msg</code></td><td><code>hoi-sync::Msg</code></td><td>Every message that decodes encodes to bytes that decode to the same message.</td></tr>
+          <tr><td><code>links</code></td><td><code>hoi-types::uri</code>, <code>hoi-crypto::recovery</code></td><td>Parsing invites, pairing links, node links and recovery lines never panics; an invite written out reads back with the same community.</td></tr>
+          <tr><td><code>manifest</code></td><td><code>hoi-types::scatter</code></td><td>A decoded manifest or pointer keeps its floors and re-encodes to the same bytes; an update to itself is never accepted.</td></tr>
+          <tr><td><code>envelope_plaintext</code></td><td><code>hoi-crypto::envelope</code></td><td>Any bytes as any of the eight request and answer kinds: whatever parses writes back to the same bytes.</td></tr>
+          <tr><td><code>rebuild</code></td><td><code>hoi-crypto::scatter</code></td><td>Rebuilding from arbitrary pieces and undoing the transform never panic; a sealed object that comes out has its class's length.</td></tr>
+          <tr><td><code>sizing</code></td><td><code>hoi-crypto::scatter::size</code></td><td>For any level, generation and number of places, a size keeps <code>k ≥ 3</code>, <code>k + 2 ≤ n ≤ m ≤ budget(n)</code>, <code>n ≤ LINKS·(k−1)</code>, and meets its level.</td></tr>
+          <tr><td><code>media</code></td><td><code>hoi-validate::media</code></td><td>Sanitizing and checking never panic; what sanitizing keeps passes the checks as its sniffed type, and sanitizing again changes nothing.</td></tr>
+          <tr><td><code>picture</code></td><td><code>hoi-validate::similar</code>, <code>avatar</code></td><td>Fingerprinting and the profile-picture check never panic; variants agree with the picture as shown.</td></tr>
+          <tr><td><code>wiki_update</code></td><td><code>loro</code>, as <code>hoi-core</code>'s wiki uses it</td><td>The ingest check, importing what passed and reading the <code>body</code> and <code>rules</code> text never panic.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="wk-note tip"><b>Vectors run in wasm too</b><p><code>node scripts/test-core-wasi.mjs</code> runs the crypto, types and vector tests for <code>wasm32-wasip1</code>; that is why the workspace builds <code>proptest</code> without <code>fork</code> and <code>timeout</code>. See <a href="/wiki/vectors/">Test vectors</a>.</p></div>
+  </section>
+
+  <section class="wk-sec" id="next">
+    <h2>Where to go next</h2>
+    <div class="wk-cards">
+      <a class="wk-card g-sky" href="/wiki/api/"><i></i><b>Core API</b><span>Every method of Node::call, the DTOs, events and errors.</span></a>
+      <a class="wk-card g-mint" href="/wiki/storage/"><i></i><b>Storage</b><span>The in-memory index, SQLite, the vault, IndexedDB and OPFS.</span></a>
+      <a class="wk-card g-coral" href="/wiki/simulator/"><i></i><b>Simulator</b><span>hoi-sim's battle, forged attacks, ladder and scatter models.</span></a>
+      <a class="wk-card g-sun" href="/wiki/sbom/"><i></i><b>SBOM</b><span>Every external dependency with its version and license.</span></a>
+    </div>
+  </section>
+</article>
+<!-- @wiki-close -->
+<!-- @include footer.html -->
+<script type="module" src="/src/pages/wiki.ts"></script>
+</body>
+</html>

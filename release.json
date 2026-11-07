@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "revision": 1,
+  "channel": "preview",
+  "protocolVersion": "0.3",
+  "indexVersion": 1,
+  "supportedProtocols": ["0.3"],
+  "notice": {
+    "title": "Preview — unstable",
+    "message": "hoi is in development. Protocol changes may cause data loss. Do not rely on this preview to preserve data."
+  }
+}

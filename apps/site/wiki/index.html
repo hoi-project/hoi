@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <!-- @include head.html title="Wiki · hoi wiki" description="The hoi wiki: the whole protocol and every program in detail, an architecture diagram, a network playground and a full software bill of materials." -->
+</head>
+<body class="wiki">
+<!-- @include header.html nav="wiki" -->
+<!-- @wiki-open -->
+<article class="wk-doc wide">
+  <!-- @wiki-crumbs -->
+  <div class="wk-hero">
+    <span class="eyebrow">the hoi wiki</span>
+    <h1>Everything, <span class="acc">in detail.</span></h1>
+    <p class="wk-lead">How hoi works, all the way down: every record kind and field, every check a device runs, every frame two devices exchange, every program and what it is built from. Written from the code in the repository and linked back to it, line by line.</p>
+  </div>
+  <div class="wk-grid-bg" aria-hidden="true"><div class="wk-dots"></div></div>
+
+  <div class="wk-stats">
+    <div class="wk-stat c-sun"><b>{{WIKI_PAGES}}</b><span>pages</span></div>
+    <div class="wk-stat c-coral"><b>14</b><span>Rust crates</span></div>
+    <div class="wk-stat c-mint"><b>8</b><span>ways to join, playable</span></div>
+    <div class="wk-stat c-sky"><b>20</b><span>test vector files</span></div>
+    <div class="wk-stat c-lilac"><b>{{SBOM_PACKAGES}}</b><span>dependencies listed</span></div>
+  </div>
+
+  <section class="wk-sec" id="start">
+    <h2>Start here</h2>
+    <div class="wk-cards">
+      <a class="wk-card g-sun" href="/wiki/architecture/"><i></i><span class="k">diagram</span><b>Architecture</b><span>Every program, crate and wire in one picture. Hover a box; click it to go there.</span></a>
+      <a class="wk-card g-coral" href="/wiki/playground/"><i></i><span class="k">interactive</span><b>Network playground</b><span>Join a simulated network from a browser, phone, desktop or node and watch every frame.</span></a>
+      <a class="wk-card g-mint" href="/wiki/sbom/"><i></i><span class="k">reference</span><b>SBOM</b><span>Every dependency of every program: version, license, checksum, source. CycloneDX download.</span></a>
+      <a class="wk-card g-lilac" href="/wiki/glossary/"><i></i><span class="k">reference</span><b>Glossary</b><span>Every term, defined once, linked to where it matters.</span></a>
+    </div>
+  </section>
+
+  <section class="wk-sec" id="paths">
+    <h2>Reading paths</h2>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Reading paths">
+      <table>
+        <thead><tr><th>If you want to…</th><th>Read, in this order</th></tr></thead>
+        <tbody>
+          <tr><td>understand the protocol</td><td><a href="/wiki/records/">Records</a> → <a href="/wiki/kinds/">Record kinds</a> → <a href="/wiki/stamps/">Stamps</a> → <a href="/wiki/validation/">Validation</a> → <a href="/wiki/communities/">Communities</a> → <a href="/wiki/standing/">Standing</a> → <a href="/wiki/sync/">Sync</a></td></tr>
+          <tr><td>see how devices find each other</td><td><a href="/wiki/transports/">Transports</a> → <a href="/wiki/discovery/">Discovery</a> → <a href="/wiki/joining/">Joining</a> → <a href="/wiki/playground/">Playground</a></td></tr>
+          <tr><td>run a node</td><td><a href="/wiki/hoi-node/">hoi-node</a> → <a href="/wiki/deploy/">Deploying &amp; hosting</a> → <a href="/wiki/node-setup/">hoi Node Setup</a> → <a href="/wiki/registry/">Registry</a></td></tr>
+          <tr><td>understand private communities</td><td><a href="/wiki/private/">Private communities</a> → <a href="/wiki/mailboxes/">Mailboxes &amp; relays</a> → <a href="/wiki/scatter/">Scattered delivery</a></td></tr>
+          <tr><td>build on the core</td><td><a href="/wiki/crates/">Crates</a> → <a href="/wiki/api/">Core API</a> → <a href="/wiki/storage/">Storage</a> → <a href="/wiki/development/">Building &amp; testing</a></td></tr>
+          <tr><td>check what you're running</td><td><a href="/wiki/releases/">Releases &amp; verification</a> → <a href="/wiki/supply-chain/">Supply chain</a> → <a href="/wiki/sbom/">SBOM</a> → <a href="/wiki/vectors/">Test vectors</a></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="wk-sec" id="all">
+    <h2>Every page</h2>
+    <!-- @wiki-map -->
+  </section>
+
+  <section class="wk-sec" id="about">
+    <h2>About this wiki</h2>
+    <p>The <a href="/protocol/">protocol page</a> tells the story in plain words; this wiki is the reference behind it. Every page names the files it describes, and the code wins wherever they could disagree: the Rust types and tests in <code>core/</code>, the conformance vectors in <code>core/vectors/</code> and the TypeScript API in <code>packages/core-api/</code> describe the current implementation. hoi is preview software, so formats can still change between versions; <a href="/wiki/releases/">Releases &amp; verification</a> says how versions are numbered and checked.</p>
+    <div class="wk-note tip"><b>Search</b><p>Press <kbd>/</kbd> or <kbd>Ctrl</kbd> <kbd>K</kbd> anywhere in the wiki to search every page and section. The index is part of the page, so searching sends nothing anywhere.</p></div>
+  </section>
+</article>
+<!-- @wiki-close -->
+<!-- @include footer.html -->
+<script type="module" src="/src/pages/wiki.ts"></script>
+</body>
+</html>

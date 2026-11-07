@@ -1,0 +1,36 @@
+{
+  "name": "@hoi/web",
+  "version": "1.0.0-preview.1",
+  "private": true,
+  "type": "module",
+  "description": "The hoi app as a static PWA. Also the UI of the desktop companion (Tauri 2).",
+  "scripts": {
+    "dev": "vite",
+    "dev:mock": "VITE_HOI_BACKEND=mock vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "check": "svelte-check --tsconfig ./tsconfig.json",
+    "test": "vitest run",
+    "dev:desktop": "vite --mode desktop --port 5174 --strictPort",
+    "build:desktop": "vite build --mode desktop --outDir dist-desktop",
+    "dev:setup": "vite --mode setup --port 5175 --strictPort",
+    "build:setup": "vite build --mode setup"
+  },
+  "dependencies": {
+    "@hoi/core-api": "workspace:*",
+    "@hoi/tokens": "workspace:*",
+    "@tauri-apps/api": "^2.12.4",
+    "animejs": "4.5.0",
+    "uqr": "^0.1.3"
+  },
+  "devDependencies": {
+    "@hoi/vite-plugin-hardening": "workspace:*",
+    "@sveltejs/vite-plugin-svelte": "^7.3.1",
+    "fake-indexeddb": "^6.2.6",
+    "svelte": "^5.57.2",
+    "svelte-check": "^4.7.7",
+    "typescript": "~6.0.3",
+    "vite": "^8.3.4",
+    "vitest": "^5.0.5"
+  }
+}

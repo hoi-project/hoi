@@ -1,0 +1,647 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <!-- @include head.html title="Record kinds · hoi wiki" description="All 24 record kinds hoi defines: every body field with its type and limits, who may sign it, the rules that apply, its stamp class and an example." -->
+</head>
+<body class="wiki">
+<!-- @include header.html nav="wiki" -->
+<!-- @wiki-open -->
+<article class="wk-doc">
+  <!-- @wiki-crumbs -->
+  <h1>Record <span class="acc">kinds</span></h1>
+  <p class="wk-lead">The code defines 24 kinds of record. They share the envelope described on <a href="/wiki/records/">Records &amp; encoding</a> and differ in their <code>body</code>. For each kind this page gives its purpose, every body field with its CBOR type, limits and optionality, whether it carries a community and a parent, which key may sign it, the checks a receiver applies, its stamp class, how long it lives, and an example decoded from the conformance vectors.</p>
+  <p class="wk-src-list">Source <a href="{{REPO_URL}}/blob/main/core/crates/hoi-types/src/record.rs">hoi-types/src/record.rs</a> <a href="{{REPO_URL}}/blob/main/core/crates/hoi-validate/src/lib.rs">hoi-validate/src/lib.rs</a> <a href="{{REPO_URL}}/blob/main/core/crates/hoi-validate/src/text.rs">hoi-validate/src/text.rs</a> <a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/node.rs">hoi-core/src/node.rs</a> <a href="{{REPO_URL}}/blob/main/core/vectors/records.json">vectors/records.json</a></p>
+  <div class="wk-head-rule"></div>
+
+  <section class="wk-sec" id="overview">
+    <h2>All kinds at a glance</h2>
+    <p>The <code>kind</code> string is what the wire carries (<code>Kind::as_str</code>). "Community" and "parent" say whether the envelope field is required (✓), forbidden (–) or optional (opt), as <code>check_shape</code> enforces. "Scope" is what a device's delegation must cover to sign it (<code>scope_needed</code>); "root" means only a root (or the community, or a recovery) key signs it. "Stamp" is the stamp class: <b>full</b> is the community's <code>pow_bits</code>, <b>−8</b> is <code>pow_bits − 8</code>, <b>16</b> is the fixed <code>GLOBAL_POW_BITS</code>, before any key-age discount (<a href="/wiki/stamps/">Stamps &amp; work</a>). "Lives" is the expiry cap: the community's <code>max_retention</code>, or <code>KEEP</code> (100 years) for kinds outside the retention window.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="All record kinds">
+      <table>
+        <thead><tr><th>Kind</th><th>For</th><th>Community</th><th>Parent</th><th>Scope</th><th>Stamp</th><th>Max wire</th><th>Lives</th></tr></thead>
+        <tbody>
+          <tr><td><a href="#post"><code>post</code></a></td><td>a thread's opening post</td><td>✓</td><td>–</td><td>post</td><td>full</td><td>64 KiB</td><td>retention</td></tr>
+          <tr><td><a href="#comment"><code>comment</code></a></td><td>a reply</td><td>✓</td><td>✓ post or comment</td><td>comment</td><td>full</td><td>16 KiB</td><td>retention</td></tr>
+          <tr><td><a href="#edit"><code>edit</code></a></td><td>new text for your post or comment</td><td>✓</td><td>✓ post or comment</td><td>post / comment</td><td>full</td><td>64 KiB</td><td>retention</td></tr>
+          <tr><td><a href="#delete"><code>delete</code></a></td><td>take back your post or comment</td><td>✓</td><td>✓ post or comment</td><td>post / comment</td><td>−8</td><td>512 B</td><td>retention</td></tr>
+          <tr><td><a href="#vote"><code>vote</code></a></td><td>up, down or none</td><td>✓</td><td>✓ post or comment</td><td>vote</td><td>−8</td><td>512 B</td><td>retention</td></tr>
+          <tr><td><a href="#community"><code>community</code></a></td><td>the genesis: name, owners, limits</td><td>✓ = author</td><td>–</td><td>root</td><td>16</td><td>64 KiB</td><td>KEEP</td></tr>
+          <tr><td><a href="#ledger"><code>ledger</code></a></td><td>a moderation or governance entry</td><td>✓</td><td>–</td><td>moderate:&lt;c&gt;</td><td>−8</td><td>64 KiB</td><td>retention or KEEP</td></tr>
+          <tr><td><a href="#wiki"><code>wiki</code></a></td><td>one edit to a wiki page</td><td>✓</td><td>–</td><td>post</td><td>−8</td><td>33 KiB</td><td>KEEP</td></tr>
+          <tr><td><a href="#vouch"><code>vouch</code></a></td><td>vouch for or object to a person</td><td>✓</td><td>✓ a person</td><td>vote</td><td>−8</td><td>512 B</td><td>KEEP</td></tr>
+          <tr><td><a href="#review"><code>review</code></a></td><td>ok, hide, veto or take back</td><td>✓</td><td>✓ a record</td><td>vote</td><td>−8</td><td>1 KiB</td><td>retention</td></tr>
+          <tr><td><a href="#label"><code>label</code></a></td><td>a labeler's note on a record</td><td>opt</td><td>✓ a record</td><td>vote</td><td>−8</td><td>512 B</td><td>retention</td></tr>
+          <tr><td><a href="#report"><code>report</code></a></td><td>evidence against a person</td><td>✓</td><td>✓ a person</td><td>vote</td><td>−8</td><td>2 KiB</td><td>retention</td></tr>
+          <tr><td><a href="#profile"><code>profile</code></a></td><td>a small profile picture</td><td>✓</td><td>–</td><td>post / comment</td><td>−8</td><td>5 KiB</td><td>retention</td></tr>
+          <tr><td><a href="#profile-color"><code>profile-color</code></a></td><td>an identicon color</td><td>✓</td><td>–</td><td>post / comment</td><td>−8</td><td>512 B</td><td>retention</td></tr>
+          <tr><td><a href="#identity"><code>identity</code></a></td><td>a root key's birth certificate</td><td>–</td><td>–</td><td>root</td><td>16</td><td>512 B</td><td>KEEP</td></tr>
+          <tr><td><a href="#delegation"><code>delegation</code></a></td><td>a device blessed by a root</td><td>–</td><td>–</td><td>root (+ device)</td><td>16</td><td>2 KiB</td><td>KEEP, ≤ 400 days</td></tr>
+          <tr><td><a href="#revoke"><code>revoke</code></a></td><td>end a device, or burn the root</td><td>–</td><td>–</td><td>root</td><td>16</td><td>512 B</td><td>KEEP</td></tr>
+          <tr><td><a href="#rotate"><code>rotate</code></a></td><td>a recovery key hands a person to a new root</td><td>–</td><td>–</td><td>recovery key</td><td>16</td><td>512 B</td><td>KEEP</td></tr>
+          <tr><td><a href="#share"><code>share</code></a></td><td>a recovery share sealed to a friend</td><td>✓</td><td>✓ a person</td><td>vote</td><td>−8</td><td>4 KiB</td><td>KEEP</td></tr>
+          <tr><td><a href="#trust"><code>trust</code></a></td><td>whom a person trusts</td><td>✓</td><td>–</td><td>vote</td><td>−8</td><td>10 KiB</td><td>retention</td></tr>
+          <tr><td><a href="#tally"><code>tally</code></a></td><td>an aggregator's vote counts</td><td>✓</td><td>–</td><td>vote</td><td>−8</td><td>32 KiB</td><td>retention</td></tr>
+          <tr><td><a href="#blocklist"><code>blocklist</code></a></td><td>media hashes a keeper lists</td><td>✓</td><td>–</td><td>vote</td><td>−8</td><td>72 KiB*</td><td>retention</td></tr>
+          <tr><td><a href="#pointer"><code>pointer</code></a></td><td>a post kept in pieces</td><td>✓</td><td>–</td><td>post / comment</td><td>full</td><td>16 KiB</td><td>retention</td></tr>
+          <tr><td><a href="#roster"><code>roster</code></a></td><td>piece holders a device saw up</td><td>✓</td><td>–</td><td>vote</td><td>−8</td><td>2 KiB</td><td>≤ 3 days</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>* Stage 1 refuses any wire over 65,792 bytes before decoding, so that is the real limit for a blocklist (<a href="/wiki/records/">Records &amp; encoding</a>). A <code>*</code> scope covers every kind a device may sign.</p>
+  </section>
+
+  <section class="wk-sec" id="reading">
+    <h2>How to read the field tables</h2>
+    <ul>
+      <li><b>Types</b> are CBOR types: <code>uint</code>, <code>int</code> (signed), <code>text</code>, <code>bytes</code>, <code>bytes32</code> (exactly 32 bytes: a key or record id), <code>bytes64</code> (a signature), <code>[…]</code> arrays, <code>{…}</code> maps. Integers typed <code>u32</code> in Rust refuse values above 2<sup>32</sup>−1.</li>
+      <li><b>Optional</b> fields are left out when absent; writing an empty default is refused where noted. Unknown fields are always refused.</li>
+      <li><b>Limits</b> come from three places: the decoder (shape and types), <code>hoi_validate::content</code> (lengths, allowed values, the text rules) and the node's semantic checks (who may write what about what). Character limits count Unicode scalar values. "Line" means one line of plain text checked by <code>text::line</code>; "markdown" means the markdown subset checked by <code>text::markdown</code>, with a character and a newline limit; both reject direction tricks, invisible and smuggled characters (<a href="/wiki/content-rules/">Text, links &amp; names</a>).</li>
+      <li><b>Hide reasons</b>, wherever a reason is "a hide reason": <code>spam</code>, <code>abuse</code>, <code>illegal</code>, <code>off-topic</code>, or <code>rule:&lt;n&gt;</code> with 1 to 3 digits (<code>is_hide_reason</code>). Disagreement is not one: that is what a downvote is for.</li>
+      <li><b>Examples</b> are the vectors in <a href="{{REPO_URL}}/blob/main/core/vectors/records.json">records.json</a>, decoded and shown as JSON with byte strings as <code>h'…'</code>, keys in canonical order and long values cut. Their stamps are mined at 8 bits and times start at 1,790,000,000.</li>
+    </ul>
+  </section>
+
+  <section class="wk-sec" id="content">
+    <h2>Posts and replies</h2>
+    <p>The kinds people read. Each is signed by a device key whose delegation covers <code>post</code> or <code>comment</code> (or <code>*</code>), or by a root directly; each pays the community's stamp; each lives at most the community's <code>max_retention</code>. Before publishing, the app also checks the author's standing: links need a member, media a trusted member (<a href="/wiki/standing/">Standing &amp; review</a>).</p>
+
+    <h3 id="post">post</h3>
+    <p>Opens a thread. No parent. The app sets <code>expires_at</code> to <code>created_at + max_retention</code> and <code>name</code> to the author's display name.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="post body">
+      <table>
+        <thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Limits</th></tr></thead>
+        <tbody>
+          <tr><td><code>title</code></td><td>text</td><td>yes</td><td>a line, at most 300 characters, not blank</td></tr>
+          <tr><td><code>text</code></td><td>text</td><td>yes (may be empty)</td><td>markdown, at most 40,000 characters and 2,000 newlines, at most 8 links</td></tr>
+          <tr><td><code>link</code></td><td>text</td><td>no</td><td>one address: at most 2,048 bytes, a public <code>http(s)</code> address that doesn't hide where it leads</td></tr>
+          <tr><td><code>name</code></td><td>text</td><td>no</td><td>display name: at most 32 characters, no leading, trailing or doubled spaces, nothing that looks like a key (<code>·</code>, a <code>did:</code> start)</td></tr>
+          <tr><td><code>media</code></td><td>[MediaRef]</td><td>no; never written empty</td><td>1 to 4 items, distinct hashes, at most 24 MiB in total</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>A <code>MediaRef</code> names a file; the bytes travel separately, by hash (<a href="/wiki/media/">Media</a>).</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="MediaRef fields">
+      <table>
+        <thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Limits</th></tr></thead>
+        <tbody>
+          <tr><td><code>hash</code></td><td>bytes32</td><td>yes</td><td>BLAKE3 of the sanitized bytes</td></tr>
+          <tr><td><code>mime</code></td><td>text</td><td>yes</td><td><code>image/png</code>, <code>image/jpeg</code>, <code>image/gif</code>, <code>image/webp</code>, <code>audio/ogg</code>, <code>video/mp4</code>, <code>video/webm</code></td></tr>
+          <tr><td><code>size</code></td><td>uint</td><td>yes</td><td>1 byte up to 2 MiB for images, 8 MiB for Ogg, 16 MiB for MP4 and WebM</td></tr>
+          <tr><td><code>w</code>, <code>h</code></td><td>uint (u32)</td><td>images only, and required for them</td><td>each 1 to 16,384, <code>w·h</code> at most 16,777,216 pixels; audio and video must leave them out</td></tr>
+          <tr><td><code>alt</code></td><td>text</td><td>no</td><td>a line, at most 500 characters</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="wk-code" data-lang="json" data-title="records.json · post-media (decoded)"><pre><code>{
+  "v": 1,
+  "body": {
+    "name": "mira",
+    "text": "",
+    "media": [{ "h": 1, "w": 1, "alt": "one pixel", "hash": "h'dcf5e1ee…9b40b06b'", "mime": "image/png", "size": 69 }],
+    "title": "The meetup, from the back"
+  },
+  "kind": "post",
+  "nonce": 173,
+  "author": "h'ca93ac17…dbdabe7c'",
+  "community": "h'8a88e3dd…b40f6f5c'",
+  "created_at": 1790000070,
+  "expires_at": 1805552070
+}</code></pre></div>
+    <p>Rate windows (by <code>created_at</code>): a newcomer <code>newcomer_posts_per_day</code> a day (default 2); a member 12 an hour and 48 a day, or 4 an hour and 6 a day with media. Posts and comments also feed the copy-paste flood check (<a href="/wiki/spam/">Spam &amp; rate limits</a>).</p>
+
+    <h3 id="comment">comment</h3>
+    <p>A reply. <code>parent</code> is a post or a comment of the same community; a reply under something since removed is still accepted, under its skeleton. The app caps its <code>expires_at</code> at the parent's.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="comment body">
+      <table>
+        <thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Limits</th></tr></thead>
+        <tbody>
+          <tr><td><code>text</code></td><td>text</td><td>yes</td><td>not blank; markdown, at most 10,000 characters and 500 newlines, at most 8 links</td></tr>
+          <tr><td><code>name</code></td><td>text</td><td>no</td><td>display name, as for posts</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="wk-code" data-lang="json" data-title="records.json · comment (decoded)"><pre><code>{
+  "v": 1,
+  "body": { "name": "mira", "text": "Defaults count, not capability." },
+  "kind": "comment",
+  "nonce": 266,
+  "author": "h'ca93ac17…dbdabe7c'",
+  "parent": "h'e9b6f330…3150ee294'",
+  "community": "h'8a88e3dd…b40f6f5c'",
+  "created_at": 1790000120,
+  "expires_at": 1805552120
+}</code></pre></div>
+    <p>Rates: a newcomer 10 an hour and 30 a day, a member 60 an hour and 400 a day.</p>
+
+    <h3 id="edit">edit</h3>
+    <p>New text for a post or comment. <code>parent</code> is the original. Only the original's author (the same root) may edit, in the same community; the newest edit by <code>created_at</code> is what people see, and the original keeps its id. The app sets <code>expires_at</code> to the original's, at least a minute ahead.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="edit body">
+      <table>
+        <thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Limits</th></tr></thead>
+        <tbody>
+          <tr><td><code>text</code></td><td>text</td><td>yes</td><td>markdown, at most 40,000 characters and 2,000 newlines</td></tr>
+          <tr><td><code>title</code></td><td>text</td><td>no</td><td>a line, at most 300 characters, not blank when present</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="wk-code" data-lang="json" data-title="records.json · edit (decoded)"><pre><code>{
+  "v": 1,
+  "body": { "text": "Edited: three apps." },
+  "kind": "edit",
+  "nonce": 308,
+  "author": "h'ed4928c6…ac8737d1'",
+  "parent": "h'e9b6f330…3150ee294'",
+  "community": "h'8a88e3dd…b40f6f5c'",
+  "created_at": 1790000140,
+  "expires_at": 1805552140
+}</code></pre></div>
+
+    <h3 id="delete">delete</h3>
+    <p>Takes back a post or comment. The body is an empty map. The same authorship checks as <code>edit</code> apply; once accepted, the target becomes a skeleton marked "deleted by the author", and replies under it stay. Edits and deletes share a rate group: 30 an hour, 100 a day.</p>
+    <div class="wk-code" data-lang="json" data-title="records.json · delete (decoded)"><pre><code>{
+  "v": 1,
+  "body": {},
+  "kind": "delete",
+  "nonce": 6,
+  "author": "h'ca93ac17…dbdabe7c'",
+  "parent": "h'0345c91a…4ad4ab83'",
+  "community": "h'8a88e3dd…b40f6f5c'",
+  "created_at": 1790000170,
+  "expires_at": 1805552170
+}</code></pre></div>
+
+    <h3 id="vote">vote</h3>
+    <p>An up- or downvote on a post or comment of the same community. Only the highest <code>seq</code> per voter and target counts, so a new vote replaces the last and <code>0</code> takes it back. The app sets <code>seq</code> to the time in seconds × 1000, or one more than its previous vote's if that is higher, and <code>expires_at</code> to the target's. Rates: 300 an hour, 2,000 a day.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="vote body">
+      <table>
+        <thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Limits</th></tr></thead>
+        <tbody>
+          <tr><td><code>value</code></td><td>int</td><td>yes</td><td><code>-1</code>, <code>0</code> or <code>1</code></td></tr>
+          <tr><td><code>seq</code></td><td>uint</td><td>yes</td><td>higher replaces lower</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="wk-code" data-lang="json" data-title="records.json · vote (decoded)"><pre><code>{ "v": 1, "body": { "seq": 1, "value": 1 }, "kind": "vote", "nonce": 578,
+  "author": "h'ca93ac17…dbdabe7c'", "parent": "h'e9b6f330…3150ee294'", "community": "h'8a88e3dd…b40f6f5c'",
+  "created_at": 1790000130, "expires_at": 1805552130 }</code></pre></div>
+    <p>Ranking is computed on each device from these votes, weighted by its own trust view (<a href="/wiki/trust/">Trust &amp; ranking</a>).</p>
+  </section>
+
+  <section class="wk-sec" id="community">
+    <h2>community: the genesis</h2>
+    <p>A community is an Ed25519 key pair, and its first record is its genesis: signed by the community key, with <code>community</code> equal to <code>author</code>, no parent and no community scope (only that key signs it). It is the only record a community key ever signs: the app makes the key, signs the genesis and forgets the key, and a node refuses a second genesis for the same key (<code>a community's genesis never changes</code>). From then on the owners govern through the <a href="#ledger">ledger</a>. It pays the fixed 16-bit stamp and is kept for 100 years (the app sets <code>expires_at</code> to <code>created_at + KEEP</code>).</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="community body">
+      <table>
+        <thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Limits</th></tr></thead>
+        <tbody>
+          <tr><td><code>name</code></td><td>text</td><td>yes</td><td>a line, 1 to 40 characters</td></tr>
+          <tr><td><code>description</code></td><td>text</td><td>yes (may be empty)</td><td>at most 300 characters, body text rules</td></tr>
+          <tr><td><code>color</code></td><td>text</td><td>yes</td><td><code>mint</code>, <code>sky</code>, <code>lilac</code>, <code>peach</code>, <code>sun</code> or <code>coral</code></td></tr>
+          <tr><td><code>owners</code></td><td>[bytes32]</td><td>yes</td><td>1 to 16 root keys; the creator first</td></tr>
+          <tr><td><code>threshold</code></td><td>uint (u32)</td><td>yes</td><td>1 to the number of owners: cosignatures a threshold entry needs</td></tr>
+          <tr><td><code>rules_text_cid</code></td><td>bytes32</td><td>no</td><td>decoded and carried; the apps leave it out and keep rules in the ledger</td></tr>
+          <tr><td><code>limits</code></td><td>{Limits}</td><td>yes</td><td>below</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 id="limits">Limits</h3>
+    <p>The same map appears in the genesis and in <code>limits</code> ledger entries. <code>hoi_validate::limits</code> checks the ranges.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Limits fields">
+      <table>
+        <thead><tr><th>Field</th><th>Type</th><th>Default</th><th>Allowed</th><th>Means</th></tr></thead>
+        <tbody>
+          <tr><td><code>pow_bits</code></td><td>uint (u32)</td><td>22</td><td>8 to 30</td><td>stamp difficulty for posts, comments, edits and pointers</td></tr>
+          <tr><td><code>max_retention</code></td><td>uint, seconds</td><td>15,552,000 (180 days)</td><td>3,600 to 315,360,000 (10 years)</td><td>how far past <code>created_at</code> a record may expire</td></tr>
+          <tr><td><code>newcomer_posts_per_day</code></td><td>uint (u32)</td><td>2</td><td>0 to 1,000</td><td>posts a day for someone the ladder hasn't admitted</td></tr>
+          <tr><td><code>newcomer_age</code></td><td>uint, seconds</td><td>2,592,000 (30 days)</td><td>at most 365 days</td><td>carried and validated; the ladder decides who is a newcomer</td></tr>
+          <tr><td><code>admission</code></td><td>text</td><td><code>open</code></td><td><code>open</code>, <code>invite</code>, <code>age-proof</code>, <code>approve</code></td><td>how people get in; <code>age-proof</code> needs <code>age_issuers</code></td></tr>
+          <tr><td><code>autoban_threshold</code></td><td>uint (u32)</td><td>12</td><td>1 to 10,000</td><td>weighted reports that make a device ban a key</td></tr>
+          <tr><td><code>labelers</code></td><td>[bytes32]</td><td>[]</td><td>at most 32</td><td>labelers whose <code>label</code> records this community takes</td></tr>
+          <tr><td><code>ladder</code></td><td>{Ladder}</td><td>below</td><td>below</td><td>the trust ladder's steps and quorums</td></tr>
+          <tr><td><code>scatter</code></td><td>{resist: uint, open: bool}</td><td><code>{resist: 10, open: false}</code>, left out</td><td><code>resist</code> 10, 15 or 20</td><td>scattered delivery: percent of places that can't rebuild or withhold a post, and whether an open community's posts travel in pieces</td></tr>
+          <tr><td><code>trackers</code></td><td>[text]</td><td>none, left out</td><td>1 or 2, each an <code>https://</code> address of at most 200 bytes without credentials, query or fragment</td><td>registries asked when no route answers</td></tr>
+          <tr><td><code>age_issuers</code></td><td>[bytes]</td><td>none, left out</td><td>1 to 8 keys of 32 (Ed25519) or 33 or 65 bytes (P-256)</td><td>credential issuers trusted for <code>age-proof</code> admission</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>The app creates open communities with <code>scatter.open</code> set to true unless the draft says otherwise, so their genesis carries a <code>scatter</code> map.</p>
+    <h3 id="ladder">Ladder</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Ladder fields">
+      <table>
+        <thead><tr><th>Field</th><th>Type</th><th>Default</th><th>Allowed</th><th>Means</th></tr></thead>
+        <tbody>
+          <tr><td><code>identity_bits</code></td><td>uint (u32)</td><td>8</td><td>0 to 20</td><td>Argon2id identity work every author must carry</td></tr>
+          <tr><td><code>admit_vouches</code></td><td>uint (u32)</td><td>2</td><td>1 to 16</td><td>vouches from established members that admit a newcomer</td></tr>
+          <tr><td><code>established_age</code></td><td>uint, seconds</td><td>1,209,600 (14 days)</td><td>at most 365 days</td><td>time as a member before counting as established</td></tr>
+          <tr><td><code>trusted_posts</code></td><td>uint (u32)</td><td>5</td><td>at most 1,000</td><td>live contributions in 90 days needed to be trusted</td></tr>
+          <tr><td><code>media_score</code></td><td>uint (u32)</td><td>10</td><td>at most 100,000</td><td>response score over those needed to be trusted</td></tr>
+          <tr><td><code>hide_quorum</code></td><td>uint (u32)</td><td>3</td><td>2 to 100</td><td>established hiders that put a record to sleep</td></tr>
+          <tr><td><code>block_quorum</code></td><td>uint (u32)</td><td>5</td><td>2 to 100</td><td>distinct established hiders that block a member</td></tr>
+          <tr><td><code>veto_quorum</code></td><td>uint (u32)</td><td>5</td><td>2 to 100</td><td>vetoes that overturn a ledger entry</td></tr>
+          <tr><td><code>contest_window</code></td><td>uint, seconds</td><td>259,200 (72 hours)</td><td>at most 14 days</td><td>how long a removal naps before its body is deleted</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Quorums below 2 are refused so that no single person can hide, block or overturn alone. What the ladder does with these numbers is on <a href="/wiki/standing/">Standing &amp; review</a>; changing them is on <a href="/wiki/communities/">Communities &amp; the ledger</a>.</p>
+    <div class="wk-code" data-lang="json" data-title="records.json · genesis (decoded, trimmed)"><pre><code>{
+  "v": 1,
+  "body": {
+    "name": "privacy",
+    "color": "mint",
+    "limits": {
+      "ladder": { "hide_quorum": 3, "media_score": 10, "veto_quorum": 5, "block_quorum": 5, "admit_vouches": 2,
+                  "identity_bits": 8, "trusted_posts": 5, "contest_window": 259200, "established_age": 1209600 },
+      "labelers": [], "pow_bits": 8, "admission": "open", "newcomer_age": 2592000,
+      "max_retention": 15552000, "autoban_threshold": 12, "newcomer_posts_per_day": 2
+    },
+    "owners": ["h'8139770e…8fc9b394'", "h'ca93ac17…dbdabe7c'", "h'6e7a1cdd…80505bf1'"],
+    "threshold": 2,
+    "description": "Practical privacy for normal people."
+  },
+  "kind": "community",
+  "nonce": 149,
+  "author": "h'8a88e3dd…b40f6f5c'",
+  "community": "h'8a88e3dd…b40f6f5c'",
+  "created_at": 1790000000,
+  "expires_at": 4943600000
+}</code></pre></div>
+  </section>
+
+  <section class="wk-sec" id="ledger">
+    <h2>ledger: moderation and governance</h2>
+    <p>Every moderation action and every change to a community's rules, limits or moderators is a <code>ledger</code> record with a sequence number. A device's delegation needs <code>moderate:&lt;community hex&gt;</code> (or <code>*</code>) to sign one. The node then checks the author's root: owners only for the threshold actions, owners or moderators for the rest (<code>only owners and moderators write the ledger</code>). Stamp class −8; size cap 64 KiB.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="ledger body">
+      <table>
+        <thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Limits</th></tr></thead>
+        <tbody>
+          <tr><td><code>seq</code></td><td>uint</td><td>yes</td><td>the app writes the community's highest seq + 1</td></tr>
+          <tr><td><code>action</code></td><td>text</td><td>yes</td><td>one of the 13 actions below</td></tr>
+          <tr><td><code>target</code></td><td>bytes32</td><td>by action</td><td>a record id or a root key; required where the table says, forbidden for <code>drop-key</code></td></tr>
+          <tr><td><code>reason</code></td><td>text</td><td>no (yes for <code>label</code>)</td><td>a line, at most 500 characters; for <code>label</code> it is the label and may not be blank</td></tr>
+          <tr><td><code>evidence</code></td><td>[bytes32]</td><td>no</td><td>at most 256 record ids</td></tr>
+          <tr><td><code>cosign</code></td><td>[{key: bytes32, sig: bytes64}]</td><td>no</td><td>at most 16; each signs the entry's <code>proposal_id</code></td></tr>
+          <tr><td><code>text</code></td><td>text</td><td><code>rules</code> only, and required there</td><td>markdown, at most 20,000 characters and 1,000 newlines</td></tr>
+          <tr><td><code>limits</code></td><td>{Limits}</td><td><code>limits</code> only, and required there</td><td>the full new limits, checked as in a genesis</td></tr>
+          <tr><td><code>drop_key</code></td><td>{key: bytes32, to: [{d: bytes32, s: bytes}]}</td><td><code>drop-key</code> only, and required there</td><td>a strong Ed25519 key, sealed once to each of at most 64 devices, each <code>s</code> exactly 80 bytes</td></tr>
+          <tr><td><code>patch</code></td><td>bytes</td><td><code>rules</code> only, and required there</td><td>the change as a Loro update to the rules document, 1 byte to 64 KiB</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 id="ledger-actions">Actions</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Ledger actions">
+      <table>
+        <thead><tr><th>Action</th><th>Target</th><th>Who signs</th><th>Kept</th><th>Vetoable</th></tr></thead>
+        <tbody>
+          <tr><td><code>rules</code></td><td>–</td><td>owners, to the threshold</td><td>until superseded</td><td>no; a proposal members answer</td></tr>
+          <tr><td><code>limits</code></td><td>–</td><td>owners, to the threshold</td><td>until superseded</td><td>no; a proposal members answer</td></tr>
+          <tr><td><code>mod-add</code></td><td>a root key</td><td>owners, to the threshold</td><td>until superseded</td><td>yes</td></tr>
+          <tr><td><code>mod-remove</code></td><td>a root key</td><td>owners, to the threshold</td><td>until superseded</td><td>no</td></tr>
+          <tr><td><code>retire</code></td><td>a root key</td><td>owners, to the threshold</td><td>until superseded</td><td>yes</td></tr>
+          <tr><td><code>remove</code></td><td>a record id</td><td>owner or moderator</td><td>retention</td><td>yes</td></tr>
+          <tr><td><code>ban</code></td><td>a root key</td><td>owner or moderator</td><td>retention</td><td>yes</td></tr>
+          <tr><td><code>unban</code></td><td>a root key</td><td>owner or moderator</td><td>retention</td><td>yes</td></tr>
+          <tr><td><code>label</code></td><td>a record id</td><td>owner or moderator</td><td>retention</td><td>yes</td></tr>
+          <tr><td><code>pin</code></td><td>a record id</td><td>owner or moderator</td><td>retention</td><td>yes</td></tr>
+          <tr><td><code>unpin</code></td><td>a record id</td><td>owner or moderator</td><td>retention</td><td>no</td></tr>
+          <tr><td><code>admit</code></td><td>a root key</td><td>owner or moderator</td><td>retention</td><td>yes</td></tr>
+          <tr><td><code>drop-key</code></td><td>none allowed</td><td>owner or moderator</td><td>until superseded</td><td>no</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>"Until superseded" (<code>kept_until_superseded</code>) means the entry is exempt from the retention window: the app gives it <code>expires_at = created_at + KEEP</code>. The threshold actions (<code>needs_threshold</code>) are <code>rules</code>, <code>limits</code>, <code>mod-add</code>, <code>mod-remove</code> and <code>retire</code>. With a threshold above 1 the first owner signs <code>proposal_id</code>, hands the entry on as a <code>hoi:cosign:</code> code (<a href="/wiki/links/">Links &amp; URIs</a>), and whoever collects the last cosignature publishes it. A <code>drop-key</code> carries an open community's drop key for scattered delivery, its secret sealed with HPKE to each owner's and moderator's device seal key (<a href="/wiki/scatter/">Scattered delivery</a>).</p>
+    <div class="wk-code" data-lang="json" data-title="vectors/tombstone.json · remove (decoded)"><pre><code>{
+  "v": 1,
+  "body": { "seq": 1, "action": "remove", "reason": "rule 4, undisclosed vendor", "target": "h'0345c91a…4ad4ab83'" },
+  "kind": "ledger",
+  "nonce": 77,
+  "author": "h'ca93ac17…dbdabe7c'",
+  "community": "h'8a88e3dd…b40f6f5c'",
+  "created_at": 1790000200,
+  "expires_at": 1805552200
+}</code></pre></div>
+    <p>Ledger entries have no rate window. What each action does when replayed, how vetoes and proposals are counted, and the consent rules for rules and limits are on <a href="/wiki/communities/">Communities &amp; the ledger</a>.</p>
+  </section>
+
+  <section class="wk-sec" id="standing-kinds">
+    <h2>Vouches, reviews, labels and reports</h2>
+    <p>The small signed judgements standing and moderation are computed from. All four need the <code>vote</code> scope, pay the −8 stamp class and count in rate groups of their own. Whose of them count, and for what, is decided by the ladder on every device (<a href="/wiki/standing/">Standing &amp; review</a>).</p>
+
+    <h3 id="vouch">vouch</h3>
+    <p><code>parent</code> is the person (a root key) vouched for; nobody vouches for themselves, which <code>check_shape</code> and the node both refuse. <code>1</code> vouches, <code>-1</code> objects and needs a hide reason, <code>0</code> takes it back. The latest <code>(seq, created_at, id)</code> per voucher and person wins and older ones are dropped. Vouches are what standing is built from, so they live outside the retention window (the app writes <code>expires_at = created_at + KEEP</code>). The app also vouches automatically once an established member has read a couple of a newcomer's posts without hiding them.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="vouch body">
+      <table>
+        <thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Limits</th></tr></thead>
+        <tbody>
+          <tr><td><code>value</code></td><td>int</td><td>yes</td><td><code>-1</code>, <code>0</code> or <code>1</code></td></tr>
+          <tr><td><code>seq</code></td><td>uint</td><td>yes</td><td>higher replaces lower</td></tr>
+          <tr><td><code>reason</code></td><td>text</td><td>only with <code>-1</code>, and required there</td><td>a hide reason; refused with <code>0</code> or <code>1</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="wk-code" data-lang="json" data-title="records.json · vouch (decoded)"><pre><code>{ "v": 1, "body": { "seq": 1, "value": 1 }, "kind": "vouch", "nonce": 52,
+  "author": "h'ca93ac17…dbdabe7c'", "parent": "h'8139770e…8fc9b394'", "community": "h'8a88e3dd…b40f6f5c'",
+  "created_at": 1790000135, "expires_at": 4943600135 }</code></pre></div>
+
+    <h3 id="review">review</h3>
+    <p>A member's judgement of a record: <code>parent</code> is a post or comment, or a ledger entry, of the same community. The node refuses a review of your own post or comment, of a ledger entry you signed or cosigned, a <code>veto</code> of a post or comment, a <code>hide</code> of a ledger entry, a review of a ledger entry that is neither vetoable nor an open proposal, and an answer to a proposal after its deadline. Latest <code>(seq, created_at, id)</code> per reviewer and record wins, except answers to a proposal, which are all kept (up to 16 per person) because when people agreed decides it.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="review body">
+      <table>
+        <thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Limits</th></tr></thead>
+        <tbody>
+          <tr><td><code>verdict</code></td><td>text</td><td>yes</td><td><code>ok</code> (it belongs here, or support), <code>hide</code>, <code>veto</code>, <code>none</code> (take back)</td></tr>
+          <tr><td><code>seq</code></td><td>uint</td><td>yes</td><td>higher replaces lower</td></tr>
+          <tr><td><code>reason</code></td><td>text</td><td><code>hide</code> and <code>veto</code> only, required there</td><td><code>hide</code>: a hide reason; <code>veto</code>: a line of at most 200 characters; refused with <code>ok</code> and <code>none</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="wk-code" data-lang="json" data-title="records.json · review (decoded)"><pre><code>{ "v": 1, "body": { "seq": 1, "reason": "off-topic", "verdict": "hide" }, "kind": "review", "nonce": 149,
+  "author": "h'6e7a1cdd…80505bf1'", "parent": "h'e9b6f330…3150ee294'", "community": "h'8a88e3dd…b40f6f5c'",
+  "created_at": 1790000138, "expires_at": 1805552138 }</code></pre></div>
+    <p>The app's <code>expires_at</code> for a review is the target's (for a proposal) or the earlier of the target's and the retention cap, at least a minute ahead. Vouches and reviews share a rate group: a newcomer 20 a day, a member 60 an hour and 300 a day.</p>
+
+    <h3 id="label">label</h3>
+    <p>A short note a labeler attaches to a record, which <code>parent</code> names. It is the one kind whose <code>community</code> is optional (a label outside any community pays the 16-bit global stamp). A node takes labels only from a labeler this device follows, from one the community's <code>limits.labelers</code> names, or from itself (<code>labels from a labeler nobody here follows</code>).</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="label body">
+      <table>
+        <thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Limits</th></tr></thead>
+        <tbody>
+          <tr><td><code>label</code></td><td>text</td><td>yes</td><td>a line, 1 to 40 characters</td></tr>
+          <tr><td><code>note</code></td><td>text</td><td>no</td><td>a line, at most 300 characters</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="wk-code" data-lang="json" data-title="records.json · label (decoded)"><pre><code>{ "v": 1, "body": { "label": "needs a threat model" }, "kind": "label", "nonce": 2,
+  "author": "h'6e7a1cdd…80505bf1'", "parent": "h'e9b6f330…3150ee294'", "community": "h'8a88e3dd…b40f6f5c'",
+  "created_at": 1790000150, "expires_at": 1805552150 }</code></pre></div>
+
+    <h3 id="report">report</h3>
+    <p>A signed report against a person: <code>parent</code> is the reported root key and <code>evidence</code> lists record ids, never the posts themselves. Devices publish reports when their own strike count for a key crosses its line, and people can report from the interface. Every accepted report makes the device weigh the reports against that person; once the sum reaches <code>autoban_threshold</code> the device bounces the key locally, and on an owner's or moderator's device a ban goes to the ledger for everyone. Owners and moderators are never bounced this way (<a href="/wiki/spam/">Spam &amp; rate limits</a>). The app keeps reports at most 30 days.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="report body">
+      <table>
+        <thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Limits</th></tr></thead>
+        <tbody>
+          <tr><td><code>reason</code></td><td>text</td><td>yes</td><td><code>spam</code>, <code>rate</code>, <code>dup</code>, <code>illegal</code> or <code>rule:&lt;n&gt;</code> (a u32); a line of at most 40 characters</td></tr>
+          <tr><td><code>evidence</code></td><td>[bytes32]</td><td>yes (may be empty)</td><td>at most 64 record ids</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="wk-code" data-lang="json" data-title="records.json · report (decoded)"><pre><code>{ "v": 1, "body": { "reason": "rule:4", "evidence": ["h'0345c91a…4ad4ab83'"] }, "kind": "report", "nonce": 163,
+  "author": "h'6e7a1cdd…80505bf1'", "parent": "h'ca93ac17…dbdabe7c'", "community": "h'8a88e3dd…b40f6f5c'",
+  "created_at": 1790000160, "expires_at": 1792592160 }</code></pre></div>
+    <p>Labels and reports share a rate group: a newcomer 20 a day, a member 200 a day.</p>
+  </section>
+
+  <section class="wk-sec" id="profiles">
+    <h2>Profiles</h2>
+    <p>Per-community appearance, kept apart from the posts so a picture never rides inside one. Both need the <code>post</code> or <code>comment</code> scope, pay the −8 class, live the community's retention, and follow the highest <code>(seq, created_at, id)</code> per person and community. The app publishes them after a person's post or comment in a community, when the copy there is missing or out of date. Both share the rate 2 an hour, 6 a day (each in its own group).</p>
+    <h3 id="profile">profile</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="profile body">
+      <table>
+        <thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Limits</th></tr></thead>
+        <tbody>
+          <tr><td><code>image</code></td><td>bytes</td><td>yes (may be empty)</td><td>a JPEG of at most 4,096 bytes, square, at most 128 pixels a side, that decodes; empty restores the key's identicon</td></tr>
+          <tr><td><code>seq</code></td><td>uint</td><td>yes</td><td>revision; higher replaces lower</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>The app publishes a picture only for owners, moderators and trusted members, and devices show one only for them; a device that blocked a picture locally refuses records carrying it.</p>
+    <h3 id="profile-color">profile-color</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="profile-color body">
+      <table>
+        <thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Limits</th></tr></thead>
+        <tbody>
+          <tr><td><code>color</code></td><td>text</td><td>yes</td><td><code>""</code> (the key-derived color), <code>mint</code>, <code>sky</code>, <code>lilac</code>, <code>peach</code> or <code>sun</code>: palette names, never CSS or addresses</td></tr>
+          <tr><td><code>seq</code></td><td>uint</td><td>yes</td><td>revision; higher replaces lower</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="wk-sec" id="keys">
+    <h2>Keys: identity, delegation, revoke, rotate, share</h2>
+    <p>The records that make a person. The first four live outside any community, pay the fixed 16-bit stamp and are kept for 100 years; a node takes them from strangers only for roots it already knows, or that arrive in the same batch as their community records. The full story (roots, devices, burning and recovery) is on <a href="/wiki/identity/">Keys &amp; identity</a>.</p>
+
+    <h3 id="identity">identity</h3>
+    <p>A root key's birth certificate, signed by the root itself. <code>work</code> is the nonce of its memory-hard Argon2id work (<a href="/wiki/stamps/">Stamps &amp; work</a>); a receiver refuses a weak key and any work under 4 bits, and a community refuses authors whose best identity carries less than its <code>ladder.identity_bits</code>. A device key can't be an identity, and a root can't name itself in <code>of</code>.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="identity body">
+      <table>
+        <thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Limits</th></tr></thead>
+        <tbody>
+          <tr><td><code>work</code></td><td>uint</td><td>yes</td><td>the Argon2id nonce; at least 4 leading zero bits</td></tr>
+          <tr><td><code>rc</code></td><td>bytes32</td><td>no</td><td>commitment to the recovery key that may replace this root: <code>BLAKE3-derive-key("hoi 2026 recovery commitment v1", recovery key)</code></td></tr>
+          <tr><td><code>of</code></td><td>bytes32</td><td>no</td><td>the person (first root) a later root continues</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="wk-code" data-lang="json" data-title="records.json · identity-continues (decoded)"><pre><code>{
+  "v": 1,
+  "body": { "of": "h'fa5e757c…325cd94e'", "rc": "h'd49e0d1b…ba05ce87'", "work": 36 },
+  "kind": "identity",
+  "nonce": 186,
+  "author": "h'bc3864ad…e30271c6'",
+  "created_at": 1790000300,
+  "expires_at": 4943600300
+}</code></pre></div>
+
+    <h3 id="delegation">delegation</h3>
+    <p>A device blessed by a root. It carries two signatures: the record's own, by the device (its consent, so nobody can claim someone else's device), and <code>root_sig</code>, the root's blessing over <code>delegation_statement(root, device, scope, expires_at)</code> (<a href="/wiki/records/">Records &amp; encoding</a> shows its bytes). Both keys must be strong, the root may not be the device, and <code>body.expires_at</code> must equal the record's <code>expires_at</code> and be at most 400 days after <code>created_at</code>. A device belongs to the first root that blessed it, an identity can't be a device, and a root has at most 16 live devices. The app blesses for 180 days with scope <code>["*"]</code> and renews before it lapses.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="delegation body">
+      <table>
+        <thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Limits</th></tr></thead>
+        <tbody>
+          <tr><td><code>root</code></td><td>bytes32</td><td>yes</td><td>the blessing root; not the author</td></tr>
+          <tr><td><code>scope</code></td><td>[text]</td><td>yes</td><td>1 to 16 of <code>*</code>, <code>post</code>, <code>comment</code>, <code>vote</code>, <code>moderate:&lt;64 hex community key&gt;</code></td></tr>
+          <tr><td><code>expires_at</code></td><td>uint</td><td>yes</td><td>equal to the record's; at most <code>created_at</code> + 400 days</td></tr>
+          <tr><td><code>root_sig</code></td><td>bytes64</td><td>yes</td><td>the root's Ed25519 signature over the statement</td></tr>
+          <tr><td><code>seal</code></td><td>bytes32</td><td>no</td><td>an X25519 key, derived from the device key, that drop keys are sealed to; signed by the device, not in the root's statement</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="wk-code" data-lang="json" data-title="records.json · delegation (decoded)"><pre><code>{
+  "v": 1,
+  "body": { "root": "h'8139770e…8fc9b394'", "scope": ["*"], "root_sig": "h'911a4446…676a4a01'", "expires_at": 1805552000 },
+  "kind": "delegation",
+  "nonce": 84,
+  "author": "h'ed4928c6…ac8737d1'",
+  "created_at": 1790000000,
+  "expires_at": 1805552000
+}</code></pre></div>
+    <p>What each scope lets a device sign:</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Scopes">
+      <table>
+        <thead><tr><th>Scope</th><th>Kinds it covers</th></tr></thead>
+        <tbody>
+          <tr><td><code>post</code></td><td><code>post</code>, <code>edit</code>, <code>delete</code>, <code>profile</code>, <code>profile-color</code>, <code>pointer</code>, <code>wiki</code></td></tr>
+          <tr><td><code>comment</code></td><td><code>comment</code>, <code>edit</code>, <code>delete</code>, <code>profile</code>, <code>profile-color</code>, <code>pointer</code></td></tr>
+          <tr><td><code>vote</code></td><td><code>vote</code>, <code>label</code>, <code>report</code>, <code>vouch</code>, <code>review</code>, <code>roster</code>, <code>share</code>, <code>trust</code>, <code>tally</code>, <code>blocklist</code></td></tr>
+          <tr><td><code>moderate:&lt;c&gt;</code></td><td><code>ledger</code> in community <code>c</code></td></tr>
+          <tr><td><code>*</code></td><td>all of the above</td></tr>
+          <tr><td>none</td><td><code>community</code>, <code>delegation</code>, <code>revoke</code>, <code>identity</code>, <code>rotate</code>: never a device</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>A device's records are refused once its delegation has expired (<code>created_at</code> after the delegation's <code>expires_at</code>) or from the moment it was revoked.</p>
+
+    <h3 id="revoke">revoke</h3>
+    <p>Signed by a root. <code>device</code> names a device that root blessed: records the device signed at or after the revoke's <code>created_at</code> are refused. When <code>device</code> is the root itself, the identity is <b>burned</b>: every device drops everything that root and its devices signed, and refuses anything later from it. Only a root revokes, and only its own devices.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="revoke body">
+      <table>
+        <thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Limits</th></tr></thead>
+        <tbody>
+          <tr><td><code>device</code></td><td>bytes32</td><td>yes</td><td>a device of the signing root, or the root itself to burn it</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="wk-code" data-lang="json" data-title="records.json · revoke (decoded)"><pre><code>{ "v": 1, "body": { "device": "h'ed4928c6…ac8737d1'" }, "kind": "revoke", "nonce": 57,
+  "author": "h'8139770e…8fc9b394'", "created_at": 1790000180, "expires_at": 4943600180 }</code></pre></div>
+
+    <h3 id="rotate">rotate</h3>
+    <p>A recovery key hands a person over to a new root. The signer must be the recovery key whose commitment (<code>rc</code>) an identity along the person's chain of roots carries; <code>to</code> must be a root whose identity names <code>person</code> in <code>of</code> and belongs to nobody else. <code>person</code>, <code>to</code> and the signer must all differ, and a weak recovery key is refused. From the rotation on, the replaced root and its devices sign nothing new.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="rotate body">
+      <table>
+        <thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Limits</th></tr></thead>
+        <tbody>
+          <tr><td><code>person</code></td><td>bytes32</td><td>yes</td><td>the person's first root</td></tr>
+          <tr><td><code>to</code></td><td>bytes32</td><td>yes</td><td>the new root</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="wk-code" data-lang="json" data-title="records.json · rotate (decoded)"><pre><code>{ "v": 1, "body": { "to": "h'bc3864ad…e30271c6'", "person": "h'fa5e757c…325cd94e'" }, "kind": "rotate", "nonce": 499,
+  "author": "h'65c28e32…1a88bb61'", "created_at": 1790000300, "expires_at": 4943600300 }</code></pre></div>
+
+    <h3 id="share">share</h3>
+    <p>One share of a person's recovery line, given to a friend: <code>parent</code> is the friend's root, and the share is sealed separately to each of the friend's devices. Unlike the other key records it is published in a community, needs the <code>vote</code> scope and pays the −8 class; it is kept for 100 years. The latest <code>seq</code> per author and friend wins, and an empty <code>sealed</code> takes the share back. Rate: 20 a day.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="share body">
+      <table>
+        <thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Limits</th></tr></thead>
+        <tbody>
+          <tr><td><code>sealed</code></td><td>[{d: bytes32, s: bytes}]</td><td>yes (may be empty)</td><td>at most 16, one per device <code>d</code>; each <code>s</code> exactly 81 bytes (32 of encapsulated key, a 33-byte share, a 16-byte tag)</td></tr>
+          <tr><td><code>seq</code></td><td>uint</td><td>yes</td><td>higher replaces lower (the app uses the time)</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="wk-sec" id="lists">
+    <h2>Lists people follow: trust, tally, blocklist</h2>
+    <p>Statements that matter only to people who choose to follow their author. A node takes a tally or a blocklist only from an author this device follows (or from itself); a trust statement is read only by people who trust its author. All three need the <code>vote</code> scope, pay −8, and the latest <code>(created_at, id)</code> per author, community and kind replaces the earlier ones, which are dropped. Every list must be sorted, each entry once (<code>check_shape</code>).</p>
+    <h3 id="trust">trust</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="trust body">
+      <table>
+        <thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Limits</th></tr></thead>
+        <tbody>
+          <tr><td><code>keys</code></td><td>[bytes32]</td><td>yes (may be empty)</td><td>0 to 256 person ids, sorted, each once; empty takes the last statement back</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Rate 4 an hour, 12 a day; lives the community's retention. How trust statements build rings and weights is on <a href="/wiki/trust/">Trust &amp; ranking</a>.</p>
+    <h3 id="tally">tally</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="tally body">
+      <table>
+        <thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Limits</th></tr></thead>
+        <tbody>
+          <tr><td><code>counts</code></td><td>[[bytes32, uint, uint]]</td><td>yes</td><td>rows of <code>[post, up-votes, down-votes]</code>, at most 500, sorted by post, each post once</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>An aggregator's vote counts for a community's posts. The app keeps its tallies at most 7 days. Rate 4 an hour, 48 a day.</p>
+    <h3 id="blocklist">blocklist</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="blocklist body">
+      <table>
+        <thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Limits</th></tr></thead>
+        <tbody>
+          <tr><td><code>exact</code></td><td>[bytes32]</td><td>yes (may be empty)</td><td>exact media hashes (BLAKE3), at most 1,000, sorted, each once</td></tr>
+          <tr><td><code>pdq</code></td><td>[bytes32]</td><td>yes (may be empty)</td><td>picture fingerprints (256-bit PDQ), at most 1,000, sorted, each once</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>A list keeper's media list that followers apply. Rate 4 an hour, 12 a day. The wire is limited to 65,792 bytes by stage 1, so a list with 1,000 of each does not fit (<a href="/wiki/media/">Media</a> covers matching).</p>
+  </section>
+
+  <section class="wk-sec" id="wiki">
+    <h2>wiki</h2>
+    <p>One edit to a page of a community's wiki, as a Loro update to the page's document. Owners, moderators and admitted members may edit, unless banned or blocked (<code>members edit the wiki</code>). The update must decode as a Loro import blob, and the edits held for one page may total at most 1 MiB (<code>this wiki page is full</code>). A page is its whole history, each edit building on the ones before, so wiki edits are kept for 100 years. The <code>post</code> scope covers it; stamp class −8; rate 60 an hour, 200 a day.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="wiki body">
+      <table>
+        <thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Limits</th></tr></thead>
+        <tbody>
+          <tr><td><code>page</code></td><td>text</td><td>yes</td><td>1 to 64 of <code>a-z</code>, <code>0-9</code> and <code>-</code>, not starting or ending with <code>-</code></td></tr>
+          <tr><td><code>update</code></td><td>bytes</td><td>yes</td><td>1 byte to 32 KiB (<code>MAX_WIKI_UPDATE</code>)</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="wk-sec" id="scattered">
+    <h2>Scattered delivery: pointer and roster</h2>
+    <p>Two kinds serve open communities whose posts travel in pieces (<a href="/wiki/scatter/">Scattered delivery</a>).</p>
+    <h3 id="pointer">pointer</h3>
+    <p>What syncs in place of a post, comment or edit kept in pieces. It names what it holds in its body, never by <code>parent</code>. Its <code>sealed</code> bytes are the pointer (where the pieces are) sealed under the community's read key, so nodes that never joined can't open it. The <code>post</code> or <code>comment</code> scope covers it, and it pays the community's full stamp. The app sets <code>expires_at</code> to the expiry in the pointer's manifest. Rates: a newcomer 20 an hour and 60 a day; a member 120 an hour and 1,000 a day.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="pointer body">
+      <table>
+        <thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Limits</th></tr></thead>
+        <tbody>
+          <tr><td><code>record</code></td><td>bytes32</td><td>yes</td><td>the id of the post, comment or edit held, or the post whose media it holds</td></tr>
+          <tr><td><code>of</code></td><td>text</td><td>yes</td><td><code>post</code>, <code>comment</code> or <code>edit</code></td></tr>
+          <tr><td><code>media</code></td><td>bytes32</td><td>no</td><td>the media item (or part) held; only with <code>of: "post"</code></td></tr>
+          <tr><td><code>sealed</code></td><td>bytes</td><td>yes</td><td>1 byte to 12 KiB</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="wk-code" data-lang="json" data-title="records.json · pointer (decoded, sealed bytes stand in)"><pre><code>{ "v": 1, "body": { "of": "post", "record": "h'e9b6f330…3150ee294'", "sealed": "h'5a5a5a…5a' (96 bytes)" },
+  "kind": "pointer", "nonce": 184, "author": "h'ed4928c6…ac8737d1'", "community": "h'8a88e3dd…b40f6f5c'",
+  "created_at": 1790000190, "expires_at": 1792592190 }</code></pre></div>
+    <h3 id="roster">roster</h3>
+    <p>The endpoints of piece holders a member's durable device saw up for days, first hand, published so the community's other devices can count them. Only established members' rosters are taken, the latest per device replaces the earlier ones, and a roster lasts at most 3 days (<code>MAX_ROSTER_LIFE</code>). The <code>vote</code> scope covers it; −8; rate 8 a day.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="roster body">
+      <table>
+        <thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Limits</th></tr></thead>
+        <tbody>
+          <tr><td><code>holders</code></td><td>[bytes32]</td><td>yes</td><td>1 to 32 endpoint ids, sorted, each once</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="wk-sec" id="rates">
+    <h2>Rate windows per kind</h2>
+    <p>Stage 5 counts an author's records of a kind in a community within rolling windows, by their own <code>created_at</code>, so every device gets the same answer (<code>rate_windows</code>). "Newcomer" means not yet admitted by the ladder. Each row is its own group, except where kinds are listed together.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Rate windows">
+      <table>
+        <thead><tr><th>Kinds</th><th>Newcomer</th><th>Member</th></tr></thead>
+        <tbody>
+          <tr><td><code>post</code></td><td><code>newcomer_posts_per_day</code> a day</td><td>12/hour, 48/day; with media 4/hour, 6/day</td></tr>
+          <tr><td><code>comment</code></td><td>10/hour, 30/day</td><td>60/hour, 400/day</td></tr>
+          <tr><td><code>edit</code> + <code>delete</code></td><td colspan="2">30/hour, 100/day</td></tr>
+          <tr><td><code>vote</code></td><td colspan="2">300/hour, 2,000/day</td></tr>
+          <tr><td><code>vouch</code> + <code>review</code></td><td>20/day</td><td>60/hour, 300/day</td></tr>
+          <tr><td><code>label</code> + <code>report</code></td><td>20/day</td><td>200/day</td></tr>
+          <tr><td><code>profile</code>; <code>profile-color</code></td><td colspan="2">2/hour, 6/day each</td></tr>
+          <tr><td><code>pointer</code></td><td>20/hour, 60/day</td><td>120/hour, 1,000/day</td></tr>
+          <tr><td><code>roster</code></td><td colspan="2">8/day</td></tr>
+          <tr><td><code>share</code></td><td colspan="2">20/day</td></tr>
+          <tr><td><code>trust</code>; <code>blocklist</code></td><td colspan="2">4/hour, 12/day each</td></tr>
+          <tr><td><code>tally</code></td><td colspan="2">4/hour, 48/day</td></tr>
+          <tr><td><code>wiki</code></td><td colspan="2">60/hour, 200/day</td></tr>
+          <tr><td><code>community</code>, <code>ledger</code>, <code>identity</code>, <code>delegation</code>, <code>revoke</code>, <code>rotate</code></td><td colspan="2">no window</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Going over a window drops the record and gives the key a strike when it arrived live. The full mechanics are on <a href="/wiki/spam/">Spam &amp; rate limits</a>.</p>
+  </section>
+
+  <section class="wk-sec" id="next">
+    <h2>Read next</h2>
+    <div class="wk-cards">
+      <a class="wk-card g-coral" href="/wiki/records/"><i></i><b>Records &amp; encoding</b><span>The envelope, canonical CBOR, ids and signatures.</span></a>
+      <a class="wk-card g-sun" href="/wiki/stamps/"><i></i><b>Stamps &amp; work</b><span>What each stamp class costs to mine and to check.</span></a>
+      <a class="wk-card g-mint" href="/wiki/communities/"><i></i><b>Communities &amp; the ledger</b><span>What ledger entries do when replayed.</span></a>
+      <a class="wk-card g-peach" href="/wiki/content-rules/"><i></i><b>Text, links &amp; names</b><span>The rules behind every text limit above.</span></a>
+    </div>
+  </section>
+</article>
+<!-- @wiki-close -->
+<!-- @include footer.html -->
+<script type="module" src="/src/pages/wiki.ts"></script>
+</body>
+</html>

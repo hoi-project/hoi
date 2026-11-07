@@ -1,0 +1,384 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <!-- @include head.html title="Standing &amp; review · hoi wiki" description="The ladder, voice, vouches, hides, blocks, vetoes and suspensions." -->
+</head>
+<body class="wiki">
+<!-- @include header.html nav="wiki" -->
+<!-- @wiki-open -->
+<article class="wk-doc">
+  <!-- @wiki-crumbs -->
+  <h1>Standing <span class="acc">&amp; review</span></h1>
+  <p class="wk-lead">What someone may share in a community follows from records the community itself signed: who vouched for them and when, and how established members judged what they wrote. Every device computes the same ladder from the same records. This page covers the four rungs, every threshold, vouches, voice, hides, blocks, vetoes, suspensions, and how the whole thing settles.</p>
+  <p class="wk-src-list">Source <a href="{{REPO_URL}}/blob/main/core/crates/hoi-moderation/src/ladder.rs">hoi-moderation/src/ladder.rs</a> · <a href="{{REPO_URL}}/blob/main/core/crates/hoi-moderation/src/lib.rs">hoi-moderation/src/lib.rs</a> · <a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/node.rs">hoi-core/src/node.rs</a> · <a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/api.rs">hoi-core/src/api.rs</a> · <a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/views.rs">hoi-core/src/views.rs</a> · <a href="{{REPO_URL}}/blob/main/core/vectors/ladder.json">vectors/ladder.json</a></p>
+  <div class="wk-head-rule"></div>
+
+  <section class="wk-sec" id="rungs">
+    <h2>The four rungs</h2>
+    <p><code>hoi_moderation::Level</code> has four values, ordered. Everyone starts as a newcomer. The ladder is computed per community: the same key can be trusted in one and a newcomer in another.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Ladder levels">
+      <table>
+        <thead><tr><th>Level</th><th>How someone gets there</th><th>Capabilities</th></tr></thead>
+        <tbody>
+          <tr><td><span class="tag t-soft">newcomer</span></td><td>A key with enough identity work for the community (<code>ladder.identity_bits</code>).</td><td><code>text</code></td></tr>
+          <tr><td><span class="tag t-sky">member</span></td><td>Admitted: enough counted vouches from established members (<code>admit_vouches</code>), or an <code>admit</code> entry.</td><td><code>text</code>, <code>links</code>, <code>vote</code></td></tr>
+          <tr><td><span class="tag t-mint">established</span></td><td><code>established_age</code> after admission (14 days by default).</td><td>+ <code>review</code>, <code>vouch</code>, <code>veto</code></td></tr>
+          <tr><td><span class="tag t-sun">trusted</span></td><td>Established, with at least <code>trusted_posts</code> live contributions in the standing window and a response score of at least <code>media_score</code>.</td><td>+ <code>media</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>The capability strings are what <code>Level::capabilities()</code> returns and what the app's standing view lists. "Vote" means a member's votes count toward other people's standing; anyone may cast votes, and everyone's votes show in the local tally (<a href="/wiki/trust/#tally">tallies</a>). Someone the community blocked has no capabilities at all.</p>
+
+    <h3 id="founders">Founders</h3>
+    <p>Owners are trusted from the genesis on. Moderators are trusted from their <code>mod-add</code> entry on, unless the community suspended them. In the ladder's code both are <em>founders</em>: established from their start time, holding a full voice, and never needing vouches. <code>Community::level</code> returns <code>Trusted</code> for any current owner or moderator.</p>
+
+    <h3 id="next-step">What the app says is missing</h3>
+    <p><code>standing_view</code> tells a person what stands between them and the next rung, in these words:</p>
+    <ul>
+      <li>Newcomer: <code>identity work: X of N bits</code> (when short) and <code>vouches from established members: X of N</code>, where N is the current admit quorum.</li>
+      <li>Member: <code>time as a member: N more days</code>.</li>
+      <li>Established: <code>posts or comments in the last 90 days: X of N</code> and <code>response from the community: X of N</code>.</li>
+    </ul>
+
+    <div class="wk-stage" data-demo="ladder" data-title="Climbing and fading">
+      <p class="nojs">A newcomer posts text. Two established members read their posts without hiding them, and their devices vouch: the newcomer becomes a member. Two weeks later they are established. They keep posting and the community responds well, so they become trusted and may share media. Then they stop contributing; as their posts leave the 90-day window, trusted fades back to established.</p>
+      <p class="wk-stage-cap">Admission counts people; trust follows recent contributions and fades when they stop.</p>
+    </div>
+  </section>
+
+  <section class="wk-sec" id="settings">
+    <h2>Every threshold</h2>
+    <p>Two kinds of number shape the ladder: settings each community chooses in <code>limits.ladder</code>, changed only by consent (<a href="/wiki/communities/#consent">changes by consent</a>), and constants fixed in the code.</p>
+    <h3 id="ladder-settings">Settings the community chooses</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Ladder settings">
+      <table>
+        <thead><tr><th>Setting</th><th>Default</th><th>Allowed</th><th>Unit</th><th>Used for</th></tr></thead>
+        <tbody>
+          <tr><td><code>identity_bits</code></td><td>8</td><td>0–20</td><td>bits</td><td>Every author's identity work (<a href="/wiki/identity/">identity</a>)</td></tr>
+          <tr><td><code>admit_vouches</code></td><td>2</td><td>1–16</td><td>people</td><td>Counted vouches that admit a newcomer</td></tr>
+          <tr><td><code>established_age</code></td><td>1,209,600 (14 days)</td><td>0–365 days</td><td>seconds</td><td>Member → established</td></tr>
+          <tr><td><code>trusted_posts</code></td><td>5</td><td>0–1,000</td><td>contributions</td><td>Established → trusted</td></tr>
+          <tr><td><code>media_score</code></td><td>10</td><td>0–100,000</td><td>score</td><td>Established → trusted</td></tr>
+          <tr><td><code>hide_quorum</code></td><td>3</td><td>2–100</td><td>voices</td><td>Hiding a record; blocking a newcomer</td></tr>
+          <tr><td><code>block_quorum</code></td><td>5</td><td>2–100</td><td>voices</td><td>Blocking an admitted member</td></tr>
+          <tr><td><code>veto_quorum</code></td><td>5</td><td>2–100</td><td>voices</td><td>Overturning a ledger entry</td></tr>
+          <tr><td><code>contest_window</code></td><td>259,200 (72 hours)</td><td>0–14 days</td><td>seconds</td><td>How long a removal naps</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>The web app's ladder form offers 4–16 bits of key work, 1–5 vouches, "right away" to 90 days for established, quorums by slider (hide 2–20, block and veto 2–30) and removal waits from none to 14 days. The ranges above are what every device accepts.</p>
+    <h3 id="constants">Constants in the code</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Ladder constants">
+      <table>
+        <thead><tr><th>Constant</th><th>Value</th><th>Meaning</th></tr></thead>
+        <tbody>
+          <tr><td><code>VOICE</code></td><td>720,720</td><td>One voice. Whole numbers, so every device gets the same sums; 720,720 divides evenly by every count from 1 to 16.</td></tr>
+          <tr><td><code>VOUCH_EPOCH</code></td><td>7,776,000 s (90 days)</td><td>Each established member gives away at most one voice per epoch, <code>created_at / VOUCH_EPOCH</code>.</td></tr>
+          <tr><td><code>STANDING_WINDOW</code></td><td>7,776,000 s (90 days)</td><td>Contributions count toward trusted for this long, capped by the community's retention.</td></tr>
+          <tr><td><code>MIN_HEADS</code></td><td>2</td><td>Hides, blocks and vetoes need at least this many distinct people, whatever their voice.</td></tr>
+          <tr><td><code>DISSENT</code></td><td>360,360 (half a voice)</td><td>Objections weighing this much stop a change to rules or limits.</td></tr>
+          <tr><td><code>MAX_ANSWERS</code></td><td>16</td><td>Answers per person per proposal that count; nodes refuse the rest.</td></tr>
+          <tr><td><code>MOD_STRIKES</code></td><td>3</td><td>Overturned actions that suspend a moderator.</td></tr>
+          <tr><td><code>REVIEW_STRIKES</code></td><td>3</td><td>Defended hides that cost a reviewer their hiding power.</td></tr>
+          <tr><td><code>VOUCH_STRIKES</code></td><td>2</td><td>Vouchees who end up blocked or banned that cost a voucher their vouching power.</td></tr>
+          <tr><td><code>RETIRE_AWAY</code></td><td>2,592,000 s (30 days)</td><td>Silence before a <code>retire</code> entry counts.</td></tr>
+          <tr><td><code>RETIRE_NOTICE</code></td><td>604,800 s (7 days)</td><td>How long after its entry a retirement takes effect.</td></tr>
+          <tr><td><code>LATE_GRACE</code> (hoi-core)</td><td>3,600 s</td><td>How far before the last catch-up a record may claim to be before it counts from arrival.</td></tr>
+          <tr><td><code>AUTO_VOUCH_READS</code> (hoi-core)</td><td>2</td><td>Records of a newcomer's an established member must read…</td></tr>
+          <tr><td><code>AUTO_VOUCH_DELAY</code> (hoi-core)</td><td>600 s</td><td>…and not hide within this long, before their app vouches.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="wk-sec" id="vouches">
+    <h2>Vouches</h2>
+    <h3 id="vouch-record">The vouch record</h3>
+    <p>A vouch is a record of kind <code>vouch</code> whose <code>parent</code> is the person vouched for: their root key, not a post.</p>
+    <dl class="wk-defs">
+      <dt>value<small>int</small></dt><dd><code>1</code> vouches, <code>-1</code> objects, <code>0</code> takes it back. Nothing else.</dd>
+      <dt>seq<small>u64</small></dt><dd>The latest <code>(seq, created_at, id)</code> per (voucher, person) wins; the store drops the older ones. The app writes <code>now × 1000</code>, or one more than the last it wrote.</dd>
+      <dt>reason<small>text, optional</small></dt><dd>Only on objections, and then required: <code>spam</code>, <code>abuse</code>, <code>illegal</code>, <code>off-topic</code> or <code>rule:&lt;n&gt;</code> with 1–3 digits. A vouch or a take-back carrying a reason is refused.</dd>
+    </dl>
+    <p>Nobody vouches for themselves: the shape check and the node both refuse a vouch whose parent is the author's own root. A vouch is 512 bytes at most, stamps at <code>pow_bits − 8</code>, and counts in the same rate group as reviews: 20 a day for newcomers, 60 an hour and 300 a day for members. It is exempt from the retention window and carries a 100-year expiry, because standing is built from vouches (<a href="/wiki/expiry/#exempt">what stays</a>). The app refuses a vouch for a community this device hasn't joined.</p>
+
+    <h3 id="reading">Reading is vouching</h3>
+    <p>Most vouches are not clicked. When an established member opens a post, their app notes whose records they read that weren't napping and aren't theirs, and later vouches for those people if they didn't hide any of it. Validation happens by people simply reading.</p>
+    <ol class="wk-steps">
+      <li><b>Note the read</b><p><code>note_reads</code> runs when a post is opened, if the reader's <code>autoVouch</code> setting is on (it is by default) and they are established here. It records the post's author and every comment author in the thread, skipping anything napping or removed and the reader's own words.</p></li>
+      <li><b>Only people who need it</b><p><code>wants_vouch</code> keeps authors who are not owners, moderators or blocked, for whom the reader has signed no vouch record of any value yet, and who are either newcomers or members whose voice is still under a full one (vouched in with many others).</p></li>
+      <li><b>Wait</b><p>Once the reader has read at least 2 records by the same person (<code>AUTO_VOUCH_READS</code>) and 600 seconds have passed since the first (<code>AUTO_VOUCH_DELAY</code>), the app acts at its next check (each read and each sweep). Notes older than 30 days are forgotten.</p></li>
+      <li><b>Check again, then vouch</b><p>No vouch if the reader is no longer established, muted the author, hid any record of theirs, or reported them. Otherwise the app signs a vouch and says so: "You vouched for lena: you read their posts and didn't hide them."</p></li>
+    </ol>
+    <div class="wk-seq" data-title="Reading a newcomer's post">
+lanes: Newcomer | Established member's app | Every device
+Newcomer => Every device: a text-only post, marked <code>unvalidated</code>
+Established member's app: opens the post; notes the author's records it showed
+Established member's app: 2 records read, 10 minutes passed, none hidden or reported
+Established member's app -> Every device @mint: <code>vouch</code> {parent: the newcomer's root, value 1, seq}
+Every device: settles the ladder: one more counted vouch
+Every device -> Newcomer: with enough of them, member: links unlock, votes count
+</div>
+    <p>The <code>newcomers_earn_links_by_being_read</code> test runs exactly this: a newcomer's post with a link is refused before it leaves the device, the owner reads a text post, ten minutes later the owner's device vouches, the newcomer is a member and the link post goes through, and a day later (that test's <code>established_age</code>) they are established. Objections are signed the same way, with a reason, through <code>vouch(…, -1, reason)</code>.</p>
+  </section>
+
+  <section class="wk-sec" id="admission">
+    <h2>Admission</h2>
+    <h3 id="when-counts">When a vouch counts</h3>
+    <p>The ladder replays every positive vouch (the latest per pair) and every <code>admit</code> entry in time order. A vouch counts toward admitting its subject when, at the vouch's effective time:</p>
+    <ul>
+      <li>the voucher was established: a founder from their start time, or admitted at least <code>established_age</code> before;</li>
+      <li>neither the voucher nor the subject is excluded now (banned in the ledger, burned, or blocked by the community; owners are never excluded);</li>
+      <li>the voucher wasn't struck before it (<a href="#accountability">accountability</a>).</li>
+    </ul>
+    <p>The subject is admitted at the moment their counted vouchers reach <code>admit_vouches</code>, clamped to between 1 and the number of people established at that moment. In a young community where only the owner is established, one vouch is enough; the <code>vouches_from_the_not_yet_established_dont_count</code> test checks both that and that a member's vouch before they were established doesn't count.</p>
+    <div class="wk-code" data-lang="rust" data-title="core/crates/hoi-moderation/src/ladder.rs (trimmed)"><pre><code>if est_since(&amp;admitted_at, &amp;v.voucher).is_none_or(|s| s &gt; t) {
+    continue;
+}
+let set = counted.entry(v.subject).or_default();
+set.insert(v.voucher);
+gifts.push(Gift { from: v.voucher, to: v.subject, at: t, id: v.id });
+if !admitted_at.contains_key(&amp;v.subject) &amp;&amp; !lv.admits_only {
+    let established_now = admitted_at.keys().filter(|p| est_since(&amp;admitted_at, p).is_some_and(|s| s &lt;= t)).count();
+    let need = (ladder.admit_vouches as usize).clamp(1, established_now.max(1));
+    if set.len() &gt;= need {
+        admitted_at.insert(v.subject, t);
+    }
+}</code></pre></div>
+    <h3 id="admit-entries">Admit entries</h3>
+    <p>An <code>admit</code> entry that took effect admits its target at the entry's time, unless they are excluded. If an owner or moderator signed it, it also counts as their gift of voice (<a href="#voice">voice</a>). In an <code>age-proof</code> community (<code>admits_only</code>) admit entries are the only way in: vouches still count and still pass voice to someone admitted, but admit nobody.</p>
+    <h3 id="admission-modes">The community's admission mode</h3>
+    <p>The ladder is the same in every mode. What differs is what other devices do with a newcomer's records while they wait: shown and marked in <code>open</code>, shown only to established members in <code>approve</code>, held until one counted vouch in <code>invite</code>, held until admitted in <code>age-proof</code>. The table is on <a href="/wiki/communities/#admission">communities</a>.</p>
+  </section>
+
+  <section class="wk-sec" id="holds">
+    <h2>Holds</h2>
+    <p>A record beyond its author's standing isn't refused: refusing it would make peers offer it again and again. It is <em>held</em>: stored, shown only to its author, never passed on, until the author's standing allows it. <code>Node::held</code> gives the reason, checked in this order:</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Hold reasons">
+      <table>
+        <thead><tr><th>#</th><th>Reason</th><th>Applies to</th></tr></thead>
+        <tbody>
+          <tr><td>1</td><td><code>a newer profile is known</code></td><td>Profile records superseded by a newer one</td></tr>
+          <tr><td>2</td><td><code>its media failed the checks</code></td><td>Posts with media this device refuses or found bad</td></tr>
+          <tr><td>3</td><td><code>its profile picture is blocked</code></td><td>Profiles with a blocked picture</td></tr>
+          <tr><td>—</td><td>(owners and moderators, and kinds other than profile, profile color, post, comment and edit, stop here: never held)</td><td></td></tr>
+          <tr><td>4</td><td><code>this community needs a member to vouch for you first</code></td><td><code>invite</code>: a newcomer with no counted vouch</td></tr>
+          <tr><td>5</td><td><code>this community lets people in once a moderator saw a proof of their age</code></td><td><code>age-proof</code>: anyone not admitted</td></tr>
+          <tr><td>6</td><td><code>links unlock once the community has vouched for you</code></td><td>Records with links, below member</td></tr>
+          <tr><td>7</td><td><code>media unlocks for trusted members</code></td><td>Records with media, below trusted</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>A record counts as having links if a post's <code>link</code> is set, or a post's title or text, a comment's text, or an edit's text or title contains one; as having media if a post carries media items or a profile carries an image. When the ladder settles and something the device's own person wrote is no longer held, the node gossips it at once rather than waiting for the next sync.</p>
+    <p>The sending side refuses up front what receivers would hold, with plain messages: banned ("You're banned from this community."), blocked ("The community blocked you… It lifts when their reasons fade."), too little identity work, links below member ("Newcomers share text only. Links unlock once members here vouch for you."), media below trusted. The <code>receivers_hold_back_what_a_newcomer_shouldnt_share</code> test sends a newcomer's link post straight past the client: it is stored, shown to nobody, and missing from an exported bundle.</p>
+  </section>
+
+  <section class="wk-sec" id="voice">
+    <h2>Voice</h2>
+    <p>Admission counts people. Decisions weigh them. Every hide, block, veto and objection is summed in <em>voice</em>, and voice is handed down through vouches with two rules: each established member gives away at most one voice per 90-day epoch, split evenly among everyone they vouched for in it, and nobody holds more voice than their strongest voucher. Founders hold a full voice; nobody holds more.</p>
+    <p>Inviting all your friends at once brings them in, but not as a voting bloc. Together they can't lift anyone above what they hold.</p>
+    <h3 id="gifts">How it is computed</h3>
+    <p>Every counted vouch, and every admission by a founder, is a gift from one person to another at a time. <code>Voices::new</code> counts each giver's gifts per epoch, then replays the gifts in time order:</p>
+    <div class="wk-code" data-lang="rust" data-title="core/crates/hoi-moderation/src/ladder.rs"><pre><code>for g in gifts {
+    let n = v.load.get(&amp;(g.from, g.at / VOUCH_EPOCH)).copied().unwrap_or(1).max(1);
+    let giver = v.at(&amp;g.from, g.at);
+    let top = ceiling.entry(g.to).or_default();
+    *top = (*top).max(giver);
+    let cur = v.at(&amp;g.to, g.at);
+    let next = (cur + giver / n).min(*top).min(VOICE);
+    if next &gt; cur {
+        v.points.entry(g.to).or_default().push((g.at, next));
+    }
+}</code></pre></div>
+    <p>A gift passes the giver's voice <em>at that moment</em> divided by how many people they vouched for in that epoch. Gifts read only earlier gifts, so voice can't loop back on itself. People with no level (blocked) have no voice.</p>
+    <h3 id="voice-examples">Examples from the tests</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Voice examples">
+      <table>
+        <thead><tr><th>What happened</th><th>Voice</th></tr></thead>
+        <tbody>
+          <tr><td>The owner</td><td>1 (720,720)</td></tr>
+          <tr><td>The owner vouched for two people in one epoch</td><td>½ each</td></tr>
+          <tr><td>Both of those vouched for a third person</td><td>½: two half voices don't make a whole one</td></tr>
+          <tr><td>The owner admitted three people in the next epoch</td><td>⅓ each</td></tr>
+          <tr><td>The owner vouched for ten friends at once</td><td><sup>1</sup>⁄<sub>10</sub> each</td></tr>
+          <tr><td>Two of those ten vouched for someone</td><td><sup>1</sup>⁄<sub>10</sub>: a bloc can't lift anyone above what it holds</td></tr>
+          <tr><td><code>ladder.json</code>: the owner vouched for four people in one epoch</td><td>180,180 (¼) each</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>The app shows voice in voices (the integer divided by <code>VOICE</code>) and how many people someone vouched for this quarter. Members whose voice is under a full one keep getting vouches from readers (<a href="#reading">reading is vouching</a>), so their voice grows as more of the community vouches for them.</p>
+  </section>
+
+  <section class="wk-sec" id="quorums">
+    <h2>Quorums</h2>
+    <p>The community sets quorums in voices. The ladder turns them into an amount of voice, capped so they stay reachable:</p>
+    <div class="wk-code" data-lang="rust" data-title="core/crates/hoi-moderation/src/ladder.rs"><pre><code>/// A quorum in voice: `q` voices, capped at a third of the established
+/// voice (rounded up), never below one voice. Decisions also need [`MIN_HEADS`] people.
+pub fn quorum(q: u32, established_voice: u64) -&gt; u64 {
+    let cap = VOICE.max(established_voice.div_ceil(3));
+    (q as u64 * VOICE).clamp(VOICE, cap)
+}</code></pre></div>
+    <ul>
+      <li><b>Never above a third.</b> Owners can't set quorums out of reach: a quorum of 100 in a community whose established voice is 2.5 becomes one voice.</li>
+      <li><b>Never below one voice, never fewer than two people.</b> Nobody decides alone: a founder's full voice is one voice, but one person. The <code>nobody_decides_alone</code> test shows an owner's hide alone napping nothing and a second hide napping the post.</li>
+      <li><b>Admission counts people.</b> The admit quorum is <code>admit_vouches</code> clamped to between 1 and the number of established people.</li>
+      <li><b>The veto quorum is computed differently.</b> It uses the established voice as if ledger bans didn't exist (<a href="#vetoes">vetoes</a>).</li>
+    </ul>
+    <p>For example, a community whose established members hold 1 + ½·3 + ⅓·3 = 3.5 voices has a hide quorum of ⌈3.5 voices ÷ 3⌉, a little over one voice, however high <code>hide_quorum</code> is set. In <code>ladder.json</code>, six established people hold 1,621,620 between them, so the hide, block and veto quorums are all 720,720, one voice, and the admit quorum is 2 people.</p>
+  </section>
+
+  <section class="wk-sec" id="hides">
+    <h2>Hides</h2>
+    <h3 id="reviews">The review record</h3>
+    <p>Judgements are records of kind <code>review</code> whose <code>parent</code> is the record judged.</p>
+    <dl class="wk-defs">
+      <dt>verdict<small>text</small></dt><dd><code>ok</code> (it belongs here, or support for a ledger entry), <code>hide</code> (hide it, with a reason), <code>veto</code> (overturn a ledger entry, or object to a proposal, with a reason), <code>none</code> (take an earlier verdict back).</dd>
+      <dt>seq<small>u64</small></dt><dd>The latest <code>(seq, created_at, id)</code> per (reviewer, record) wins, except for answers to proposals, which are all kept.</dd>
+      <dt>reason<small>text, optional</small></dt><dd>A hide needs one from the closed list: <code>spam</code>, <code>abuse</code>, <code>illegal</code>, <code>off-topic</code> or <code>rule:&lt;n&gt;</code>. "Disagreeing is what downvotes are for." A veto needs a reason of up to 200 characters. <code>ok</code> and <code>none</code> carry none.</dd>
+    </dl>
+    <p>Nodes check what a review may judge: posts and comments (never your own words, never with a veto) and ledger entries (only vetoable ones or proposals, never your own action or one you co-signed, never with a hide). Anything else is refused (<code>only posts, comments and ledger entries are reviewed</code>). A review is 1 KiB at most and expires when its target does, or one retention window after it is made if that is sooner, and never sooner than a minute.</p>
+
+    <h3 id="napping">When a record naps</h3>
+    <p>For each live post or comment, the ladder gathers the hiders (established, not struck, not overruled, not the author, verdict <code>hide</code>) and the defenders (established, not struck, not the author, verdict <code>ok</code>), and weighs both sides in voice:</p>
+    <div class="wk-code" data-lang="rust" data-title="core/crates/hoi-moderation/src/ladder.rs (trimmed)"><pre><code>let (hv, dv) = (weigh(&amp;hiders), weigh(&amp;defenders));
+if hiders.len() &gt;= MIN_HEADS &amp;&amp; hv &gt;= q.hide &amp;&amp; hv &gt; 2 * dv {
+    // … the reason most hiders gave …
+    hidden.insert(c.id, Hidden { hiders: hiders.len(), defenders: defenders.len(), reason });
+}</code></pre></div>
+    <p>So a record naps for everyone when at least two people hide it, their voice reaches the hide quorum, and they outweigh the defenders two to one. The reason shown is the one most hiders gave (ties go to the alphabetically first; a hide without one counts as <code>spam</code>), as <code>hidden by 3 members: spam</code>, by "the community". A napping record is never deleted: anyone can still peek. Hides from newcomers count for nothing, so an army of fresh keys can't hide anything (<code>newcomers_cant_gang_up</code>).</p>
+    <p>A hide with the reason <code>illegal</code> also makes the hiding person's own device delete the post's media and refuse it from then on, and once the community hides a post as <code>illegal</code>, every device deletes its media and never fetches it again. Your own hide makes the record nap for you alone at once (<code>you hid this</code>), before any quorum.</p>
+
+    <h3 id="defended">When the community defends a record</h3>
+    <p>If at least two defenders, weighing the hide quorum and twice the hiders' voice, said <code>ok</code> on a record that someone hid, the community defended it. Every hide on it, counted or not, is noted as <em>overruled</em> for its author. Three defended hides (<code>REVIEW_STRIKES</code>) and a reviewer's hides and objections stop counting (<a href="#accountability">accountability</a>).</p>
+  </section>
+
+  <section class="wk-sec" id="blocks">
+    <h2>Blocks</h2>
+    <p>A block is a judgement about a person, not a record. For each person the ladder pools everyone who hid any of their live records and every juror who objects to them (a <code>-1</code> vouch, unless the objector is overruled), against everyone who defended any of their records and every juror who vouched for them:</p>
+    <div class="wk-code" data-lang="rust" data-title="core/crates/hoi-moderation/src/ladder.rs (trimmed)"><pre><code>let admitted = adm.admitted_at.contains_key(p);
+let need = if admitted { q.block } else { q.hide };
+let (hv, dv) = (weigh(&amp;hiders), weigh(&amp;defenders));
+let is_blocked = !lv.owners.contains(p) &amp;&amp; hiders.len() &gt;= MIN_HEADS &amp;&amp; hv &gt;= need &amp;&amp; hv &gt; 2 * dv;</code></pre></div>
+    <p>A newcomer is blocked at the hide quorum; an admitted member needs the higher block quorum. Owners are never blocked, though their posts can be hidden. A block means:</p>
+    <ul>
+      <li>nothing the person writes is passed on, or counted (<code>usable</code> is false), and the app shows them with no capabilities;</li>
+      <li>in the next round they are excluded from admission and lose their level and voice;</li>
+      <li>a blocked moderator is suspended;</li>
+      <li>the community view lists them among the banned: <code>blocked by the community: N established members hid their posts or objected</code>.</li>
+    </ul>
+    <p>A block isn't an entry anyone signs. It lifts by itself as its reasons fade: hides expire with the records they judge, objections can be taken back, and new defenders change the balance.</p>
+  </section>
+
+  <section class="wk-sec" id="trusted">
+    <h2>Trusted, and fading</h2>
+    <p>Trusted is the only rung that can be lost by doing nothing. An established person is trusted while, within the standing window (90 days, or the community's retention if shorter), they have at least <code>trusted_posts</code> live posts and comments and a response score of at least <code>media_score</code>.</p>
+    <div class="wk-code" data-lang="rust" data-title="core/crates/hoi-moderation/src/ladder.rs (trimmed)"><pre><code>for c in &amp;recent {
+    // ups and downs: votes from people with a level, not their own, not blocked
+    let oks = defenders_of.get(&amp;c.id).map_or(0, |s| s.len()) as i64;
+    let hides = hiders_of.get(&amp;c.id).map_or(0, |s| s.len()) as i64;
+    score += ups + oks - downs.min(2) - 3 * hides;
+}
+score -= 5 * removed_of.get(p).copied().unwrap_or(0) as i64;</code></pre></div>
+    <p>Each recent contribution adds its up-votes and "looks good" reviews, takes away its down-votes (at most 2 per contribution) and three per counted hide. Every removal of their records in the window costs 5. Only votes from people with a level count. When they stop contributing, their posts leave the window and the level drops back to established: the <code>trust_needs_recent_contributions_and_good_response</code> test makes someone trusted with two posts and three up-votes, then moves the clock 200 days and finds them established again.</p>
+  </section>
+
+  <section class="wk-sec" id="vetoes">
+    <h2>Vetoes</h2>
+    <p>Established members can overturn owners' and moderators' <code>remove</code>, <code>ban</code>, <code>unban</code>, <code>label</code>, <code>pin</code>, <code>admit</code>, <code>mod-add</code> and <code>retire</code> entries. A veto is a <code>review</code> of the ledger entry with verdict <code>veto</code> and a reason; <code>ok</code> on an entry supports it.</p>
+    <p>The ladder counts vetoes and support from people who are established <em>as if ledger bans didn't exist</em>, aren't struck and aren't blocked, and who are neither a signer of the entry nor its target. A moderator can't ban the people who would overturn the ban, and the person banned can't veto their own ban; the author of a removed post can veto its removal, because the entry targets the post, not them.</p>
+    <div class="wk-code" data-lang="rust" data-title="core/crates/hoi-moderation/src/ladder.rs"><pre><code>let (vv, sv) = (voice_v.sum(&amp;v, now), voice_v.sum(&amp;s, now));
+let over = v.len() &gt;= MIN_HEADS &amp;&amp; vv &gt;= q.veto &amp;&amp; vv &gt; sv;</code></pre></div>
+    <p>An entry is overturned when at least two people veto it, their voice reaches the veto quorum, and it exceeds the voice of those who support it. Overturned entries stay in the ledger for everyone to see, marked so, but the replay refuses them: the removed post wakes up, the ban lifts, the moderator isn't added. The <code>vetoes_undo_a_moderators_removal_and_strikes_suspend_them</code> test has three members holding a third of a voice each veto three removals; each is overturned, the posts come back, and the moderator is suspended. The removal sequence is on <a href="/wiki/communities/#removals">communities</a>.</p>
+  </section>
+
+  <section class="wk-sec" id="suspension">
+    <h2>Moderator suspension</h2>
+    <p>Every overturned entry is a strike for its first signer. A moderator with three (<code>MOD_STRIKES</code>) is suspended from the time of the third. A moderator the community blocks is suspended too, from now. Owners are never suspended.</p>
+    <ul>
+      <li>Ledger entries the moderator signs from the suspension on are refused in the replay: <code>the moderator was suspended by the community</code>.</li>
+      <li>After the replay, a suspended moderator added on or before the suspension leaves <code>mods</code>.</li>
+      <li>A suspended moderator is no founder: their level comes from vouches like anyone's. In the ladder test that makes them a newcomer.</li>
+    </ul>
+    <p>Nobody lifts a suspension by hand. The strikes are the overturned entries themselves, and those expire with the retention window like other moderation entries. Once fewer than three are left, the next settle no longer suspends the moderator, and their original <code>mod-add</code> counts again.</p>
+  </section>
+
+  <section class="wk-sec" id="accountability">
+    <h2>Accountability for reviewers and vouchers</h2>
+    <h3 id="overruled">Reviewers</h3>
+    <p>Someone whose hides the community defended three times (<code>REVIEW_STRIKES</code>) is <em>overruled</em>: their hides no longer count, and neither do their objections to people. Their defences still do.</p>
+    <h3 id="struck">Vouchers</h3>
+    <p>Someone whose counted vouches brought in two or more people (<code>VOUCH_STRIKES</code>) who ended up blocked or banned is <em>struck</em>, from the time of the latest of those vouches. Ledger bans count here. A struck voucher:</p>
+    <ul>
+      <li>sits on no jury: their hides, defences and objections don't count;</li>
+      <li>can't veto, and doesn't decide proposals;</li>
+      <li>vouches in vain: vouches they make after the struck time don't count.</li>
+    </ul>
+    <p>Earlier admissions stand: the people they vouched for before keep their place. Owners are never struck. The <code>careless_vouching_costs_vouching_power</code> test has two members vouch two spammers in, the community object to both, and then finds both vouchers struck, their earlier vouchee still established, and a later vouch of theirs not counted.</p>
+  </section>
+
+  <section class="wk-sec" id="late">
+    <h2>Late records</h2>
+    <p>Standing reads time from records: a vouch's time decides whether its author was established, a ledger entry's time decides what it overrides. A record could claim to be older than it is. So each device keeps, per community, when it last finished catching up with a peer (<code>state.synced</code>), and treats records that arrive afterwards claiming to predate that as late.</p>
+    <div class="wk-code" data-lang="rust" data-title="core/crates/hoi-core/src/node.rs"><pre><code>if matches!(kind, Kind::Vouch | Kind::Review | Kind::Ledger)
+    &amp;&amp; matches!(src, Source::Peer { .. } | Source::Import | Source::PrivateRelay | Source::Pieces)
+    &amp;&amp; let Some(c) = community
+    &amp;&amp; self.state.synced.get(&amp;c).is_some_and(|t| r.created_at.saturating_add(LATE_GRACE) &lt; *t)
+{
+    self.state.late.insert(id, now);
+    self.mark_state();
+}</code></pre></div>
+    <p>A late record's effective time is when this device first saw it (<code>effective_at</code> returns the later of that and <code>created_at</code>). The ladder and the ledger replay both use effective times. An hour's grace (<code>LATE_GRACE</code>) covers records that were merely slow. The <code>backdated_vouches_count_from_when_they_turn_up</code> test has two vouches arrive two hours after a catch-up, dated the day before: the person is admitted, but from when the vouches arrived, so not yet established. The simulator forges exactly such vouches (<code>backdated_vouch</code>, <a href="/wiki/spam/#sim">spam</a>).</p>
+  </section>
+
+  <section class="wk-sec" id="settle">
+    <h2>Settling to a fixpoint</h2>
+    <p>The ladder and the ledger depend on each other. Blocks exclude people from admission, which changes who is established, which changes quorums and who can veto. Vetoes overturn entries and suspend moderators, which changes the ledger, which changes who the founders are and what was removed. Accepted proposals change the limits. So <code>ladder::settle</code> iterates:</p>
+    <ol class="wk-steps">
+      <li><b>Start with no penalties</b><p>Replay the ledger with empty penalty sets and build the ledger view: owners, moderators, bans, admits, removals, entries, proposals, the ladder settings, the retention, retirements.</p></li>
+      <li><b>Run a round</b><p><code>round</code> computes admission, voice, quorums, hides, blocks, scores and levels, struck vouchers, overruled reviewers, vetoes, suspensions and proposal outcomes, reading the previous round's penalties.</p></li>
+      <li><b>Replay if the ledger changed</b><p>If the overturned entries, the suspensions or the passed proposals changed, replay the ledger with the new penalties.</p></li>
+      <li><b>Stop when nothing changes</b><p>When a round's penalties equal the previous round's, or after 6 rounds, stop. <code>Community::settle</code> then replays once more with the final penalties so the ledger state matches the standing it keeps.</p></li>
+    </ol>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Penalty sets">
+      <table>
+        <thead><tr><th>Penalty set</th><th>What it holds</th><th>Who reads it next round</th></tr></thead>
+        <tbody>
+          <tr><td><code>blocked</code></td><td>People the community blocked</td><td>Admission, levels, votes in scores, electors</td></tr>
+          <tr><td><code>struck</code></td><td>Struck vouchers and since when</td><td>Admission, juries, vetoes, electors</td></tr>
+          <tr><td><code>overruled</code></td><td>Reviewers with three defended hides</td><td>Hides and objections</td></tr>
+          <tr><td><code>overturned</code></td><td>Entries the community vetoed</td><td>The ledger replay</td></tr>
+          <tr><td><code>suspended</code></td><td>Moderators and since when</td><td>The replay; founders</td></tr>
+          <tr><td><code>passed</code></td><td>Proposals in effect and from when</td><td>The replay</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Everything is a pure function of the records and the clock: sets are ordered (<code>BTreeMap</code>, <code>BTreeSet</code>), voice is integer, ties break on ids. A property test builds random communities with up to 60 vouches and 80 reviews and checks that 12 and 13 rounds give the same penalties (it settles instead of oscillating), that reversing the order of arrival gives the same people and hidden records, and that nobody's voice exceeds one voice.</p>
+    <h3 id="when-settled">When a device settles</h3>
+    <ul>
+      <li>After a community's records change, and otherwise whenever the node settles and a minute has passed for that community, so people become established and removals ripen on time. Hosts sweep every few minutes.</li>
+      <li>In a batch from sync or a bundle, the node ingests records in dependency order (genesis, identities, rotations, delegations, revocations, ledger, vouches, then posts and the rest) and settles before the first post (<code>SETTLE_BEFORE</code> = 7), so people admitted by vouches in the same batch post with their new standing.</li>
+      <li>The ladder's inputs (<code>ladder_inputs</code>) are every post and comment held (contributions), the authors of removed ones too, every vouch and review with its effective time, each voter's latest vote per target, burned identities, and the latest time each person signed anything.</li>
+    </ul>
+  </section>
+
+  <section class="wk-sec" id="checks">
+    <h2>How it is checked</h2>
+    <ul>
+      <li><b>The vector.</b> <a href="{{REPO_URL}}/blob/main/core/vectors/ladder.json">vectors/ladder.json</a> gives owners, a genesis time, ladder settings, vouches, posts, reviews and a proposal, and the expected outcome: levels, voices, vouchers, who is blocked, which post is hidden, the quorums and the proposal's status. Its second part, <code>retirement</code>, is the same community sixty days on, after the owner retired a silent elector. Any implementation should reproduce it exactly.</li>
+      <li><b>Unit tests.</b> <a href="{{REPO_URL}}/blob/main/core/crates/hoi-moderation/src/ladder.rs">ladder.rs</a> has the tests named on this page, from climbing the ladder to retired electors.</li>
+      <li><b>Integration tests.</b> <a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/tests.rs">hoi-core/src/tests.rs</a> runs the same rules through real nodes: being read, holds, community hides and blocks, vetoes and suspension, consent, late vouches, invite-only communities.</li>
+      <li><b>The model.</b> <a href="{{REPO_URL}}/blob/main/core/crates/hoi-sim/src/ladder.rs">hoi-sim/src/ladder.rs</a> runs <code>ladder::settle</code> weekly over a community of hundreds against three strategies: a <em>ring</em> of Sybils vouching only for each other, two <em>turncoat</em> established members vouching in batches of Sybils every quarter, and <em>patient</em> Sybils that behave for half a year before striking. It scores the party's share of established voice against the bound the ladder is built on, honest members blocked, honest posts hidden, and proposals passed, stalled and lapsed (<a href="/wiki/simulator/">simulator</a>).</li>
+    </ul>
+    <div class="wk-cards">
+      <a class="wk-card g-mint" href="/wiki/communities/"><i></i><b>Communities &amp; the ledger</b><span>The ledger the ladder reads and overturns.</span></a>
+      <a class="wk-card g-sky" href="/wiki/trust/"><i></i><b>Trust &amp; ranking</b><span>Your own weights, separate from the community's ladder.</span></a>
+      <a class="wk-card g-peach" href="/wiki/spam/"><i></i><b>Spam &amp; rate limits</b><span>Newcomer windows, strikes and reports.</span></a>
+      <a class="wk-card g-lilac" href="/wiki/simulator/"><i></i><b>Simulator</b><span>Sieges and the ladder model.</span></a>
+    </div>
+  </section>
+</article>
+<!-- @wiki-close -->
+<!-- @include footer.html -->
+<script type="module" src="/src/pages/wiki.ts"></script>
+</body>
+</html>

@@ -1,0 +1,29 @@
+# systemd unit for hoi-node. Install the binary to /usr/local/bin, then:
+#   sudo cp hoi-node.service /etc/systemd/system/ && sudo systemctl enable --now hoi-node
+#   sudo cat /var/lib/hoi-node/pairing-link   # the hoi://pair link; it never goes to the journal
+#   sudo cat /var/lib/hoi-node/node-link      # the link to share: anyone who opens it finds what it carries
+#   journalctl -u hoi-node      # status lines only, nothing about peers
+# A home node is a public relay too; add --no-public-relay to keep it to your own devices.
+# deploy/home/install.sh writes this unit for you.
+[Unit]
+Description=hoi home node and public relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+DynamicUser=yes
+StateDirectory=hoi-node
+ExecStart=/usr/local/bin/hoi-node --data /var/lib/hoi-node --listen 127.0.0.1:7842 --name "home node"
+Restart=on-failure
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+# Netlink is how the node lists its network addresses (and finds the router, --port-mapping).
+RestrictAddressFamilies=AF_INET AF_INET6 AF_NETLINK
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+
+[Install]
+WantedBy=multi-user.target

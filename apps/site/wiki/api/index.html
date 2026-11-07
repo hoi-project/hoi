@@ -1,0 +1,712 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <!-- @include head.html title="Core API · hoi wiki" description="The Node API in hoi-core: the JSON dispatch every method goes through, its DTOs, events and error codes, the TypeScript contract, and the wasm-bindgen and UniFFI surfaces." -->
+</head>
+<body class="wiki">
+<!-- @include header.html nav="wiki" -->
+<!-- @wiki-open -->
+<article class="wk-doc">
+  <!-- @wiki-crumbs -->
+  <h1>Core <span class="acc">API</span></h1>
+  <p class="wk-lead">Every hoi interface talks to the same thing: a <code>Node</code> in <code>hoi-core</code>. The web app and the desktop call it with JSON (<code>Node::call("createPost", [draft])</code>), phones call typed UniFFI methods, and all of them get the same data shapes back, the same events and the same error codes. This page lists every method, the main data types field by field, and how each host carries a call.</p>
+  <p class="wk-src-list">Source <a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/dispatch.rs">hoi-core/src/dispatch.rs</a> · <a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/api.rs">api.rs</a> · <a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/dto.rs">dto.rs</a> · <a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/error.rs">error.rs</a> · <a href="{{REPO_URL}}/tree/main/packages/core-api/src">packages/core-api/src</a> · <a href="{{REPO_URL}}/blob/main/core/crates/hoi-wasm/src/lib.rs">hoi-wasm/src/lib.rs</a> · <a href="{{REPO_URL}}/tree/main/core/crates/hoi-ffi/src">hoi-ffi/src</a> · <a href="{{REPO_URL}}/tree/main/apps/web/src/lib/core">apps/web/src/lib/core</a></p>
+  <div class="wk-head-rule"></div>
+
+  <section class="wk-sec" id="shells">
+    <h2>One API, four ways in</h2>
+    <p>UIs never touch keys, storage or the network. They call <code>HoiCore</code>, the TypeScript interface in <code>packages/core-api/src/types.ts</code>, or its typed mirror on phones. Behind it the same Rust code runs everywhere:</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Shells and how they reach the core">
+      <table>
+        <thead><tr><th>Shell</th><th>Implementation</th><th>How a call travels</th><th>Where the core runs</th></tr></thead>
+        <tbody>
+          <tr><td>Web app</td><td><code>apps/web/src/lib/core/worker-core.ts</code> + <code>rpc-core.ts</code></td><td><code>postMessage({id, method, args})</code> to <code>core.worker.ts</code>, which calls <code>WasmNode.call(method, argsJson)</code></td><td><code>hoi-wasm</code> in a dedicated Web Worker</td></tr>
+          <tr><td>Desktop (Tauri 2)</td><td><code>apps/web/src/lib/core/tauri-core.ts</code> + <code>rpc-core.ts</code></td><td><code>invoke("hoi_call", {method, args})</code>; the command runs <code>Node::call</code> inside <code>Shared::with</code></td><td>native <code>hoi-core</code> in the shell's process</td></tr>
+          <tr><td>iOS, Android</td><td>generated UniFFI bindings (<code>apps/mobile</code>)</td><td>typed methods on <code>HoiNode</code>, or <code>HoiNode.call(method, argsJson)</code></td><td>native <code>hoi-core</code> through <code>hoi-ffi</code></td></tr>
+          <tr><td>Development</td><td><code>apps/web/src/lib/core/mock-core.ts</code></td><td>in memory (the mock backend switch, never in production bundles)</td><td>nowhere: seeded data, no crypto</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p><code>apps/web/src/lib/core/index.ts</code> picks the backend: the mock when the backend switch is <code>mock</code>, Tauri when <code>__HOI_DESKTOP__</code> is set or <code>window.__TAURI_INTERNALS__</code> exists, otherwise the worker. The rule that keeps the shells honest is in <code>dto.rs</code>'s first line: the Rust DTOs mirror <code>types.ts</code> field for field, in camelCase, and both files change together.</p>
+    <div class="wk-seq" data-title="One call from the web app">
+lanes: Page | Core worker | WasmNode | Storage
+Page -> Core worker: <code>{id, method, args}</code> (args copied through JSON first)
+Core worker -> WasmNode: <code>call(method, JSON.stringify(args))</code>
+WasmNode: <code>Node::call</code> runs the method, then <code>commit()</code>
+WasmNode --> Core worker: JSON result, or a JSON <code>{code, message}</code> error
+Core worker -> WasmNode: <code>take_changes()</code>
+Core worker => Storage: the changes, sealed by the vault, in one write
+Core worker -> WasmNode: <code>take_outbox()</code>, then <code>take_events()</code>
+Core worker --> Page: <code>{kind: "event", event}</code> for each event
+Core worker --> Page: <code>{kind: "reply", id, ok: true, result}</code>
+</div>
+    <p>Messages go out and events reach the page only after storage accepted the changes (<code>durable-settle.ts</code>): a record is never gossiped, and the UI never hears of a change, before it is durable.</p>
+  </section>
+
+  <section class="wk-sec" id="call">
+    <h2>Node::call: the JSON dispatcher</h2>
+    <p><code>dispatch.rs</code> is one function that takes a method name and positional arguments, runs the method and persists:</p>
+    <div class="wk-code" data-lang="rust" data-title="hoi-core/src/dispatch.rs (trimmed)"><pre><code>impl Node {
+    /// Calls one API method with positional JSON arguments, then persists.
+    pub fn call(&amp;mut self, method: &amp;str, args: Value) -&gt; R&lt;Value&gt; {
+        let a = Args(match args {
+            Value::Array(v) =&gt; v,
+            Value::Null =&gt; Vec::new(),
+            other =&gt; vec![other],
+        });
+        let out = self.call_inner(method, &amp;a);
+        self.commit()?;
+        out
+    }
+}</code></pre></div>
+    <dl class="wk-defs">
+      <dt>Arguments<small>positional</small></dt><dd>A JSON array in the order <code>HoiCore</code> declares them. <code>null</code> means no arguments; any other single value is taken as the one argument. A missing argument reads as <code>null</code>, so optional trailing arguments may be left out.</dd>
+      <dt>Bytes<small>base64url</small></dt><dd>Images, files, nonces' puzzles and exports travel as base64url strings without padding (<code>hoi_types::uri::b64</code>). An optional bytes argument that is absent or <code>null</code> is empty.</dd>
+      <dt>Keys and ids<small>hex</small></dt><dd>Lowercase hex, 64 characters. Where a person's key is expected, <code>parse_key</code> also takes a <code>did:key</code>.</dd>
+      <dt>Bad arguments<small>invalid</small></dt><dd>An argument that does not deserialize fails with code <code>invalid</code> and <code>argument &lt;name&gt;: &lt;serde error&gt;</code>; an unknown method with <code>unknown method &lt;name&gt;</code>.</dd>
+      <dt>Persistence<small>after every call</small></dt><dd><code>commit()</code> runs even when the method failed, so whatever it changed before failing is saved and the journal is retried. If <code>commit()</code> itself fails, that error replaces the method's result.</dd>
+    </dl>
+    <div class="wk-code" data-lang="ts" data-title="In the web worker (core.worker.ts, trimmed)"><pre><code>function call(method: string, args: unknown[]): unknown {
+  if (!node) throw { code: 'offline', message: stolen ? 'hoi is open in another tab. Reload to use it here.' : 'hoi is still starting.' };
+  try {
+    return JSON.parse(node.call(method, JSON.stringify(args)));
+  } catch (e) {
+    throw toError(e);
+  }
+}</code></pre></div>
+    <div class="wk-code" data-lang="rust" data-title="From Rust, as hoi-sim and the tests do"><pre><code>let draft = serde_json::json!([{ "community": community_hex, "title": "hello", "text": "first post" }]);
+let post = node.call("createPost", draft)?;          // a PostSummary as JSON
+let feed = node.call("feed", serde_json::json!([{ "community": community_hex, "sort": "fresh" }]))?;</code></pre></div>
+  </section>
+
+  <section class="wk-sec" id="methods">
+    <h2>Every method</h2>
+    <p>All methods <code>call_inner</code> knows, in the groups of <code>HoiCore</code>. Argument names are the ones the dispatcher reports in errors; <code>?</code> marks an argument that may be <code>null</code> or left out. Return types are the DTO names in <code>dto.rs</code> (the same names in <code>types.ts</code> unless noted); <code>null</code> means the method returns nothing.</p>
+
+    <h3 id="methods-you">You: identity and key</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Identity methods">
+      <table>
+        <thead><tr><th>Method</th><th>Arguments</th><th>Returns</th><th>Notes</th></tr></thead>
+        <tbody>
+          <tr><td><code>boot</code></td><td>none</td><td><code>Boot</code></td><td>Platform, version, protocol, whether an identity exists.</td></tr>
+          <tr><td><code>me</code></td><td>none</td><td><code>Me</code> or <code>null</code></td><td></td></tr>
+          <tr><td><code>createIdentity</code></td><td><code>name</code>, <code>stir?</code> (bytes)</td><td><code>Me</code></td><td>Makes the keys and mines the identity work inside the core. <code>stir</code> (at most 64 bytes) is mixed into system randomness.</td></tr>
+          <tr><td><code>draftIdentity</code></td><td><code>name</code>, <code>stir?</code></td><td><code>IdentityDraft</code></td><td>The key, waiting for its work: hosts that show the work mine it themselves.</td></tr>
+          <tr><td><code>publishIdentity</code></td><td><code>rootKey</code>, <code>work</code> (u64)</td><td><code>Me</code></td><td>Finishes a draft identity with the found work nonce.</td></tr>
+          <tr><td><code>setName</code></td><td><code>name</code></td><td><code>Me</code></td><td>1 to 32 characters after collapsing whitespace, checked by the name rules.</td></tr>
+          <tr><td><code>setAvatar</code></td><td><code>image?</code> (bytes)</td><td><code>Me</code></td><td>Empty or <code>null</code> restores the identicon.</td></tr>
+          <tr><td><code>setAvatarColor</code></td><td><code>color?</code></td><td><code>Me</code></td><td><code>null</code> restores the key-derived color.</td></tr>
+          <tr><td><code>exportIdentity</code></td><td><code>passphrase</code></td><td>string (base64url bytes)</td><td>A <code>HOIK</code> keystore file; the passphrase must have at least 15 characters and at most 1024 bytes.</td></tr>
+          <tr><td><code>importIdentity</code></td><td><code>data</code> (bytes), <code>passphrase</code></td><td><code>Me</code></td><td>Refused when the device already has a key.</td></tr>
+          <tr><td><code>strengthenIdentity</code></td><td><code>bits</code>, <code>work?</code></td><td><code>Me</code></td><td>With <code>work</code>: work mined outside the core; without: the core mines it.</td></tr>
+          <tr><td><code>burnIdentity</code></td><td><code>confirm</code></td><td><code>null</code></td><td><code>confirm</code> is <code>Me.short</code>.</td></tr>
+          <tr><td><code>mineIdentity</code></td><td><code>rootKey</code>, <code>bits</code></td><td>u64</td><td>Native builds only; <code>bits</code> must be 4 to 20.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3 id="methods-recovery">Recovery</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Recovery methods">
+      <table>
+        <thead><tr><th>Method</th><th>Arguments</th><th>Returns</th><th>Notes</th></tr></thead>
+        <tbody>
+          <tr><td><code>recoveryKey</code></td><td>none</td><td>string</td><td>The <code>hoi-key-1-…</code> line, while this device keeps it.</td></tr>
+          <tr><td><code>forgetRecoveryKey</code></td><td>none</td><td><code>RecoveryStatus</code></td><td>The line is saved elsewhere; the device forgets it.</td></tr>
+          <tr><td><code>recoveryStatus</code></td><td>none</td><td><code>RecoveryStatus</code></td><td><code>holdsLine</code>, <code>restoring</code>, <code>rotations</code>, <code>friends</code>.</td></tr>
+          <tr><td><code>restoreIdentity</code></td><td><code>recoveryKey</code>, <code>name</code></td><td><code>Me</code></td><td>A new root that takes over from the old one.</td></tr>
+          <tr><td><code>shareCandidates</code></td><td><code>community</code></td><td><code>Person[]</code></td><td>Who could keep a share.</td></tr>
+          <tr><td><code>giveShares</code></td><td><code>community</code>, <code>friends</code> (string[])</td><td><code>RecoveryStatus</code></td><td>3 to 7 friends; any 3 bring the line back.</td></tr>
+          <tr><td><code>heldShares</code></td><td>none</td><td><code>HeldShare[]</code></td><td>Whose share this device keeps.</td></tr>
+          <tr><td><code>askFriends</code></td><td>none</td><td><code>RecoveryAsk</code></td><td>On a device without a key.</td></tr>
+          <tr><td><code>requestDigits</code></td><td><code>code</code></td><td>string</td><td>Six digits to compare (<code>"123 456"</code>).</td></tr>
+          <tr><td><code>answerRequest</code></td><td><code>person</code>, <code>code</code></td><td><code>RecoveryAnswer</code></td><td></td></tr>
+          <tr><td><code>takeAnswer</code></td><td><code>code</code>, <code>name</code></td><td><code>{answers, me}</code></td><td>The third answer brings the person back (<code>me</code> is then set).</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3 id="methods-devices">Devices and linking</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Device methods">
+      <table>
+        <thead><tr><th>Method</th><th>Arguments</th><th>Returns</th><th>Notes</th></tr></thead>
+        <tbody>
+          <tr><td><code>linkRequest</code></td><td><code>label</code></td><td>string</td><td>On a new device: a <code>hoi:link:…</code> code to show the root device.</td></tr>
+          <tr><td><code>linkApprove</code></td><td><code>request</code></td><td>string</td><td>On the root device: blesses the new device, returns the approval.</td></tr>
+          <tr><td><code>linkComplete</code></td><td><code>approval</code></td><td><code>Me</code></td><td>On the new device.</td></tr>
+          <tr><td><code>linkHome</code></td><td><code>label</code></td><td><code>LinkStarted</code></td><td>Ask through the shared home node; <code>linkCheck</code> and <code>linked</code> events follow.</td></tr>
+          <tr><td><code>linkHomeRemote</code></td><td><code>label</code></td><td><code>LinkStarted</code></td><td>The same for a browser that keeps no signing key.</td></tr>
+          <tr><td><code>linkCancel</code></td><td>none</td><td><code>null</code></td><td></td></tr>
+          <tr><td><code>linkAsks</code></td><td>none</td><td><code>LinkAsk[]</code></td><td>Asks waiting on a root device.</td></tr>
+          <tr><td><code>linkAnswer</code></td><td><code>id</code> (u64), <code>yes</code></td><td><code>null</code></td><td></td></tr>
+          <tr><td><code>signAsks</code></td><td>none</td><td><code>SignAsk[]</code></td><td>On a computer: what its browsers asked to sign and waits for a yes.</td></tr>
+          <tr><td><code>signAnswer</code></td><td><code>id</code>, <code>yes</code></td><td><code>null</code></td><td></td></tr>
+          <tr><td><code>revokeDevice</code></td><td><code>key</code></td><td><code>Me</code></td><td></td></tr>
+          <tr><td><code>setDeviceLabel</code></td><td><code>key</code>, <code>label</code></td><td><code>Me</code></td><td>Local only, never sent.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3 id="methods-communities">Communities and discovery</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Community methods">
+      <table>
+        <thead><tr><th>Method</th><th>Arguments</th><th>Returns</th><th>Notes</th></tr></thead>
+        <tbody>
+          <tr><td><code>communities</code></td><td>none</td><td><code>CommunitySummary[]</code></td><td></td></tr>
+          <tr><td><code>community</code></td><td><code>id</code></td><td><code>CommunityView</code></td><td></td></tr>
+          <tr><td><code>createCommunity</code></td><td><code>draft</code> (<code>CommunityDraft</code>)</td><td><code>CommunityView</code></td><td></td></tr>
+          <tr><td><code>previewInvite</code></td><td><code>link</code></td><td><code>InvitePreview</code></td><td>What a <code>hoi://join</code> or <code>#/join</code> link leads to, checked against its genesis.</td></tr>
+          <tr><td><code>join</code></td><td><code>link</code></td><td><code>CommunityView</code></td><td></td></tr>
+          <tr><td><code>leave</code></td><td><code>id</code></td><td><code>null</code></td><td></td></tr>
+          <tr><td><code>setPinning</code></td><td><code>id</code>, <code>on</code></td><td><code>CommunityView</code></td><td></td></tr>
+          <tr><td><code>invite</code></td><td><code>id</code></td><td><code>Invite</code></td><td>Also asks public nodes in reach to keep the community (<code>carry_for_invite</code>).</td></tr>
+          <tr><td><code>exportBundle</code></td><td><code>id</code></td><td>string (base64url bytes)</td><td>A CBOR map <code>{t: "hoi-bundle", v: 1, c, recs}</code> with every forwardable record and what it depends on. Refused for private communities.</td></tr>
+          <tr><td><code>importBundle</code></td><td><code>data</code> (bytes)</td><td><code>ImportReport</code></td><td></td></tr>
+          <tr><td><code>discoverCommunities</code></td><td>none</td><td><code>DiscoveredCommunity[]</code></td><td>Open communities connected nodes list, and ones heard before.</td></tr>
+          <tr><td><code>openNodeLink</code></td><td><code>link</code></td><td><code>DirectoryStatus</code></td><td>A <code>hoi://node</code> or <code>#/node</code> link.</td></tr>
+          <tr><td><code>previewNodeLink</code></td><td><code>link</code></td><td><code>NodeLinkPreview</code></td><td>Where it points and its operator's notice, before anything is dialed.</td></tr>
+          <tr><td><code>nodeNotices</code></td><td>none</td><td><code>NoticeView[]</code></td><td>Pending first.</td></tr>
+          <tr><td><code>acceptNotice</code></td><td><code>node</code>, <code>hash</code></td><td><code>NoticeView</code></td><td></td></tr>
+          <tr><td><code>declineNotice</code></td><td><code>node</code></td><td><code>NoticeView</code></td><td></td></tr>
+          <tr><td><code>forgetNotice</code></td><td><code>node</code></td><td><code>null</code></td><td></td></tr>
+          <tr><td><code>publicJoin</code></td><td><code>community</code>, <code>peers</code> (string[]), <code>name?</code></td><td><code>PublicJoinStatus</code></td><td>Fetch an open community's definition by key from chosen public nodes.</td></tr>
+          <tr><td><code>publicJoinStatus</code></td><td><code>community</code></td><td><code>PublicJoinStatus</code></td><td></td></tr>
+          <tr><td><code>communityRegistration</code></td><td><code>id</code></td><td><code>CommunityRegistration</code></td><td>A name-claim proof.</td></tr>
+          <tr><td><code>communityPublication</code></td><td><code>id</code></td><td><code>CommunityPublication</code></td><td>A version-bound index proof.</td></tr>
+          <tr><td><code>warmth</code></td><td>none</td><td><code>WarmthView</code></td><td>How safe each public community's records are, from this device's links.</td></tr>
+          <tr><td><code>communityWarmth</code></td><td><code>community</code></td><td><code>CommunityWarmth</code></td><td></td></tr>
+          <tr><td><code>requestCarry</code></td><td><code>community</code></td><td><code>CarryRequest</code></td><td>Answers arrive as <code>notice</code> events.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3 id="methods-private">Private communities</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Private community methods">
+      <table>
+        <thead><tr><th>Method</th><th>Arguments</th><th>Returns</th><th>Notes</th></tr></thead>
+        <tbody>
+          <tr><td><code>createPrivateCommunity</code></td><td><code>draft</code></td><td><code>CommunityView</code></td><td>An MLS group.</td></tr>
+          <tr><td><code>privateGroups</code></td><td>none</td><td><code>PrivateGroup[]</code></td><td></td></tr>
+          <tr><td><code>privateGroup</code></td><td><code>community</code></td><td><code>PrivateGroup</code></td><td></td></tr>
+          <tr><td><code>privateJoinRequest</code></td><td>none</td><td>string</td><td>A request to hand to a member.</td></tr>
+          <tr><td><code>privatePreviewRequest</code></td><td><code>request</code></td><td><code>PrivateMember</code> (<code>{device, root}</code> in TS)</td><td></td></tr>
+          <tr><td><code>privateInvite</code></td><td><code>community</code>, <code>request</code></td><td>string</td><td>An invitation for that request.</td></tr>
+          <tr><td><code>privateJoin</code></td><td><code>invite</code></td><td><code>CommunityView</code></td><td></td></tr>
+          <tr><td><code>privateRemove</code></td><td><code>community</code>, <code>device</code></td><td><code>PrivateGroup</code></td><td></td></tr>
+          <tr><td><code>privatePassRequest</code></td><td><code>community</code>, <code>request</code></td><td><code>PrivateMember</code></td><td>Passes a join request on to the committers.</td></tr>
+          <tr><td><code>privateCopy</code></td><td><code>community</code></td><td><code>CommunityView</code></td><td>A private copy of a members-only community.</td></tr>
+          <tr><td><code>privateOutbox</code></td><td><code>community</code></td><td><code>CipherObject[]</code> (<code>PrivateRelayObject[]</code> in TS)</td><td>Sealed objects for a relay.</td></tr>
+          <tr><td><code>privateReceive</code></td><td><code>community</code>, <code>body</code></td><td><code>PrivateGroup</code></td><td>What a relay returned.</td></tr>
+          <tr><td><code>privateAck</code></td><td><code>community</code>, <code>ids</code> (string[])</td><td><code>PrivateGroup</code></td><td></td></tr>
+          <tr><td><code>privateRead</code></td><td><code>community</code>, <code>targets</code> (string[])</td><td><code>PrivateRead</code> (<code>PrivateRelayRead</code> in TS)</td><td>At most 65 targets.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3 id="methods-owners">Owners and moderators</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Owner and moderator methods">
+      <table>
+        <thead><tr><th>Method</th><th>Arguments</th><th>Returns</th><th>Notes</th></tr></thead>
+        <tbody>
+          <tr><td><code>setLimits</code></td><td><code>id</code>, <code>limits</code> (<code>LimitsDto</code>)</td><td><code>LedgerResult</code></td><td>A proposal the community decides.</td></tr>
+          <tr><td><code>setRules</code></td><td><code>id</code>, <code>text</code></td><td><code>LedgerResult</code></td><td></td></tr>
+          <tr><td><code>addMod</code> / <code>removeMod</code></td><td><code>id</code>, <code>key</code></td><td><code>LedgerResult</code></td><td></td></tr>
+          <tr><td><code>retire</code></td><td><code>id</code>, <code>key</code></td><td><code>LedgerResult</code></td><td>An elector left for good.</td></tr>
+          <tr><td><code>cosign</code></td><td><code>proposal</code></td><td><code>LedgerResult</code></td><td>Adds this owner's signature to a <code>hoi:cosign:…</code> proposal.</td></tr>
+          <tr><td><code>ledger</code></td><td><code>id</code></td><td><code>LedgerEntryView[]</code></td><td></td></tr>
+          <tr><td><code>remove</code></td><td><code>target</code>, <code>reason</code></td><td><code>LedgerEntryView</code></td><td></td></tr>
+          <tr><td><code>pin</code></td><td><code>target</code>, <code>on</code></td><td><code>LedgerEntryView</code></td><td></td></tr>
+          <tr><td><code>label</code></td><td><code>target</code>, <code>label</code>, <code>reason?</code></td><td><code>LedgerEntryView</code></td><td></td></tr>
+          <tr><td><code>ban</code> / <code>unban</code></td><td><code>community</code>, <code>key</code>, <code>reason?</code></td><td><code>LedgerEntryView</code></td><td>A missing reason is empty.</td></tr>
+          <tr><td><code>admit</code></td><td><code>community</code>, <code>key</code></td><td><code>LedgerEntryView</code></td><td></td></tr>
+          <tr><td><code>ageChallenge</code></td><td><code>community</code></td><td><code>AgeChallenge</code></td><td>What a wallet binds its presentation to.</td></tr>
+          <tr><td><code>ageProofCode</code></td><td><code>community</code>, <code>presentation</code></td><td>string</td><td>Checked here; the code goes to a moderator.</td></tr>
+          <tr><td><code>admitByAge</code></td><td><code>code</code></td><td><code>LedgerEntryView</code></td><td>The moderator's side.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3 id="methods-ladder">The ladder</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Ladder methods">
+      <table>
+        <thead><tr><th>Method</th><th>Arguments</th><th>Returns</th><th>Notes</th></tr></thead>
+        <tbody>
+          <tr><td><code>standing</code></td><td><code>community</code>, <code>key?</code></td><td><code>StandingView</code></td><td>Without <code>key</code>: you.</td></tr>
+          <tr><td><code>vouch</code></td><td><code>community</code>, <code>key</code>, <code>value</code> (1, −1, 0), <code>reason?</code></td><td><code>StandingView</code></td><td></td></tr>
+          <tr><td><code>review</code></td><td><code>target</code>, <code>verdict</code> (<code>ok</code>, <code>hide</code>, <code>veto</code>, <code>none</code>), <code>reason?</code></td><td><code>null</code></td><td></td></tr>
+          <tr><td><code>reviewQueue</code></td><td><code>community</code></td><td><code>PostSummary[]</code></td><td>Newcomers' posts waiting for an established member.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3 id="methods-posts">Posts and media</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Post methods">
+      <table>
+        <thead><tr><th>Method</th><th>Arguments</th><th>Returns</th><th>Notes</th></tr></thead>
+        <tbody>
+          <tr><td><code>feed</code></td><td><code>query</code> <code>{community?, sort?, limit?}</code></td><td><code>PostSummary[]</code></td><td><code>sort</code>: <code>hot</code> (default), <code>fresh</code>, <code>loudest</code>, <code>friends</code>, <code>counted</code>. Without a community, every joined one. At most 200 unless <code>limit</code> says otherwise; pinned first inside one community.</td></tr>
+          <tr><td><code>post</code></td><td><code>id</code></td><td><code>PostView</code></td><td>Reading counts toward auto-vouching.</td></tr>
+          <tr><td><code>createPost</code></td><td><code>draft</code> (<code>PostDraft</code>)</td><td><code>PostSummary</code></td><td>Mines the stamp inside the core. The shells use <code>draftPost</code> instead.</td></tr>
+          <tr><td><code>reply</code></td><td><code>parent</code>, <code>text</code></td><td><code>CommentView</code></td><td></td></tr>
+          <tr><td><code>edit</code></td><td><code>id</code>, <code>text</code>, <code>title?</code></td><td><code>null</code></td><td></td></tr>
+          <tr><td><code>deleteOwn</code></td><td><code>id</code></td><td><code>null</code></td><td></td></tr>
+          <tr><td><code>vote</code></td><td><code>target</code>, <code>value</code> (1, −1, 0)</td><td>number</td><td>The new score.</td></tr>
+          <tr><td><code>flag</code></td><td><code>target</code>, <code>reason</code></td><td><code>null</code></td><td>A signed <code>report</code>: <code>spam</code>, <code>rule:&lt;n&gt;</code> or <code>illegal</code>.</td></tr>
+          <tr><td><code>save</code></td><td><code>id</code>, <code>on</code></td><td><code>null</code></td><td>Local only.</td></tr>
+          <tr><td><code>saved</code></td><td>none</td><td><code>PostSummary[]</code></td><td></td></tr>
+          <tr><td><code>search</code></td><td><code>q</code>, <code>community?</code></td><td><code>PostSummary[]</code></td><td>Over what this device holds; nothing leaves it.</td></tr>
+          <tr><td><code>media</code></td><td><code>hash</code></td><td><code>MediaBlob</code></td><td><code>data</code> is base64url; the TS wrapper turns it into a <code>Uint8Array</code>.</td></tr>
+          <tr><td><code>looked</code></td><td><code>hash</code>, <code>look</code></td><td><code>null</code></td><td>What a host's look worker saw (when the core looks elsewhere).</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3 id="methods-stamps">Draft, mine, publish</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Draft and mining methods">
+      <table>
+        <thead><tr><th>Method</th><th>Arguments</th><th>Returns</th><th>Notes</th></tr></thead>
+        <tbody>
+          <tr><td><code>draftPost</code></td><td><code>draft</code></td><td><code>DraftDto</code></td><td>The record built and waiting for its nonce.</td></tr>
+          <tr><td><code>draftReply</code></td><td><code>parent</code>, <code>text</code></td><td><code>DraftDto</code></td><td></td></tr>
+          <tr><td><code>draftEdit</code></td><td><code>id</code>, <code>text</code>, <code>title?</code></td><td><code>DraftDto</code></td><td></td></tr>
+          <tr><td><code>publishDraft</code></td><td><code>token</code>, <code>nonce</code></td><td><code>PostSummary</code>, <code>CommentView</code>, <code>null</code> or <code>{signing: id}</code></td><td>Refuses a nonce whose stamp is below the draft's bits. A draft lives an hour.</td></tr>
+          <tr><td><code>published</code></td><td><code>id</code></td><td><code>PostSummary</code>, <code>CommentView</code> or <code>null</code></td><td>The record once the person's computer signed it.</td></tr>
+          <tr><td><code>mine</code></td><td><code>prefix</code>, <code>suffix</code> (bytes), <code>bits</code></td><td>u64</td><td>Native only: <code>mine_puzzle</code> on up to 16 threads. Absent from the wasm build.</td></tr>
+          <tr><td><code>benchmark</code></td><td>none</td><td><code>{hashesPerSecond}</code></td><td>Native only: one thread's rate for 200,000 tries times the number of cores.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3 id="methods-people">People, labelers, lists and wiki</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="People methods">
+      <table>
+        <thead><tr><th>Method</th><th>Arguments</th><th>Returns</th><th>Notes</th></tr></thead>
+        <tbody>
+          <tr><td><code>person</code></td><td><code>key</code>, <code>community?</code></td><td><code>PersonView</code></td><td></td></tr>
+          <tr><td><code>setTrust</code></td><td><code>key</code>, <code>friend</code></td><td><code>Person</code></td><td></td></tr>
+          <tr><td><code>setMuted</code></td><td><code>key</code>, <code>muted</code></td><td><code>Person</code></td><td></td></tr>
+          <tr><td><code>setPetname</code></td><td><code>key</code>, <code>petname?</code></td><td><code>Person</code></td><td></td></tr>
+          <tr><td><code>trustSharing</code></td><td><code>community</code></td><td><code>TrustSharing</code></td><td></td></tr>
+          <tr><td><code>shareTrust</code></td><td><code>community</code>, <code>on</code></td><td><code>TrustSharing</code></td><td>Publishes or withdraws a trust statement there.</td></tr>
+          <tr><td><code>labelers</code></td><td>none</td><td><code>LabelerView[]</code></td><td></td></tr>
+          <tr><td><code>followLabeler</code></td><td><code>key</code>, <code>on</code></td><td><code>LabelerView[]</code></td><td></td></tr>
+          <tr><td><code>publishLabel</code></td><td><code>target</code>, <code>label</code>, <code>note?</code></td><td><code>null</code></td><td></td></tr>
+          <tr><td><code>blocklistKeepers</code></td><td>none</td><td><code>BlocklistKeeper[]</code></td><td></td></tr>
+          <tr><td><code>followBlocklist</code></td><td><code>key</code>, <code>on</code></td><td><code>BlocklistKeeper[]</code></td><td></td></tr>
+          <tr><td><code>publishBlocklist</code></td><td><code>community</code>, <code>text</code></td><td>number</td><td>One hash a line: PDQ, or <code>blake3:&lt;hash&gt;</code>.</td></tr>
+          <tr><td><code>aggregators</code></td><td>none</td><td><code>AggregatorView[]</code></td><td></td></tr>
+          <tr><td><code>followAggregator</code></td><td><code>key</code>, <code>on</code></td><td><code>AggregatorView[]</code></td><td></td></tr>
+          <tr><td><code>aggregating</code></td><td><code>community</code></td><td>boolean</td><td></td></tr>
+          <tr><td><code>setAggregating</code></td><td><code>community</code>, <code>on</code></td><td>boolean</td><td></td></tr>
+          <tr><td><code>linkPreview</code></td><td><code>url</code></td><td><code>LinkPreview</code> or <code>null</code></td><td><code>null</code> while it is fetched; a <code>preview</code> event follows.</td></tr>
+          <tr><td><code>wikiPages</code></td><td><code>community</code></td><td><code>WikiPageSummary[]</code></td><td></td></tr>
+          <tr><td><code>wikiPage</code></td><td><code>community</code>, <code>page</code></td><td><code>WikiPageView</code></td><td></td></tr>
+          <tr><td><code>editWiki</code></td><td><code>community</code>, <code>page</code>, <code>text</code></td><td><code>WikiPageView</code></td><td></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3 id="methods-node">This node</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Node methods">
+      <table>
+        <thead><tr><th>Method</th><th>Arguments</th><th>Returns</th><th>Notes</th></tr></thead>
+        <tbody>
+          <tr><td><code>stats</code></td><td>none</td><td><code>NodeStats</code></td><td></td></tr>
+          <tr><td><code>settings</code></td><td>none</td><td><code>Settings</code></td><td></td></tr>
+          <tr><td><code>setSettings</code></td><td><code>patch</code> (<code>SettingsPatch</code>)</td><td><code>Settings</code></td><td>Only the fields present change.</td></tr>
+          <tr><td><code>net</code></td><td>none</td><td><code>NetStatus</code></td><td></td></tr>
+          <tr><td><code>traffic</code></td><td>none</td><td><code>TrafficView</code> (<code>Traffic</code> in TS)</td><td>Amounts and times, never content.</td></tr>
+          <tr><td><code>pair</code></td><td><code>link</code></td><td><code>NetStatus</code></td><td>A <code>hoi://pair</code> or <code>#/pair</code> link.</td></tr>
+          <tr><td><code>previewPair</code></td><td><code>link</code></td><td><code>PairPreview</code></td><td></td></tr>
+          <tr><td><code>unpair</code></td><td>none</td><td><code>NetStatus</code></td><td></td></tr>
+          <tr><td><code>rotatePairing</code></td><td>none</td><td><code>NetStatus</code></td><td>A new pairing link; devices pair again.</td></tr>
+          <tr><td><code>importBlocklist</code></td><td><code>text</code></td><td>number</td><td>PDQ hashes, one 64-hex hash per line; how many were new.</td></tr>
+          <tr><td><code>wipe</code></td><td>none</td><td><code>null</code></td><td>Everything on this device.</td></tr>
+          <tr><td><code>sweep</code></td><td>none</td><td>number</td><td>Expiry and housekeeping; how many records went. Hosts also run it on a timer.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="wk-note info"><b>Three methods live in the hosts</b><p><code>takeOver</code> is answered by the web worker (it steals the one-tab lock, then calls <code>boot</code>). <code>previewPublicNode</code> and <code>vpnInterfaces</code> are answered by the desktop shell's <code>hoi_call</code> before it reaches the core: the core does not talk to routers or list network interfaces.</p></div>
+  </section>
+
+  <section class="wk-sec" id="stamps">
+    <h2>Draft, mine, publish</h2>
+    <p>A post, a reply or an edit needs a stamp: about a second of hashing. Doing that inside one core call would freeze the worker or hold the node's lock, so <code>rpc-core.ts</code> splits it in three. The core builds and signs nothing until the nonce comes back; it only hands out the puzzle, the canonical bytes before and after the nonce.</p>
+    <div class="wk-seq" data-title="createPost from the web app or the desktop">
+lanes: UI | rpc-core.ts | Core | Miners
+UI -> rpc-core.ts: <code>createPost(draft)</code>
+rpc-core.ts -> Core: <code>looked(hash, look)</code> for each picture (browser only)
+rpc-core.ts -> Core: <code>draftPost [draft]</code>
+Core --> rpc-core.ts: <code>DraftDto {token, prefix, suffix, bits}</code>
+rpc-core.ts: emits <code>stamp {phase: "start", bits, estimateMs}</code>
+rpc-core.ts => Miners: <code>mine(prefix, suffix, bits)</code>
+Miners --> rpc-core.ts: nonce
+rpc-core.ts -> Core: <code>publishDraft [token, nonce]</code>
+Core: checks <code>stamp_bits(id, nonce) ≥ bits</code>, signs, takes it in, queues gossip
+Core --> rpc-core.ts: <code>PostSummary</code> (or <code>{signing: id}</code>)
+rpc-core.ts: emits <code>stamp {phase: "done", tookMs}</code>
+rpc-core.ts --> UI: <code>PostSummary</code>
+</div>
+    <ul>
+      <li><b>Browsers</b> mine with a pool of <code>miner.worker.ts</code> workers (one fewer than <code>navigator.hardwareConcurrency</code>, between 1 and 4), each calling <code>mine_range</code> on every n-th nonce in chunks of 20,000.</li>
+      <li><b>The desktop</b> mines with the <code>hoi_mine</code> Tauri command on a blocking thread, without the node lock; its rate comes from <code>hoi_benchmark</code>.</li>
+      <li><b>Phones</b> do the same inside <code>HoiNode</code>: draft under the lock, <code>mine_puzzle</code> without it, publish under it again, and emit the two <code>stamp</code> events themselves.</li>
+      <li>If the miners can't run, <code>rpc-core.ts</code> falls back to the core's own <code>mine</code> (native) or, for a new identity, to <code>createIdentity</code>.</li>
+      <li>On a browser whose computer signs for it, <code>publishDraft</code> returns <code>{signing: id}</code>; <code>rpc-core.ts</code> waits up to 120 seconds for a <code>signed</code> event, then calls <code>published</code>.</li>
+    </ul>
+    <p>New identities go the same way: <code>draftIdentity</code> returns an <code>IdentityDraft</code>, the host mines the Argon2id work (the browser across its miners with <code>IdentityMiner</code>, reporting every try), and <code>publishIdentity(rootKey, work)</code> finishes it.</p>
+  </section>
+
+  <section class="wk-sec" id="dtos">
+    <h2>The data types</h2>
+    <p>Every DTO derives <code>Serialize</code> and <code>Deserialize</code> with <code>rename_all = "camelCase"</code>, and with the <code>ffi</code> feature also <code>uniffi::Record</code> (or <code>uniffi::Enum</code>). Optional fields marked "omitted" are left out of the JSON when empty. These are the ones most screens use.</p>
+
+    <h3 id="dto-boot">Boot</h3>
+    <dl class="wk-defs">
+      <dt>platform<small>string</small></dt><dd>What the host opened the node as: <code>web</code>, <code>desktop</code>, <code>mobile</code>, <code>node</code>.</dd>
+      <dt>version<small>string</small></dt><dd>The crate version, <code>1.0.0-preview.1</code>.</dd>
+      <dt>protocol<small>u64</small></dt><dd><code>PROTOCOL_VERSION</code>, 1.</dd>
+      <dt>hasIdentity<small>bool</small></dt><dd>A key exists on this device.</dd>
+      <dt>blockedByOtherTab<small>bool, omitted</small></dt><dd>Set by the web worker when another tab holds the store.</dd>
+      <dt>cleaned<small>u64</small></dt><dd>Legacy counter, always 0.</dd>
+      <dt>preservedRecords<small>u64</small></dt><dd>Stored records this build can't decode: kept on disk, neither indexed nor served.</dd>
+    </dl>
+
+    <h3 id="dto-me">Me and Person</h3>
+    <p><code>Me</code> is this device's person:</p>
+    <dl class="wk-defs">
+      <dt>root, rootKey<small>string</small></dt><dd>The person's id as <code>did:key</code> and as hex. It stays the same after a recovery.</dd>
+      <dt>workKey<small>hex</small></dt><dd>The root more identity work is mined for: the one the device signs with now.</dd>
+      <dt>fingerprint, short<small>string</small></dt><dd>What people compare (<code>e04c · 2a9f · 7b31 · 0cd8</code>) and the short key.</dd>
+      <dt>name, avatar, avatarColor<small>string, omitted</small></dt><dd>The self-chosen name; picture and color when set.</dd>
+      <dt>createdAt<small>u64</small></dt><dd>When the key was made.</dd>
+      <dt>hasRoot<small>bool</small></dt><dd>This device holds the root key, not only a device key.</dd>
+      <dt>device, devices<small>hex, DeviceInfo[]</small></dt><dd>This device's key; every device the current root blessed (<code>key</code>, <code>short</code>, <code>label</code>, <code>thisDevice</code>, <code>expiresAt</code>, <code>revoked</code>, <code>signedHere</code>).</dd>
+      <dt>identityBits<small>u32</small></dt><dd>Memory-hard work the identity carries.</dd>
+      <dt>burned, holdsLine, restoring, replaced, remote<small>bool</small></dt><dd>Burned for good; still keeps the recovery line; restoring from a line; another device replaced the root this one signs with; this device holds no signing key at all.</dd>
+    </dl>
+    <p><code>Person</code> is anyone else as this device sees them: <code>key</code>, <code>short</code>, <code>name</code>, <code>trust</code> (<code>me</code>, <code>friend</code>, <code>fof</code>, <code>member</code>, <code>newcomer</code>), <code>muted</code>, <code>keyAgeDays</code>, and when known <code>avatar</code>, <code>avatarColor</code>, <code>nameHint</code>, <code>petname</code>, <code>role</code>, <code>banned</code>, <code>standing</code>, <code>trustedBy</code> (at most three friends) and <code>handle</code> (<code>{domain, verified, checking}</code>).</p>
+
+    <h3 id="dto-community">CommunitySummary and CommunityView</h3>
+    <p><code>CommunitySummary</code> has <code>id</code>, <code>name</code>, <code>color</code>, <code>description</code>, <code>createdAt</code>, <code>joined</code>, <code>pinning</code>, <code>role</code>, <code>posts</code> and <code>lastActivity</code>. <code>CommunityView</code> has all of those and:</p>
+    <dl class="wk-defs">
+      <dt>owners, threshold, mods<small>Person[], u32, Person[]</small></dt><dd>Who signs owner actions, how many must, and the moderators.</dd>
+      <dt>limits<small>LimitsDto</small></dt><dd>The limits in effect.</dd>
+      <dt>rules<small>RulesView or null</small></dt><dd>The rules text in effect.</dd>
+      <dt>stats<small>CommunityStats</small></dt><dd>Counts for the header.</dd>
+      <dt>pending, banned, flags<small>Person[], BanView[], FlagView[]</small></dt><dd>People waiting for admission (filled for owners, moderators and reviewers); bans; flagged records with reasons, count, weight and last time (owners and moderators only).</dd>
+      <dt>established, establishedVoice<small>u64, f64</small></dt><dd>Established members (owners and moderators included) and their voice together.</dd>
+      <dt>me<small>StandingView or null</small></dt><dd>Your place on the ladder.</dd>
+      <dt>reviewQueue<small>u64</small></dt><dd>Newcomer posts waiting for your review.</dd>
+      <dt>proposals<small>ProposalView[]</small></dt><dd>Rules and limits being decided, or decided in the last 30 days.</dd>
+      <dt>privateCopy<small>bool</small></dt><dd>You own this members-only community and could make a private copy.</dd>
+      <dt>pieces<small>u8, omitted</small></dt><dd>For an open community whose posts go in pieces: the level, in percent of places.</dd>
+      <dt>trackers<small>string[]</small></dt><dd>Registries to ask when no route answers.</dd>
+    </dl>
+
+    <h3 id="dto-limits">LimitsDto and LadderDto</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="LimitsDto fields">
+      <table>
+        <thead><tr><th>Field</th><th>Type</th><th>Meaning</th></tr></thead>
+        <tbody>
+          <tr><td><code>powBits</code></td><td>u32</td><td>Stamp difficulty for posts and comments.</td></tr>
+          <tr><td><code>maxRetention</code></td><td>u64 s</td><td>The longest a record may live.</td></tr>
+          <tr><td><code>newcomerPostsPerDay</code>, <code>newcomerAge</code></td><td>u32, u64 s</td><td>The newcomer rate and how long a key counts as new.</td></tr>
+          <tr><td><code>admission</code></td><td>string</td><td>How people get in: <code>open</code>, <code>invite</code>, <code>approve</code> or <code>age-proof</code>.</td></tr>
+          <tr><td><code>autobanThreshold</code></td><td>u32</td><td>The weight of reports at which this device bounces a key; on an owner's or moderator's device the ban also goes to the ledger.</td></tr>
+          <tr><td><code>labelers</code></td><td>hex[]</td><td>Default labelers.</td></tr>
+          <tr><td><code>ladder</code></td><td><code>LadderDto</code></td><td><code>identityBits</code>, <code>admitVouches</code>, <code>establishedAge</code>, <code>trustedPosts</code>, <code>mediaScore</code>, <code>hideQuorum</code>, <code>blockQuorum</code>, <code>vetoQuorum</code>, <code>contestWindow</code> (seconds for durations).</td></tr>
+          <tr><td><code>scatterResist</code>, <code>scatterOpen</code></td><td>u8, bool</td><td>Scattered delivery level (10, 15 or 20; default 10) and whether an open community scatters.</td></tr>
+          <tr><td><code>trackers</code></td><td>string[]</td><td>At most two https tracker addresses.</td></tr>
+          <tr><td><code>ageIssuers</code></td><td>hex[]</td><td>At most eight credential issuer keys (Ed25519, or P-256 compressed or uncompressed).</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p><code>CommunityDraft</code> is <code>{name, description, color, limits?, rules?, coOwners?, threshold?}</code>, where <code>limits</code> is a <code>LimitsPatch</code>: the same fields, each optional, with a <code>LadderPatch</code> inside.</p>
+
+    <h3 id="dto-posts">PostSummary, PostView and CommentView</h3>
+    <dl class="wk-defs">
+      <dt>id, short<small>hex, string</small></dt><dd>The record id and its short form <code>b3:9e1c…4f0a</code>.</dd>
+      <dt>community, author<small>CommunityRef, Person</small></dt><dd><code>{id, name, color}</code> and the author.</dd>
+      <dt>title, excerpt, link<small>string, string, omitted</small></dt><dd></dd>
+      <dt>createdAt, expiresAt<small>u64</small></dt><dd>Unix seconds.</dd>
+      <dt>score, myVote<small>i64</small></dt><dd>The weighted score here and your vote.</dd>
+      <dt>friendsUp, fofUp<small>u32</small></dt><dd>Up-votes from friends and friends of friends: why Hot put it where it is.</dd>
+      <dt>tallies<small>TallyView[], omitted</small></dt><dd>What followed aggregators count (<code>by</code>, <code>key</code>, <code>up</code>, <code>down</code>, <code>at</code>).</dd>
+      <dt>replies, pinned, edited, mine, saved<small>u64, bool…</small></dt><dd></dd>
+      <dt>napping<small>{label, by}, omitted</small></dt><dd>Put to sleep by a label or a hide.</dd>
+      <dt>labels<small>string[]</small></dt><dd></dd>
+      <dt>waiting, unvalidated<small>bool</small></dt><dd>Held for review; the author is a newcomer not validated yet.</dd>
+      <dt>media<small>MediaView[]</small></dt><dd><code>hash</code>, <code>mime</code>, <code>size</code>, <code>w</code>, <code>h</code>, <code>alt</code>, and <code>available</code> (the checked bytes are on this device).</dd>
+      <dt>held<small>string, omitted</small></dt><dd>Only on your own records: why other devices hold it back.</dd>
+    </dl>
+    <p><code>PostView</code> flattens a <code>PostSummary</code> and adds <code>text</code>, <code>comments</code> (a tree of <code>CommentView</code>), <code>removed</code> (<code>{by, reason, at, ledgerId}</code>) and <code>checks</code>: <code>signature</code>, <code>signedBy</code>, <code>stampBits</code>, <code>requiredBits</code>, <code>receivedFrom</code>, <code>createdAt</code>, <code>fadesAt</code>, <code>identityBits</code>, <code>standing</code>, <code>vouchedBy</code> and, on your own posts in open communities, <code>addressHidden</code>. <code>CommentView</code> carries <code>id</code>, <code>short</code>, <code>parent</code>, <code>author</code>, <code>text</code>, times, <code>score</code>, <code>myVote</code>, <code>mine</code>, <code>edited</code>, <code>napping</code>, <code>removed</code>, <code>waiting</code>, <code>unvalidated</code>, <code>held</code> and <code>children</code>.</p>
+    <p><code>PostDraft</code> is <code>{community, title, text, link?, media?}</code>, each <code>MediaDraft</code> being <code>{data, alt?}</code> with <code>data</code> in base64url; the core sniffs the type and strips metadata before anything is hashed. <code>MediaBlob</code>, what <code>media(hash)</code> returns, is <code>{hash, mime, data}</code>.</p>
+
+    <h3 id="dto-ledger">LedgerEntryView and LedgerResult</h3>
+    <p>A ledger entry as the UI shows it: <code>id</code>, <code>seq</code>, <code>at</code>, <code>action</code>, <code>by</code> (signers), <code>auto</code>, and when they apply <code>target</code> (a <code>LedgerTarget</code> tagged by <code>kind</code>), <code>reason</code>, <code>text</code>, <code>limits</code>, then <code>evidence</code>, <code>expiresAt</code>, the veto tally (<code>vetoes</code>, <code>vetoesVoice</code>, <code>vetoesNeeded</code>), <code>support</code>, <code>overturned</code>, <code>vetoable</code>, <code>myReview</code>, <code>pendingUntil</code> (removals: the body goes at this time unless vetoed) and <code>proposal</code> (<code>open</code>, <code>in-effect</code>, <code>passed</code> or <code>lapsed</code>).</p>
+    <div class="wk-code" data-lang="json" data-title="LedgerResult, tagged by status"><pre><code>{ "status": "published", "entry": { "id": "…", "action": "rules", … } }
+{ "status": "needs-cosign", "proposal": "hoi:cosign:…", "have": 1, "need": 2 }</code></pre></div>
+
+    <h3 id="dto-standing">StandingView</h3>
+    <p><code>community</code>, <code>person</code>, <code>level</code> (<code>newcomer</code>, <code>member</code>, <code>established</code>, <code>trusted</code>), <code>capabilities</code> (<code>text</code>, <code>links</code>, <code>vote</code>, <code>review</code>, <code>vouch</code>, <code>veto</code>, <code>media</code>), <code>admittedAt</code>, <code>establishedAt</code>, <code>vouchedBy</code>, <code>vouchesNeeded</code>, <code>objections</code>, <code>contributions</code>, <code>contributionsNeeded</code>, <code>score</code>, <code>scoreNeeded</code>, <code>blocked</code>, <code>struck</code>, <code>myVouch</code>, <code>voice</code> (0 to 1), <code>vouchedThisQuarter</code>, <code>identityBits</code>, <code>identityNeeded</code> and <code>next</code> (the next step and what it takes).</p>
+
+    <h3 id="dto-settings">Settings</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Settings fields">
+      <table>
+        <thead><tr><th>Field</th><th>Default</th><th>Meaning</th></tr></thead>
+        <tbody>
+          <tr><td><code>relay</code></td><td><code>false</code></td><td>Members' browsers may connect and catch up through this node. Native nodes switch it on once.</td></tr>
+          <tr><td><code>dailyCapGb</code></td><td>5.0</td><td>Bytes exchanged with other people's devices per UTC day.</td></tr>
+          <tr><td><code>keepModerated</code></td><td><code>true</code></td><td></td></tr>
+          <tr><td><code>linkPreviews</code></td><td><code>false</code></td><td>Fetch link previews (native side only).</td></tr>
+          <tr><td><code>tor</code></td><td><code>false</code></td><td>Kept only on the desktop platform; ignored elsewhere.</td></tr>
+          <tr><td><code>theme</code>, <code>motion</code></td><td><code>"system"</code></td><td></td></tr>
+          <tr><td><code>autoVouch</code></td><td><code>true</code></td><td>Vouch for newcomers whose posts you read and didn't hide.</td></tr>
+          <tr><td><code>autoMedia</code></td><td><code>true</code></td><td>Fetch media of trusted members' posts by itself.</td></tr>
+          <tr><td><code>relayNoticeSeen</code>, <code>postingNoticeSeen</code></td><td><code>false</code></td><td>One-time explanations shown.</td></tr>
+          <tr><td><code>companion</code></td><td><code>false</code></td><td>Desktop opens as the small companion.</td></tr>
+          <tr><td><code>publicNode</code></td><td><code>false</code></td><td>Serve strangers as a public node (native, while relaying).</td></tr>
+          <tr><td><code>vpn</code>, <code>homeNetwork</code></td><td><code>""</code>, <code>true</code></td><td>Only through this interface; whether the home network may still be used directly.</td></tr>
+          <tr><td><code>holdPiecesGb</code></td><td>2.0</td><td>Desktop: pieces kept for others while a public node; 0 is off.</td></tr>
+          <tr><td><code>favorites</code>, <code>communityOrder</code></td><td><code>[]</code></td><td>This device's ordering of communities; never sent.</td></tr>
+          <tr><td><code>lessData</code></td><td><code>false</code></td><td>Browsers and phones: let the home node rebuild posts kept in pieces.</td></tr>
+          <tr><td><code>shareHolders</code></td><td><code>false</code></td><td>Publish a roster of holders this device saw up.</td></tr>
+          <tr><td><code>directLinks</code></td><td><code>false</code></td><td>Direct WebRTC links with members' browsers.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p><code>SettingsPatch</code> has the same fields, each optional.</p>
+
+    <h3 id="dto-net">NetStatus and NodeStats</h3>
+    <p><code>NetStatus</code> is what the network screens draw and what every <code>net</code> event carries: <code>mode</code>, <code>label</code> (the relay pill), <code>peers</code>, <code>connections</code> (each <code>ConnectionStatus</code>: <code>peer</code>, <code>role</code>, <code>route</code>, <code>connected</code>, <code>transport</code> <code>quic</code>/<code>webrtc</code>/<code>websocket</code>, <code>encryption</code> in words, <code>kind</code> <code>home</code>/<code>device</code>/<code>public</code>/<code>node</code>/<code>browser</code>, <code>keeps</code>, <code>incoming</code>, <code>direct</code>, <code>communities</code>), <code>communities</code> (<code>CommunitySyncStatus</code>), <code>lastSync</code>, <code>homeNode</code> (<code>url</code>, <code>connected</code>, <code>name</code>, <code>error</code>, <code>pairingWeb</code>, <code>phoneCanReach</code>, <code>via</code>), <code>serving</code> (<code>url</code>, <code>pairing</code>, <code>pairingWeb</code>, <code>phoneCanReach</code>, <code>clients</code>), <code>transport</code>, <code>rtc</code> routes, <code>relaying</code>, <code>directory</code>, <code>nodeLink</code>, <code>portMapping</code>, <code>exposure</code>, <code>vpn</code> and <code>pendingNotices</code>.</p>
+    <p><code>NodeStats</code>: <code>records</code>, <code>storedBytes</code>, <code>communities</code>, <code>bouncedKeys</code>, <code>bouncedRecords</code>, <code>peers</code>, <code>passedAlongBytes</code>, <code>mediaBytes</code>, <code>saved</code>, <code>readingNotes</code>, <code>fadesBy</code>, <code>blockedPictures</code>, and <code>heldPieces</code>, <code>heldBytes</code>, <code>heldBudget</code> while the node keeps pieces for others.</p>
+
+    <h3 id="dto-invites">Invite, InvitePreview, ImportReport, drafts</h3>
+    <ul>
+      <li><code>Invite</code>: <code>uri</code> (<code>hoi://join?code=…</code>), <code>web</code> (the https form), <code>addresses</code> (each address inside, named before it is shared) and <code>outside</code> (at least one is on the internet).</li>
+      <li><code>InvitePreview</code>: <code>community</code>, <code>relays</code>, <code>peers</code>, <code>trackers</code>, <code>alreadyJoined</code>, <code>verified</code>.</li>
+      <li><code>ImportReport</code>: <code>accepted</code>, <code>duplicates</code>, <code>rejected</code>, <code>reasons</code> (a map written with its keys sorted).</li>
+      <li><code>DraftDto</code>: <code>token</code>, <code>prefix</code> and <code>suffix</code> (base64url), <code>bits</code>. <code>IdentityDraft</code>: <code>root</code>, <code>rootKey</code>, <code>short</code>, <code>fingerprint</code>, <code>bits</code>. Neither crosses UniFFI.</li>
+    </ul>
+  </section>
+
+  <section class="wk-sec" id="events">
+    <h2>Events</h2>
+    <p>The core never calls a UI. It queues <code>Event</code>s, which the host takes with <code>take_events()</code> after each call and passes on. The enum is tagged by <code>type</code>:</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Events">
+      <table>
+        <thead><tr><th><code>type</code></th><th>Fields</th><th>When</th></tr></thead>
+        <tbody>
+          <tr><td><code>changed</code></td><td><code>communities</code> (hex[])</td><td>Records arrived, expired or were removed: refresh those communities. Pushed by <code>commit()</code>.</td></tr>
+          <tr><td><code>notice</code></td><td><code>text</code></td><td>Something worth a toast: a bounce, a storage failure, a carry answer.</td></tr>
+          <tr><td><code>net</code></td><td><code>status</code> (<code>NetStatus</code>)</td><td>Pushed by <code>commit()</code> only when the status differs from the last one sent.</td></tr>
+          <tr><td><code>linkAsk</code></td><td><code>ask</code> (<code>LinkAsk</code>: <code>id</code>, <code>label</code>, <code>check</code>, <code>device</code>, <code>at</code>)</td><td>A new device asks to be linked (root devices only).</td></tr>
+          <tr><td><code>linkCheck</code></td><td><code>checks</code> (string[])</td><td>On the new device: the four digits to compare.</td></tr>
+          <tr><td><code>linked</code></td><td><code>me</code></td><td>This device was linked through the home node.</td></tr>
+          <tr><td><code>signAsk</code></td><td><code>ask</code> (<code>id</code>, <code>device</code>, <code>kind</code>, <code>community</code>, <code>at</code>)</td><td>On a computer: a browser's record waits for a yes. Ledger entries, communities, identities, delegations, revokes and rotations always wait.</td></tr>
+          <tr><td><code>signed</code></td><td><code>id</code>, <code>ok</code>, <code>message</code></td><td>On that browser: the answer.</td></tr>
+          <tr><td><code>preview</code></td><td><code>url</code></td><td>A link preview arrived.</td></tr>
+          <tr><td><code>nodeNotice</code></td><td><code>node</code></td><td>A public node asks the person to read its operator's notice first.</td></tr>
+          <tr><td><code>stamp</code></td><td><code>phase</code>, <code>bits</code>, <code>estimateMs</code>, <code>tookMs?</code></td><td>Not from the core: <code>rpc-core.ts</code> and <code>HoiNode</code> emit it around mining.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="wk-table" tabindex="0" role="region" aria-label="How each host delivers events">
+      <table>
+        <thead><tr><th>Host</th><th>Delivery</th></tr></thead>
+        <tbody>
+          <tr><td>Web worker</td><td><code>JSON.parse(node.take_events())</code> after storage committed, each posted as <code>{kind: "event", event}</code>; <code>worker-core.ts</code> hands it to every subscriber.</td></tr>
+          <tr><td>Desktop</td><td><code>Shared</code>'s event sink calls <code>app.emit("hoi://event", e)</code> for each; <code>tauri-core.ts</code> listens on that channel.</td></tr>
+          <tr><td>Phones</td><td><code>EventListener.on_event(json)</code>, one JSON string per event, on a background thread. <code>events.rs</code> drops <code>net</code> events identical to the last, notes the last <code>changed</code> (to tell when a sync burst has gone quiet), and writes the time the home node was last reached to <code>last-sync</code> at most every 30 seconds.</td></tr>
+          <tr><td>Native hosts in general</td><td><code>hoi_net::Shared::with</code> commits, then takes the events and calls the sink. When <code>commit()</code> fails it sends one <code>notice</code> (“This node could not save changes. Sync is paused…”), drops the outbox and closes every link; on recovery it adds “Storage is working again…”.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="wk-sec" id="errors">
+    <h2>Errors</h2>
+    <p>Every failure is an <code>ApiError { code, message }</code>: a code a UI can branch on and a sentence a person can read, shown as is. Over JSON it is <code>{"code": "…", "message": "…"}</code>; in TypeScript a <code>HoiError</code> (an <code>Error</code> with <code>code</code>); over UniFFI <code>HoiError::Api { code, message }</code>, whose <code>message</code> Kotlin calls <code>reason</code>.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Error codes">
+      <table>
+        <thead><tr><th>Code</th><th>Where it comes from</th></tr></thead>
+        <tbody>
+          <tr><td><code>no-identity</code></td><td>No key yet (“Pick a name first.”), or the record's key has no identity here.</td></tr>
+          <tr><td><code>not-found</code></td><td>“No &lt;thing&gt; like that on this device.” Also an unknown community.</td></tr>
+          <tr><td><code>not-allowed</code></td><td>Not permitted, too little identity work for the community, or a burned key.</td></tr>
+          <tr><td><code>rate-limited</code></td><td>The community's newcomer rate.</td></tr>
+          <tr><td><code>invalid</code></td><td>Bad arguments, content rules, damaged codes (“That code or file is damaged.”), unknown methods.</td></tr>
+          <tr><td><code>bad-invite</code></td><td>A link that doesn't parse or verify.</td></tr>
+          <tr><td><code>bad-passphrase</code></td><td>“Wrong passphrase, or the file is damaged.” (<code>CryptoError::Open</code>), and a vault that won't open.</td></tr>
+          <tr><td><code>expired</code></td><td>“That has already faded.”</td></tr>
+          <tr><td><code>banned</code></td><td>“You're banned from this community.”</td></tr>
+          <tr><td><code>too-big</code></td><td>“That's too long for one record.”</td></tr>
+          <tr><td><code>storage-incompatible</code></td><td><code>Node::open</code>: saved data is damaged or newer. “No stored data was changed.”</td></tr>
+          <tr><td><code>offline</code></td><td>Hosts: the worker is not open or the tab lost the lock; a remote signature never came.</td></tr>
+          <tr><td><code>internal</code></td><td>Storage failures and everything unexpected.</td></tr>
+          <tr><td><code>signing</code></td><td><code>createPost</code> or <code>reply</code> on a device whose computer signs for it.</td></tr>
+          <tr><td><code>private-pending</code>, <code>private-invalid</code></td><td>Private groups: something encrypted is still on its way, or failed authentication.</td></tr>
+          <tr><td><code>scatter-busy</code>, <code>scatter-budget</code>, <code>scatter-update</code>, <code>unavailable</code></td><td>Scattered delivery: too many pieces in flight, a generation's indexes spent, a bad update, the home node didn't answer a rebuild.</td></tr>
+          <tr><td><code>saved-data</code></td><td>The web worker and the desktop: the passphrase opened the vault but the data inside could not be loaded.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>The TypeScript <code>ErrorCode</code> union lists the first thirteen; the others arrive as strings in <code>HoiError.code</code>. A refused record maps from <code>hoi_validate::Reject</code>: <code>RateLimited</code>, <code>Banned</code>, <code>TooBig</code>, <code>Expired</code> to their codes, <code>Content</code> to <code>invalid</code>, <code>UnknownCommunity</code> to <code>not-found</code>, <code>NotAllowed</code>, <code>WeakIdentity</code> and <code>Burned</code> to <code>not-allowed</code>, <code>NoIdentity</code> to <code>no-identity</code>, anything else to <code>invalid</code>; messages are capitalized and end with a period.</p>
+  </section>
+
+  <section class="wk-sec" id="typescript">
+    <h2>The TypeScript package</h2>
+    <p><code>@hoi/core-api</code> (<code>packages/core-api</code>, private, version <code>1.0.0-preview.1</code>) is the contract: types only and a few display helpers, no runtime dependency. <code>src/index.ts</code> re-exports <code>types.ts</code> and <code>format.ts</code>; <code>pnpm check</code> runs <code>tsc</code>.</p>
+    <ul>
+      <li><code>types.ts</code>: the <code>HoiCore</code> interface (about 140 methods in the groups above, plus <code>on(listener)</code> returning an unsubscribe function), every DTO, <code>CoreEvent</code>, <code>ErrorCode</code>, <code>HoiError</code>, the defaults <code>DEFAULT_LADDER</code> and <code>DEFAULT_LIMITS</code>, the colors <code>COMMUNITY_COLORS</code> (six) and <code>AVATAR_COLORS</code> (five), and literal types such as <code>FeedSort</code>, <code>Verdict</code> and <code>HideReason</code>.</li>
+      <li><code>format.ts</code>: helpers every shell shares.</li>
+    </ul>
+    <div class="wk-table" tabindex="0" role="region" aria-label="format.ts helpers">
+      <table>
+        <thead><tr><th>Helper</th><th>Returns</th></tr></thead>
+        <tbody>
+          <tr><td><code>shortKey(hex)</code></td><td><code>a7f2·91c0</code></td></tr>
+          <tr><td><code>shortId(hex)</code></td><td><code>b3:9e1c…4f0a</code></td></tr>
+          <tr><td><code>lifeLeft(createdAt, expiresAt, at?)</code></td><td>Remaining life 0 to 1, for life bars.</td></tr>
+          <tr><td><code>fadesIn(expiresAt, at?)</code></td><td><code>fades in a moment</code> (≤ 60 s), <code>… min</code>, <code>… h</code> (under two days), <code>… d</code>.</td></tr>
+          <tr><td><code>ago(t, at?)</code></td><td><code>just now</code>, <code>5m</code>, <code>2h</code>, <code>5 d</code>, <code>2 mo</code>.</td></tr>
+          <tr><td><code>duration(seconds)</code></td><td><code>180 days</code>, <code>36 hours</code>.</td></tr>
+          <tr><td><code>bytes(n)</code></td><td><code>512 B</code>, <code>4.2 KB</code>, <code>12 MB</code>, <code>1.3 GB</code>.</td></tr>
+          <tr><td><code>stampEstimateMs(bits, hashesPerSecond)</code></td><td><code>2^bits / rate</code> in milliseconds.</td></tr>
+          <tr><td><code>leadingZeroBits(hash)</code></td><td>The work a stamp or identity nonce carries.</td></tr>
+          <tr><td><code>zbase32Encode</code>, <code>zbase32Decode</code>, <code>recoveryKeyBody</code>, <code>looksLikeRecoveryKey</code>, <code>formatRecoveryKey</code>, <code>RECOVERY_KEY_PREFIX</code></td><td>Recovery lines: prefix <code>hoi-key-1-</code>, a body of 56 z-base-32 characters (35 bytes), written in seven groups of eight; pasting forgives case, hyphens, spaces and <code>0</code>/<code>l</code> for <code>o</code>/<code>1</code>.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p><code>apps/web/src/lib/core/rpc-core.ts</code> implements <code>HoiCore</code> over any <code>Transport</code> (<code>call(method, args)</code> rejecting with <code>{code, message}</code>, and <code>subscribe</code>) and a <code>Stamper</code> (<code>rate</code>, <code>mine</code>, <code>mineIdentity</code>, optionally <code>mineMore</code>). It converts bytes to and from base64url, wraps errors in <code>HoiError</code>, and turns <code>createPost</code>, <code>reply</code>, <code>edit</code>, <code>createIdentity</code> and <code>strengthenIdentity</code> into the draft, mine, publish steps.</p>
+    <div class="wk-code" data-lang="ts" data-title="A UI component"><pre><code>import { getCore } from '$lib/core';
+
+const core = await getCore();                     // worker, Tauri or mock: the UI can't tell
+const off = core.on((e) =&gt; {
+  if (e.type === 'changed' &amp;&amp; e.communities.includes(id)) refresh();
+});
+const post = await core.createPost({ community: id, title: 'Weekend plans', text: 'Picnic on Saturday?' });
+const feed = await core.feed({ community: id, sort: 'hot' });
+await core.vote(post.id, 1);</code></pre></div>
+  </section>
+
+  <section class="wk-sec" id="worker">
+    <h2>The web worker and the desktop shell</h2>
+    <h3 id="worker-protocol">Worker messages</h3>
+    <p><code>worker-core.ts</code> starts <code>core.worker.ts</code> as a module worker named <code>hoi-core</code> and speaks a small protocol over <code>postMessage</code>:</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Worker messages">
+      <table>
+        <thead><tr><th>Direction</th><th>Message</th><th>Meaning</th></tr></thead>
+        <tbody>
+          <tr><td>page → worker</td><td><code>{id, method, args}</code></td><td>A call; <code>args</code> are copied through <code>JSON.parse(JSON.stringify())</code> first, which also strips Svelte's state proxies.</td></tr>
+          <tr><td>worker → page</td><td><code>{kind: "reply", id, ok, result}</code> or <code>{…, ok: false, error}</code></td><td>The answer.</td></tr>
+          <tr><td>worker → page</td><td><code>{kind: "event", event}</code></td><td>A <code>CoreEvent</code>.</td></tr>
+          <tr><td>worker → page</td><td><code>{kind: "locked"}</code></td><td>Another tab took over: the page tears down and reloads.</td></tr>
+          <tr><td>worker ↔ page</td><td><code>rtc-open</code>, <code>rtc-send</code>, <code>rtc-close</code>, <code>direct-offer</code>, <code>direct-answer</code>, <code>direct-accept</code>; <code>{kind: "rtc", ev, id, …}</code> back</td><td>Workers can't open WebRTC, so the page carries those links.</td></tr>
+          <tr><td>worker ↔ page</td><td><code>{kind: "look", id, mime, data}</code>; <code>{kind: "looked", id, look}</code> back</td><td>Media the core wants looked at in the page's look worker.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Methods beginning with <code>__</code> never reach the core: <code>__init</code> (web base, store name, take the one-tab lock), <code>__vaultStatus</code> (<code>create</code>, <code>migrate</code>, <code>locked</code>, <code>ready</code> or <code>blocked</code>), <code>__unlock</code>, <code>__vaultPasskeys</code>, <code>__unlockPasskey</code>, <code>__addPasskey</code>, <code>__removePasskeys</code>, <code>__resetVault</code> (needs <code>"RESET"</code>), <code>__lock</code> and <code>__takeOver</code>. A few core methods get extra work around them: <code>boot</code> answers without the core when another tab holds the lock, <code>pair</code> and <code>unpair</code> reconnect the home link, <code>publicJoin</code>, <code>openNodeLink</code> and <code>acceptNotice</code> dial right away, <code>setSettings</code> closes direct links when they were turned off, and <code>wipe</code> restarts every link.</p>
+    <p>Everything that touches the node or storage runs through one promise queue (<code>run</code>), so calls, incoming messages, timers and the sweep never interleave. After a storage failure, no new call runs until the pending changes are saved again. A timer runs <code>scatterTick()</code> every 5 seconds and <code>sweep()</code> every 36th round (about every three minutes); a watchdog every 30 seconds closes links whose catch-up stalled.</p>
+
+    <h3 id="worker-desktop">The desktop's Tauri commands</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Tauri commands">
+      <table>
+        <thead><tr><th>Command</th><th>Does</th></tr></thead>
+        <tbody>
+          <tr><td><code>hoi_call(method, args)</code></td><td><code>Node::call</code> inside <code>Shared::with</code>; answers <code>vpnInterfaces</code> and <code>previewPublicNode</code> itself; around <code>wipe</code> stops and restarts the transports and port forwards; after <code>setSettings</code> follows the VPN setting and the piece store; after <code>pair</code>, <code>unpair</code> or <code>wipe</code> restarts the home link.</td></tr>
+          <tr><td><code>hoi_mine(prefix, suffix, bits)</code></td><td><code>mine_puzzle</code> on a blocking thread, without the node.</td></tr>
+          <tr><td><code>hoi_benchmark</code></td><td><code>{hashesPerSecond}</code> for the work bar.</td></tr>
+          <tr><td><code>hoi_mine_identity</code>, <code>hoi_identity_progress</code>, <code>hoi_identity_stop</code></td><td>More identity work, minutes long, off the node; progress read twice a second; stoppable.</td></tr>
+          <tr><td><code>hoi_vault_status</code>, <code>hoi_vault_unlock</code>, <code>hoi_vault_lock</code>, <code>hoi_vault_reset</code></td><td>The passphrase vault around <code>hoi.db</code>; see <a href="/wiki/storage/">Storage</a>.</td></tr>
+          <tr><td><code>hoi_save_file</code>, <code>hoi_open_url</code>, <code>hoi_autostart</code>, <code>hoi_face</code></td><td>Shell conveniences: save a file, open a web link, start at login, companion or full window.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="wk-sec" id="uniffi">
+    <h2>The typed UniFFI API</h2>
+    <p>On phones there is no JSON layer for the common calls. <code>hoi-core</code>'s <code>ffi</code> feature derives UniFFI records on every DTO, and <code>hoi-ffi</code> exports one object:</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="HoiNode lifecycle methods">
+      <table>
+        <thead><tr><th>Method</th><th>Does</th></tr></thead>
+        <tbody>
+          <tr><td><code>HoiNode.open(dataDir, keystore, listener)</code></td><td>Constructor. Creates the directory, opens <code>hoi.db</code> through the encrypted <code>Split</code> adapter, replays and re-checks everything, turns the consent gate on, starts a two-thread tokio runtime and the sweeper, benchmarks hashing in the background. Call it off the main thread.</td></tr>
+          <tr><td><code>start_home_link()</code> / <code>stop_home_link()</code></td><td>Foreground only: phones keep no background sockets. Returns false when no home node is paired.</td></tr>
+          <tr><td><code>sync_burst(max_seconds)</code></td><td>For background refresh: starts the link, waits until the home node was reached and nothing changed for 2 seconds (or the time ran out), stops it again unless the app had it running.</td></tr>
+          <tr><td><code>last_synced_at()</code></td><td>When the home node was last reached, kept across restarts.</td></tr>
+          <tr><td><code>net_status()</code>, <code>pair(link)</code>, <code>unpair()</code>, <code>wipe()</code>, <code>sweep()</code></td><td>Typed; <code>pair</code>, <code>unpair</code> and <code>wipe</code> also manage the link.</td></tr>
+          <tr><td><code>call(method, argsJson)</code></td><td><code>Node::call</code> for everything not typed (private communities, recovery shares, wiki, labelers, aggregators…). Returns JSON.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>The typed methods cover identity (<code>boot</code>, <code>me</code>, <code>create_identity</code>, <code>set_name</code>, <code>set_avatar</code>, <code>set_avatar_color</code>, <code>export_identity</code>, <code>import_identity</code>, <code>recovery_key</code>, <code>forget_recovery_key</code>, <code>restore_identity</code>, <code>link_request</code>, <code>link_approve</code>, <code>link_complete</code>, <code>revoke_device</code>, <code>strengthen_identity</code>, <code>strengthen_identity_with</code>, <code>set_device_label</code>, <code>burn_identity</code>, <code>import_blocklist</code>), notices and node links, communities (<code>communities</code>, <code>discover_communities</code>, registration and publication, <code>public_join</code>, <code>warmth</code>, <code>request_carry</code>, <code>community</code>, <code>create_community</code>, <code>preview_invite</code>, <code>join</code>, <code>leave</code>, <code>set_pinning</code>, <code>invite</code>, bundles), owners and moderators, the ladder, posts (<code>feed</code>, <code>post</code>, <code>create_post</code>, <code>reply</code>, <code>edit</code>, <code>delete_own</code>, <code>vote</code>, <code>flag</code>, <code>save</code>, <code>saved</code>, <code>search</code>, <code>media</code>) and people (<code>person</code>, <code>set_trust</code>, <code>set_muted</code>, <code>set_petname</code>, <code>stats</code>, <code>settings</code>, <code>set_settings</code>). <code>create_post</code>, <code>reply</code> and <code>edit</code> mine without holding the node lock and emit <code>stamp</code> events with an estimate from the phone's own benchmark (4 million hashes a second assumed until it is in).</p>
+    <p>Every method blocks its thread while it reads storage, validates, mines or writes. The app implements two foreign traits: <code>KeyStore</code> (<code>get(key)</code>, <code>set(key, value?)</code>; Keychain on iOS, an AES-GCM key in the Android Keystore on Android) and <code>EventListener</code> (<code>on_event(json)</code>). Both are called on background threads and must not call back into <code>HoiNode</code>.</p>
+    <div class="wk-code" data-lang="kotlin" data-title="apps/mobile/android/…/Hoi.kt (trimmed)"><pre><code>val listener = object : EventListener {
+    // Called on the core's threads: hand over, never block.
+    override fun onEvent(json: String) {
+        raw.tryEmit(json)
+    }
+}
+val dir = File(context.applicationContext.filesDir, "hoi")
+val node = HoiNode.open(dir.path, keyStore, listener)</code></pre></div>
+    <div class="wk-code" data-lang="swift" data-title="apps/mobile/ios/…/HoiCore.swift (trimmed)"><pre><code>let (node, snapshot) = try await Task.detached(priority: .userInitiated) {
+    let node = try HoiNode.open(dataDir: dir.path, keystore: keyStore, listener: relay)
+    return (node, Snapshot(node))
+}.value</code></pre></div>
+  </section>
+
+  <section class="wk-sec" id="wasm">
+    <h2>The wasm-bindgen surface</h2>
+    <p><code>hoi-wasm</code> exports a node, a vault and the pieces the worker pools need. Errors from <code>WasmNode</code> are JSON <code>{code, message}</code> strings.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="WasmNode methods">
+      <table>
+        <thead><tr><th>Export</th><th>Does</th></tr></thead>
+        <tbody>
+          <tr><td><code>new WasmNode(platform, webBase, records, blobs)</code></td><td>Opens a node over an in-memory <code>Persist</code> preloaded with the decrypted records (<code>Uint8Array[]</code>) and blobs (<code>[key, Uint8Array][]</code>); turns on the consent gate and <code>set_look_elsewhere(true)</code>.</td></tr>
+          <tr><td><code>call(method, argsJson)</code></td><td><code>Node::call</code>; returns JSON.</td></tr>
+          <tr><td><code>take_events()</code></td><td>A JSON array of events.</td></tr>
+          <tr><td><code>take_changes()</code></td><td>Storage changes in order: <code>{op: "put", id, community, expiresAt, wire}</code>, <code>{op: "delete", id}</code>, <code>{op: "blob", key, value}</code>, <code>{op: "wipe"}</code>.</td></tr>
+          <tr><td><code>take_outbox()</code></td><td><code>[[peer, Uint8Array], …]</code> to send.</td></tr>
+          <tr><td><code>net_connect(peer, role)</code>, <code>net_receive(peer, bytes)</code>, <code>net_disconnect(peer)</code></td><td>Links: <code>role</code> is <code>home</code>, <code>client</code> or <code>peer</code>; <code>net_receive</code> commits and returns false when the link should be dropped.</td></tr>
+          <tr><td><code>set_peer_meta(peer, transport, local, tls, dialed?, rtc?)</code></td><td>How a link travels, which routes it was dialed by (at most eight), and the WebRTC certificate binding <code>{node, browser, ufrag}</code>.</td></tr>
+          <tr><td><code>rtc_candidates()</code>, <code>discovery_candidates()</code>, <code>mailbox_links()</code>, <code>dial_failed(route)</code></td><td>What to dial next and how many extra links to keep.</td></tr>
+          <tr><td><code>sync_stalled(peer)</code>, <code>consent_closed(peer)</code>, <code>set_net_error(msg?)</code>, <code>home()</code></td><td>Link bookkeeping for the worker.</td></tr>
+          <tr><td><code>sweep()</code>, <code>scatterTick()</code></td><td>Timers; both commit.</td></tr>
+          <tr><td><code>looks_wanted()</code>, <code>looked(id, lookJson)</code></td><td>Media handed out to the look worker and its answers.</td></tr>
+          <tr><td><code>handleChecks()</code>, <code>handleChecked(domain, lines)</code></td><td>Domains to check as handles and what <code>/.well-known/hoi</code> said.</td></tr>
+          <tr><td><code>takeDirect()</code>, <code>signal(via, to, data)</code>, <code>setDirectMeta(peer, via, handle, incoming)</code></td><td>Direct links between browsers.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Other hoi-wasm exports">
+      <table>
+        <thead><tr><th>Export</th><th>Does</th></tr></thead>
+        <tbody>
+          <tr><td><code>WasmVault</code></td><td><code>new(passphrase)</code>, <code>unlock(header, passphrase)</code>, <code>unlock_passkey(header, credential, prf)</code>, <code>passkeys(header)</code>, <code>add_passkey</code>, <code>remove_passkeys</code>, <code>header</code>, <code>seal(context, plain)</code>, <code>unseal(context, cipher)</code>, <code>fingerprint(bytes)</code>. The worker keeps it only while unlocked.</td></tr>
+          <tr><td><code>mine_range(prefix, suffix, bits, start, step, tries)</code></td><td>Searches nonces <code>start, start+step, …</code>; returns the nonce or −1. Nonces stay below 2⁵³.</td></tr>
+          <tr><td><code>IdentityMiner(root)</code> / <code>attempt(work)</code></td><td>One Argon2id try at a time (one 8 MiB buffer per miner), so the page can show every attempt.</td></tr>
+          <tr><td><code>look_media(mime, bytes)</code>, <code>sanitize_and_look(raw)</code>, <code>look_luma(luma, w, h)</code></td><td>For the look worker: fingerprints of checked media, of a file being attached (with its hash and type), and of one video frame.</td></tr>
+          <tr><td><code>core_version()</code></td><td><code>hoi_core::VERSION</code>.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="wk-sec" id="next">
+    <h2>Where to go next</h2>
+    <div class="wk-cards">
+      <a class="wk-card g-mint" href="/wiki/storage/"><i></i><b>Storage</b><span>What take_changes writes, where, and how it is sealed.</span></a>
+      <a class="wk-card g-sky" href="/wiki/crates/"><i></i><b>Crates</b><span>Every module of hoi-core and the crates around it.</span></a>
+      <a class="wk-card g-coral" href="/wiki/web-app/"><i></i><b>Web app</b><span>The screens that call this API.</span></a>
+      <a class="wk-card g-lilac" href="/wiki/mobile/"><i></i><b>Mobile libraries</b><span>The Swift and Kotlin packages around HoiNode.</span></a>
+    </div>
+  </section>
+</article>
+<!-- @wiki-close -->
+<!-- @include footer.html -->
+<script type="module" src="/src/pages/wiki.ts"></script>
+</body>
+</html>

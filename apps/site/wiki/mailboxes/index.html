@@ -1,0 +1,535 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <!-- @include head.html title="Mailboxes &amp; encrypted relays · hoi wiki" description="The relay protocol, padded objects, rooms and the relay service." -->
+</head>
+<body class="wiki">
+<!-- @include header.html nav="wiki" -->
+<!-- @wiki-open -->
+<article class="wk-doc">
+  <!-- @wiki-crumbs -->
+  <h1>Mailboxes <span class="acc">&amp; encrypted relays</span></h1>
+  <p class="wk-lead">Members of a private group never hand each other messages directly. Each device leaves sealed, padded MLS messages where the others will look: in numbered slots on a few public nodes the group agreed on (mailboxes), or, on a build that names one, in an opaque encrypted relay. Both carry the same objects and neither learns the community, its members or a message's exact size. This page covers both sides of each: the core's <code>mailbox.rs</code> and <code>pickup.rs</code>, the web app's relay client, and the relay service in <code>relay/</code>.</p>
+  <p class="wk-src-list">Source <a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/mailbox.rs">hoi-core/src/mailbox.rs</a> <a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/pickup.rs">hoi-core/src/pickup.rs</a> <a href="{{REPO_URL}}/blob/main/apps/web/src/lib/private-relay.ts">apps/web/src/lib/private-relay.ts</a> <a href="{{REPO_URL}}/tree/main/relay">relay/</a> <a href="{{REPO_URL}}/blob/main/relay/README.md">relay/README.md</a></p>
+  <div class="wk-head-rule"></div>
+
+  <section class="wk-sec" id="overview">
+    <h2>Two ways to carry a group</h2>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Mailboxes and relays compared">
+      <table>
+        <thead><tr><th></th><th>Mailboxes</th><th>Encrypted relay</th></tr></thead>
+        <tbody>
+          <tr><td>Who stores</td><td>Public nodes that keep pieces for others: <code>hoi-node --hold-pieces GB</code> (2 GB by default on a node that serves strangers) or a desktop that is a public node with <b>Keep mailboxes for others</b> on (1 to 20 GB, 2 by default).</td><td>A Cloudflare Worker with one SQLite-backed Durable Object, or the same Worker run locally.</td></tr>
+          <tr><td>Chosen by</td><td>The owner's device (or the committers in line), by itself, in places of their own; listed in the MLS group context, so a Welcome gives them to newcomers.</td><td>The app's build: up to three relay URLs in the relay addresses. Invitations never name one. The published app names none.</td></tr>
+          <tr><td>Addressing</td><td>One slot per message: a random-looking locator from the epoch's slot key, the writer's leaf and a sequence number.</td><td>The epoch's room id, and a sequence the relay assigns.</td></tr>
+          <tr><td>Proof</td><td>A stamp bound to holder, locator, length and expiry day; the request sealed to the holder with HPKE.</td><td>Ed25519 signatures by the epoch's room key, on every upload and every read.</td></tr>
+          <tr><td>Used when</td><td>Once the group context lists any (<code>transport</code> = <code>mailboxes</code>).</td><td>While the group has no mailboxes yet (<code>transport</code> = <code>waiting</code>), on a build that names a relay.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="wk-note info"><b>Not the other relays</b><p>The site's <a href="/relay/">Run a relay</a> page is about something else: a desktop app or <code>hoi-node</code> keeping public communities reachable for members who are away, and relays that pass encrypted QUIC packets between devices (<a href="/wiki/transports/">Transports</a>). That page notes that private communities use a separate encrypted relay; this page is about that one, and about mailboxes.</p></div>
+  </section>
+
+  <section class="wk-sec" id="objects">
+    <h2>The objects both carry</h2>
+    <p>Every message a private group sends is a <code>CipherObject</code> from the core's outbox (<a href="/wiki/private/">Private communities</a>): one MLS message, length-prefixed, zero-padded and sealed with XChaCha20-Poly1305 under a key from the epoch's exporter secret.</p>
+    <dl class="wk-defs">
+      <dt>id<small>64 hex</small></dt><dd>SHA-256 of the sealed bytes.</dd>
+      <dt>room<small>64 hex</small></dt><dd>The public half of the room key of the epoch the message was made in. A commit goes to the room it leaves.</dd>
+      <dt>body<small>base64url</small></dt><dd>The sealed bytes.</dd>
+      <dt>expires<small>Unix seconds</small></dt><dd>Now + 30 days (<code>RETENTION</code>).</dd>
+      <dt>size<small>bytes</small></dt><dd>One of the padded sizes below.</dd>
+      <dt>signature<small>128 hex</small></dt><dd>The room key's Ed25519 signature over <code>hoi relay object v2\n&lt;room&gt;\n&lt;id&gt;\n&lt;expires&gt;\n&lt;size&gt;</code>.</dd>
+    </dl>
+    <div class="wk-bytes" data-title="A sealed object (4 KiB to 1 MiB)">
+nonce | 24 B | sun | 2 | random
+length | 4 B | coral | 1 | u32 BE
+MLS message | n B | lilac | 5 | a <code>PrivateMessage</code>, header inside
+zeros | to size | mute | 2 | padding
+tag | 16 B | peach | 2 | Poly1305
+    </div>
+    <h3 id="objects-sizes">Padded sizes</h3>
+    <p>Both sides use one rule: at least 4 KiB, at most four significant bits, at most 1 MiB. That gives 65 sizes, at most one eighth above the content past 4 KiB. The relay refuses every other size; the core refuses to open one.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Padded sizes">
+      <table>
+        <thead><tr><th>From</th><th>Below</th><th>Step</th><th>Sizes</th></tr></thead>
+        <tbody>
+          <tr><td>4 KiB</td><td>8 KiB</td><td>512 B</td><td>4,096 · 4,608 · … · 7,680</td></tr>
+          <tr><td>8 KiB</td><td>16 KiB</td><td>1 KiB</td><td>8,192 · 9,216 · … · 15,360</td></tr>
+          <tr><td>16 KiB</td><td>32 KiB</td><td>2 KiB</td><td>8 sizes</td></tr>
+          <tr><td>32 KiB</td><td>64 KiB</td><td>4 KiB</td><td>8 sizes</td></tr>
+          <tr><td>64 KiB</td><td>128 KiB</td><td>8 KiB</td><td>8 sizes</td></tr>
+          <tr><td>128 KiB</td><td>256 KiB</td><td>16 KiB</td><td>8 sizes</td></tr>
+          <tr><td>256 KiB</td><td>512 KiB</td><td>32 KiB</td><td>8 sizes</td></tr>
+          <tr><td>512 KiB</td><td>1 MiB</td><td>64 KiB</td><td>524,288 · … · 983,040</td></tr>
+          <tr><td>1 MiB</td><td></td><td></td><td>1,048,576</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="wk-code" data-lang="js" data-title="relay/protocol.mjs"><pre><code>/** Stored sizes keep at most four significant bits: 4 KiB, 4.5 KiB … 7.5 KiB, 8 KiB, 9 KiB … 1 MiB. */
+export function isPaddedSize(size) {
+  return Number.isSafeInteger(size) &amp;&amp; size &gt;= MIN_OBJECT_BYTES &amp;&amp; size &lt;= MAX_OBJECT_BYTES &amp;&amp; size % (1 &lt;&lt; (28 - Math.clz32(size))) === 0;
+}</code></pre></div>
+  </section>
+
+  <section class="wk-sec" id="mailboxes">
+    <h2>Mailboxes</h2>
+    <p>A group's mailboxes are holders: public nodes that keep pieces for others and answer sealed requests (<a href="/wiki/scatter/">Scattered delivery</a>). To a holder a mailbox slot is just a piece: the same sealed <code>put</code>, <code>has</code> and <code>get</code>, the same stamp, the same rule that nothing is overwritten. Browsers cannot be holders; nodes and desktops can.</p>
+    <h3 id="mailboxes-list">The list in the group context</h3>
+    <p>The list lives in the MLS group context under extension type <code>0xff44</code>, as canonical CBOR. Only a commit changes it, so every member of an epoch sees the same list, and a Welcome hands it to a newcomer.</p>
+    <dl class="wk-defs">
+      <dt>v<small>uint</small></dt><dd><code>1</code>; anything else reads as no list.</dd>
+      <dt>m<small>array, at most 8</small></dt><dd>Mailboxes: <code>{e: endpoint (32 bytes), r: [route text]}</code>, at most 4 routes of at most 128 bytes each.</dd>
+      <dt>d<small>32 bytes, optional</small></dt><dd>The group's drop key (Ed25519, public part), which pieces of its posts are stored with.</dd>
+      <dt>h<small>array, optional</small></dt><dd>The committer devices the drop key's secret was given to, at most 64. Present only with <code>d</code>.</dd>
+    </dl>
+    <p>Anything malformed reads as no list. Older readers ignore <code>d</code> and <code>h</code>.</p>
+    <h3 id="mailboxes-choose">Choosing and keeping them</h3>
+    <p>The owner's device keeps the list; in a group whose membership follows its records, the committing devices do, in their order and turns (<a href="/wiki/private/">Private communities</a>), and change it only once they have caught up with the epoch.</p>
+    <ul>
+      <li><b>Keep</b> every listed mailbox that is linked now or was seen within <code>MAILBOX_STALE</code> (2 days); the list is fine as it is when all are alive and there are 4.</li>
+      <li><b>Fill</b> up to <code>MAILBOXES</code> (4): holders this device saw long and steadily first, then any reachable holder with routes; each in a place of its own (a network, or one named operator, is one place), with up to 4 routes members can dial.</li>
+      <li><b>Commit</b> the new list only if it has at least <code>MIN_MAILBOXES</code> (2) and differs. The commit goes in the epoch it ends, so members reading the old slots learn the new ones.</li>
+      <li><b>Look again</b> every 600 s, or every 30 s while the group has fewer than 2. Meanwhile the host dials more holders: mailboxes in use first, then holders met before (seen within 2 days, steadiest first, up to 8) and public nodes from the directory.</li>
+    </ul>
+    <p>A group of one has nobody to read its messages: objects that got no slot are acknowledged at once.</p>
+  </section>
+
+  <section class="wk-sec" id="slots">
+    <h2>Slots, writes and the bell</h2>
+    <p>Each member writes its messages of an epoch into its own numbered slots on every mailbox. Only members of that epoch can compute where a slot is; each membership change starts a fresh set; holders see random locators, never a listing.</p>
+    <div class="wk-code" data-lang="rust" data-title="core/crates/hoi-core/src/mailbox.rs"><pre><code>/// Where member `leaf`'s slot `seq` of an epoch is.
+pub(crate) fn slot(key: &amp;[u8; 32], leaf: u32, seq: u32) -&gt; [u8; 32] {
+    let mut msg = [0u8; 8];
+    msg[..4].copy_from_slice(&amp;leaf.to_be_bytes());
+    msg[4..].copy_from_slice(&amp;seq.to_be_bytes());
+    *blake3::keyed_hash(key, &amp;msg).as_bytes()
+}
+
+/// The slot key of an epoch, from its relay secret.
+pub(crate) fn slot_key(relay_secret: &amp;[u8; 32]) -&gt; [u8; 32] {
+    blake3::derive_key("hoi mailbox slot v1", relay_secret)
+}</code></pre></div>
+    <h3 id="slots-write">Writing</h3>
+    <ol class="wk-steps">
+      <li><b>A slot per message</b><p>Every object of the current room that has no slot gets this device's next sequence number in this epoch (<code>assign_slots</code>), in outbox order. A membership change may follow at once once everything ahead of it has a slot.</p></li>
+      <li><b>Put on every mailbox</b><p>A <code>put</code> sealed to the holder's key (<a href="/wiki/scatter/">envelopes</a>): the locator, a one-time reply key, an expiry day of <code>min(max(expires, now + 1 h), now + 30 days)</code> rounded up to a day, a drop hash from this device's own mailbox drop secret, a stamp mined for this holder, locator, length and day, and the sealed object. At most 32 puts per group are out at once.</p></li>
+      <li><b>Count it sent</b><p>Once <code>WRITE_QUORUM</code> (2) mailboxes stored it, or every mailbox answered and at least one stored it, the object is acknowledged and leaves the outbox.</p></li>
+      <li><b>Never overwritten</b><p>A holder that already keeps something else under the locator answers <code>Taken</code> (this device lost its place after a restart): the message moves to the next slot of its epoch, if the epoch is still current. Other refusals mark that mailbox done.</p></li>
+      <li><b>Ring the bell</b><p>Once stored, the writer rings its epoch's bell on every mailbox: 32 random bytes at the next free slot of leaf <code>u32::MAX</code>, which no member has, kept for 2 days. A <code>Taken</code> ring moves to the next bell slot, so two members ringing at once take two.</p></li>
+    </ol>
+    <h3 id="slots-read">Reading</h3>
+    <ul>
+      <li><b>The bell.</b> An idle member probes only the bell, on one mailbox chosen by its own leaf index, so readers spread over the mailboxes. Every writer rings on all of them, so one is enough.</li>
+      <li><b>A ring</b> sends the member over every other member's next slot, three probes each (<code>CHASE</code>): <code>has</code> answers in a 64-byte envelope with the piece's length, then <code>get</code> asks for exactly that length. A member found writing is followed until it stops.</li>
+      <li><b>A sweep</b> every 600 s looks at every member anyway, and one past the bell's next slot, in case a ring or a slot was lost.</li>
+      <li><b>In order.</b> A fetched slot goes through <code>privateReceive</code> like any object. A commit found past a member's next slot is held, not followed, until the slots before it are read. A member whose next slot keeps missing is looked at one past it on every fourth miss; once something was found ahead and the next slot missed 4 times, the reader counts it lost and moves on (following a held commit then).</li>
+      <li><b>Retry.</b> A message that came before what it depends on (an attachment before its post) gets another try for an hour, up to 64 waiting.</li>
+    </ul>
+    <div class="wk-seq" data-title="A message through mailboxes">
+lanes: Writer | Mailbox A | Mailbox B | Reader
+Writer: object gets slot <i>s</i> of leaf <i>w</i>, epoch <i>e</i>
+Writer -> Mailbox A: <code>put</code> loc(<i>w</i>, <i>s</i>), stamp, sealed object
+Writer -> Mailbox B: <code>put</code> loc(<i>w</i>, <i>s</i>), stamp, sealed object
+Mailbox A --> Writer: <code>stored</code> ok
+Mailbox B --> Writer: <code>stored</code> ok
+Writer: quorum of 2: acknowledged
+Writer -> Mailbox A: ring: 32 random bytes at bell slot <i>b</i>
+Writer -> Mailbox B: ring: 32 random bytes at bell slot <i>b</i>
+Reader -> Mailbox B: <code>has</code> bell slot <i>b</i>
+Mailbox B --> Reader: <code>had</code>: rang
+Reader -> Mailbox A: <code>has</code> loc(<i>w</i>, <i>s</i>)
+Mailbox A --> Reader: <code>had</code>, its length
+Reader -> Mailbox A: <code>get</code> loc(<i>w</i>, <i>s</i>), that length
+Mailbox A => Reader: <code>got</code>: the sealed object
+Reader: <code>privateReceive</code>; next look at slot <i>s</i>+1 at once
+    </div>
+    <h3 id="slots-timing">Timing and limits</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Mailbox constants">
+      <table>
+        <thead><tr><th>Constant</th><th>Value</th><th>Meaning</th></tr></thead>
+        <tbody>
+          <tr><td><code>MAILBOXES</code> / <code>MIN_MAILBOXES</code></td><td>4 / 2</td><td>Mailboxes a group keeps, and the fewest it lists.</td></tr>
+          <tr><td><code>WRITE_QUORUM</code></td><td>2</td><td>Mailboxes that must store a slot.</td></tr>
+          <tr><td><code>SLOT_TTL</code></td><td>30 days</td><td>Longest a slot is kept.</td></tr>
+          <tr><td><code>RING_DAYS</code></td><td>2</td><td>How long a ring is kept.</td></tr>
+          <tr><td><code>POLL_FAST</code> → <code>POLL_SLOW</code></td><td>5 s → 120 s</td><td>A probe that finds nothing doubles the wait, up to two minutes; one that finds something looks again at once.</td></tr>
+          <tr><td><code>FULL_SWEEP</code></td><td>600 s</td><td>Every member looked at, ring or not.</td></tr>
+          <tr><td><code>CHASE</code></td><td>3</td><td>Probes a member gets after a ring before it counts as quiet.</td></tr>
+          <tr><td><code>OUTBOX_EVERY</code></td><td>15 s</td><td>How often the outbox is filled with what members still lack.</td></tr>
+          <tr><td><code>MAILBOX_STALE</code></td><td>2 days</td><td>A listed mailbox not seen this long is replaced.</td></tr>
+          <tr><td><code>MAINTAIN_EVERY</code> / <code>CHOOSE_EVERY</code></td><td>600 s / 30 s</td><td>How often the list is looked at, normally and while there are too few.</td></tr>
+          <tr><td><code>CONTEST_POLL</code></td><td>600 s</td><td>Slowest look at committers ahead in a contested epoch.</td></tr>
+          <tr><td><code>MAX_INFLIGHT</code></td><td>32</td><td>Puts and probes in flight per group.</td></tr>
+          <tr><td><code>MAX_RETRY</code> / <code>RETRY_FOR</code></td><td>64 / 3600 s</td><td>Messages kept for another try, and for how long.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="wk-sec" id="reach">
+    <h2>Reaching a mailbox</h2>
+    <p>Requests to holders travel as <code>piece</code> messages on ordinary sync links (<a href="/wiki/sync/">Sync &amp; gossip</a>): <code>{op, rid, to?, env}</code>, where <code>env</code> is sealed to the holder and the answer is sealed to a one-time key the request carries. For each mailbox the device picks a way (<code>mail_links</code>):</p>
+    <ul>
+      <li><b>Through a forwarder</b> in another place that vouches for the holder: the forwarder passes the envelope on (<code>to</code> names the holder) and the answer back. The holder sees the forwarder's address, never this device's; the forwarder sees only envelopes. Mailboxes reached this way are not dialed.</li>
+      <li><b>Over its own link</b> to the holder, when no such forwarder is around. The holder then sees this device's address.</li>
+    </ul>
+    <p>The host keeps one link per mailbox in use (up to 4), and dials the routes the lists give for mailboxes it does not reach through a forwarder. Before linking, the app asks the person to accept the holder's operator notice, as for any node (<a href="/wiki/hoi-node/">hoi-node</a>); the end-to-end test accepts both holders' notices this way.</p>
+  </section>
+
+  <section class="wk-sec" id="pickup">
+    <h2>Picking up an invitation</h2>
+    <p>The device that adds a newcomer is not always the one the newcomer talked to: in a group whose membership follows its records, a member passes the request on and a committer adds them later. So every join request carries a one-time X25519 key and up to 4 holders the newcomer's app reaches (its own choice; it knows no mailbox of the group yet). The committer that adds the newcomer seals the invitation to that key and stores it on those holders, at numbered slots:</p>
+    <div class="wk-code" data-lang="rust" data-title="core/crates/hoi-core/src/pickup.rs"><pre><code>/// Where slot `i` of a pickup key is.
+pub(crate) fn pickup_loc(key: &amp;[u8; 32], i: u32) -&gt; [u8; 32] {
+    *blake3::keyed_hash(&amp;blake3::derive_key("hoi invitation pickup v1", key), &amp;i.to_be_bytes()).as_bytes()
+}</code></pre></div>
+    <div class="wk-bytes" data-title="A sealed invitation">
+enc | 32 B | sun | 2 | HPKE encapsulated key
+length | 4 B | coral | 1 | u32 BE
+invitation | n B | lilac | 5 | <code>hoi:private:…</code>
+zeros | to 4 KiB multiple | mute | 2 | padding
+tag | 16 B | peach | 2 | AEAD tag
+    </div>
+    <p>HPKE base mode with the envelopes' suite (X25519, HKDF-SHA256, ChaCha20-Poly1305), info <code>hoi invitation v1</code>, AAD <code>hoi invitation v1</code> ‖ the key. The plaintext is padded to a multiple of 4096 bytes, so the size says little about the group; the sealed invitation is at most 1 MiB. Anyone who saw the request can compute the locators, but what is stored there opens only with the newcomer's key, and the Welcome inside only with its key package: they could fill slots, not read or swap one.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Pickup constants">
+      <table>
+        <thead><tr><th>Constant</th><th>Value</th><th>Meaning</th></tr></thead>
+        <tbody>
+          <tr><td><code>PICKUP_HOLDERS</code></td><td>4</td><td>Holders a request names at most, distinct, steadiest first, each in a place of its own.</td></tr>
+          <tr><td><code>PICKUP_SLOTS</code></td><td>8</td><td>Slots tried per holder: a <code>Taken</code> slot moves the writer on; a slot that does not open moves the reader on.</td></tr>
+          <tr><td><code>PICKUP_TTL</code></td><td>7 days</td><td>As long as the request lives; also the stored piece's expiry.</td></tr>
+          <tr><td><code>MAX_PICKUPS</code></td><td>32</td><td>Invitations a committer keeps waiting to be stored.</td></tr>
+          <tr><td><code>POLL_FAST</code> → <code>POLL_SLOW</code></td><td>5 s → 120 s</td><td>The newcomer's looks at each holder, slower and slower.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="wk-seq" data-title="Picking up an invitation">
+lanes: Newcomer | Member | Committer | Pickup holders
+Newcomer: request with a one-time key and 4 holders it reaches
+Newcomer -> Member: <code>hoi:private-request:…</code>
+Member -> Committer: <code>request</code> payload in the group (a vouch, in an invite community)
+Committer: once the records admit the person, and its turn has come: adds the device
+Committer => Pickup holders: <code>put</code> at <code>pickup_loc(key, 0)</code>: the sealed invitation
+Pickup holders --> Committer: <code>stored</code>, or <code>Taken</code>: try slot 1, up to 8
+Newcomer -> Pickup holders: <code>has</code> slot 0, every 5 s to 120 s
+Pickup holders --> Newcomer: <code>had</code>, its length
+Newcomer -> Pickup holders: <code>get</code>
+Pickup holders => Newcomer: the sealed invitation
+Newcomer: opens it with the one-time key, then <code>privateJoin</code>
+    </div>
+    <p>The invitation also goes back into the group as a <code>welcome</code> payload, so a member can hand it on if the named holders are out of the committer's reach. The committer's host dials pickup holders it does not reach; the newcomer's host dials its own.</p>
+  </section>
+
+  <section class="wk-sec" id="relay-client">
+    <h2>The relay client in the web app</h2>
+    <h3 id="relay-config">Which relays</h3>
+    <p>Relay URLs are build-time policy, never taken from an invite. <code>scripts/relay-config.mjs</code> reads the relay addresses, and the Vite build defines it as <code>__HOI_RELAY_URLS__</code> and adds each origin to the Content-Security-Policy's <code>connect-src</code>. The default is an empty list.</p>
+    <div class="wk-code" data-lang="js" data-title="scripts/relay-config.mjs"><pre><code>/** Explicit relay URLs are build-time policy, never supplied by an untrusted invite. */
+export function relayUrls(value, fallback = []) {
+  const values = value === undefined ? fallback : JSON.parse(value);
+  if (!Array.isArray(values) || values.length &gt; 3 || values.some(item =&gt; typeof item !== 'string')) {
+    throw new Error('… must be a JSON array of at most three relay base URLs.');
+  }
+  return [...new Set(values.map(value =&gt; {
+    if (value.replace(/\/+$/, '') === '/relay') return '/relay';
+    const url = new URL(value);
+    const loopback = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
+    if (url.protocol !== 'https:' &amp;&amp; !(url.protocol === 'http:' &amp;&amp; loopback)) throw new Error('Relay URLs require HTTPS except on loopback.');
+    if (url.username || url.password || url.search || url.hash) throw new Error('Relay URLs cannot contain credentials, queries or fragments.');
+    return url.href.replace(/\/+$/, '');
+  }))];
+}</code></pre></div>
+    <p>Each URL is the complete API base, including <code>/relay</code> (for example <code>https://relay.example/relay</code>); <code>/relay</code> alone means the app's own origin.</p>
+    <h3 id="relay-sync">One sync</h3>
+    <p><code>syncPrivateGroup(core, community)</code> in <code>private-relay.ts</code>. The core signs every read and upload; the client only moves bytes and checks them.</p>
+    <ol class="wk-steps">
+      <li><b>Room</b><p>Ask the core for the group. No relay configured: <i>"Private syncing is unavailable. Your data stays on this device."</i> Not active: stop.</p></li>
+      <li><b>List</b><p>For each relay, page through <code>objects?after=&lt;cursor&gt;</code>, at most 64 pages. Each page gets its own read signature from <code>privateRead</code>, made just before the request, since the relay accepts each once. A page is at most 64 KiB of JSON and 64 entries; each entry needs a 64-hex id, a sequence above the cursor and a size from 4 KiB to 1 MiB; at most 4096 objects per room per relay; <code>nextCursor</code> must equal the last sequence.</p></li>
+      <li><b>Fetch</b><p>Objects not yet received get read signatures in one call and are downloaded, each bounded to 1 MiB, at most 64 MiB per sync. A body whose length or SHA-256 does not match is not passed on.</p></li>
+      <li><b>Receive</b><p>Hand each object to <code>privateReceive</code>, up to 8 passes while one makes progress: replicas list one epoch in different orders, and a message may wait for one before it. Failures are retried, never read any other way.</p></li>
+      <li><b>Follow commits</b><p>If a commit moved the group to a new room, repeat from the list step in the new room, up to 8 epochs per sync. What is left in the old room belongs to an epoch the device no longer reads.</p></li>
+      <li><b>Upload</b><p>Take the outbox; check each object's room, size and hash; <code>PUT</code> it to every relay with <code>X-Hoi-Expires</code> and <code>X-Hoi-Signature</code>; the receipt (at most 4 KiB) must repeat the id, size and expiry. Only objects every configured relay stored are acknowledged; the rest stay for retry.</p></li>
+    </ol>
+    <p>Every request uses <code>credentials: 'omit'</code>, <code>referrerPolicy: 'no-referrer'</code>, <code>cache: 'no-store'</code>, <code>redirect: 'error'</code> and a 15 s timeout, and stops at once when the app locks. One relay failing does not stop the others.</p>
+    <div class="wk-seq" data-title="Reading a room from a relay">
+lanes: App | Core | Relay
+App -> Core: <code>privateGroup</code>
+Core --> App: room, received ids
+App -> Core: <code>privateRead</code> [<code>objects?after=0</code>]
+Core --> App: time, nonce, signature by the room key
+App -> Relay: GET <code>/v2/rooms/&lt;room&gt;/objects?after=0</code> + read headers
+Relay: checks time, nonce, signature; stores the read's digest
+Relay --> App: {objects: [{id, sequence, size}], nextCursor?}
+App -> Core: <code>privateRead</code> [<code>objects/&lt;id&gt;</code>, …]
+Core --> App: one signature per object
+App -> Relay: GET <code>/v2/rooms/&lt;room&gt;/objects/&lt;id&gt;</code>, each signed once
+Relay => App: the sealed bytes
+App: length and SHA-256 must match the listing
+App -> Core: <code>privateReceive</code> for each
+Core --> App: the group, perhaps in a new room
+    </div>
+    <div class="wk-seq" data-title="Uploading to a relay">
+lanes: App | Core | Relay
+App -> Core: <code>privateOutbox</code>
+Core --> App: [{id, room, body, expires, size, signature}]
+App: checks room, size and SHA-256
+App => Relay: PUT <code>/v2/rooms/&lt;room&gt;/objects/&lt;id&gt;</code>, <code>X-Hoi-Expires</code>, <code>X-Hoi-Signature</code>
+Relay: padded size, hash, expiry, signature, quotas
+Relay --> App: 201 {id, sequence, size, expires}, or 200 for an identical retry
+App: receipt must repeat id, size and expiry
+App -> Core: <code>privateAck</code> for objects every relay stored
+    </div>
+    <h3 id="relay-app">When the app syncs</h3>
+    <p>The app runs <code>syncPrivateGroups</code> every 15 s and 750 ms after a <code>changed</code> event, only on a build with relays, only with an identity, and only for active groups whose <code>transport</code> is not <code>mailboxes</code>; one sync runs per group at a time. For a group on mailboxes (or a build without relays), "sync" only asks the core for its outbox, which gives anything new its slot. The status line says <i>"Encrypted updates checked with n of m relays."</i>, or <i>"Some relay copies are unavailable. Your changes remain saved for retry."</i>, <i>"Some encrypted updates could not be verified yet. Existing messages are unchanged."</i>, or, for a removed device, <i>"This device was removed. New messages are no longer available here."</i></p>
+  </section>
+
+  <section class="wk-sec" id="relay-protocol">
+    <h2>Relay protocol version 2</h2>
+    <p>The relay checks room signatures, hashes, padded sizes, quotas and expiry. It does not decrypt messages, decide membership, moderate plaintext or authorize changes to signed community records. A room is an Ed25519 public key; any current member of the epoch can sign for it and none is named.</p>
+    <h3 id="relay-rooms">Rooms</h3>
+    <p>Each MLS epoch of a group has its own room. Every member exports a 32-byte relay secret from the epoch (MLS exporter, label <code>hoi relay v2</code>, empty context); BLAKE3 <code>derive_key("hoi relay v2 room key", secret)</code> seeds an Ed25519 key whose public half is the room id. Every member of the epoch derives the same key and signs with it, so the relay sees one key per room and no member's device or identity key. Knowing the community key, or holding an invitation meant for someone else, derives nothing. A commit is uploaded to the room of the epoch it ends; a newcomer reads the new room, where members resend the live history they keep; a removed device reads its removal in the old room and cannot derive the next one (<a href="/wiki/private/">Private communities</a>).</p>
+    <h3 id="relay-routes">Routes</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Relay routes">
+      <table>
+        <thead><tr><th>Method</th><th>Path</th><th>Needs</th><th>Answer</th></tr></thead>
+        <tbody>
+          <tr><td>GET</td><td><code>/relay/v2/meta</code></td><td>nothing; no query string</td><td><code>apiVersion</code> 2, <code>maxObjectBytes</code>, <code>minObjectBytes</code>, <code>maxTtlSeconds</code>, <code>readWindowSeconds</code>, <code>pageSize</code>, <code>maxBytes</code>, <code>roomBytes</code>, <code>maxObjects</code>, <code>roomObjects</code>, <code>removed</code> (identifiers the operator removed).</td></tr>
+          <tr><td>GET</td><td><code>/relay/v2/rooms/&lt;room&gt;/objects?after=&lt;n&gt;</code></td><td>a read signature</td><td><code>{objects: [{id, sequence, size}], nextCursor?}</code>: at most 64 entries in increasing sequence, <code>after</code> exclusive, <code>nextCursor</code> only when more remain.</td></tr>
+          <tr><td>GET</td><td><code>/relay/v2/rooms/&lt;room&gt;/objects/&lt;id&gt;</code></td><td>a read signature; no query string</td><td>The body, <code>application/octet-stream</code>, and nothing else about it.</td></tr>
+          <tr><td>PUT</td><td><code>/relay/v2/rooms/&lt;room&gt;/objects/&lt;id&gt;</code></td><td>an upload signature</td><td><code>{id, sequence, size, expires}</code>: 201 new, 200 identical retry.</td></tr>
+          <tr><td>OPTIONS</td><td>the paths above</td><td></td><td>204 with the allowed methods and headers, <code>Access-Control-Max-Age: 600</code>; 405 for a method the path does not take.</td></tr>
+          <tr><td>any</td><td><code>/relay/v1/…</code></td><td></td><td>410 <code>protocol-gone</code>.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p><code>room</code> and <code>id</code> are 64 lowercase hex characters; <code>id</code> is the SHA-256 of the body. Other paths answer 404; methods other than these answer 405 with an <code>Allow</code> header. Readers get no expiry, signature, writer or grant: only what they need to fetch and check an object.</p>
+    <h3 id="relay-upload">Uploads</h3>
+    <div class="wk-code" data-lang="text" data-title="An upload's headers and the statement the room key signs"><pre><code>Content-Type: application/octet-stream
+X-Hoi-Expires: &lt;integer Unix seconds, at most 31 days ahead&gt;
+X-Hoi-Signature: &lt;128 lowercase hex&gt;
+
+hoi relay object v2
+&lt;room&gt;
+&lt;id&gt;
+&lt;expires&gt;
+&lt;bodyByteLength&gt;</code></pre></div>
+    <p>The statement is UTF-8 with no final newline. The relay refuses an upload unless the body has a padded size, its SHA-256 is <code>id</code>, <code>expires</code> is an integer after now and at most 31 days on, the room key is a valid, canonical Ed25519 point outside the small-order subgroup (small-order points verify forged signatures), the signature verifies, and no version 1 header (<code>X-Hoi-Author</code>, <code>X-Hoi-Grant-Expires</code>, <code>X-Hoi-Grant-Signature</code>) is present. Objects are create-only: an identical retry gets its receipt again, a different expiry for the same object is a 409 conflict, even from the room. Expired ciphertext may be uploaded again only with a fresh envelope.</p>
+    <h3 id="relay-read">Reads</h3>
+    <div class="wk-code" data-lang="text" data-title="A read's headers and the statement the room key signs"><pre><code>X-Hoi-Read-Time: &lt;integer Unix seconds within 300 s of the relay's clock&gt;
+X-Hoi-Read-Nonce: &lt;32 lowercase hex, fresh per request&gt;
+X-Hoi-Read-Signature: &lt;128 lowercase hex&gt;
+
+hoi relay read v2
+&lt;room&gt;
+&lt;target&gt;
+&lt;time&gt;
+&lt;nonce&gt;</code></pre></div>
+    <p><code>target</code> is the request below the room exactly as sent: <code>objects?after=&lt;sequence&gt;</code> or <code>objects/&lt;id&gt;</code>. The core signs only those two shapes (a cursor of 1 to 15 digits without a leading zero, or a 64-hex id), at most 65 per call, each with a fresh 16-byte nonce. The window is inclusive on both sides. The relay accepts each read once: it keeps <code>SHA-256("hoi relay read v2\n&lt;room&gt;\n&lt;nonce&gt;")</code> until the window closes and refuses the same nonce again, also after a restart. The digest does not name the room. A signature for one room opens no other; anyone holding a room key may list it, even when it is empty.</p>
+    <div class="wk-note tip"><b>Shared vector</b><p>The core's <code>relay_v2_shared_vector</code> test and <code>relay/worker.test.mjs</code> check the same bytes: from the exporter secret <code>[7; 32]</code> the room is <code>c7c825f5…486d36</code>, and both sides agree on the object and read signatures.</p></div>
+    <h3 id="relay-errors">Errors</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Relay errors">
+      <table>
+        <thead><tr><th>Status</th><th><code>error</code></th><th>When</th></tr></thead>
+        <tbody>
+          <tr><td>400</td><td><code>invalid-request</code></td><td>A query on meta or on one object, or a listing query other than one <code>after</code>.</td></tr>
+          <tr><td>400</td><td><code>invalid-cursor</code></td><td><code>after</code> is not a plain non-negative integer.</td></tr>
+          <tr><td>400</td><td><code>unpadded</code></td><td>The body is not a padded size.</td></tr>
+          <tr><td>400</td><td><code>invalid-proof</code></td><td>Hash, expiry, key, signature or a v1 header is wrong.</td></tr>
+          <tr><td>401</td><td><code>read-denied</code></td><td>A missing, stale, forged or replayed read signature.</td></tr>
+          <tr><td>403</td><td><code>origin-denied</code></td><td>A browser origin that is neither the relay's own nor configured; <code>null</code> is refused.</td></tr>
+          <tr><td>404</td><td><code>not-found</code></td><td>An unknown path, or a missing or expired object.</td></tr>
+          <tr><td>405</td><td><code>method-not-allowed</code></td><td>A method the path does not take.</td></tr>
+          <tr><td>408</td><td><code>request-timeout</code></td><td>The body did not arrive within 10 s.</td></tr>
+          <tr><td>409</td><td><code>object-conflict</code></td><td>The object exists with a different signed envelope.</td></tr>
+          <tr><td>410</td><td><code>removed</code></td><td>The operator removed the room or object; only after a valid room signature.</td></tr>
+          <tr><td>410</td><td><code>protocol-gone</code></td><td>Any version 1 path.</td></tr>
+          <tr><td>413</td><td><code>too-large</code></td><td>More than 1 MiB, by <code>Content-Length</code> or while reading.</td></tr>
+          <tr><td>415</td><td><code>content-type</code></td><td>An upload not sent as <code>application/octet-stream</code>.</td></tr>
+          <tr><td>429</td><td><code>rate-limited</code></td><td>Over the minute's budget; <code>Retry-After</code> gives the seconds left.</td></tr>
+          <tr><td>503</td><td><code>unavailable</code></td><td>A storage failure or bad configuration, with no database details.</td></tr>
+          <tr><td>507</td><td><code>storage-full</code></td><td>A quota is full: <i>"Try another relay."</i></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="wk-sec" id="relay-storage">
+    <h2>What the relay stores and logs</h2>
+    <p>One Durable Object, named <code>opaque-objects</code>, holds the entire service and enforces its totals. Its SQLite schema:</p>
+    <div class="wk-code" data-lang="js" data-title="relay/worker-runtime.mjs (trimmed)"><pre><code>this.sql.exec(`CREATE TABLE IF NOT EXISTS objects_v2 (
+  sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+  room TEXT NOT NULL, id TEXT NOT NULL, expires INTEGER NOT NULL, size INTEGER NOT NULL CHECK(size &gt; 0), body BLOB NOT NULL,
+  UNIQUE(room, id)
+) STRICT`);
+// One digest per accepted read, kept only while its signature could still be replayed.
+this.sql.exec('CREATE TABLE IF NOT EXISTS reads (digest TEXT PRIMARY KEY, expires INTEGER NOT NULL) STRICT');
+// Identifiers an operator removed (id '' is a whole room), so the same bytes cannot return.
+this.sql.exec('CREATE TABLE IF NOT EXISTS removed (room TEXT NOT NULL, id TEXT NOT NULL, PRIMARY KEY(room, id)) STRICT');</code></pre></div>
+    <ul>
+      <li><code>objects_v2</code>: ciphertext with its room key, hash, padded size, expiry and insertion sequence.</li>
+      <li><code>reads</code>: one digest per accepted read until its window closes.</li>
+      <li><code>removed</code>: identifiers the operator removed.</li>
+      <li><code>relay_schema</code>: the schema version (2). An unknown version stops the object rather than serving data.</li>
+      <li><code>objects</code>: version 1 rows from an upgraded relay, never served, counted against the service quota and deleted at their expiry.</li>
+    </ul>
+    <p>It holds no writer keys, grants, community keys, MLS headers, content keys, names, profiles, member lists or plaintext posts, and no request headers: a test uploads with <code>X-Forwarded-For</code> and a cookie and checks neither is stored. The relay cannot prove a payload is encrypted; clients must encrypt before uploading. Application code does not log requests, addresses or bodies, and the checked-in config turns Worker observability off; the hosting provider still processes connection metadata.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Response headers">
+      <table>
+        <thead><tr><th>Header</th><th>Value</th></tr></thead>
+        <tbody>
+          <tr><td><code>Cache-Control</code></td><td><code>no-store</code></td></tr>
+          <tr><td><code>X-Content-Type-Options</code></td><td><code>nosniff</code></td></tr>
+          <tr><td><code>Referrer-Policy</code></td><td><code>no-referrer</code></td></tr>
+          <tr><td><code>Strict-Transport-Security</code></td><td><code>max-age=31536000; includeSubDomains</code></td></tr>
+          <tr><td><code>Vary</code></td><td><code>Origin</code></td></tr>
+          <tr><td><code>Access-Control-Allow-Origin</code></td><td>The request's origin, when allowed. No credentials header: no cookies or credentials are used.</td></tr>
+          <tr><td><code>Access-Control-Allow-Headers</code></td><td><code>Content-Type, X-Hoi-Expires, X-Hoi-Signature, X-Hoi-Read-Time, X-Hoi-Read-Nonce, X-Hoi-Read-Signature</code> (preflight)</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>What the relay still observes: a room's object count, padded sizes, upload and read times, expiry, and the network address and timing of every request. One group's rooms share no identifier, but uploads that follow each other from the same addresses can link them, and the number of objects resent after a commit hints at a group's size and history.</p>
+  </section>
+
+  <section class="wk-sec" id="relay-limits">
+    <h2>Quotas and limits</h2>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Relay settings">
+      <table>
+        <thead><tr><th>Setting</th><th>Default</th><th>Bound</th></tr></thead>
+        <tbody>
+          <tr><td>Object bytes</td><td colspan="2">4 KiB to 1 MiB, padded sizes, fixed</td></tr>
+          <tr><td>Object lifetime</td><td colspan="2">31 days from upload at most, fixed</td></tr>
+          <tr><td>Read signature window</td><td colspan="2">300 s either way, fixed</td></tr>
+          <tr><td>Page size</td><td colspan="2">64 entries, fixed</td></tr>
+          <tr><td><code>HOI_RELAY_MAX_BYTES</code></td><td>512 MiB</td><td>512 MiB</td></tr>
+          <tr><td><code>HOI_RELAY_ROOM_BYTES</code></td><td>64 MiB</td><td>64 MiB</td></tr>
+          <tr><td><code>HOI_RELAY_ROOM_OBJECTS</code></td><td>4,096</td><td>4,096</td></tr>
+          <tr><td><code>HOI_RELAY_MAX_OBJECTS</code></td><td>32,768</td><td>32,768</td></tr>
+          <tr><td><code>HOI_RELAY_REQUESTS_PER_MINUTE</code></td><td>600</td><td>100,000</td></tr>
+          <tr><td><code>HOI_RELAY_WRITES_PER_MINUTE</code></td><td>60</td><td>10,000</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Each setting must be an integer from 1 to its bound, or the object refuses to start. Storage limits can be lowered, never raised past these bounds; the object count limit exists because the byte limit alone would allow too many tiny objects and signatures. Quota checks and inserts run in one transaction, so competing uploads cannot overshoot, and legacy v1 bytes count toward the service totals. Rate counters are global fixed one-minute windows in memory, keep no requester identifiers and reset when the object restarts: they bound work but give no per-person fairness. Admission is possession of an epoch's room key, not proof of a distinct person.</p>
+  </section>
+
+  <section class="wk-sec" id="expiry">
+    <h2>Expiry</h2>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Lifetimes">
+      <table>
+        <thead><tr><th>What</th><th>Lifetime</th><th>Set by</th></tr></thead>
+        <tbody>
+          <tr><td>Group objects (relay or mailbox)</td><td>30 days</td><td>The core's <code>RETENTION</code>; the app's default.</td></tr>
+          <tr><td>Relay objects</td><td>31 days at most</td><td>The relay's <code>MAX_TTL_SECONDS</code>.</td></tr>
+          <tr><td>Relay read digests</td><td>300 s past the read's time</td><td>The read window.</td></tr>
+          <tr><td>Mailbox slots</td><td>The object's expiry, at least an hour and at most 30 days on, rounded up to a UTC day</td><td><code>SLOT_TTL</code></td></tr>
+          <tr><td>Bell rings</td><td>2 days</td><td><code>RING_DAYS</code></td></tr>
+          <tr><td>Pickup invitations</td><td>7 days</td><td><code>PICKUP_TTL</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>The relay deletes objects at their expiry by a Durable Object alarm set to the earliest expiry, or when a request touches them first; read digests go by alarm shortly after their window. Holders drop pieces past their expiry day when they sweep, and a full holder first sheds expired pieces, then pieces nobody asked for in 30 days (<a href="/wiki/scatter/">Scattered delivery</a>). The core keeps a copy of everything it sent until it is acknowledged; an object that expired unsent is dropped from the outbox and everything is sent again.</p>
+    <div class="wk-seq" data-title="An object's life on a relay">
+lanes: Member | Relay | Alarm
+Member => Relay: PUT, <code>X-Hoi-Expires</code> = now + 30 days
+Relay: stores it; sets the alarm to the earliest expiry
+Member -> Relay: listings and fetches, each signed once
+Relay: each read's digest kept 300 s
+Alarm -> Relay: at the digest's expiry: delete read digests
+Alarm -> Relay: at the object's expiry: delete it, schedule the next
+Member -> Relay: GET the object after it expired
+Relay --> Member: 404 <code>not-found</code>
+Member: upload again only with a fresh signed envelope
+    </div>
+  </section>
+
+  <section class="wk-sec" id="operator">
+    <h2>Operator controls</h2>
+    <p>There is no HTTP endpoint for deletion. An operator who wants identified objects or rooms gone (a report that names a room, or a room and an object) stores the list as the Worker secret <code>HOI_RELAY_PURGE</code> with the local tool, which runs Wrangler:</p>
+    <div class="wk-code" data-lang="sh" data-title="relay/README.md"><pre><code>node relay/operator.mjs remove --dry-run &lt;room&gt;/&lt;id&gt; &lt;room&gt;
+node relay/operator.mjs remove --check https://relay.example/relay &lt;room&gt;/&lt;id&gt; &lt;room&gt;</code></pre></div>
+    <ul>
+      <li><b>Entries</b>: <code>&lt;room&gt;</code> (every object of the room, and no uploads to it afterwards), <code>&lt;room&gt;/&lt;id&gt;</code> (one object, which cannot be stored again) or <code>v1</code> (every legacy object), separated by commas or whitespace, at most 4 KiB per batch (secrets hold at most 5 KiB). The tool validates entries before calling Wrangler; an invalid list stops the relay with 503 rather than serve what it was told to remove.</li>
+      <li><b>Applying</b>: setting the secret deploys a new Worker version; the Durable Object applies the list on its next start, in one transaction with the schema check, records each identifier in <code>removed</code> and deletes matching rows. The deletion runs again at every start, so storage restored from an earlier point is purged again. Each run replaces the secret; earlier batches stay in <code>removed</code>.</li>
+      <li><b>Checking</b>: <code>--check</code> takes the HTTPS relay base (or a loopback one), wakes the object through <code>/relay/v2/meta</code> and prints the <code>removed</code> count before and after, retrying for up to a minute. <code>--dry-run</code> prints the Wrangler command and changes nothing.</li>
+      <li><b>Who learns what</b>: members of a removed room get 410 <code>removed</code> after a valid room signature; nobody else learns whether a room existed or was removed. The meta count is public, like a transparency report; the identifiers are not. Removal does not touch members' devices and cannot identify who uploaded an object.</li>
+    </ul>
+    <p>For a local Worker, the same list goes in with <code>wrangler dev --var HOI_RELAY_PURGE:&lt;list&gt;</code>.</p>
+  </section>
+
+  <section class="wk-sec" id="deploy">
+    <h2>Running the relay</h2>
+    <p>The relay is a Cloudflare Worker of its own; the static website contains none. The Worker routes only <code>/relay/…</code> to the Durable Object and answers 404 for anything else.</p>
+    <div class="wk-code" data-lang="toml" data-title="relay/wrangler.toml"><pre><code># Standalone encrypted storage; independent operators use their own Worker/account.
+name = "hoi-opaque-relay"
+main = "worker.mjs"
+compatibility_date = "2026-10-01"
+compatibility_flags = ["nodejs_compat"]
+
+[observability]
+enabled = false
+
+[[durable_objects.bindings]]
+name = "OPAQUE_RELAY"
+class_name = "OpaqueRelay"
+
+[[migrations]]
+tag = "opaque-relay-v1"
+new_sqlite_classes = ["OpaqueRelay"]</code></pre></div>
+    <div class="wk-code" data-lang="sh" data-title="relay/README.md"><pre><code>pnpm dlx wrangler@4 deploy --config relay/wrangler.toml
+pnpm dlx wrangler@4 deploy --config relay/wrangler.toml --dry-run
+pnpm dlx wrangler@4 dev --config relay/wrangler.toml --local</code></pre></div>
+    <ul>
+      <li>The migration creates the SQLite class; no database identifier or decryption secret is provisioned. Keep the Worker name, class name, binding and migration history stable to keep the stored objects.</li>
+      <li><code>HOI_RELAY_ORIGINS</code>: comma-separated exact app origins for an externally hosted app or native shell, for example <code>https://app.example,http://tauri.localhost,tauri://localhost</code>. Each must be a bare <code>http(s)</code> origin, or <code>tauri://localhost</code>. The request URL's own origin is always allowed.</li>
+      <li>The app is then built with that relay's base URL in its relay list (the setting is named in <code>apps/web/README.md</code>), at most three bases.</li>
+      <li>It is a bounded pilot, not an unlimited archive or a consensus network. Several instances run by one operator are not independent replicas; another operator deploys it in their own account under their own URL. Hosting objects grants no voting or signing authority.</li>
+    </ul>
+    <div class="wk-note warn"><b>Upgrading from version 1</b><p>Version 1 is not served. A relay upgraded from it keeps v1 rows unreadable until they expire (31 days at most), or until the operator removes <code>v1</code>. Clients on version 2 send live records and media again into the current room; a membership change that was still waiting for a v1 relay is lost, so the devices it concerned are removed and invited again.</p></div>
+  </section>
+
+  <section class="wk-sec" id="trust">
+    <h2>Trust boundary</h2>
+    <p>An operator can withhold, delete or replay stored ciphertext and can inspect the metadata above; a mailbox holder can do the same with its slots. Clients therefore validate downloaded hashes and authenticated content themselves and never treat a listing, its order or a receipt as permission to accept a message: the core decides validity, and a commit is followed only from a committer, in order. Independent relays reduce dependence on one host; they do not solve malicious membership, collusion or the authenticity of a newly downloaded app. The relay is not a membership authority.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="What carriers see">
+      <table>
+        <thead><tr><th>Party</th><th>Sees</th><th>Cannot</th></tr></thead>
+        <tbody>
+          <tr><td>Relay operator</td><td>Rooms, padded sizes, counts, upload and read times, expiry, request addresses and timing.</td><td>Read content, name the community or a member, tell which rooms are one group except by timing and address.</td></tr>
+          <tr><td>Mailbox holder</td><td>Random locators, padded sizes, expiry days, stamps, the forwarder (or device) a request came from.</td><td>Open a slot, list a group's slots, overwrite a slot.</td></tr>
+          <tr><td>Forwarder</td><td>Envelope sizes and which holder a request names.</td><td>Open a request or an answer.</td></tr>
+          <tr><td>Removed device</td><td>The old room until its objects expire.</td><td>Derive the next room or slots.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="wk-sec" id="tests">
+    <h2>Tests</h2>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Relay and mailbox tests">
+      <table>
+        <thead><tr><th>Where</th><th>What it covers</th></tr></thead>
+        <tbody>
+          <tr><td><code>relay/worker.test.mjs</code></td><td>Real SQLite transactions and Ed25519 signatures: the shared vector, routing, immutable objects, signed and replayed reads (also after a restart), fragmented and oversized bodies, the 65 padded sizes, version 1 paths and rows, operator removal surviving restarts, competing envelopes, quotas and expiry, pagination, schema checks, CORS and generic failures.</td></tr>
+          <tr><td><code>relay/operator.test.mjs</code></td><td>Removal batches, options and a dry run.</td></tr>
+          <tr><td><code>scripts/relay-config.test.mjs</code></td><td>Accepted and refused relay URLs.</td></tr>
+          <tr><td><code>apps/web/src/tests/private-relay.test.ts</code></td><td>The client: aborting on lock, one signature per request, following a commit to the next room, acknowledging only after every replica, retrying when a replica fails or lies, refusing modified or unpadded objects, no fallback.</td></tr>
+          <tr><td><code>hoi-core</code> <code>mailbox.rs</code>, <code>pickup.rs</code>, <code>tests/scatter.rs</code></td><td>List round trips, slots per member and sequence, invitations opening only with their key, a group syncing through mailboxes with no relay, an owner dialing holders it met before, an idle member listening to the bell.</td></tr>
+          <tr><td><code>scripts/e2e-private-relay.mjs</code></td><td>Real browsers through a local Worker (loopback only; it refuses any other destination).</td></tr>
+          <tr><td><code>scripts/e2e-mailboxes.mjs</code></td><td>Two <code>hoi-node</code> holders (<code>--hold-pieces 0.2</code>) in two places and two browsers with no relay and no registry: the owner's browser chooses both as mailboxes, the newcomer finds them from the invitation, posts go both ways, and <code>hoi-node admin pieces</code> counts what each holder keeps, none readable there.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="wk-cards">
+      <a class="wk-card g-lilac" href="/wiki/private/"><i></i><b>Private communities</b><span>The MLS group whose messages these objects carry.</span></a>
+      <a class="wk-card g-sky" href="/wiki/scatter/"><i></i><b>Scattered delivery</b><span>Holders, envelopes and stamps that mailboxes reuse.</span></a>
+      <a class="wk-card g-sun" href="/wiki/hoi-node/"><i></i><b>hoi-node</b><span>Running a node that holds pieces and mailboxes for others.</span></a>
+      <a class="wk-card g-mint" href="/wiki/deploy/"><i></i><b>Deploying &amp; hosting</b><span>Static hosting, nodes and servers.</span></a>
+    </div>
+  </section>
+</article>
+<!-- @wiki-close -->
+<!-- @include footer.html -->
+<script type="module" src="/src/pages/wiki.ts"></script>
+</body>
+</html>

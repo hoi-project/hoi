@@ -1,0 +1,5 @@
+# Read by uniffi-bindgen in library mode (apps/mobile/scripts/build-*.sh).
+
+[bindings.kotlin]
+# Kotlin exceptions already have a `message`; the readable sentence is `reason` there.
+rename = { "HoiError.Api.message" = "reason" }

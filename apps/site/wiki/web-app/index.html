@@ -1,0 +1,660 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <!-- @include head.html title="Web app · hoi wiki" description="The Svelte app in apps/web: its threads, the wasm core in a worker, OPFS and IndexedDB storage, the encrypted vault, the service worker, every screen and every test." -->
+</head>
+<body class="wiki">
+<!-- @include header.html nav="wiki" -->
+<!-- @wiki-open -->
+<article class="wk-doc">
+  <!-- @wiki-crumbs -->
+  <h1>Web <span class="acc">app</span></h1>
+  <p class="wk-lead">The hoi app is a static Svelte 5 page. The screens never touch keys, storage or sockets: they call one interface, <code>HoiCore</code>, and a Web Worker running the Rust core as WebAssembly does the rest. The same build, in other modes, is the window of the desktop companion and of the node setup app. This page follows every thread, every file the app stores and every screen it has.</p>
+  <p class="wk-src-list">Source <a href="{{REPO_URL}}/tree/main/apps/web">apps/web</a> · <a href="{{REPO_URL}}/blob/main/apps/web/src/lib/core/core.worker.ts">core/core.worker.ts</a> · <a href="{{REPO_URL}}/blob/main/apps/web/src/lib/core/rpc-core.ts">core/rpc-core.ts</a> · <a href="{{REPO_URL}}/blob/main/apps/web/src/lib/core/worker-core.ts">core/worker-core.ts</a> · <a href="{{REPO_URL}}/blob/main/apps/web/src/lib/core/idb.ts">core/idb.ts</a> · <a href="{{REPO_URL}}/blob/main/apps/web/src/lib/core/opfs.ts">core/opfs.ts</a> · <a href="{{REPO_URL}}/blob/main/apps/web/vite.config.ts">vite.config.ts</a> · <a href="{{REPO_URL}}/blob/main/apps/web/vite/service-worker.js">vite/service-worker.js</a> · <a href="{{REPO_URL}}/blob/main/core/crates/hoi-wasm/src/lib.rs">hoi-wasm/src/lib.rs</a></p>
+  <div class="wk-head-rule"></div>
+
+  <section class="wk-sec" id="overview">
+    <h2>What it is</h2>
+    <p>The app lives in <code>apps/web</code> (package <code>@hoi/web</code>, version <code>1.0.0-preview.1</code>). It is Svelte 5 with runes switched on in <code>svelte.config.js</code>, built by Vite. Its runtime dependencies are short: <code>@hoi/core-api</code> (the <code>HoiCore</code> types, see <a href="/wiki/api/">Core API</a>), <code>@hoi/tokens</code> (colors and fonts), <code>@tauri-apps/api</code> (used only inside the desktop shell), <code>animejs</code> 4.5.0 for motion and <code>uqr</code> for QR codes. Fonts and Anime.js are bundled, so the app makes no third-party request of its own.</p>
+    <p>One source tree makes three builds. Vite's <code>--mode</code> picks which:</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Builds of apps/web">
+      <table>
+        <thead><tr><th>Command</th><th>Output</th><th>What differs</th></tr></thead>
+        <tbody>
+          <tr><td><code>pnpm --filter @hoi/web build</code></td><td><code>dist/</code></td><td>The PWA served at <code>/app/</code>: CSP <code>&lt;meta&gt;</code>, SRI attributes, <code>sw.js</code>, <code>_headers</code>, <code>release.json</code>.</td></tr>
+          <tr><td><code>build:desktop</code> (<code>--mode desktop</code>, or <code>HOI_TARGET=desktop</code>)</td><td><code>dist-desktop/</code></td><td>The window of the <a href="/wiki/desktop/">desktop companion</a>. No CSP meta (Tauri sets its own), no service worker, no <code>_headers</code>.</td></tr>
+          <tr><td><code>build:setup</code> (<code>--mode setup</code>)</td><td><code>dist-setup/</code></td><td>The window of <a href="/wiki/node-setup/">hoi Node Setup</a>: root <code>setup/</code>, one page, no core, no worker, no service worker, no <code>public/</code> folder.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Development has three more entry points: <code>dev</code> (the real core in a worker), <code>dev:mock</code> (the mock backend switch, a seeded in-memory core, no Rust needed) and <code>dev:desktop</code> / <code>dev:setup</code> on the fixed ports 5174 and 5175 that the two Tauri apps load. The wasm core itself is built once with <code>pnpm core:wasm</code> (<code>scripts/build-wasm.mjs</code>), which runs <code>cargo build -p hoi-wasm --target wasm32-unknown-unknown --profile wasm</code>, then <code>wasm-bindgen --target web</code> into <code>src/lib/core/wasm/pkg/</code>, then <code>wasm-opt -O3</code> when binaryen is installed.</p>
+    <div class="wk-note info"><b>Rules the app keeps</b><p>No third-party requests. The relay pill is honest about being a browser: it says "only in this browser" until a home node is paired. Every signed action ends in a toast. Removed things show "Poof." with the reason and a link to the ledger. Reduced motion is respected and every view is complete at rest. Nothing scrolls sideways at 320 px.</p></div>
+  </section>
+
+  <section class="wk-sec" id="threads">
+    <h2>Threads and backends</h2>
+    <p>In a browser the app runs on up to seven threads. The page (the main thread) draws the screens, holds the reactive state and carries everything only a window can do: WebRTC, WebAuthn and the <code>&lt;video&gt;</code> element. One worker named <code>hoi-core</code> owns the node. A small pool of miner workers searches for stamps, and one look worker decodes pictures so that a decoder crash never takes the node down.</p>
+    <figure class="wk-fig">
+      <svg viewBox="0 0 760 480" role="img" aria-label="The page, the core worker with its storage, the miner workers and the look worker, and how each reaches the network">
+        <rect class="d-box acc c-coral" x="16" y="16" width="300" height="392" rx="14"/>
+        <text class="d-tag c-coral" x="32" y="40">main thread · the page</text>
+        <rect class="d-box" x="32" y="56" width="268" height="44" rx="10"/>
+        <text class="d-text" x="46" y="76">Screens</text>
+        <text class="d-sub" x="46" y="92">routes/*.svelte · lib/ui/*.svelte</text>
+        <rect class="d-box" x="32" y="112" width="268" height="44" rx="10"/>
+        <text class="d-text" x="46" y="132">app.svelte.ts</text>
+        <text class="d-sub" x="46" y="148">phase · me · rev · net · settings</text>
+        <rect class="d-box" x="32" y="168" width="268" height="44" rx="10"/>
+        <text class="d-text" x="46" y="188">rpc-core.ts</text>
+        <text class="d-sub" x="46" y="204">HoiCore over call(method, args)</text>
+        <rect class="d-box" x="32" y="224" width="268" height="44" rx="10"/>
+        <text class="d-text" x="46" y="244">miner-pool.ts · look-pool.ts</text>
+        <text class="d-sub" x="46" y="260">start, feed and replace the workers</text>
+        <rect class="d-box" x="32" y="280" width="268" height="44" rx="10"/>
+        <text class="d-text" x="46" y="300">rtc-link.ts · rtc-direct.ts</text>
+        <text class="d-sub" x="46" y="316">RTCPeerConnection for the worker</text>
+        <rect class="d-box" x="32" y="336" width="268" height="44" rx="10"/>
+        <text class="d-text" x="46" y="356">video-frames.ts · passkey.ts</text>
+        <text class="d-sub" x="46" y="372">&lt;video&gt; frames · WebAuthn PRF</text>
+        <rect class="d-box acc c-sky" x="444" y="16" width="300" height="140" rx="14"/>
+        <text class="d-tag c-sky" x="460" y="40">worker · hoi-core</text>
+        <text class="d-text" x="460" y="64">core.worker.ts</text>
+        <text class="d-sub" x="460" y="84">WasmNode + WasmVault (hoi-wasm)</text>
+        <text class="d-sub" x="460" y="102">one queue: run() then settle()</text>
+        <text class="d-sub" x="460" y="120">Web Lock "hoi-core"</text>
+        <text class="d-sub" x="460" y="138">WebSocket to the home node</text>
+        <line class="d-line acc c-mint" x1="594" y1="156" x2="594" y2="172"/>
+        <rect class="d-box acc c-mint" x="444" y="172" width="300" height="64" rx="14"/>
+        <text class="d-tag c-mint" x="460" y="194">storage</text>
+        <text class="d-sub" x="460" y="212">OPFS store-hoi/log-a, log-b, or IndexedDB "hoi"</text>
+        <text class="d-sub" x="460" y="228">every value sealed by the vault first</text>
+        <rect class="d-box acc c-sun" x="444" y="256" width="300" height="64" rx="14"/>
+        <text class="d-tag c-sun" x="460" y="278">miner.worker.ts × 1 to 4</text>
+        <text class="d-sub" x="460" y="298">mine_range, 20 000 nonces a chunk</text>
+        <text class="d-sub" x="460" y="312">IdentityMiner, one Argon2id try at a time</text>
+        <rect class="d-box acc c-lilac" x="444" y="336" width="300" height="64" rx="14"/>
+        <text class="d-tag c-lilac" x="460" y="358">look.worker.ts × 1</text>
+        <text class="d-sub" x="460" y="378">look_media · sanitize_and_look · look_luma</text>
+        <text class="d-sub" x="460" y="392">replaced when it dies or hangs</text>
+        <path class="d-line acc c-sky" d="M300 190 C 380 190 370 86 444 86"/>
+        <text class="d-sub" x="322" y="130">postMessage</text>
+        <path class="d-line acc c-sun" d="M300 240 C 380 240 370 288 444 288"/>
+        <path class="d-line acc c-lilac" d="M300 256 C 392 256 360 368 444 368"/>
+        <path class="d-line dash acc c-sky" d="M744 60 H752 V424"/>
+        <line class="d-line dash acc c-coral" x1="166" y1="408" x2="166" y2="424"/>
+        <rect class="d-box" x="16" y="424" width="728" height="44" rx="12"/>
+        <text class="d-text" x="32" y="451">The network</text>
+        <text class="d-sub" x="160" y="451">WebRTC from the page · WebSocket from the worker · home node, members' and public nodes, other browsers</text>
+      </svg>
+      <figcaption>Workers can't open a <code>RTCPeerConnection</code>, so the page carries the core worker's WebRTC links and passes whole sync messages across. The core worker opens WebSockets itself.</figcaption>
+    </figure>
+
+    <h3 id="threads-backend">Which core the screens get</h3>
+    <p><code>src/lib/core/index.ts</code> decides once and caches the promise. The screens only ever see <code>HoiCore</code>:</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Backends">
+      <table>
+        <thead><tr><th>When</th><th>Backend</th><th>How it reaches the core</th></tr></thead>
+        <tbody>
+          <tr><td>Backend switch set to mock (app build)</td><td><code>mock-core.ts</code></td><td>An in-memory object with seed data from <code>mock-data.ts</code>. The branch is dead code in production bundles.</td></tr>
+          <tr><td><code>__HOI_DESKTOP__</code> or <code>'__TAURI_INTERNALS__' in window</code></td><td><code>tauri-core.ts</code></td><td><code>invoke('hoi_call', {method, args})</code> into the native core; events on the <code>hoi://event</code> channel.</td></tr>
+          <tr><td>Anything else</td><td><code>worker-core.ts</code></td><td>Messages to <code>core.worker.ts</code>, which runs <code>WasmNode</code> from <code>hoi-wasm</code>.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>The vault has its own small door beside <code>HoiCore</code>: <code>getVaultStatus</code>, <code>unlockVault</code>, <code>lockVault</code>, <code>takeOverVault</code> and <code>resetVault</code>. In a browser they become the worker methods <code>__vaultStatus</code>, <code>__unlock</code>, <code>__lock</code>, <code>__takeOver</code> and <code>__resetVault</code>. On the desktop they become the Tauri commands <code>hoi_vault_status</code>, <code>hoi_vault_unlock</code> (argument <code>passphrase</code>), <code>hoi_vault_lock</code> and <code>hoi_vault_reset</code> (argument <code>confirmation</code>). The mock answers <code>{state: 'ready'}</code>.</p>
+
+    <h3 id="threads-rpc">rpc-core: one interface over two transports</h3>
+    <p><code>createRpcCore(transport, stamper, looker?)</code> builds the whole <code>HoiCore</code> from two small things: a <code>Transport</code> with <code>call(method, args)</code> and <code>subscribe(fn)</code>, and a <code>Stamper</code> that mines. Both the web worker and the Tauri shell speak <code>call(method, args)</code> to the core's JSON dispatcher, so almost every method is a one-liner such as <code>ledger: (id) =&gt; c('ledger', id)</code>. Errors come back as <code>{code, message}</code> and become <code>HoiError</code>. Bytes cross the JSON boundary as base64url (<code>toBase64Url</code>, <code>fromBase64Url</code>).</p>
+    <p>Three kinds of call do more than forward:</p>
+    <ul>
+      <li><b>Posts, replies and edits</b> go draft, mine, publish, so the stamp is mined outside the core and the composer can draw its work bar. If the miners can't run, the page asks the core to <code>mine</code> itself (one thread, slower).</li>
+      <li><b>A new key</b> is drafted by the core (<code>draftIdentity</code>, with the first-run gesture "stir" mixed into the core's randomness), its Argon2id identity work is mined by the pool with every try reported, then <code>publishIdentity(rootKey, work)</code>. If the pool fails, <code>createIdentity</code> lets the core do the work unseen.</li>
+      <li><b>More key work</b> (You → Key work) runs through <code>mineMore</code>, which can take minutes, reports progress and stops on abort.</li>
+    </ul>
+    <div class="wk-code" data-lang="ts" data-title="apps/web/src/lib/core/rpc-core.ts (trimmed)"><pre><code>async function stamped&lt;T&gt;(draftMethod: string, args: unknown[]): Promise&lt;T&gt; {
+  const d = (await c(draftMethod, ...args)) as DraftDto;
+  const estimateMs = stampEstimateMs(d.bits, await stamper.rate());
+  emit({ type: 'stamp', phase: 'start', bits: d.bits, estimateMs });
+  let nonce: number;
+  try {
+    nonce = await stamper.mine(fromBase64Url(d.prefix), fromBase64Url(d.suffix), d.bits);
+  } catch {
+    // The miners couldn't run here: the core stamps it itself (slower, one thread).
+    nonce = (await c('mine', d.prefix, d.suffix, d.bits)) as number;
+  }
+  const published = await c('publishDraft', d.token, nonce);
+  if (published &amp;&amp; typeof published === 'object' &amp;&amp; 'signing' in published)
+    return (await signedThere(published.signing as string)) as T;
+  return published as T;
+}</code></pre></div>
+    <p>The <code>signing</code> branch is for a browser whose computer signs for it: the core answers with an id instead of a record, the page waits for a <code>signed</code> event for that id and then calls <code>published</code>. If nothing comes within 120 000 ms it fails with <code>offline</code> and "Your computer didn't answer. Is it on and connected?". Pictures attached to a post are first passed to the looker's <code>compose</code>; a picture nothing here can read is refused with "That picture can't be read here, so nobody else could check it either."</p>
+    <div class="wk-seq" data-title="Publishing a post from the browser">
+lanes: Composer | Page (rpc-core) | Core worker | Miners
+Composer -> Page (rpc-core): <code>createPost(draft)</code>
+Page (rpc-core) -> Core worker: <code>{id, method: "draftPost", args}</code>
+Core worker --> Page (rpc-core): <code>{token, prefix, suffix, bits}</code>
+Page (rpc-core) --> Composer: event <code>stamp</code> phase <code>start</code>, <code>estimateMs</code>
+Page (rpc-core) => Miners @sun: <code>mine</code> with <code>start: i, step: n</code>
+Miners --> Page (rpc-core): <code>found</code> {nonce}; the others get <code>stop</code>
+Page (rpc-core) -> Core worker: <code>publishDraft(token, nonce)</code>
+Core worker: <code>run()</code>, then <code>settle()</code>: save, send, emit
+Core worker --> Page (rpc-core): reply: the <code>PostSummary</code>
+Core worker -> Page (rpc-core): event <code>changed</code> {communities}
+Page (rpc-core) --> Composer: <code>stamp</code> phase <code>done</code>, <code>tookMs</code>
+    </div>
+
+    <h3 id="threads-worker">worker-core and the message kinds</h3>
+    <p><code>worker-core.ts</code> starts <code>new Worker(new URL('./core.worker.ts', import.meta.url), {type: 'module', name: 'hoi-core'})</code> and numbers each request. Arguments are copied with <code>JSON.parse(JSON.stringify(args))</code> before <code>postMessage</code>: the core reads JSON anyway, and Svelte's state proxies can't be cloned. The first call is <code>__init(base, storeName)</code>, where <code>base</code> is <code>location.origin + location.pathname</code> (invite links point back at wherever the app is hosted) and <code>storeName</code> is <code>'hoi'</code>, or a sandbox name.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Messages from the core worker to the page">
+      <table>
+        <thead><tr><th><code>kind</code></th><th>Fields</th><th>The page does</th></tr></thead>
+        <tbody>
+          <tr><td><code>reply</code></td><td><code>id</code>, <code>ok</code>, <code>result</code> or <code>error {code, message}</code></td><td>Settles the pending promise.</td></tr>
+          <tr><td><code>event</code></td><td><code>event</code> (a <code>CoreEvent</code>)</td><td>Hands it to every subscriber.</td></tr>
+          <tr><td><code>locked</code></td><td>none</td><td>Another tab took the store: terminate the worker, close every link, reload.</td></tr>
+          <tr><td><code>rtc-open</code></td><td><code>id</code>, <code>routes</code>, <code>mode</code> (<code>c</code> or <code>p</code>)</td><td>Opens a WebRTC link to a native node (<code>openRtc</code>) and answers with an <code>rtc</code> <code>open</code> or <code>close</code>.</td></tr>
+          <tr><td><code>rtc-send</code> / <code>rtc-close</code></td><td><code>id</code>, <code>bytes</code></td><td>Sends a whole sync message on that link, or closes it.</td></tr>
+          <tr><td><code>direct-offer</code> / <code>direct-answer</code> / <code>direct-accept</code></td><td><code>id</code>, <code>stun</code>, <code>data</code></td><td>Builds a direct link with another member's browser (<code>rtc-direct.ts</code>) and returns the offer or answer as an <code>rtc</code> <code>sig</code>.</td></tr>
+          <tr><td><code>look</code></td><td><code>id</code>, <code>mime</code>, <code>data</code></td><td>Media the core wants looked at outside itself; the answer goes back as <code>{kind: 'looked', id, look}</code>.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>If the worker throws an uncaught error, every pending call is rejected with <code>internal</code> and "The core worker failed: …".</p>
+
+    <h3 id="threads-core">core.worker.ts: one queue for everything</h3>
+    <p>The worker imports <code>WasmNode</code> and <code>WasmVault</code> from the wasm package. Every call that touches the node or storage goes through <code>run(f)</code>, which chains it on one promise queue, so two calls never interleave. After each call <code>settle()</code> runs: it drains <code>take_changes()</code> and saves them, then sends the outbox, then hands out events, picture looks, domain-name checks and direct-link signals.</p>
+    <div class="wk-code" data-lang="ts" data-title="apps/web/src/lib/core/core.worker.ts">
+      <pre><code>/** Serializes everything that touches the node and storage. */
+function run&lt;T&gt;(f: () =&gt; T | Promise&lt;T&gt;, retryPending = true): Promise&lt;T&gt; {
+  const p = queue.then(async () =&gt; {
+    // Do not accept another mutation while an earlier one still cannot be saved.
+    if (storageFailed &amp;&amp; retryPending) await settle();
+    return f();
+  }).then(async (v) =&gt; {
+    await settle();
+    return v;
+  });
+  queue = p.catch(() =&gt; undefined);
+  return p;
+}</code></pre></div>
+    <p>The order inside <code>settle</code> matters. <code>durable-settle.ts</code> keeps the drained journal until storage has committed it, and only then calls <code>flushOutbox()</code> and emits events. A record is never sent to a peer, and never shown as saved, before it is on disk.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Timers in the core worker">
+      <table>
+        <thead><tr><th>Constant</th><th>Value</th><th>What runs</th></tr></thead>
+        <tbody>
+          <tr><td><code>TICK_MS</code></td><td>5 000 ms</td><td><code>scatterTick()</code>: the scattered-delivery round (private groups' mailboxes, holder sightings, answers that never came). See <a href="/wiki/scatter/">Scattered delivery</a>.</td></tr>
+          <tr><td><code>SWEEP_EVERY</code></td><td>36 ticks</td><td><code>sweep()</code>, the expiry sweep, about every three minutes. See <a href="/wiki/expiry/">Expiry</a>.</td></tr>
+          <tr><td><code>SYNC_WATCHDOG_MS</code></td><td>30 000 ms</td><td>Any link where <code>sync_stalled(peer)</code> is true is closed; for the home node the error reads "Sync stopped making progress. Reconnecting to your home node…".</td></tr>
+          <tr><td>members timer</td><td>15 000 ms (first after 3 000 ms)</td><td><code>maintainMembers()</code> and <code>maintainDiscovery()</code>.</td></tr>
+          <tr><td>domain checks</td><td>5 000 ms timeout</td><td><code>fetch('https://&lt;domain&gt;/.well-known/hoi')</code> with <code>credentials: 'omit'</code> and no referrer; at most 4 096 characters and 8 lines are read.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3 id="threads-tauri">tauri-core: the same interface on the desktop</h3>
+    <p>In the Tauri shell, <code>call</code> is <code>invoke('hoi_call', {method, args})</code> and events arrive through <code>listen('hoi://event')</code>. The stamper is native: <code>rate()</code> asks <code>hoi_benchmark</code> once, <code>mine</code> is <code>hoi_mine</code> with base64url prefix and suffix, a new key's work is the core's own <code>mineIdentity</code>, and <code>mineMore</code> calls <code>hoi_mine_identity</code> while reading <code>hoi_identity_progress</code> every 500 ms and calling <code>hoi_identity_stop</code> on abort. The commands are described on <a href="/wiki/desktop/">Desktop companion</a>.</p>
+
+    <h3 id="threads-mock">mock-core: every screen without a core</h3>
+    <p><code>mock-core.ts</code> is a dev-only, in-memory <code>HoiCore</code> of about 2 600 lines with no crypto and no network. It starts with no identity, so the first run shows; once a key exists it seeds the people, communities, posts and ledger of <code>mock-data.ts</code>. It emits <code>stamp</code> events for posts, replies and votes, <code>changed</code> after writes and <code>net</code> on pairing. Owner actions need <code>threshold</code> signatures and answer <code>needs-cosign</code>; simulated co-owners sign a few seconds later. URL switches change how it starts:</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Mock core URL switches">
+      <table>
+        <thead><tr><th>Query</th><th>Effect</th></tr></thead>
+        <tbody>
+          <tr><td><code>?blocked</code></td><td>The first boot says another tab has the store.</td></tr>
+          <tr><td><code>?me=&lt;name&gt;</code></td><td>Start with a key.</td></tr>
+          <tr><td><code>?platform=desktop</code></td><td>Act as the desktop app (serving, relaying, traffic); it opens as the companion.</td></tr>
+          <tr><td><code>?full</code></td><td>With <code>?platform=desktop</code>: open as the full app.</td></tr>
+          <tr><td><code>?ask</code></td><td>A phone ("Pixel 9") asks to be linked 2 500 ms after boot.</td></tr>
+          <tr><td><code>?paired</code></td><td>Start paired with a home node.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="wk-sec" id="links">
+    <h2>How the worker connects</h2>
+    <p>The worker keeps three kinds of link, all named as peers of the node: <code>home</code>, <code>member-N</code> and <code>node-N</code>, plus <code>direct-N</code> for other browsers. Nothing connects before the person has read the Network &amp; Safety notice (see <a href="#notices">Notices</a>), because the core is only started after that. The protocol on the wire is the subject of <a href="/wiki/transports/">Transports</a> and <a href="/wiki/sync/">Sync &amp; gossip</a>; here is what the app does around it.</p>
+    <h3 id="links-home">Your home node</h3>
+    <ol class="wk-steps">
+      <li><b>WebSocket first</b><p><code>node.home()</code> gives <code>{url, token, name, rtc}</code>. The worker opens <code>new WebSocket(url)</code> with <code>binaryType = 'arraybuffer'</code> and gives it 5 000 ms to open. On a phone (user agent matching <code>Android|iPhone|iPad|iPod</code>) a loopback address is skipped when WebRTC routes exist: a loopback address there is someone else's.</p></li>
+      <li><b>Then WebRTC</b><p>The routes (<code>rtc:&lt;base64url SHA-256 of the node's DTLS certificate&gt;@&lt;ip:port&gt;</code>) are grouped by certificate, one group per node, and tried in order with mode <code>c</code>.</p></li>
+      <li><b>Back off</b><p>If nothing opened, the next try waits <code>backoff</code>: 1 000 ms, doubling up to 60 000 ms. A link that opens resets it to 1 000 ms, and so does <code>pair</code> or <code>unpair</code>.</p></li>
+    </ol>
+    <p>When the socket fails, the worker checks whether the browser refused this page the home node's address space (Local Network Access). It queries the permissions <code>loopback-network</code> or <code>local-network</code> (and the older <code>local-network-access</code>) and, if one is <code>denied</code>, the error tells the person to allow "Apps on device" or "Local network" in the site settings. Loopback means <code>localhost</code>, <code>::1</code> or <code>127.*</code>; local means 10/8, 192.168/16, 169.254/16, 172.16/12, <code>fc</code>/<code>fd</code>/<code>fe80</code> IPv6 or a <code>.local</code> name.</p>
+    <h3 id="links-members">Members' and public nodes</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Member and discovery link limits">
+      <table>
+        <thead><tr><th>Constant</th><th>Value</th><th>Meaning</th></tr></thead>
+        <tbody>
+          <tr><td><code>MAX_MEMBER_LINKS</code></td><td>2</td><td>Member links kept open, plus one per private-group mailbox (<code>node.mailbox_links()</code>).</td></tr>
+          <tr><td><code>MEMBER_SHORT_MS</code></td><td>60 000 ms</td><td>A member link that closes sooner counts as a refusal.</td></tr>
+          <tr><td>retry wait</td><td>30 000 ms, doubling, at most 30 min</td><td>How long a node that refused or never answered rests (<code>memberWait</code>).</td></tr>
+          <tr><td><code>DISCOVERY_RACE</code></td><td>3</td><td>Public nodes dialed at once for discovery; the first to answer is kept and the others are closed before they carry anything.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Candidates come from the core (<code>rtc_candidates()</code>, <code>discovery_candidates()</code>); nothing in the app names a node. A <code>publicJoin</code> moves the chosen carrier to the front and frees a member slot for it. An <code>openNodeLink</code> clears that node's wait and replaces the current discovery link. Accepting an operator's notice clears every wait, so the node is dialed at once. When the core closed a link because a notice is unread (<code>consent_closed</code>), the node is not counted as refusing. Direct links with other browsers exist only while <code>directLinks</code> is on; turning it off closes every open one.</p>
+  </section>
+
+  <section class="wk-sec" id="routes">
+    <h2>Screens and routes</h2>
+    <p>Routing is by hash (<code>src/lib/router.ts</code>), so the same build works under <code>/app/</code>, on its own origin and inside <code>tauri://</code>. Ids in a route must match <code>^[0-9a-zA-Z_-]{1,128}$</code> and wiki page names <code>^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$</code>; anything else is <code>notfound</code>. <code>router.go</code> changes the route at once, not on the next <code>hashchange</code>, so whatever the same click opens can take focus; a new screen scrolls to the top, a tab change inside a community keeps the scroll.</p>
+    <h3 id="routes-gates">What shows before the routes</h3>
+    <p><code>App.svelte</code> checks, in this order:</p>
+    <ol class="wk-steps">
+      <li><b><code>#/privacy</code></b><p>The privacy notice shows first, whatever else is true: readable before consent and before unlocking.</p></li>
+      <li><b>Network &amp; Safety</b><p>Until the current notice is acknowledged on this device, <code>NetworkSafety.svelte</code> is the only screen and <code>app.start()</code> is not called.</p></li>
+      <li><b>Locked</b><p><code>Unlock.svelte</code> while the vault is <code>create</code>, <code>migrate</code> or <code>locked</code>.</p></li>
+      <li><b>Not ready</b><p><code>Boot.svelte</code> for <code>booting</code>, <code>blocked</code> ("hoi is open in another tab.", with a button to use it here) and <code>error</code> ("hoi couldn't start.").</p></li>
+      <li><b>Companion</b><p><code>#/companion</code> shows without the forum chrome.</p></li>
+      <li><b>No key</b><p><code>#/pair</code> still works (a phone scanning the computer's code); everything else shows <code>FirstRun.svelte</code>.</p></li>
+      <li><b>The app</b><p>Top bar, the index (<code>Side</code>), the screen in <code>&lt;main&gt;</code> (its id is <code>main</code>, its <code>tabindex</code> −1), the footer and the bottom bar. <code>SyncNotice</code> sits above most screens.</p></li>
+    </ol>
+    <h3 id="routes-table">Every route</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Routes">
+      <table>
+        <thead><tr><th>Hash</th><th>Screen</th><th>What it does</th></tr></thead>
+        <tbody>
+          <tr><td><code>#/</code></td><td><code>Home.svelte</code></td><td>"Hey &lt;name&gt;." Your feed across joined communities (<code>feed</code>). With nothing joined: "hoi has no front page. That's the point."</td></tr>
+          <tr><td><code>#/communities</code></td><td><code>Communities.svelte</code></td><td>Your communities in your own order (favorites, <code>arrange.ts</code>), the ones you left that are still fading, and "Found on the network" (<code>discoverCommunities</code>).</td></tr>
+          <tr><td><code>#/registry?q=</code></td><td><code>Registry.svelte</code></td><td>"Community registry" when the registry address is set, else "Find communities" from what nodes listed (<code>RegistryResults</code>). See <a href="/wiki/registry/">Registry</a>.</td></tr>
+          <tr><td><code>#/c/&lt;id&gt;</code> (or <code>/posts</code>)</td><td><code>Community.svelte</code></td><td>The community: posts ranked "hot" on this device, the composer, proposals, invite, join and leave, pinning, trust sharing, Warmth.</td></tr>
+          <tr><td><code>#/c/&lt;id&gt;/rules</code></td><td><code>Community.svelte</code></td><td>Proposed rule changes, then the rules text with its version, who signed it and how many of the owners.</td></tr>
+          <tr><td><code>#/c/&lt;id&gt;/wiki</code>, <code>/wiki/&lt;page&gt;</code></td><td><code>Wiki.svelte</code> inside the community</td><td>Pages the members write together (<code>wikiPages</code>, <code>wikiPage</code>, <code>editWiki</code>). Each save is a signed edit; edits made elsewhere merge in line by line.</td></tr>
+          <tr><td><code>#/c/&lt;id&gt;/ladder</code></td><td><code>Community.svelte</code></td><td>How trust works here and the review queue (<code>reviewQueue</code>). See <a href="/wiki/standing/">Standing &amp; review</a>.</td></tr>
+          <tr><td><code>#/c/&lt;id&gt;/manage</code></td><td><code>Manage.svelte</code></td><td>For owners and mods: limits, rules, moderators, cosigning, waiting at the door, bans, flags, age proofs, "carry it by hand" (bundle export and import), danger zone. Owner-only parts stay visible to mods, disabled, with the reason.</td></tr>
+          <tr><td><code>#/c/&lt;id&gt;/ledger</code></td><td><code>Ledger.svelte</code></td><td>The signed moderation ledger (<code>LedgerTable</code>) and "export" as <code>c-&lt;name&gt;-ledger-&lt;date&gt;.hoibundle</code>.</td></tr>
+          <tr><td><code>#/new</code>, <code>#/new/private</code></td><td><code>NewCommunity.svelte</code></td><td>Start a public community (<code>createCommunity</code>, optional public name) or an invite-only encrypted one (<code>PrivateStart</code>).</td></tr>
+          <tr><td><code>#/private</code></td><td><code>PrivateCommunities.svelte</code></td><td>"Join by invitation" (<code>privateJoinRequest</code>, <code>privateJoin</code>) and your private groups. See <a href="/wiki/private/">Private communities</a>.</td></tr>
+          <tr><td><code>#/join?…</code></td><td><code>Join.svelte</code></td><td>An invite: <code>previewInvite</code>, then <code>join</code> after the VPN warning.</td></tr>
+          <tr><td><code>#/public?c=&amp;name=&amp;p=</code></td><td><code>PublicJoin.svelte</code></td><td>Join a public community by its key (<code>publicJoin</code>, <code>publicJoinStatus</code>).</td></tr>
+          <tr><td><code>#/p/&lt;id&gt;</code></td><td><code>Post.svelte</code></td><td>A post and its replies; vote, save, edit, delete your own; mod actions (remove with a reason, pin, label, ban, admit, review); "Poof." when removed.</td></tr>
+          <tr><td><code>#/u/&lt;key&gt;?c=&lt;id&gt;</code></td><td><code>Person.svelte</code></td><td>A person and their standing in one community; trust, mute, petname; labelers, blocklist keepers and aggregators to follow.</td></tr>
+          <tr><td><code>#/you</code></td><td><code>You.svelte</code></td><td>Your key (name, picture, fingerprint, key work, devices, recovery friends, passkeys, key backup), connection, Warmth, traffic, privacy switches, looks, and "On this device" (wipe, burn the key).</td></tr>
+          <tr><td><code>#/saved</code></td><td><code>Saved.svelte</code></td><td>Posts you saved (<code>saved</code>).</td></tr>
+          <tr><td><code>#/search?q=&amp;scope=communities</code></td><td><code>Search.svelte</code></td><td>Local full-text search of posts (<code>search</code>), or communities through <code>RegistryResults</code>.</td></tr>
+          <tr><td><code>#/pair?…</code></td><td><code>Pair.svelte</code></td><td>A pairing link (usually a phone's camera): one tap pairs; without a key, a second asks your other device to link this one, with four digits to compare.</td></tr>
+          <tr><td><code>#/node?…</code></td><td><code>NodeLink.svelte</code></td><td>A public node's link: <code>previewNodeLink</code> shows where it points and the operator's notice, checked against the node it names; accepting connects (<code>openNodeLink</code>).</td></tr>
+          <tr><td><code>#/companion</code></td><td><code>Companion.svelte</code></td><td>The desktop's small face: status, "Your browser and phone" with a QR code, settings (keep communities reachable, start with this computer, the whole app), traffic, Warmth.</td></tr>
+          <tr><td><code>#/server</code></td><td><code>Server.svelte</code></td><td>"A node on a server.": makes the kit for a public node (and registry) on this device, from <code>lib/server-kit.ts</code>. See <a href="/wiki/deploy/">Deploying</a>.</td></tr>
+          <tr><td><code>#/privacy</code></td><td><code>Privacy.svelte</code></td><td>The client's privacy notice and the Network &amp; Safety notice with when it was acknowledged; "read again" resets the acknowledgement.</td></tr>
+          <tr><td>anything else</td><td><code>NotFound.svelte</code></td><td>"Nothing lives at &lt;path&gt;."</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p><code>screenKey(route)</code> gives each screen a key (<code>community:&lt;id&gt;</code>, <code>post:&lt;id&gt;</code>, …) for the <code>{#key}</code> block, so changing tabs inside a community keeps the screen while moving to another community rebuilds it.</p>
+  </section>
+
+  <section class="wk-sec" id="state">
+    <h2>App state and data loading</h2>
+    <p><code>src/lib/app.svelte.ts</code> is one class, <code>AppState</code>, exported as <code>app</code>. Its fields are Svelte <code>$state</code>: <code>phase</code> (<code>booting | blocked | error | locked | ready</code>), <code>vaultState</code>, <code>boot</code>, <code>me</code>, <code>communities</code>, <code>privateGroups</code>, <code>net</code>, <code>warmth</code>, <code>settings</code>, <code>stats</code>, <code>linkAsks</code>, <code>linkChecks</code>, the composer's state and a counter, <code>rev</code>.</p>
+    <p>Screens load their data with <code>resource(() =&gt; { void app.rev; return app.core.x() })</code>. Reading <code>app.rev</code> before the first <code>await</code> makes the effect depend on it, so every <code>changed</code> event re-runs the fetch and new records from peers appear on screen. Old data stays shown while the new fetch runs.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Core events and what the app does">
+      <table>
+        <thead><tr><th>Event</th><th>The app does</th></tr></thead>
+        <tbody>
+          <tr><td><code>changed</code></td><td>Bumps <code>rev</code>, refreshes communities, stats and private groups, re-reads Warmth after 500 ms of quiet, and syncs private groups 750 ms later.</td></tr>
+          <tr><td><code>net</code></td><td>Stores the status, refreshes, re-reads Warmth.</td></tr>
+          <tr><td><code>stamp</code></td><td>Feeds the composer's work bar; a finished stamp of 16 bits or more updates <code>hashesPerSecond</code> (2<sup>22</sup> until the first real one).</td></tr>
+          <tr><td><code>notice</code></td><td>A toast.</td></tr>
+          <tr><td><code>linkAsk</code> / <code>linkCheck</code> / <code>linked</code></td><td>A new device asks to sign as you; the digits to compare; the link finished.</td></tr>
+          <tr><td><code>signAsk</code></td><td>"&lt;device&gt; asks this &lt;platform&gt; to sign a …. Answer under You → Your devices."</td></tr>
+          <tr><td><code>preview</code></td><td>A link preview arrived: bumps <code>previewRev</code>.</td></tr>
+          <tr><td><code>nodeNotice</code></td><td>A node asks to be read first: re-reads <code>net</code>, whose <code>pendingNotices</code> hold the words.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Once ready, the app runs two background jobs: <code>connectPublic()</code> every 60 000 ms (finding public carriers for joined communities through the registry or the trackers a community names, <code>public-connections.ts</code>) and <code>syncPrivateGroups()</code> every 15 000 ms for groups that use explicit relays. Before a signed post, reply, vote or vouch, <code>requirePostingConnection</code> re-reads <code>net</code> and refuses when no connected peer offered this exact community ("Your text stays in the editor."). On a browser or phone with no home node, <code>confirmPosting</code> shows <code>PostingNotice</code> once.</p>
+    <p>Theme and motion come from the core's settings and are mirrored to <code>localStorage</code> under <code>hoi:theme</code> and <code>hoi:motion</code>; <code>prepaintTheme()</code> applies them before the core answers, so the first paint is right. Toasts show one at a time, 2 600 ms for confirmations and 4 200 ms for errors.</p>
+  </section>
+
+  <section class="wk-sec" id="components">
+    <h2>Important components</h2>
+    <p>67 components live in <code>src/lib/ui/</code>. These carry the most behavior:</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="UI components">
+      <table>
+        <thead><tr><th>Component</th><th>What it does</th></tr></thead>
+        <tbody>
+          <tr><td><code>Composer</code></td><td>The one orchestrated moment: work bar (the stamp), id scramble, the stamp slams in, the composer folds, the new row drops into the feed. Media is offered only to trusted members; the core strips metadata.</td></tr>
+          <tr><td><code>SayHoi</code>, <code>Shards</code></td><td>Making a key, acted out in three parts: stir the swarm (gestures folded into extra randomness by <code>lib/sayhoi/stir.ts</code>, skippable), earn the stamp (every Argon2id try flies to a "bouncer"), meet your key (its <code>did:key</code>, fingerprint and picture, then an optional 3-of-5 rehearsal with <code>lib/sayhoi/shamir.ts</code>).</td></tr>
+          <tr><td><code>KeyWork</code></td><td>How much identity work the key carries and more of it, with a live count of tries.</td></tr>
+          <tr><td><code>KeyBackup</code></td><td>The recovery key (one line, <code>hoi-key-1-…</code>, saved to a password manager under "hoi key") beside an exported <code>.hoikey</code> file with its own passphrase.</td></tr>
+          <tr><td><code>LinkDevice</code>, <code>LinkWaiting</code>, <code>LinkAskPrompt</code>, <code>Devices</code></td><td>Linking another device to your key (one scan with a home node), the new device's wait, the prompt on the device that holds the key, and the list of devices that sign as you.</td></tr>
+          <tr><td><code>RecoveryFriends</code>, <code>AskFriends</code></td><td>Friends who keep shares of your recovery line; asking them from a device without a key.</td></tr>
+          <tr><td><code>PasskeyUnlock</code>, <code>VaultRecovery</code></td><td>Adding passkeys to the browser vault; "Can't unlock? Recover or start over".</td></tr>
+          <tr><td><code>OperatorNotice</code>, <code>NoticeText</code>, <code>NoticeEditor</code></td><td>A node's join notice as people read it, which can't be dismissed, only answered; the editor the kit page and the setup app share.</td></tr>
+          <tr><td><code>JoinWarning</code>, <code>PostingNotice</code></td><td>"Turn on your VPN before joining" before every join; the once-only notice before the first post without a home node.</td></tr>
+          <tr><td><code>SyncNotice</code>, <code>ConnectionDetails</code>, <code>NetworkMap</code>, <code>Traffic</code>, <code>Warmth</code></td><td>The connection, in words and drawn; amounts and times passing through, never content; who else holds a community's records.</td></tr>
+          <tr><td><code>LinkCard</code>, <code>HandleTag</code>, <code>TrustTag</code></td><td>A post's link with an optional preview; a name that is a domain, verified or flagged; trust, always cobalt and always with the ✓.</td></tr>
+          <tr><td><code>Modal</code>, <code>Toasts</code>, <code>QR</code></td><td>A real <code>&lt;dialog&gt;</code>; one polite toast at a time; dark modules on a light tile with the quiet zone the standard asks.</td></tr>
+          <tr><td><code>PreviewBanner</code>, <code>UpdateBanner</code>, <code>SandboxBanner</code></td><td>The release status line, "A new version is ready · Reload", and the sandbox marker.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="wk-sec" id="storage">
+    <h2>Storage: OPFS or IndexedDB</h2>
+    <p>The core never touches storage itself. <code>WasmNode</code> collects changes in memory; the worker drains them with <code>take_changes()</code> after every call and applies them to a store. A change is one of four:</p>
+    <dl class="wk-defs">
+      <dt>put<small>{id, community, expiresAt, wire}</small></dt><dd>A record by its hex id, its community (or null), when it expires (Unix seconds) and its canonical bytes.</dd>
+      <dt>delete<small>{id}</small></dt><dd>A record removed.</dd>
+      <dt>blob<small>{key, value}</small></dt><dd>A keyed value (identity keys, MLS state, settings); <code>null</code> deletes it.</dd>
+      <dt>wipe<small>{}</small></dt><dd>Everything cleared.</dd>
+    </dl>
+    <p><code>openStore(name)</code> picks the store. Where the browser has sync access handles in a dedicated worker (<code>createSyncAccessHandle</code> on <code>FileSystemFileHandle</code>) and the store doesn't already live in IndexedDB, it is two log files in the origin-private file system, directory <code>store-&lt;name&gt;</code>. Otherwise, and in a private window that refuses OPFS, it is the IndexedDB database <code>hoi</code>, version 1, with object stores <code>records</code> and <code>blobs</code>. An OPFS write is one append and one flush instead of an IndexedDB transaction.</p>
+    <h3 id="storage-opfs">The OPFS log format</h3>
+    <p>A store is <code>log-a</code> and <code>log-b</code>. Each file is a run of frames. A frame is there whole or not at all: on opening, the first frame that is cut short or fails its CRC ends the log and the file is truncated there. The file whose first frame is valid and whose generation is higher is the store, and its first frame always starts with a <code>wipe</code>.</p>
+    <div class="wk-bytes" data-title="One OPFS frame (opfs.ts)">
+magic | 4 B | sun | 2 | <code>HOIF</code>, u32 <code>0x464f4948</code> little-endian
+generation | 4 B | sky | 2 | u32 LE, the same for every frame of a file
+length | 4 B | lilac | 2 | u32 LE, the body's length
+body | n B | mint | 4 | a batch of changes
+crc | 4 B | coral | 2 | CRC-32 (poly <code>0xedb88320</code>) of the body
+    </div>
+    <div class="wk-bytes" data-title="A put change inside a body">
+op | 1 B | sun | 1 | 1 put · 2 delete · 3 blob · 4 wipe
+id | 2 + n B | sky | 3 | u16 LE length, UTF-8; <code>0xffff</code> is null
+community | 2 + n B | lilac | 3 | same string form
+expiresAt | 8 B | peach | 2 | f64 LE
+wire | 4 + n B | mint | 3 | u32 LE length; <code>0xffffffff</code> is null
+    </div>
+    <p>Compaction starts once the log passes <code>COMPACT_AT</code> (4 MiB) and is more than three times what is live (each record counts its bytes plus 64). Everything live is written as one frame into the other file under the next generation, then the old file is emptied. A crash in between leaves one of the two whole. If the compacted frame doesn't fit (the disk is full), the old log stays in use. A tab that just took over retries <code>createSyncAccessHandle</code> up to 20 times, 100 ms apart, while the old tab lets go.</p>
+    <h3 id="storage-lock">One tab owns the store</h3>
+    <p>The worker holds the Web Lock <code>hoi-core</code> (in the sandbox, <code>&lt;store&gt;:core</code>) for its lifetime, asked with <code>ifAvailable</code>. A second tab gets <code>blocked</code> and shows "hoi is open in another tab." Choosing to use it here asks again with <code>steal: true</code>; the first tab's lock request then rejects, it stops touching storage and sockets and posts <code>locked</code>, and its page reloads. A browser without Web Locks is refused: "This browser cannot safely open your saved data. Use an up-to-date browser." While locked, the worker closes the store, so the OPFS files stay free for another tab or a reset.</p>
+    <h3 id="storage-failure">When saving fails</h3>
+    <p>If applying a batch fails, the worker emits the notice "This browser could not save changes. Sync is paused. Keep this tab open, check free storage and allow site storage; saving will retry." The journal is kept, the next call first retries it, and no new mutation is accepted until it succeeds; then "Storage is working again." follows. A boot that finds records this build can't decode shows a banner: "Some saved data needs compatible software." with the count of <code>preservedRecords</code>, and asks the person not to reset to recover them.</p>
+    <p>The deeper model (the in-memory index, SQLite on native, the journal) is on <a href="/wiki/storage/">Storage</a>.</p>
+  </section>
+
+  <section class="wk-sec" id="vault">
+    <h2>The encrypted browser vault</h2>
+    <p>Every value the store holds is sealed first. <code>WasmVault</code> wraps <code>hoi_crypto::vault::LocalVault</code>: a random 32-byte data key, wrapped once per way in. The worker keeps it only while the store is unlocked; locking frees it and reloads the page, so no rendered content or worker outlives the lock.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Vault states">
+      <table>
+        <thead><tr><th>State</th><th>When</th><th>The screen</th></tr></thead>
+        <tbody>
+          <tr><td><code>create</code></td><td>Nothing stored yet.</td><td>"Protect this device": new passphrase, twice.</td></tr>
+          <tr><td><code>migrate</code></td><td>Plaintext data from an older build, no vault header.</td><td>"Your existing identity and communities will be kept and encrypted."</td></tr>
+          <tr><td><code>locked</code></td><td>A vault header is stored.</td><td>"Unlock hoi", and "Unlock with a passkey" when the header lists one.</td></tr>
+          <tr><td><code>ready</code></td><td>The node is open.</td><td>The app.</td></tr>
+          <tr><td><code>blocked</code></td><td>Another tab holds the lock.</td><td>"hoi is open in another tab."</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 id="vault-passphrase">The passphrase</h3>
+    <p>A new passphrase needs at least 15 characters and at most 1 024 bytes. The Rust side checks both again (<code>chars().count() &lt; 15 || len() &gt; 1024</code>). It wraps the data key with Argon2id at 64 MiB, three passes, one lane, then XChaCha20-Poly1305; the header starts with the magic <code>HOIV\x03</code>. Unlocking refuses a header whose Argon2 cost isn't exactly that, so a tampered header can't ask for an expensive derivation. The login form exposes <code>username</code> (read-only, "hoi — browser vault" or "hoi — desktop vault"), <code>current-password</code> and <code>new-password</code> fields so password managers can save it, shows "Caps Lock is on." when it is, and clears both fields after every attempt. The app never stores the passphrase.</p>
+    <div class="wk-note warn"><b>Three different secrets</b><p>The local vault passphrase only opens storage on this device. It is not the recovery key (<code>hoi-key-1-…</code>) and not the passphrase of a <code>.hoikey</code> file. The unlock screen and "Recover or start over" both say so.</p></div>
+    <h3 id="vault-cells">What is stored</h3>
+    <p><code>idb.ts</code> seals each cell with a context that binds its address: <code>record:&lt;id&gt;</code> for records, <code>blob:&lt;key&gt;</code> for blobs (stored under <code>v:&lt;key&gt;</code>), <code>manifest</code> for the manifest. Each seal is XChaCha20-Poly1305 under a BLAKE3-derived key for the context <code>hoi local vault cell v1:&lt;address&gt;</code>. Three plaintext blobs remain:</p>
+    <dl class="wk-defs">
+      <dt>vault<small>bytes</small></dt><dd>The header: the passphrase slot and any passkey slots.</dd>
+      <dt>format<small>bytes</small></dt><dd>The old-client guard <code>{"version":4294967295}</code>, so an older build refuses the database instead of misreading it.</dd>
+      <dt>vault-manifest<small>sealed JSON</small></dt><dd><code>{version: 1, cells: {…}}</code>: every cell's address and the BLAKE3 hash of its ciphertext.</dd>
+    </dl>
+    <p>On unlock the manifest must list exactly the cells present, with matching hashes, or loading stops with "Saved data is incomplete or damaged. No data was replaced." That catches a deleted cell and a single older ciphertext put back, not only a modified one. A <code>v:</code> cell or a manifest without a header, or a header next to anything unexpected, is reported as damage and nothing is changed. Migration seals everything first and then writes it in one batch that starts with <code>wipe</code>, so a crypto failure writes nothing.</p>
+    <h3 id="vault-passkeys">Passkey unlock</h3>
+    <p>A browser vault can also be opened by up to four passkeys through WebAuthn's <code>prf</code> extension. The WebAuthn calls happen on the page (<code>src/lib/passkey.ts</code>); the worker only ever sees the credential id and the 32-byte answer.</p>
+    <ul>
+      <li><b>Adding</b> (You → Unlock with a passkey, browsers only): <code>navigator.credentials.create</code> with <code>rp: {name: 'hoi'}</code>, a random 16-byte user id, algorithms <code>-7</code> and <code>-257</code>, <code>residentKey: 'preferred'</code>, <code>userVerification: 'required'</code> and a fresh 32-byte salt. Authenticators that answer the PRF at creation are used as is; the rest are asked once more. The worker calls <code>add_passkey</code> and saves the changed header with <code>saveHeader</code>; the cells stay as they are.</li>
+      <li><b>Unlocking</b>: <code>WasmVault.passkeys(header)</code> lists each slot's credential id and salt in the clear, so the page can ask before anything is unlocked. <code>navigator.credentials.get</code> uses <code>evalByCredential</code> with each salt; the answer opens the slot. A passkey never creates a vault: "Set a passphrase first; a passkey can be added after."</li>
+      <li><b>Removing</b>: <code>remove_passkeys</code> keeps only the passphrase slot.</li>
+    </ul>
+    <div class="wk-seq" data-title="Unlocking the browser vault">
+lanes: Unlock screen | Page | Core worker | Store
+Unlock screen -> Page: <code>app.unlock(passphrase)</code>
+Page -> Core worker: <code>__unlock</code> [passphrase]
+Core worker -> Store: <code>openStore("hoi")</code>, <code>snapshot()</code>
+Store --> Core worker: records and blobs, still sealed
+Core worker: <code>WasmVault.unlock(header, passphrase)</code>: Argon2id, 64 MiB
+Core worker: check the manifest, unseal every cell
+Core worker: <code>new WasmNode("web", base, records, blobs)</code>
+Core worker -> Store: first <code>settle()</code>
+Core worker: start links, the 5 s tick
+Core worker --> Page: ok
+Page -> Core worker: <code>boot</code>, <code>me</code>, <code>settings</code>, <code>net</code>
+    </div>
+    <h3 id="vault-errors">Errors and recovery</h3>
+    <p>A wrong passphrase reads "Could not unlock. Check this browser's local passphrase; a key-file backup can have a different passphrase. A damaged vault header can also cause this. No data was replaced." A right passphrase whose data won't load answers <code>saved-data</code>: "The passphrase opened your vault, but its saved data could not be loaded. No replacement key was created." A failed unlock never creates an identity, changes the passphrase or rewrites ciphertext.</p>
+    <p>"Can't unlock? Recover or start over" (<code>VaultRecovery.svelte</code>) explains which secret is which, offers "Lock and reload" when the vault is still open, and clears local data only with a ticked box and the exact text <code>RESET</code>. The worker refuses while the node is open ("Lock hoi before using recovery."), releases everything, deletes the IndexedDB database without opening its schema and removes the OPFS directory. The page then removes <code>hoi:theme</code>, <code>hoi:motion</code>, <code>hoi:sync-hidden</code> and <code>hoi:consent:network</code> from <code>localStorage</code> and <code>hoi:sort</code> from <code>sessionStorage</code>, and reloads. Clearing doesn't revoke the old key or erase other devices' copies. The vault format itself is described on <a href="/wiki/storage/">Storage</a>.</p>
+  </section>
+
+  <section class="wk-sec" id="miners">
+    <h2>Stamp miners and the look worker</h2>
+    <h3 id="miners-pool">The miner pool</h3>
+    <p><code>createMinerPool()</code> starts <code>n = max(1, min(4, hardwareConcurrency − 1))</code> module workers running <code>miner.worker.ts</code>. Miner <code>i</code> tries nonces <code>i, i + n, i + 2n, …</code> with <code>mine_range(prefix, suffix, bits, start, step, 20000)</code>, yielding between chunks so a <code>stop</code> can arrive. Nonces stay below 2<sup>53</sup> so they survive a JavaScript number. The first <code>rate()</code> benchmarks one worker on 30 000 hashes of a 180-byte prefix and 60-byte suffix, floors it at 50 000 hashes per second, and multiplies by <code>n</code>; the composer's estimate is <code>stampEstimateMs(bits, rate)</code>.</p>
+    <p>Identity work runs one Argon2id try at a time through <code>IdentityMiner</code> (an 8 MiB buffer per miner); every try's 32-byte output is posted with its leading zero bits, so the first run can draw it. Between tries the miner yields through a <code>MessageChannel</code>, not <code>setTimeout</code>, because a try takes about 15 ms and the timer would add a 4 ms clamp. A stamp job and an identity job can run in the same miner, taking turns. <code>mineMore</code> reports <code>{tries, best}</code> every 250 ms and resolves <code>null</code> when stopped. If every miner fails (no memory, wasm didn't load), the job rejects and the caller falls back to the core.</p>
+    <p>What a stamp is and how difficulty is set: <a href="/wiki/stamps/">Stamps &amp; work</a>.</p>
+    <div class="wk-stage" data-demo="stamp" data-title="Mining a stamp"><p class="nojs">A miner tries nonce after nonce until the hash of the record and the nonce starts with enough zero bits. Each extra bit doubles the expected work.</p><p class="wk-stage-cap">The pool splits exactly this search across up to four workers.</p></div>
+    <h3 id="miners-look">The look pool</h3>
+    <p>The core runs as wasm with <code>panic = "abort"</code>, so a bug in a picture decoder would end the whole node. In a browser the node is therefore told to look at media elsewhere (<code>set_look_elsewhere(true)</code>). <code>createLooker()</code> keeps one <code>look.worker.ts</code> named <code>hoi-look</code> and gives it one job at a time:</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Look worker jobs">
+      <table>
+        <thead><tr><th>Message</th><th>Wasm function</th><th>Result</th></tr></thead>
+        <tbody>
+          <tr><td><code>look</code> {mime, data}</td><td><code>look_media</code></td><td>The media is checked by <code>hoi_validate::media::check</code>, then looked at: <code>{picture: {hashes, quality}}</code>, or <code>unreadable</code>.</td></tr>
+          <tr><td><code>sanitize</code> {data}</td><td><code>sanitize_and_look</code></td><td>A file someone attaches, sanitized as the core will: <code>{hash, mime, look}</code>.</td></tr>
+          <tr><td><code>frames</code> {frames}</td><td><code>look_luma</code></td><td>Fingerprints of video frames: <code>{video: [...]}</code> or <code>nothing</code>.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>A job that takes longer than <code>LOOK_MS</code> (20 000 ms), or a worker that errors, gets the worker terminated and replaced; that one picture counts as <code>unreadable</code> (a video as <code>nothing</code>). Video frames come from the page: <code>video-frames.ts</code> plays the video muted and detached, waits up to 5 000 ms per step and 30 000 ms in all, and draws <code>FRAMES</code> = 8 frames spread over its length at no more than 512 px on the longest side, converted to luma with weights 0.299, 0.587 and 0.114. A video this browser can't play has nothing to say. See <a href="/wiki/media/">Media</a>.</p>
+  </section>
+
+  <section class="wk-sec" id="sw">
+    <h2>The service worker</h2>
+    <p>The service worker is hand-written (<code>vite/service-worker.js</code>); the build fills in two placeholders. <code>vite/sw-plugin.js</code> runs as the last <code>generateBundle</code> hook, so it sees the final bytes of every file. It takes every emitted chunk and asset (worker chunks and the <code>.wasm</code> included) and every file copied from <code>public/</code>, skips <code>_headers</code>, <code>sw.js</code>, <code>release.json</code>, source maps and dotfiles, and records each file's SHA-256. The cache version is the first 16 hex characters of the SHA-256 over the sorted <code>"&lt;file&gt; &lt;hash&gt;"</code> lines, so any change ships a new worker and a new cache <code>hoi-&lt;version&gt;</code>. <code>index.html</code> is listed with a null hash: its own SRI attributes pin the entry script and stylesheet.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Service worker request handling">
+      <table>
+        <thead><tr><th>Request</th><th>Handling</th></tr></thead>
+        <tbody>
+          <tr><td>Not <code>GET</code>, another origin, or outside the scope</td><td>Not touched.</td></tr>
+          <tr><td><code>release.json</code></td><td>Not touched: release notices can change without a build and must never be frozen or faked from cache.</td></tr>
+          <tr><td>A navigation, <code>index.html</code> or the scope root</td><td>Network first; a good same-origin answer updates the cached <code>index.html</code>; offline, the cached one.</td></tr>
+          <tr><td>Any precached file</td><td>Cache first. A miss is fetched and checked against the build's hash; bytes that differ give <code>Response.error()</code>, never the file.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>On <code>install</code> every precached file is fetched with <code>cache: 'reload'</code> and checked; one mismatch fails the whole install. On <code>activate</code> other <code>hoi-*</code> caches are deleted and the worker claims its clients. This covers what SRI attributes can't: dynamic imports, workers and the wasm.</p>
+    <h3 id="sw-update">The update flow</h3>
+    <p><code>registerServiceWorker()</code> does nothing in development, in desktop or sandbox builds, inside Tauri, or without <code>navigator.serviceWorker</code>. Otherwise it registers <code>sw.js</code> after the page's <code>load</code> event and asks for an update every hour.</p>
+    <div class="wk-seq" data-title="A new version arrives">
+lanes: Page | Service worker | Host
+Page -> Host: <code>reg.update()</code>, hourly
+Host --> Service worker: a new <code>sw.js</code>
+Service worker -> Host: every precached file, <code>cache: "reload"</code>
+Service worker: checks each SHA-256; state <code>installed</code>, waiting
+Service worker --> Page: <code>statechange</code>: <code>sw.waiting</code> is set
+Page: "A new version is ready · Reload"
+Page -> Service worker: <code>{type: "skip-waiting"}</code>
+Service worker: activates, deletes old <code>hoi-*</code> caches, claims clients
+Service worker --> Page: <code>controllerchange</code>
+Page: <code>location.reload()</code>, once
+    </div>
+  </section>
+
+  <section class="wk-sec" id="build">
+    <h2>Build configuration</h2>
+    <p><code>vite.config.ts</code> sets <code>base: './'</code>: a relative base, so the same files work under <code>/app/</code> on the website and inside Tauri. Workers are built as ES modules, the target is <code>es2022</code> and there are no source maps.</p>
+    <h3 id="build-env">Environment variables</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Build-time environment variables">
+      <table>
+        <thead><tr><th>Setting</th><th>Default</th><th>Effect</th></tr></thead>
+        <tbody>
+          <tr><td>Backend switch (app build)</td><td>unset</td><td><code>mock</code> selects the in-memory core.</td></tr>
+          <tr><td>Registry address (app build)</td><td><code>''</code></td><td>A shared registry. Must be <code>https:</code>, or <code>http:</code> on <code>localhost</code>, <code>127.0.0.1</code> or <code>[::1]</code>; no credentials, query or fragment. <code>/registry</code> means the bundled deployment. Its origin is added to <code>connect-src</code>. Empty disables registration.</td></tr>
+          <tr><td>Relay addresses (app build)</td><td><code>[]</code></td><td>A JSON array of at most three encrypted relay base URLs, with the same HTTPS rule; <code>/relay</code> is allowed. Each origin is added to <code>connect-src</code>.</td></tr>
+          <tr><td><code>HOI_PUBLISHER</code>, <code>HOI_CONTACT</code></td><td><code>''</code></td><td>Who publishes this build and how to reach them, for the privacy notice. Empty means "the hoi project" and "through the source repository".</td></tr>
+          <tr><td><code>HOI_SANDBOX</code></td><td>unset</td><td><code>1</code> builds the sandbox bridge in and leaves the service worker out.</td></tr>
+          <tr><td><code>HOI_TARGET</code></td><td>unset</td><td><code>desktop</code> is the same as <code>--mode desktop</code>.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>The build also reads the repository's <code>release.json</code> (<code>loadBuildRelease</code>, at most 16 KiB, checked by <code>scripts/release-schema.mjs</code>) and defines these constants:</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Compile-time constants">
+      <table>
+        <thead><tr><th>Constant</th><th>Value</th></tr></thead>
+        <tbody>
+          <tr><td><code>__HOI_DESKTOP__</code></td><td>Desktop or setup mode.</td></tr>
+          <tr><td><code>__HOI_SETUP__</code></td><td>Setup mode.</td></tr>
+          <tr><td><code>__HOI_SANDBOX__</code></td><td><code>HOI_SANDBOX=1</code> and not desktop.</td></tr>
+          <tr><td><code>__HOI_RELAY_URLS__</code></td><td>The checked relay list.</td></tr>
+          <tr><td><code>__HOI_VERSION__</code></td><td><code>package.json</code>'s version.</td></tr>
+          <tr><td><code>__HOI_PREVIEW__</code>, <code>__HOI_RELEASE__</code>, <code>__HOI_PROTOCOL__</code></td><td>From <code>release.json</code>: channel is <code>preview</code>, the whole release object, its <code>protocolVersion</code>.</td></tr>
+          <tr><td><code>__HOI_PUBLISHER__</code>, <code>__HOI_CONTACT__</code></td><td>The two variables above.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 id="build-csp">Content-Security-Policy</h3>
+    <p>Web builds get this policy as a <code>&lt;meta&gt;</code> from <code>@hoi/vite-plugin-hardening</code>, which also adds <code>integrity="sha384-…"</code> to every bundled script and stylesheet (see <a href="/wiki/website/">This website</a>):</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="The app's CSP">
+      <table>
+        <thead><tr><th>Directive</th><th>Sources</th></tr></thead>
+        <tbody>
+          <tr><td><code>default-src</code></td><td><code>'self'</code></td></tr>
+          <tr><td><code>script-src</code></td><td><code>'self' 'wasm-unsafe-eval'</code> (the wasm core needs it)</td></tr>
+          <tr><td><code>worker-src</code>, <code>style-src</code>, <code>font-src</code></td><td><code>'self'</code></td></tr>
+          <tr><td><code>img-src</code></td><td><code>'self' data: blob:</code></td></tr>
+          <tr><td><code>media-src</code></td><td><code>'self' blob:</code>: media plays only from bytes the core checked and handed over</td></tr>
+          <tr><td><code>connect-src</code></td><td><code>'self' ws: wss: https:</code> plus the registry and relay origins; <code>https:</code> is for trackers a community names, asked only when no route answers</td></tr>
+          <tr><td><code>object-src</code>, <code>base-uri</code>, <code>form-action</code></td><td><code>'none'</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>A <code>_headers</code> file repeats the policy as a header with <code>frame-ancestors 'none'</code>, <code>X-Content-Type-Options: nosniff</code>, <code>Referrer-Policy: no-referrer</code>, HSTS, a <code>Permissions-Policy</code> and <code>Cross-Origin-Opener-Policy: same-origin</code>, plus <code>Cache-Control: no-store</code> for <code>/release.json</code>. A preview channel adds <code>X-Robots-Tag: noindex, nofollow</code> there and a <code>robots</code> <code>&lt;meta&gt;</code> in the page, so a preview app stays out of search results on any host. <code>index.html</code> itself sets <code>referrer</code> to <code>no-referrer</code>, both <code>theme-color</code>s and the manifest; <code>public/manifest.webmanifest</code> is <code>display: standalone</code> with <code>start_url</code> and <code>scope</code> <code>./</code> and four icons drawn from <code>public/icon.svg</code> by <code>scripts/icons.mjs</code>.</p>
+  </section>
+
+  <section class="wk-sec" id="notices">
+    <h2>Consent, legal texts and banners</h2>
+    <h3 id="notices-safety">Network &amp; Safety, before anything connects</h3>
+    <p>The notice's words live in <code>src/lib/legal/texts.ts</code> (<code>NETWORK_SAFETY</code>, <code>PRIVACY_NOTICE</code>, <code>OPERATOR_RESPONSIBILITY</code>) so the screens, the setup app and the tests read the same text. Its versions live in plain JavaScript, <code>src/lib/legal/version.mjs</code>, so browser tests and the site can import them:</p>
+    <div class="wk-code" data-lang="js" data-title="apps/web/src/lib/legal/version.mjs"><pre><code>export const NETWORK_NOTICE_VERSION = '1.2';
+export const PRIVACY_NOTICE_VERSION = '1.2';
+export const PRIVACY_NOTICE_DATE = '2026-11-05';
+/** localStorage key of the Network &amp; Safety acknowledgement: `{"version":"1.2","date":"2026-11-05"}`. */
+export const CONSENT_KEY = 'hoi:consent:network';</code></pre></div>
+    <p>The acknowledgement is kept in <code>localStorage</code>, not in the vault, so it can be read before unlocking. Continue needs both boxes: the IP address box and the VPN box. A stored record whose version differs counts as not accepted (<code>networkConsent.changed</code> is true), so the notice comes back when its words change in substance. A wipe resets it, and so does "read again" on the privacy screen. In a private window where <code>localStorage</code> throws, the acknowledgement lasts for the visit.</p>
+    <h3 id="notices-operator">Operators' notices</h3>
+    <p>Before a browser, the desktop or a phone says anything to a public node it dialed, the core may close the link until the person has read that node's join notice (<code>set_consent_gate(true)</code>). <code>OperatorNotice.svelte</code> shows it; it can't be dismissed, only accepted or declined. <code>src/lib/notice.ts</code> writes and checks notices with the same fields, limits and canonical DAG-CBOR bytes as <code>hoi_types::notice</code>:</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Notice limits">
+      <table>
+        <thead><tr><th>Field</th><th>Limit</th></tr></thead>
+        <tbody>
+          <tr><td><code>v</code></td><td><code>NOTICE_VERSION</code> = 1</td></tr>
+          <tr><td><code>node</code> · <code>operator</code> · <code>contact</code> · <code>provider</code></td><td>64 · 120 · 200 · 120 characters, optional</td></tr>
+          <tr><td><code>processes</code></td><td>600, required, multi-line</td></tr>
+          <tr><td><code>purpose</code> · <code>communityRules</code> · <code>extra</code></td><td>400 · 600 · 600, multi-line</td></tr>
+          <tr><td><code>country</code></td><td>Empty or two upper-case letters (ISO 3166-1 alpha-2)</td></tr>
+          <tr><td><code>ipLogging</code>, <code>retentionDays</code></td><td>Days are required with IP logging, at most 3 650, and must be 0 without it</td></tr>
+          <tr><td><code>updated</code></td><td><code>YYYY-MM-DD</code>, year 2024 to 2999</td></tr>
+          <tr><td>the whole notice</td><td><code>MAX_NOTICE_BYTES</code> = 1 536 canonical bytes, so it fits in a node link</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 id="notices-release">Release status and updates</h3>
+    <p><code>PreviewBanner</code> shows the build's release notice (title and message from <code>release.json</code>, for example "Preview — unstable"). Every 60 000 ms while the tab is visible, and on each visibility change, it fetches the latest <code>release.json</code> (from the registry when one is configured, else beside the app) with no credentials, no referrer, no cache, no redirects and a 5 000 ms timeout. A registry is someone else's server, so it is not asked before Network &amp; Safety was accepted. <code>noticeForBuild</code> lets a newer revision change the words only for the same channel, protocol and index version; otherwise the bundled warning stays and an "Operator update: …" line is added. Metadata never changes what the build implements and never deletes local data. "A new version is ready · Reload" is the <a href="#sw-update">service worker's</a>.</p>
+  </section>
+
+  <section class="wk-sec" id="network-ui">
+    <h2>Network status in the UI</h2>
+    <p><code>src/lib/network-status.ts</code> turns a <code>NetStatus</code> into words. The rule throughout: a connection is not a delivery receipt.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Sync states">
+      <table>
+        <thead><tr><th>State</th><th>When</th><th>Title</th></tr></thead>
+        <tbody>
+          <tr><td><code>checking</code></td><td>No status yet.</td><td>Checking connections</td></tr>
+          <tr><td><code>offline</code></td><td><code>peers === 0</code>.</td><td>Reading saved posts</td></tr>
+          <tr><td><code>degraded</code></td><td>Peers, but none offered this community's exact id; or the node never said; or an error, or a home node that isn't connected.</td><td>Connected, but not to this community · Community sync not confirmed · Some connections are unavailable</td></tr>
+          <tr><td><code>connected</code></td><td>Otherwise.</td><td>Connected to this community · Connected for sync</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>After a signed action, <code>savedForSync</code> picks the toast's second sentence: "Saved on this device. Waiting for a connection to sync.", "Waiting for a peer that carries this community.", or, from a browser or phone without its own home node, "Sent to the home nodes carrying this community; others read it from there. Delivery is not confirmed." Private groups say "Saved here for encrypted delivery." <code>SyncNotice</code> is one line above the feed. You → Connection draws <code>NetworkMap</code> (this device in the middle), <code>ConnectionDetails</code> for troubleshooting, <code>Traffic</code> (amounts and times, never content) and <code>Warmth</code> (who else holds a community's records, see <a href="/wiki/sync/">Sync &amp; gossip</a>).</p>
+  </section>
+
+  <section class="wk-sec" id="sandbox">
+    <h2>Sandbox mode</h2>
+    <p>The repository's <code>sandbox/</code> runs a local community simulator: a dashboard on port 7070 and three browser personas of the real app on 7071 (<code>owner</code>), 7072 (<code>member</code>) and 7073 (<code>watcher</code>). The app is built with <code>HOI_SANDBOX=1</code> for it. Only then is <code>src/lib/sandbox.ts</code> compiled in, and it acts only on <code>http:</code> loopback at those three ports.</p>
+    <ol class="wk-steps">
+      <li><b>Bootstrap</b><p><code>GET /__sandbox/bootstrap</code> (no credentials, no cache) returns <code>{session, role, name, pairing, invite, community}</code>. The pairing link must start <code>hoi://pair?</code> and point at a <code>ws:</code> home node on loopback, the invite must start <code>hoi://join?</code>, the name is 1 to 32 characters and the community 64 hex digits.</p></li>
+      <li><b>Separate storage</b><p>Each persona's store is <code>hoi-sandbox:&lt;session&gt;:&lt;role&gt;</code>; the worker accepts only names matching <code>^hoi-sandbox:[a-zA-Z0-9_-]{1,128}:(owner|member|watcher)$</code>.</p></li>
+      <li><b>A real identity</b><p>The owner links this browser to the founder through the normal device-link flow (<code>linkRequest</code>, the dashboard approves, <code>linkComplete</code>); the others make their own keys. Then <code>pair</code>, <code>join</code> and a <code>visit</code> report, and the app opens the community.</p></li>
+      <li><b>Canary links</b><p>Links to <code>https://sandbox-canary.example/&lt;run&gt;/&lt;agent&gt;/&lt;token&gt;</code> in posts are observed: exposure when at least half visible, and a click only when it is a real person's (<code>isTrusted</code>); the navigation itself is always prevented.</p></li>
+    </ol>
+    <p>The real core still owns every key, signature and membership; the bridge only automates the normal setup. Normal web builds keep ordinary onboarding.</p>
+  </section>
+
+  <section class="wk-sec" id="a11y">
+    <h2>Accessibility in the code</h2>
+    <ul>
+      <li>A "Skip to the main view" button focuses <code>&lt;main&gt;</code> (its id is <code>main</code>, its <code>tabindex</code> −1).</li>
+      <li><code>Modal</code> is a real <code>&lt;dialog&gt;</code> opened with <code>showModal()</code>: focus is trapped, Esc closes, the page behind is inert. A <code>required</code> modal has no Esc, backdrop or ✕.</li>
+      <li>Toasts sit in one <code>role="status" aria-live="polite"</code> region; errors carry a hidden "Problem: ". The work bar, the id line, vote scores and the first-run game announce politely too.</li>
+      <li>Motion is skipped when <code>prefers-reduced-motion: reduce</code> or the app's own motion setting (<code>data-motion="reduced"</code>) says so. <code>motion.ts</code> clears inline styles on completion, on a fallback timer and on destroy, so nothing is left at opacity 0.</li>
+      <li>Focus rings are a 3 px cobalt outline; inputs and bottom-bar targets are 44 px high.</li>
+      <li>Trust is never color alone: <code>TrustTag</code> always carries the ✓.</li>
+      <li>Password fields use standard <code>autocomplete</code> values; paste always works.</li>
+      <li><code>scripts/e2e-a11y.mjs</code> runs axe-core on every route against the mock, light and dark, with reduced motion, and fails on serious and critical findings.</li>
+    </ul>
+  </section>
+
+  <section class="wk-sec" id="tests">
+    <h2>Tests</h2>
+    <p><code>pnpm --filter @hoi/web test</code> runs Vitest over <code>src/tests/</code>; <code>check</code> runs <code>svelte-check</code>. IndexedDB tests use <code>fake-indexeddb</code>.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Unit tests">
+      <table>
+        <thead><tr><th>File</th><th>What it pins down</th></tr></thead>
+        <tbody>
+          <tr><td><code>vault-storage.test.ts</code></td><td>Migration seals every key, group secret, state and post; reopening; the old-client guard; damage detection.</td></tr>
+          <tr><td><code>opfs-store.test.ts</code></td><td>Frames, truncation after a cut-short write, compaction and recovery.</td></tr>
+          <tr><td><code>durable-settle.test.ts</code></td><td>Outbox and events wait until storage committed.</td></tr>
+          <tr><td><code>look-pool.test.ts</code></td><td>A dying or hanging look worker is replaced; one picture lost, never the node.</td></tr>
+          <tr><td><code>mock-core.test.ts</code></td><td>The mock's behavior that screens rely on.</td></tr>
+          <tr><td><code>router.test.ts</code></td><td><code>parseHash</code> and <code>href</code> round trips.</td></tr>
+          <tr><td><code>consent.test.ts</code>, <code>notice.test.ts</code>, <code>release.test.ts</code></td><td>Acknowledgement versions; operator notices with the same words and bytes as Rust; release notices that can't change compatibility.</td></tr>
+          <tr><td><code>network-status.test.ts</code>, <code>warmth.test.ts</code>, <code>private-status.test.ts</code></td><td>Status sentences.</td></tr>
+          <tr><td><code>registry.test.ts</code>, <code>public-connections.test.ts</code>, <code>public-join.test.ts</code>, <code>public-node.test.ts</code>, <code>nearby.test.ts</code>, <code>community-discovery.test.ts</code></td><td>The registry client and verified directory, finding public carriers, join links, router answers, finding communities without a registry, name conflicts.</td></tr>
+          <tr><td><code>private-relay.test.ts</code></td><td>Encrypted relay replication.</td></tr>
+          <tr><td><code>remote-signing.test.ts</code></td><td>A browser whose computer signs for it.</td></tr>
+          <tr><td><code>sayhoi.test.ts</code>, <code>recovery-key.test.ts</code>, <code>key-work.test.ts</code>, <code>pairing.test.ts</code></td><td>Stirring a key, 3 of 5 friends, recovery keys, more key work, reading a pairing link.</td></tr>
+          <tr><td><code>server-kit.test.ts</code>, <code>setup-steps.test.ts</code></td><td>Kit names and what <code>install.sh</code> would refuse; the setup wizard's parsing and quoting.</td></tr>
+          <tr><td><code>sandbox.test.ts</code></td><td>Sandbox boundaries and the real identity bootstrap.</td></tr>
+          <tr><td><code>manifest.test.ts</code>, <code>arrange.test.ts</code>, <code>ledger.test.ts</code>, <code>profile-picture.test.ts</code>, <code>util.test.ts</code></td><td>PWA colors follow the tokens; your own order of communities; ledger wording; profile framing; names, text and keys.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 id="tests-e2e">Browser scripts</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="End-to-end scripts">
+      <table>
+        <thead><tr><th>Script</th><th>What it drives</th></tr></thead>
+        <tbody>
+          <tr><td><code>apps/web/scripts/e2e-mock.mjs</code></td><td>First run, say hoi, a community, a post, reply, vote, Manage, ledger, You, a blocked tab and an invite, at 1280×900 and 390×844, light and dark; fails on console errors and horizontal overflow.</td></tr>
+          <tr><td><code>e2e-qol.mjs</code></td><td>Settings layout and photo cropping at four widths.</td></tr>
+          <tr><td><code>e2e-consent.mjs</code></td><td>Network &amp; Safety before anything, kept across reloads, back on a version change; an operator's notice can only be answered.</td></tr>
+          <tr><td><code>e2e-join-warning.mjs</code></td><td>Every join waits for the VPN warning.</td></tr>
+          <tr><td><code>e2e-public-reading.mjs</code></td><td>Mobile posting policy with explicit mock transport state.</td></tr>
+          <tr><td><code>e2e-setup.mjs</code></td><td>The node setup wizard and Manage against the pretend server.</td></tr>
+          <tr><td><code>e2e-sandbox.mjs</code>, <code>e2e-sandbox-live.mjs</code></td><td>Canary exposure and trusted clicks; a real Docker sandbox run.</td></tr>
+          <tr><td><code>scripts/e2e-vault.mjs</code>, <code>e2e-passkey.mjs</code></td><td>Real wasm crypto: setup, reload, bad password, lock, competing tabs, corruption, migration; passkeys with Chromium's virtual authenticator and PRF.</td></tr>
+          <tr><td><code>scripts/e2e-profile.mjs</code>, <code>e2e-discovery.mjs</code>, <code>e2e-network.mjs</code>, <code>e2e-rtc.mjs</code></td><td>Profile publishing and removal; registry search privacy; two browsers through <code>hoi-node</code>; a phone pairing and linking over WebRTC.</td></tr>
+          <tr><td><code>scripts/e2e-a11y.mjs</code></td><td>axe-core on every route.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="wk-sec" id="next">
+    <h2>Read next</h2>
+    <div class="wk-cards">
+      <a class="wk-card g-sky" href="/wiki/api/"><i></i><b>Core API</b><span>Every method behind HoiCore and the JSON dispatcher.</span></a>
+      <a class="wk-card g-mint" href="/wiki/storage/"><i></i><b>Storage</b><span>The journal, SQLite and the vault format.</span></a>
+      <a class="wk-card g-coral" href="/wiki/desktop/"><i></i><b>Desktop companion</b><span>The same UI over the native core.</span></a>
+      <a class="wk-card g-sky" href="/wiki/transports/"><i></i><b>Transports</b><span>The WebSocket link, WebRTC routes and relays.</span></a>
+    </div>
+  </section>
+</article>
+<!-- @wiki-close -->
+<!-- @include footer.html -->
+<script type="module" src="/src/pages/wiki.ts"></script>
+</body>
+</html>

@@ -1,0 +1,95 @@
+name: ${COMPOSE_PROJECT_NAME:-hoi-sandbox}
+
+# `pnpm sandbox` creates .state/control.env and builds the complete local stack.
+services:
+  hub:
+    build:
+      context: ../core
+      dockerfile: ../sandbox/Dockerfile
+    image: hoi-sandbox:latest
+    container_name: ${COMPOSE_PROJECT_NAME:-hoi-sandbox}-hub
+    # A throwaway local test hub: the sandbox reads its pairing token from its log (docker.mjs).
+    command: ["hoi-node", "--data", "/data", "--listen", "0.0.0.0:7842", "--name", "hub", "--show-pairing"]
+    ports: ["127.0.0.1:7842:7842"]
+    networks:
+      control:
+      agents:
+        aliases: [hub]
+    volumes: [hub-data:/data]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    tmpfs: ["/tmp:rw,size=16m"]
+    mem_limit: 512m
+    pids_limit: 512
+    restart: unless-stopped
+
+  dashboard:
+    build:
+      context: ..
+      dockerfile: sandbox/Control.Dockerfile
+    ports: ["127.0.0.1:7070:7070"]
+    environment:
+      PORT: "7070"
+      HOI_SANDBOX_TOKEN: ${HOI_SANDBOX_TOKEN:?Run pnpm sandbox to create the private sandbox token}
+      HOI_STATE_DIR: /data
+      COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-hoi-sandbox}
+      HOI_AGENT_NETWORK: ${COMPOSE_PROJECT_NAME:-hoi-sandbox}-agents
+      HOI_AGENT_IMAGE: hoi-sandbox:latest
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - control-data:/data
+      # Only the controller gets Docker access. Agents and app do not.
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks: [control]
+    depends_on: [hub]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    tmpfs: ["/tmp:rw,size=16m"]
+    mem_limit: 512m
+    pids_limit: 128
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:7070/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 4s
+      retries: 60
+      start_period: 30s
+
+  app:
+    build:
+      context: ..
+      dockerfile: sandbox/App.Dockerfile
+    ports:
+      - "127.0.0.1:7071:7071"
+      - "127.0.0.1:7072:7072"
+      - "127.0.0.1:7073:7073"
+    environment:
+      HOI_SANDBOX_TOKEN: ${HOI_SANDBOX_TOKEN:?Run pnpm sandbox to create the private sandbox token}
+      HOI_SANDBOX_CONTROLLER: http://dashboard:7070
+    networks: [control]
+    depends_on: [dashboard]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    tmpfs: ["/tmp:rw,size=16m"]
+    mem_limit: 256m
+    pids_limit: 128
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "Promise.all([7071,7072,7073].map(p=>fetch('http://127.0.0.1:'+p+'/app/').then(r=>{if(!r.ok)throw Error()}))).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 4s
+      retries: 12
+
+networks:
+  control:
+  agents:
+    name: ${COMPOSE_PROJECT_NAME:-hoi-sandbox}-agents
+    internal: true
+
+volumes:
+  hub-data:
+  control-data:

@@ -1,0 +1,96 @@
+# Fuzz targets for the decoders: scattered delivery's (SCATTER.md §8), media and pictures,
+# records, sync messages, links and recovery keys. A workspace of its own, so
+# libfuzzer-sys stays out of core/Cargo.lock and its dependency checks; needs nightly:
+#
+#     cargo +nightly fuzz run manifest            (from core/fuzz; `cargo fuzz list` names them all)
+[package]
+name = "hoi-fuzz"
+version = "0.0.0"
+edition = "2024"
+license = "AGPL-3.0-only"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+hoi-types = { path = "../crates/hoi-types" }
+hoi-crypto = { path = "../crates/hoi-crypto" }
+hoi-validate = { path = "../crates/hoi-validate" }
+hoi-sync = { path = "../crates/hoi-sync" }
+# wiki and rules updates come from anyone
+loro = { version = "=1.17.1", default-features = false }
+
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "manifest"
+path = "fuzz_targets/manifest.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "envelope_plaintext"
+path = "fuzz_targets/envelope_plaintext.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "rebuild"
+path = "fuzz_targets/rebuild.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sizing"
+path = "fuzz_targets/sizing.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "media"
+path = "fuzz_targets/media.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "picture"
+path = "fuzz_targets/picture.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "record"
+path = "fuzz_targets/record.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sync_msg"
+path = "fuzz_targets/sync_msg.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "links"
+path = "fuzz_targets/links.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "wiki_update"
+path = "fuzz_targets/wiki_update.rs"
+test = false
+doc = false
+bench = false

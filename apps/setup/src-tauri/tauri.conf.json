@@ -1,0 +1,79 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "hoi Node Setup",
+  "mainBinaryName": "hoi-node-setup",
+  "version": "1.0.0-preview.1",
+  "identifier": "sh.hoi.setup",
+  "build": {
+    "beforeDevCommand": "pnpm --filter @hoi/web dev:setup",
+    "devUrl": "http://localhost:5175",
+    "beforeBuildCommand": "pnpm --filter @hoi/web build:setup",
+    "frontendDist": "../../web/dist-setup"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "hoi Node Setup",
+        "width": 880,
+        "height": 920,
+        "minWidth": 520,
+        "minHeight": 620,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": {
+        "default-src": "'self'",
+        "script-src": "'self'",
+        "worker-src": "'none'",
+        "style-src": "'self'",
+        "img-src": "'self' data: blob:",
+        "media-src": "'none'",
+        "font-src": "'self'",
+        "connect-src": "'self' ipc: http://ipc.localhost",
+        "object-src": "'none'",
+        "base-uri": "'none'",
+        "form-action": "'none'"
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "category": "DeveloperTool",
+    "shortDescription": "Set up a hoi public node on a server.",
+    "longDescription": "Installs and manages a hoi public node on a server over SSH, or on this computer, step by step: what running one means, the server and its host key, a check before anything changes, the node's settings, your join notice exactly as people read it, the install, and the node's link as text and QR code. Keys, an agent or a password typed for one session; it stores no passwords.",
+    "copyright": "hoi contributors, AGPL-3.0",
+    "license": "AGPL-3.0-only",
+    "homepage": "https://hoi.sh",
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"],
+    "linux": {
+      "deb": { "section": "net" },
+      "rpm": { "release": "1" },
+      "appimage": { "bundleMediaFramework": false }
+    },
+    "macOS": {
+      "minimumSystemVersion": "11.0",
+      "dmg": {
+        "background": "installer/dmg-background.png",
+        "windowSize": { "width": 660, "height": 400 },
+        "appPosition": { "x": 180, "y": 170 },
+        "applicationFolderPosition": { "x": 480, "y": 170 }
+      }
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "installerIcon": "icons/icon.ico",
+        "uninstallerIcon": "icons/icon.ico",
+        "headerImage": "installer/header.bmp",
+        "uninstallerHeaderImage": "installer/header.bmp",
+        "sidebarImage": "installer/sidebar.bmp",
+        "startMenuFolder": "hoi",
+        "languages": ["English"],
+        "displayLanguageSelector": false
+      }
+    }
+  }
+}

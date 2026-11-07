@@ -1,0 +1,177 @@
+{
+  "about": "The registry's public log of names: entry texts, their RFC 6962 leaves, the root of every prefix, audit and consistency paths, and a signed head from a fixed log secret.",
+  "entry": {
+    "name": "garden_1.v2-test",
+    "community": "197f6b23e16c8532c6abc838facd5ea789be0c76b2920334039bfa8b3d368d61",
+    "protocolVersion": "0.3",
+    "indexVersion": 1,
+    "signature": "65eaba7ecfcad9b64f3e995d5dd88d7f15f61d2305cadc0c15503bf8eadf0d9a3a0625775a248e70f32c875de0c5c549b7bd658f9a6fbdb324a201d5ee451e00",
+    "version": 2,
+    "text": "hoi name log v1\n2\ngarden_1.v2-test\n197f6b23e16c8532c6abc838facd5ea789be0c76b2920334039bfa8b3d368d61\n0.3\n1\n65eaba7ecfcad9b64f3e995d5dd88d7f15f61d2305cadc0c15503bf8eadf0d9a3a0625775a248e70f32c875de0c5c549b7bd658f9a6fbdb324a201d5ee451e00"
+  },
+  "entries": [
+    "hoi name log v1\n1\ngarden_1.v2-test\n197f6b23e16c8532c6abc838facd5ea789be0c76b2920334039bfa8b3d368d61\n\n\n028a8eb39535cd7363cf95fa15000feb664ae5894df2d2075ebe0420bf89d69e41e17562cff7a81630620735b21d027dea7b082526f6f65fa22decb3c2347900",
+    "hoi name log v1\n2\ngarden_1.v2-test\n197f6b23e16c8532c6abc838facd5ea789be0c76b2920334039bfa8b3d368d61\n0.3\n1\n65eaba7ecfcad9b64f3e995d5dd88d7f15f61d2305cadc0c15503bf8eadf0d9a3a0625775a248e70f32c875de0c5c549b7bd658f9a6fbdb324a201d5ee451e00",
+    "hoi name log v1\n1\nname-2\n2222222222222222222222222222222222222222222222222222222222222222\n\n\nabababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab",
+    "hoi name log v1\n1\nname-3\n3333333333333333333333333333333333333333333333333333333333333333\n\n\nabababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab",
+    "hoi name log v1\n1\nname-4\n4444444444444444444444444444444444444444444444444444444444444444\n\n\nabababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab",
+    "hoi name log v1\n1\nname-5\n5555555555555555555555555555555555555555555555555555555555555555\n\n\nabababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab",
+    "hoi name log v1\n1\nname-6\n6666666666666666666666666666666666666666666666666666666666666666\n\n\nabababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab"
+  ],
+  "leaves": [
+    "24b0e94480f7b7181a603072a6a17c1b1e02af413bccdc477f9fea441338819b",
+    "d7e34cd35fad350a4e466cf1fb7df63d3eff2c678da7d1849b5f06438747a362",
+    "9e877c1a13ca2579de3cdd327fea9ecf1c226d939bdfa76f0a0ca4018d4c8f77",
+    "d953eac2ee179b3c52b4c45f7f16b01eb44e669fcb068fe808cf1282968a398e",
+    "3482bbfae81d20df9d59ba3d6d2829e792a44e586257832bd59b3fd2fc91bf5a",
+    "79a825666196ab156d7b489679e34ab1e7f6b88beca5a1daa4970792d0aa93d0",
+    "858806d76d7c55ced752c398d348a04b087ab6af7eeaea193c4db005e3628a7b"
+  ],
+  "roots": [
+    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "24b0e94480f7b7181a603072a6a17c1b1e02af413bccdc477f9fea441338819b",
+    "2fc3929316ae55bd8eb11e0fad214b0121e96fa1ef8096c64a0a280e15cb672d",
+    "cafe54533ebfea1fa1c724fc1ea77b5199b8de0ca2f4cf6261f1c884be60d071",
+    "8c7992156f5410736a4b8638718c7a315e447c682db81654533ddd4547b9febf",
+    "75f99c252190d4369aee5de487cd94780d9e740ed85e4c3d560902f8c9ccf061",
+    "0037b83a1a4c1d15edbf5f3a977b93e9dfb2cf79f4f3fd22623317c6ad7f7350",
+    "4e2fe9452ea733e40bbf3ef55ae2185583015513146ec8664fc21d72320192db"
+  ],
+  "inclusion": [
+    {
+      "index": 0,
+      "size": 1,
+      "path": []
+    },
+    {
+      "index": 0,
+      "size": 2,
+      "path": [
+        "d7e34cd35fad350a4e466cf1fb7df63d3eff2c678da7d1849b5f06438747a362"
+      ]
+    },
+    {
+      "index": 1,
+      "size": 2,
+      "path": [
+        "24b0e94480f7b7181a603072a6a17c1b1e02af413bccdc477f9fea441338819b"
+      ]
+    },
+    {
+      "index": 0,
+      "size": 7,
+      "path": [
+        "d7e34cd35fad350a4e466cf1fb7df63d3eff2c678da7d1849b5f06438747a362",
+        "5b953926dcd2ec84328cfafb8d5675c2634f8bc20be6a27c4931a341446381d9",
+        "9bc376a2416724a1a55de8a7de29f2a55211d054144711449058e42faab2d597"
+      ]
+    },
+    {
+      "index": 3,
+      "size": 7,
+      "path": [
+        "9e877c1a13ca2579de3cdd327fea9ecf1c226d939bdfa76f0a0ca4018d4c8f77",
+        "2fc3929316ae55bd8eb11e0fad214b0121e96fa1ef8096c64a0a280e15cb672d",
+        "9bc376a2416724a1a55de8a7de29f2a55211d054144711449058e42faab2d597"
+      ]
+    },
+    {
+      "index": 6,
+      "size": 7,
+      "path": [
+        "d3fc4e3ead12489037cb2e49fa3800af721c27a7abba50a8d8b1d5d071c6bec7",
+        "8c7992156f5410736a4b8638718c7a315e447c682db81654533ddd4547b9febf"
+      ]
+    },
+    {
+      "index": 4,
+      "size": 5,
+      "path": [
+        "8c7992156f5410736a4b8638718c7a315e447c682db81654533ddd4547b9febf"
+      ]
+    }
+  ],
+  "consistency": [
+    {
+      "first": 0,
+      "second": 7,
+      "path": []
+    },
+    {
+      "first": 1,
+      "second": 1,
+      "path": []
+    },
+    {
+      "first": 1,
+      "second": 2,
+      "path": [
+        "d7e34cd35fad350a4e466cf1fb7df63d3eff2c678da7d1849b5f06438747a362"
+      ]
+    },
+    {
+      "first": 1,
+      "second": 7,
+      "path": [
+        "d7e34cd35fad350a4e466cf1fb7df63d3eff2c678da7d1849b5f06438747a362",
+        "5b953926dcd2ec84328cfafb8d5675c2634f8bc20be6a27c4931a341446381d9",
+        "9bc376a2416724a1a55de8a7de29f2a55211d054144711449058e42faab2d597"
+      ]
+    },
+    {
+      "first": 2,
+      "second": 7,
+      "path": [
+        "5b953926dcd2ec84328cfafb8d5675c2634f8bc20be6a27c4931a341446381d9",
+        "9bc376a2416724a1a55de8a7de29f2a55211d054144711449058e42faab2d597"
+      ]
+    },
+    {
+      "first": 3,
+      "second": 7,
+      "path": [
+        "9e877c1a13ca2579de3cdd327fea9ecf1c226d939bdfa76f0a0ca4018d4c8f77",
+        "d953eac2ee179b3c52b4c45f7f16b01eb44e669fcb068fe808cf1282968a398e",
+        "2fc3929316ae55bd8eb11e0fad214b0121e96fa1ef8096c64a0a280e15cb672d",
+        "9bc376a2416724a1a55de8a7de29f2a55211d054144711449058e42faab2d597"
+      ]
+    },
+    {
+      "first": 4,
+      "second": 7,
+      "path": [
+        "9bc376a2416724a1a55de8a7de29f2a55211d054144711449058e42faab2d597"
+      ]
+    },
+    {
+      "first": 6,
+      "second": 7,
+      "path": [
+        "d3fc4e3ead12489037cb2e49fa3800af721c27a7abba50a8d8b1d5d071c6bec7",
+        "858806d76d7c55ced752c398d348a04b087ab6af7eeaea193c4db005e3628a7b",
+        "8c7992156f5410736a4b8638718c7a315e447c682db81654533ddd4547b9febf"
+      ]
+    },
+    {
+      "first": 3,
+      "second": 5,
+      "path": [
+        "9e877c1a13ca2579de3cdd327fea9ecf1c226d939bdfa76f0a0ca4018d4c8f77",
+        "d953eac2ee179b3c52b4c45f7f16b01eb44e669fcb068fe808cf1282968a398e",
+        "2fc3929316ae55bd8eb11e0fad214b0121e96fa1ef8096c64a0a280e15cb672d",
+        "3482bbfae81d20df9d59ba3d6d2829e792a44e586257832bd59b3fd2fc91bf5a"
+      ]
+    }
+  ],
+  "head": {
+    "secret": "4242424242424242424242424242424242424242424242424242424242424242",
+    "timestamp": 1793800000,
+    "signed": {
+      "logKey": "2152f8d19b791d24453242e15f2eab6cb7cffa7b6a5ed30097960e069881db12",
+      "size": 7,
+      "root": "4e2fe9452ea733e40bbf3ef55ae2185583015513146ec8664fc21d72320192db",
+      "timestamp": 1793800000,
+      "signature": "7bd9fa23949dcc4943d9319ed8283e3a337bea8b48a5b48646e901d9c93cd0941e0e491e6d02184107a8b1c34969f56cd9434a609d4b4b167e173fabba32420b"
+    }
+  }
+}

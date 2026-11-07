@@ -1,0 +1,48 @@
+[package]
+name = "hoi-node"
+description = "Headless hoi node: home node for your phone and browser, public node carrying open communities, registry node naming them."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "hoi-node"
+path = "src/main.rs"
+
+[dependencies]
+hoi-core = { workspace = true, features = ["sqlite"] }
+hoi-store = { workspace = true, features = ["sqlite"] }
+hoi-net.workspace = true
+# The embedded packet relay (--packet-relay): iroh's own relay server, the version iroh uses.
+iroh-relay = { version = "=1.4.1", default-features = false, features = ["server", "tls-ring"] }
+hoi-crypto.workspace = true
+hoi-types.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+url = "2"
+# Talking to the public index over HTTPS (`--index`): the same reqwest and rustls the tree already
+# carries through iroh, on ring, with Mozilla's roots compiled in so the container needs no
+# system certificate store. No default features: no system proxy, no compression, no cookies.
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "json"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+webpki-roots = "1"
+# The registry role (`--registry`): the HTTP/1.1 server is hyper, which reqwest already brings
+# into the tree; only its server half is enabled, no HTTP/2 and no TLS (put a proxy in front).
+hyper = { version = "1", default-features = false, features = ["server", "http1"] }
+hyper-util = { version = "0.1", default-features = false, features = ["tokio"] }
+http-body-util = "0.1"
+# The registry's own database, in the same SQLite file layout as the Node service, so a
+# namespace can move between the two. Already in the tree through hoi-store.
+rusqlite.workspace = true
+# The default gateway the port mapper asks (`--port-mapping`); hoi-net already uses it for
+# local addresses.
+netdev.workspace = true
+
+[dev-dependencies]
+# Endpoint keys for the packet relay's gate tests: the iroh-base the relay already uses.
+iroh-base = { version = "=1.4.1", default-features = false, features = ["key"] }

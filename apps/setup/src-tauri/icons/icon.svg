@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- hoi Node Setup: the hoi mark on an ink tile, with a server in the corner. The hoi app's icon is the light tile. -->
+  <rect x="64" y="64" width="896" height="896" rx="200" fill="#1A1A1A"/>
+  <g transform="translate(118 112) scale(22)">
+    <line x1="8" y1="10" x2="22" y2="9" stroke="#FBFAF5" stroke-width="2" stroke-linecap="round"/>
+    <line x1="8" y1="10" x2="15" y2="22" stroke="#FBFAF5" stroke-width="2" stroke-linecap="round"/>
+    <line x1="22" y1="9" x2="15" y2="22" stroke="#FBFAF5" stroke-width="2" stroke-linecap="round"/>
+    <circle cx="8" cy="10" r="5" fill="#FF6B4A"/>
+    <circle cx="22" cy="9" r="5" fill="#2F55E6"/>
+    <circle cx="15" cy="22" r="5" fill="#FFE16A"/>
+  </g>
+  <g transform="translate(596 586)">
+    <rect x="0" y="0" width="290" height="132" rx="34" fill="#FFE16A"/>
+    <rect x="0" y="160" width="290" height="132" rx="34" fill="#FFE16A"/>
+    <circle cx="64" cy="66" r="22" fill="#1A1A1A"/>
+    <circle cx="64" cy="226" r="22" fill="#1A1A1A"/>
+    <line x1="132" y1="66" x2="234" y2="66" stroke="#1A1A1A" stroke-width="24" stroke-linecap="round"/>
+    <line x1="132" y1="226" x2="234" y2="226" stroke="#1A1A1A" stroke-width="24" stroke-linecap="round"/>
+  </g>
+</svg>

@@ -1,0 +1,9 @@
+{
+  "h": 1,
+  "hash": "dcf5e1eea025f4e1f2dafcaf87b6a0a2625446a38f6c8da653d6aad69b40b06b",
+  "input": "89504e470d0a1a0a0000000d4948445200000001000000010802000000907753de00000015744558744c6f636174696f6e0035322e33374e20342e383945de69f0f60000000c49444154789c63f8cfc0000003010100c9fe92ef0000000049454e44ae426082",
+  "mime": "image/png",
+  "note": "sanitize() strips everything but the picture: the tEXt chunk (a location) goes, the rest is copied as is. check() accepts the clean bytes and refuses the dirty ones. MediaRef.hash is BLAKE3 of the clean bytes.",
+  "sanitized": "89504e470d0a1a0a0000000d4948445200000001000000010802000000907753de0000000c49444154789c63f8cfc0000003010100c9fe92ef0000000049454e44ae426082",
+  "w": 1
+}

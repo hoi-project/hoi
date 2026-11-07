@@ -1,0 +1,73 @@
+# Create a tag from a committed version and explicitly start the existing release pipeline.
+name: "Release: version"
+
+on:
+  push:
+    branches: [main]
+    paths: ["core/Cargo.toml"]
+  workflow_dispatch:
+    inputs:
+      desktop:
+        description: "Build desktop installers as well as hoi-node"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-version-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    # Manual runs are explicit opt-in; a version push needs the HOI_RELEASES_ENABLED switch in
+    # the hoi-project repository, so forks and private copies never tag.
+    if: github.event_name == 'workflow_dispatch' || (github.repository_owner == 'hoi-project' && vars.HOI_RELEASES_ENABLED == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      release: ${{ steps.version.outputs.release }}
+      tag: ${{ steps.version.outputs.tag }}
+      sha: ${{ steps.version.outputs.sha }}
+      create_tag: ${{ steps.version.outputs.create_tag }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - name: Detect and validate the committed version
+        id: version
+        env:
+          RELEASE_BEFORE_SHA: ${{ github.event.before }}
+        run: node scripts/release-plan.mjs
+
+  start:
+    needs: plan
+    if: needs.plan.outputs.release == 'true'
+    permissions:
+      contents: write
+      actions: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ needs.plan.outputs.tag }}
+      RELEASE_SHA: ${{ needs.plan.outputs.sha }}
+      CREATE_TAG: ${{ needs.plan.outputs.create_tag }}
+      DESKTOP: ${{ github.event_name != 'workflow_dispatch' || inputs.desktop }}
+    steps:
+      - name: Create the matching tag and start Release
+        run: |
+          if [ "$CREATE_TAG" = true ]; then
+            gh api --method POST "repos/$GH_REPO/git/refs" -f "ref=refs/tags/$TAG" -f "sha=$RELEASE_SHA" >/dev/null
+          fi
+          test "$(gh api "repos/$GH_REPO/commits/$TAG" --jq .sha)" = "$RELEASE_SHA" || { echo "Tag $TAG no longer matches the validated commit." >&2; exit 1; }
+          # GITHUB_TOKEN-created tags don't trigger push workflows; dispatch explicitly.
+          gh workflow run release.yml --ref "$TAG" -f "tag=$TAG" -f "desktop=$DESKTOP"
+          echo "Started Release for $TAG ($RELEASE_SHA). Follow it in the Actions tab." >> "$GITHUB_STEP_SUMMARY"

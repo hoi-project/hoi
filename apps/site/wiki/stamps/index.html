@@ -1,0 +1,439 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <!-- @include head.html title="Stamps &amp; work · hoi wiki" description="The BLAKE3 proof of work every record carries, every difficulty rule and floor, the Argon2id identity work, and how hoi mines natively and in the browser." -->
+</head>
+<body class="wiki">
+<!-- @include header.html nav="wiki" -->
+<!-- @wiki-open -->
+<article class="wk-doc">
+  <!-- @wiki-crumbs -->
+  <h1>Stamps <span class="acc">&amp; work</span></h1>
+  <p class="wk-lead">Every record carries a stamp: a nonce chosen so that a BLAKE3 hash of the record's id and the nonce starts with enough zero bits. It costs the author about a second for a post and costs a receiver one hash to check. Every root key also carries identity work, done once with memory-hard Argon2id. This page gives the exact inputs, every difficulty rule and floor, how the miners work on native hosts and in the browser, and what the numbers mean in tries and time.</p>
+  <p class="wk-src-list">Source <a href="{{REPO_URL}}/blob/main/core/crates/hoi-crypto/src/pow.rs">hoi-crypto/src/pow.rs</a> <a href="{{REPO_URL}}/blob/main/core/crates/hoi-crypto/src/identity.rs">hoi-crypto/src/identity.rs</a> <a href="{{REPO_URL}}/blob/main/core/crates/hoi-validate/src/lib.rs">hoi-validate/src/lib.rs</a> <a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/node.rs">hoi-core/src/node.rs</a> <a href="{{REPO_URL}}/blob/main/core/crates/hoi-wasm/src/lib.rs">hoi-wasm/src/lib.rs</a> <a href="{{REPO_URL}}/blob/main/apps/web/src/lib/core/miner.worker.ts">miner.worker.ts</a> <a href="{{REPO_URL}}/blob/main/apps/web/src/lib/core/miner-pool.ts">miner-pool.ts</a></p>
+  <div class="wk-head-rule"></div>
+
+  <div class="wk-stats">
+    <div class="wk-stat c-sun"><b>22</b><span>default <code>pow_bits</code></span></div>
+    <div class="wk-stat c-coral"><b>16</b><span>bits for keys and genesis</span></div>
+    <div class="wk-stat c-mint"><b>−8</b><span>for small signed actions</span></div>
+    <div class="wk-stat c-sky"><b>−6</b><span>most a key's age takes off</span></div>
+    <div class="wk-stat c-lilac"><b>8 MiB</b><span>Argon2id per identity try</span></div>
+  </div>
+
+  <section class="wk-sec" id="stamp">
+    <h2>What a stamp is</h2>
+    <p>A stamp is hashcash over the record id. The record's <code>nonce</code> field is the author's choice; the stamp holds when</p>
+    <div class="wk-code" data-lang="text" data-title="hoi-crypto/src/pow.rs (module comment)"><pre><code>valid iff leading_zero_bits(BLAKE3(id ‖ u64be(nonce))) &gt;= bits_required</code></pre></div>
+    <p>where <code>id</code> is the record id, the BLAKE3 hash of the canonical record, which itself contains the nonce. Changing the nonce changes the id, so every try needs a fresh id and a fresh stamp hash. A stamp can't be moved to another record, and a record can't be changed after mining without mining again.</p>
+    <div class="wk-bytes" data-title="What is hashed for a stamp (40 bytes)">
+id | 32 B | sun | 8 | BLAKE3 of the canonical record, nonce included
+nonce | 8 B | coral | 2 | the same nonce, as a big-endian u64
+</div>
+    <div class="wk-code" data-lang="rust" data-title="hoi-crypto/src/pow.rs"><pre><code>pub fn stamp_hash(id: &amp;Id, nonce: u64) -&gt; [u8; 32] {
+    let mut h = blake3::Hasher::new();
+    h.update(id.as_bytes());
+    h.update(&amp;nonce.to_be_bytes());
+    *h.finalize().as_bytes()
+}
+
+/// Bits of work a record actually carries.
+pub fn stamp_bits(id: &amp;Id, nonce: u64) -&gt; u32 {
+    leading_zero_bits(&amp;stamp_hash(id, nonce))
+}</code></pre></div>
+    <p>The hash is plain BLAKE3 (no key, no context string) of 40 bytes. Nothing else goes in: not the signature, not the author's key separately (the id already covers it), not the time.</p>
+    <div class="wk-stage" data-demo="stamp" data-title="Mining a stamp">
+      <p class="nojs">An interactive demo: a miner tries nonce after nonce, hashing each, until the hash starts with as many zero bits as the slider asks for. Each extra bit doubles the expected number of tries.</p>
+      <p class="wk-stage-cap">Move the slider: every bit doubles the average work, while checking a found stamp stays one hash.</p>
+    </div>
+  </section>
+
+  <section class="wk-sec" id="bits">
+    <h2>Counting leading zero bits</h2>
+    <p>The 32-byte hash is read from its first byte: each zero byte counts 8, and the first non-zero byte adds its own leading zeros, most significant bit first. A hash of all zeros counts 256.</p>
+    <div class="wk-code" data-lang="rust" data-title="hoi-crypto/src/pow.rs"><pre><code>pub fn leading_zero_bits(h: &amp;[u8; 32]) -&gt; u32 {
+    let mut n = 0;
+    for b in h {
+        if *b == 0 {
+            n += 8;
+        } else {
+            n += b.leading_zeros();
+            break;
+        }
+    }
+    n
+}</code></pre></div>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Leading zero bits examples">
+      <table>
+        <thead><tr><th>First bytes of the hash</th><th>Bits</th></tr></thead>
+        <tbody>
+          <tr><td><code>9e …</code></td><td>0</td></tr>
+          <tr><td><code>3a …</code></td><td>2</td></tr>
+          <tr><td><code>00 9e …</code></td><td>8</td></tr>
+          <tr><td><code>00 10 …</code> (the test in <code>pow.rs</code>)</td><td>11</td></tr>
+          <tr><td><code>00 00 01 …</code></td><td>23</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>The web app counts the same way in TypeScript (<code>leadingZeroBits</code> in <code>packages/core-api/src/format.ts</code>, using <code>Math.clz32(b) - 24</code> for the first non-zero byte), for the identity work it shows try by try. A stamp that carries more bits than required is fine; the node records what it actually carries.</p>
+  </section>
+
+  <section class="wk-sec" id="nonce">
+    <h2>The nonce, twice</h2>
+    <p>The nonce appears in two encodings in one stamp:</p>
+    <ul>
+      <li>inside the record, as the <code>nonce</code> field, a canonical CBOR unsigned integer in its shortest form: 1 byte for 0–23, 2 bytes up to 255, 3 up to 65,535, 5 up to 2<sup>32</sup>−1, 9 above;</li>
+      <li>appended to the id for the stamp hash, as exactly 8 bytes big-endian.</li>
+    </ul>
+    <p>So the record's length changes as the search crosses 24, 256 and 65,536, and the miner re-encodes the CBOR head for every try. Native miners search the whole <code>u64</code> range. The browser's miners pass nonces through JavaScript numbers, so they stay below 2<sup>53</sup> (the comment on <code>mine_range</code> in <code>hoi-wasm</code>); at any difficulty the protocol allows, a stamp is found long before that.</p>
+  </section>
+
+  <section class="wk-sec" id="difficulty">
+    <h2>How many bits a record needs</h2>
+    <p>For a record in a community the node holds, the required bits are the community's difficulty, minus a discount for the kind, minus a discount for the key's age:</p>
+    <div class="wk-code" data-lang="rust" data-title="hoi-crypto/src/pow.rs"><pre><code>pub fn required_bits(pow_bits: u32, kind_discount: u32, key_age_secs: u64) -&gt; u32 {
+    let d = key_age_secs / 86_400;
+    let age = if d &lt; 30 {
+        0
+    } else if d &lt; 90 {
+        2
+    } else if d &lt; 365 {
+        4
+    } else {
+        6
+    };
+    pow_bits.saturating_sub(kind_discount).saturating_sub(age)
+}</code></pre></div>
+    <h3 id="pow-bits">The community's <code>pow_bits</code></h3>
+    <p><code>limits.pow_bits</code> is set in the genesis and changed by a <code>limits</code> ledger entry (<a href="/wiki/communities/">Communities &amp; the ledger</a>). The default is 22; <code>hoi_validate::limits</code> allows 8 to 30. A record is judged against the easier of the community's current difficulty and the one in force when the record was made (<code>limits_for</code> takes the minimum), so raising the difficulty never invalidates records stamped before.</p>
+    <h3 id="kind-discount">Kind discount</h3>
+    <p><code>Kind::pow_discount</code> takes 8 bits (256 times less work) off small signed actions:</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Kind discounts">
+      <table>
+        <thead><tr><th>Discount</th><th>Kinds</th></tr></thead>
+        <tbody>
+          <tr><td>0: the full <code>pow_bits</code></td><td><code>post</code>, <code>comment</code>, <code>edit</code>, <code>pointer</code></td></tr>
+          <tr><td>8</td><td><code>vote</code>, <code>delete</code>, <code>vouch</code>, <code>review</code>, <code>label</code>, <code>report</code>, <code>ledger</code>, <code>profile</code>, <code>profile-color</code>, <code>roster</code>, <code>share</code>, <code>trust</code>, <code>wiki</code>, <code>tally</code>, <code>blocklist</code></td></tr>
+          <tr><td>not used: fixed 16 bits</td><td><code>community</code>, <code>delegation</code>, <code>revoke</code>, <code>identity</code>, <code>rotate</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 id="key-age">Key age discount</h3>
+    <p>Older keys pay less. The age is that of the author's <b>root</b> (the person, not the device), counted from <code>first_seen</code>: when <b>this device</b> first accepted a record from that root, never from anything a record claims, so nobody can backdate their way to a discount. A device's own new key is entered as first seen when it is made.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Key age discounts">
+      <table>
+        <thead><tr><th>Root first seen</th><th>Discount</th><th>Post at 22</th><th>Vote at 22</th></tr></thead>
+        <tbody>
+          <tr><td>under 30 days ago</td><td>0</td><td>22</td><td>14</td></tr>
+          <tr><td>30 to 89 days</td><td>2</td><td>20</td><td>12</td></tr>
+          <tr><td>90 to 364 days</td><td>4</td><td>18</td><td>10</td></tr>
+          <tr><td>365 days or more</td><td>6</td><td>16</td><td>8</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="wk-note warn"><b>Authors stamp for the full difficulty</b><p>Each device counts key age from its own first sighting, so a device that has never seen your key gives no discount. The author's node therefore mines at key age 0 (<code>bits_to_stamp</code> calls <code>bits_for(r, 0)</code>): a post in a default community is always mined at 22 bits, and receivers who know the key simply find it has more than they need.</p></div>
+    <h3 id="global">Records outside a community: 16 bits</h3>
+    <p>When a record has no community, or is itself a <code>community</code> genesis, <code>bits_for</code> asks for <code>GLOBAL_POW_BITS</code> = 16, with no discount of any kind. That covers <code>identity</code>, <code>delegation</code>, <code>revoke</code>, <code>rotate</code>, every genesis, and a <code>label</code> published outside a community. Those records don't belong to any community whose limits could set a price, and they are kept for 100 years, so they pay a fixed one.</p>
+  </section>
+
+  <section class="wk-sec" id="floors">
+    <h2>Floors: the cheap check first</h2>
+    <p>The stamp is checked twice in the pipeline. First, stage 2, before the signature: a <b>floor</b>, the least work any record of this kind could need here. A flood of unstamped junk then costs a receiver one BLAKE3 hash per record instead of an Ed25519 verification. Failing it drops the record quietly (<code>stamp too weak</code>, no strike).</p>
+    <div class="wk-code" data-lang="rust" data-title="hoi-validate/src/lib.rs"><pre><code>/// The least work any record of this kind could ever need: community difficulty may be as low
+/// as 8 bits, minus the kind and the largest age discount. Checked before the signature, so a
+/// flood of unstamped junk costs one hash each instead of a signature verification.
+pub fn stamp_floor(kind: Kind) -&gt; u32 {
+    match kind {
+        Kind::Community | Kind::Delegation | Kind::Revoke | Kind::Identity | Kind::Rotate =&gt; hoi_types::GLOBAL_POW_BITS,
+        k =&gt; 8u32.saturating_sub(k.pow_discount()).saturating_sub(6),
+    }
+}</code></pre></div>
+    <p>For a community the node holds, the floor is raised to what that community could ever ask: its <code>pow_bits</code> minus the kind discount minus the largest age discount (the code passes a key age of 366 days).</p>
+    <div class="wk-code" data-lang="rust" data-title="hoi-core/src/node.rs (ingest, trimmed)"><pre><code>// stage 2: the cheapest check first, before any signature work. For a community we
+// hold, the floor is the least any key could need there (its stamp minus the kind and
+// the largest age discount), not the protocol-wide minimum.
+if !loading {
+    let floor = match community.and_then(|c| self.communities.get(&amp;c)) {
+        Some(st) if kind != Kind::Community =&gt; hoi_validate::stamp_floor(kind).max(hoi_crypto::pow::required_bits(
+            limits_for(st, d.wire.record.created_at).pow_bits,
+            kind.pow_discount(),
+            366 * 86_400,
+        )),
+        _ =&gt; hoi_validate::stamp_floor(kind),
+    };
+    hoi_validate::stamp(&amp;id, d.wire.record.nonce, floor)?;
+}</code></pre></div>
+    <p>Then, after the signature has shown whose record it is, the full check: <code>bits_for(record, key_age(root))</code>, with the real key age.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Floors and requirements">
+      <table>
+        <thead><tr><th>Kind class</th><th>Protocol floor (<code>stamp_floor</code>)</th><th>Floor in a 22-bit community</th><th>Full check, new key</th><th>Full check, key a year old</th></tr></thead>
+        <tbody>
+          <tr><td>post, comment, edit, pointer</td><td>2</td><td>16</td><td>22</td><td>16</td></tr>
+          <tr><td>the −8 kinds</td><td>0</td><td>8</td><td>14</td><td>8</td></tr>
+          <tr><td>community, delegation, revoke, identity, rotate</td><td>16</td><td>16</td><td>16</td><td>16</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <ul>
+      <li>Records replayed from this device's own storage at startup (<code>Source::Load</code>) skip both checks: they passed when they arrived, and the limits that applied then aren't replayed yet.</li>
+      <li>Genesis records in directory listings and in requests to carry a community are checked against the 16-bit floor before anything else (<code>directory.rs</code>, <code>carry.rs</code>), and identity records in a batch are checked against it, then their signature, before any Argon2id runs.</li>
+      <li>When the author's node finishes a draft (<code>publish_draft</code>), it checks the nonce it was handed carries the bits the draft asked for, and refuses it otherwise (<code>That stamp doesn't hold enough work.</code>).</li>
+    </ul>
+    <p>The whole order of stages is on <a href="/wiki/validation/">Validation pipeline</a>.</p>
+  </section>
+
+  <section class="wk-sec" id="identity-work">
+    <h2>Identity work</h2>
+    <p>A root key becomes an identity by publishing an <code>identity</code> record whose <code>work</code> nonce makes a memory-hard Argon2id hash start with enough zero bits. The work depends on the key alone, so it is done once and stays with the key for life; it can't be moved to another key. Argon2id makes each try cost 8 MiB of memory, so graphics cards and server farms gain far less over a phone than they would with a plain hash, and minting thousands of keys costs thousands of times the work.</p>
+    <div class="wk-code" data-lang="text" data-title="hoi-crypto/src/identity.rs (module comment)"><pre><code>w    = Argon2id(password = root ‖ u64be(work), salt = "hoi/identity/v1\0",
+                m = 8 MiB, t = 1, p = 1, out = 32 bytes)
+bits = leading_zero_bits(w)</code></pre></div>
+    <div class="wk-bytes" data-title="Argon2id input for one identity try">
+root | 32 B | lilac | 8 | the root public key
+work | 8 B | coral | 2 | the nonce, big-endian u64
+salt | 16 B | sun | 4 | <code>hoi/identity/v1</code> and a zero byte
+</div>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Argon2id parameters">
+      <table>
+        <thead><tr><th>Parameter</th><th>Value</th><th>Constant</th></tr></thead>
+        <tbody>
+          <tr><td>algorithm</td><td>Argon2id, version 0x13</td><td><code>Algorithm::Argon2id</code>, <code>Version::V0x13</code></td></tr>
+          <tr><td>memory</td><td>8,192 KiB (8 MiB)</td><td><code>M_KIB</code></td></tr>
+          <tr><td>iterations</td><td>1</td><td><code>T_COST</code></td></tr>
+          <tr><td>parallelism</td><td>1</td><td>fixed in <code>Params::new</code></td></tr>
+          <tr><td>output</td><td>32 bytes</td><td>fixed in <code>Params::new</code></td></tr>
+          <tr><td>password</td><td>40 bytes: root key ‖ <code>u64be(work)</code></td><td><code>eval</code></td></tr>
+          <tr><td>salt</td><td><code>b"hoi/identity/v1\0"</code>, 16 bytes</td><td><code>SALT</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>The parameters are fixed by the protocol "so nobody can claim cheaper work": only the nonce varies. Three numbers bound how much work is asked for:</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Identity work bounds">
+      <table>
+        <thead><tr><th>Bits</th><th>Name</th><th>Meaning</th></tr></thead>
+        <tbody>
+          <tr><td>4</td><td><code>MIN_BITS</code></td><td>no identity carrying less is stored at all (<code>invalid identity</code>, and the sending peer gets a strike)</td></tr>
+          <tr><td>8</td><td><code>Ladder::identity_bits</code> default</td><td>what a community asks of every author by default; a community may set 0 to 20</td></tr>
+          <tr><td>10</td><td><code>DEFAULT_BITS</code></td><td>what a new key is mined to: comfortably above the default community's ask</td></tr>
+          <tr><td>20</td><td><code>MAX_BITS</code></td><td>the most a community may ask, and the most the apps will mine</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>A person may publish a stronger identity later ("Key work" in the app, <code>strengthenIdentity</code>, 4 to 20 bits); communities count the best identity along the person's chain of roots. A root made later by recovery mines only the 4-bit minimum, because the person's earlier identity still counts. Receivers check the work with <code>hoi_validate::identity</code>, which also refuses a weak key, and cache the answer per author and nonce, so each identity costs a node one Argon2id run. On native hosts the run happens before the message takes the node's lock (<code>crate::work</code>), so a batch of identities doesn't stall other connections. Which community needs how much, and what happens without enough, is on <a href="/wiki/identity/">Keys &amp; identity</a>.</p>
+  </section>
+
+  <section class="wk-sec" id="puzzle">
+    <h2>Mining: the prefix trick</h2>
+    <p>A miner doesn't re-encode the whole record for every try. <code>Record::split_for_nonce</code> cuts the canonical bytes around the nonce's value, so that <code>encode() == prefix ‖ cbor_uint(nonce) ‖ suffix</code>. Since <code>nonce</code> is the fourth key in canonical order, the prefix is the map head, <code>v</code>, <code>body</code>, <code>kind</code> and the <code>nonce</code> key; the suffix is everything from <code>author</code> on.</p>
+    <div class="wk-bytes" data-title="A record split for mining (the post vector)">
+prefix | 127 B | sky | 6 | map head, <code>v</code>, <code>body</code>, <code>kind</code>, the key <code>"nonce"</code>: hashed once
+nonce | 1–9 B | coral | 1 | shortest CBOR uint: the only bytes that change
+suffix | 117 B | mint | 5 | <code>author</code>, <code>community</code>, <code>created_at</code>, <code>expires_at</code>
+</div>
+    <p><code>Puzzle::search</code> feeds the prefix into a BLAKE3 hasher once, then for every try clones that state, adds the nonce head and the suffix, finishes the id, and computes the 40-byte stamp hash. A try is therefore two short BLAKE3 finishes, whatever the length of the body.</p>
+    <div class="wk-code" data-lang="rust" data-title="hoi-crypto/src/pow.rs"><pre><code>/// Tries `start, start+step, …` for at most `tries` nonces. Returns the first nonce that works.
+pub fn search(&amp;self, start: u64, step: u64, tries: u64) -&gt; Option&lt;u64&gt; {
+    let mut base = blake3::Hasher::new();
+    base.update(&amp;self.prefix);
+    let mut nonce = start;
+    let mut buf = Vec::with_capacity(9);
+    for _ in 0..tries {
+        buf.clear();
+        cbor::head(0, nonce, &amp;mut buf);
+        let mut h = base.clone();
+        h.update(&amp;buf);
+        h.update(&amp;self.suffix);
+        let id = Id(*h.finalize().as_bytes());
+        if stamp_bits(&amp;id, nonce) &gt;= self.bits {
+            return Some(nonce);
+        }
+        nonce = nonce.checked_add(step)?;
+    }
+    None
+}</code></pre></div>
+    <p>The <code>start, step</code> form is how the search is split: worker <i>i</i> of <i>n</i> tries <i>i</i>, <i>i + n</i>, <i>i + 2n</i>… so no two workers ever try the same nonce. The core hands hosts exactly this puzzle: a draft is <code>{token, prefix, suffix, bits}</code>, prefix and suffix in base64url.</p>
+  </section>
+
+  <section class="wk-sec" id="native">
+    <h2>Mining on native hosts</h2>
+    <p>The desktop app, <code>hoi-node</code> and the mobile libraries run the Rust core natively.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Native miners">
+      <table>
+        <thead><tr><th>Function</th><th>Used by</th><th>How</th></tr></thead>
+        <tbody>
+          <tr><td><code>pow::mine</code></td><td>the core's own <code>publish</code> (genesis, identities, delegations, votes, ledger entries…)</td><td>at 12 bits or fewer, one thread from nonce 0; above, one thread per core (at most 16), each searching chunks of 4,096 tries with step = threads, stopping when any finds one</td></tr>
+          <tr><td><code>dispatch::mine_puzzle</code></td><td>the core's <code>mine</code> method, the desktop's <code>hoi_mine</code> command, the mobile libraries' drafts</td><td>the same multi-core search over a <code>Puzzle</code>, without the 12-bit shortcut</td></tr>
+          <tr><td><code>pow::mine_single</code></td><td>the core inside <code>hoi-wasm</code> (no threads)</td><td>one thread from nonce 0</td></tr>
+          <tr><td><code>pow::benchmark</code></td><td>work-bar estimates</td><td>times a search that never succeeds (bits 255) over a 180-byte prefix and a 60-byte suffix; desktop multiplies 200,000 tries' rate by the core count, mobile 100,000 tries' by the core count (at most 16)</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="wk-code" data-lang="rust" data-title="hoi-crypto/src/pow.rs (mine, trimmed)"><pre><code>let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).min(16) as u64;
+let found = AtomicU64::new(u64::MAX);
+std::thread::scope(|s| {
+    for t in 0..threads {
+        s.spawn(move || {
+            let mut start = t;
+            const CHUNK: u64 = 4096;
+            loop {
+                if found.load(Ordering::Relaxed) != u64::MAX {
+                    return;
+                }
+                if let Some(n) = p.search(start, threads, CHUNK) {
+                    found.fetch_min(n, Ordering::Relaxed);
+                    return;
+                }
+                start += threads * CHUNK;
+            }
+        });
+    }
+});</code></pre></div>
+    <p>Threads check the shared <code>found</code> between chunks, so they stop within 4,096 tries of the first success; if two find one in the same round, the smaller nonce wins. Posts, replies and edits go draft → mine → publish even natively: the desktop mines with <code>hoi_mine</code> on a blocking thread without holding the node, and the mobile libraries draft under the node's lock, mine without it, then publish, so other calls and the network keep going. Before a phone's own benchmark is in, the mobile libraries assume 4,000,000 tries a second for the work bar.</p>
+    <h3 id="native-identity">Identity work natively</h3>
+    <ul>
+      <li><code>identity::mine</code>: at 4 bits or fewer, or on one core, a single search; otherwise one thread per core (at most 16), each trying chunks of 8 nonces with step = threads.</li>
+      <li><code>identity::mine_watched</code>: the same, but every try is counted in a <code>Watch</code> (tries so far, best bits so far) and a <code>stop</code> flag ends it after the current try. The desktop's "Key work" uses it (<code>hoi_mine_identity</code>), polls <code>hoi_identity_progress</code> twice a second and calls <code>hoi_identity_stop</code> when the person stops it.</li>
+      <li><code>identity::Miner</code> keeps one 8 MiB buffer for all its tries and hands back each output, so a host can show the work as it happens.</li>
+    </ul>
+  </section>
+
+  <section class="wk-sec" id="browser">
+    <h2>Mining in the browser</h2>
+    <p>In the web app the core runs in one Web Worker (<code>hoi-wasm</code>), and mining runs in a small pool of others, each loading the same wasm package. <a href="{{REPO_URL}}/blob/main/apps/web/src/lib/core/rpc-core.ts">rpc-core.ts</a> sends posts, replies and edits through draft → mine → publish so that mining uses several cores and the interface can show the work bar.</p>
+    <div class="wk-seq" data-title="Stamping a post in the browser">
+lanes: Page | Core worker | Miner pool
+-- Draft --
+Page -> Core worker: <code>draftPost</code>(draft)
+Core worker: builds and checks the record, works out <code>bits</code>, keeps the draft for an hour
+Core worker --> Page: <code>{token, prefix, suffix, bits}</code>
+Page: emits <code>stamp</code> start with an estimate from <code>rate()</code>
+-- Mine --
+Page -> Miner pool: <code>mine</code> {job, prefix, suffix, bits, start: i, step: n} to each worker
+Miner pool: each worker calls <code>mine_range</code> for 20,000 tries, yields, repeats
+Miner pool --> Page: <code>found</code> {job, nonce, tries, ms}
+Page -> Miner pool: <code>stop</code> {job} to every worker
+-- Publish --
+Page -> Core worker: <code>publishDraft</code>(token, nonce)
+Core worker: checks the stamp carries <code>bits</code>, signs, runs the pipeline
+Core worker --> Page: the post as published
+Page: emits <code>stamp</code> done with the time it took
+</div>
+    <h3 id="pool">The pool</h3>
+    <p><code>createMinerPool</code> starts <code>max(1, min(4, hardwareConcurrency − 1))</code> workers: one fewer than the cores the browser reports, at least one and at most four. Worker <i>i</i> searches nonces <i>i</i>, <i>i + n</i>, … The first <code>found</code> wins; the pool then sends <code>stop</code> to every worker. If every worker fails (out of memory, a wasm that didn't load), the promise rejects and <code>rpc-core</code> asks the core's own <code>mine</code> method instead, which native cores serve on every core; <code>hoi-wasm</code> compiles that method out.</p>
+    <div class="wk-code" data-lang="ts" data-title="apps/web/src/lib/core/miner.worker.ts (trimmed)"><pre><code>const CHUNK = 20_000;
+
+async function mine(j: Job) {
+  active.add(j.job);
+  await ready;
+  let nonce = j.start;
+  let tries = 0;
+  const t0 = performance.now();
+  while (active.has(j.job)) {
+    const found = mine_range(j.prefix, j.suffix, j.bits, nonce, j.step, CHUNK);
+    tries += CHUNK;
+    if (found &gt;= 0) {
+      active.delete(j.job);
+      self.postMessage({ type: 'found', job: j.job, nonce: found, tries, ms: performance.now() - t0 });
+      return;
+    }
+    nonce += j.step * CHUNK;
+    // let a stop message in
+    await new Promise((r) =&gt; setTimeout(r, 0));
+  }
+}</code></pre></div>
+    <p><code>mine_range</code> is a thin wasm export over <code>Puzzle::search</code>: it takes the prefix, suffix, bits, start, step and tries as JavaScript numbers and returns the nonce or <code>-1</code>. Between chunks the worker yields with <code>setTimeout(0)</code> so a <code>stop</code> can arrive. A worker tracks the jobs it is on in a set, so a stamp that comes while a long identity job runs is mined alongside it, the two taking turns, rather than ending it.</p>
+    <h3 id="rate">The work-bar estimate</h3>
+    <p><code>rate()</code> runs a benchmark once, on the first worker: 30,000 tries of a puzzle that never succeeds (a 180-byte prefix of <code>0xa9</code>, a 60-byte suffix of <code>0x01</code>, 255 bits). The pool's rate is that, but at least 50,000 tries a second, times the number of workers. The estimate is <code>stampEstimateMs(bits, rate) = round(2^bits / rate × 1000)</code>; the core emits <code>stamp</code> events with <code>phase: "start"</code> (bits and estimate) and <code>"done"</code> (the time it really took). The interface keeps its own running figure for other estimates, such as the join screen's "≈ … per post here": it starts at 2<sup>22</sup> tries a second (22 bits in about a second) and is updated from how long each stamp of 16 bits or more really took.</p>
+    <h3 id="browser-identity">Identity work in the browser</h3>
+    <p>A new key goes the same way: <code>draftIdentity</code> makes the key and returns <code>{root, rootKey, short, fingerprint, bits}</code>; the pool mines; <code>publishIdentity(rootKey, work)</code> checks the work and adopts the key. Each worker builds one <code>IdentityMiner</code> (one 8 MiB Argon2id buffer, so up to 32 MiB for four workers), tries one nonce at a time and posts every try back (<code>{type: "try", work, hash, bits}</code>, the hash transferred, not copied), so the first run can show the work as it happens. Between tries it yields through a <code>MessageChannel</code> rather than <code>setTimeout</code>, avoiding the 4 ms clamp; the code's comment puts a try at about 15 ms. "More work" (<code>mineMore</code>) reports progress every 250 ms and stops on an abort signal. If no miner can run, the core does the work itself, on one thread and without showing it.</p>
+    <div class="wk-seq" data-title="A new key's identity work in the browser">
+lanes: Page | Core worker | Miner pool
+Page -> Core worker: <code>draftIdentity</code>(name, stir)
+Core worker --> Page: <code>{rootKey, bits: 10, fingerprint…}</code>
+Page -> Miner pool: <code>identity</code> {job, root, bits, start: i, step: n}
+Miner pool --> Page: <code>try</code> {work, hash, bits} for every Argon2id try
+Miner pool --> Page: <code>found</code> {nonce}
+Page -> Miner pool: <code>stop</code> {job}
+Page -> Core worker: <code>publishIdentity</code>(rootKey, work)
+Core worker: checks <code>work_bits ≥ bits</code>, keeps the keys, publishes identity and delegation
+</div>
+  </section>
+
+  <section class="wk-sec" id="cost">
+    <h2>What checking costs</h2>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Verification cost">
+      <table>
+        <thead><tr><th>Check</th><th>Cost</th><th>When</th></tr></thead>
+        <tbody>
+          <tr><td>stamp floor</td><td>one BLAKE3 over 40 bytes (the id is already computed while decoding)</td><td>stage 2, before the signature</td></tr>
+          <tr><td>signature</td><td>one strict Ed25519 verification</td><td>stage 3, only for records past the floor</td></tr>
+          <tr><td>full stamp</td><td>a comparison: the same hash, a different threshold</td><td>after the signature</td></tr>
+          <tr><td>identity work</td><td>one Argon2id run: 8 MiB, one pass</td><td>once per author and nonce, then cached</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>So the asymmetry is about 2<sup>bits</sup> to 1 for stamps: millions of tries to make a 22-bit stamp, one hash to check it. Identity work is the one expensive check, and the reason the node checks it last among the cheap stages, after stamp and signature, and only once per key.</p>
+  </section>
+
+  <section class="wk-sec" id="expected">
+    <h2>Expected work, in tries and time</h2>
+    <p>Each try succeeds with probability 2<sup>−bits</sup>, independently, so the number of tries is geometric with mean 2<sup>bits</sup>. That is an average, not a cap: about 63% of searches finish within 2<sup>bits</sup> tries, 86.5% within twice that, 95% within three times and 99% within 4.6 times.</p>
+    <h3 id="expected-stamps">Stamps</h3>
+    <p>The rates below are examples, not measurements: 50,000 tries a second is the floor the web pool assumes, 4,000,000 is what the mobile libraries assume before benchmarking. A try is the two BLAKE3 finishes described above; real rates depend on the machine and on how many cores mine.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Expected stamp work">
+      <table>
+        <thead><tr><th>Bits</th><th>Expected tries</th><th>at 50 k/s</th><th>at 1 M/s</th><th>at 4 M/s</th><th>at 16 M/s</th><th>Where it appears</th></tr></thead>
+        <tbody>
+          <tr><td>8</td><td>256</td><td>5 ms</td><td>0.26 ms</td><td>0.06 ms</td><td>0.02 ms</td><td>lowest <code>pow_bits</code>; a vote from a year-old key at 22; the vectors</td></tr>
+          <tr><td>10</td><td>1,024</td><td>20 ms</td><td>1 ms</td><td>0.26 ms</td><td>0.06 ms</td><td>a vote from a 90-day key at 22</td></tr>
+          <tr><td>12</td><td>4,096</td><td>82 ms</td><td>4 ms</td><td>1 ms</td><td>0.26 ms</td><td>a vote from a 30-day key at 22</td></tr>
+          <tr><td>14</td><td>16,384</td><td>328 ms</td><td>16 ms</td><td>4 ms</td><td>1 ms</td><td>a vote, vouch or ledger entry at 22</td></tr>
+          <tr><td>16</td><td>65,536</td><td>1.3 s</td><td>66 ms</td><td>16 ms</td><td>4 ms</td><td>keys, delegations, genesis; a post from a year-old key</td></tr>
+          <tr><td>18</td><td>262,144</td><td>5.2 s</td><td>262 ms</td><td>66 ms</td><td>16 ms</td><td>a post from a 90-day key</td></tr>
+          <tr><td>20</td><td>1,048,576</td><td>21 s</td><td>1.0 s</td><td>262 ms</td><td>66 ms</td><td>a post from a 30-day key</td></tr>
+          <tr><td>22</td><td>4,194,304</td><td>1.4 min</td><td>4.2 s</td><td>1.0 s</td><td>262 ms</td><td>a post at the default, as authors mine it</td></tr>
+          <tr><td>24</td><td>16,777,216</td><td>5.6 min</td><td>16.8 s</td><td>4.2 s</td><td>1.0 s</td><td></td></tr>
+          <tr><td>26</td><td>67,108,864</td><td>22 min</td><td>1.1 min</td><td>16.8 s</td><td>4.2 s</td><td></td></tr>
+          <tr><td>28</td><td>268,435,456</td><td>1.5 h</td><td>4.5 min</td><td>1.1 min</td><td>16.8 s</td><td></td></tr>
+          <tr><td>30</td><td>1,073,741,824</td><td>6.0 h</td><td>18 min</td><td>4.5 min</td><td>1.1 min</td><td>highest <code>pow_bits</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 id="expected-identity">Identity work</h3>
+    <p>At the miner's own estimate of about 15 ms per Argon2id try, on one worker, on four (the web pool's most) and on sixteen (the native miners' most):</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Expected identity work">
+      <table>
+        <thead><tr><th>Bits</th><th>Expected tries</th><th>1 worker</th><th>4 workers</th><th>16 threads</th><th>Where it appears</th></tr></thead>
+        <tbody>
+          <tr><td>4</td><td>16</td><td>240 ms</td><td>60 ms</td><td>15 ms</td><td><code>MIN_BITS</code>; a later root after recovery</td></tr>
+          <tr><td>8</td><td>256</td><td>3.8 s</td><td>0.96 s</td><td>240 ms</td><td>the default community ask</td></tr>
+          <tr><td>10</td><td>1,024</td><td>15 s</td><td>3.8 s</td><td>0.96 s</td><td><code>DEFAULT_BITS</code>: a new key</td></tr>
+          <tr><td>12</td><td>4,096</td><td>1.0 min</td><td>15 s</td><td>3.8 s</td><td></td></tr>
+          <tr><td>16</td><td>65,536</td><td>16 min</td><td>4.1 min</td><td>1.0 min</td><td></td></tr>
+          <tr><td>20</td><td>1,048,576</td><td>4.4 h</td><td>1.1 h</td><td>16 min</td><td><code>MAX_BITS</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="wk-note info"><b>Why both kinds of work</b><p>Stamps price every record, so a million posts cost a million seconds; identity work prices every key, so a thousand fresh keys cost a thousand times one key's work, which is what makes throwaway identities expensive. Neither stops a determined attacker alone: rate windows, the trust ladder and moderation do the rest (<a href="/wiki/spam/">Spam &amp; rate limits</a>, <a href="/wiki/standing/">Standing &amp; review</a>).</p></div>
+  </section>
+
+  <section class="wk-sec" id="vectors">
+    <h2>Checking an implementation</h2>
+    <p>Every entry in <a href="{{REPO_URL}}/blob/main/core/vectors/records.json">records.json</a> carries <code>nonce</code> and <code>stamp_bits</code>: the generator searches nonces from 0 at 8 bits, so <code>stamp_bits</code> is at least 8 and is the exact count of leading zero bits of <code>BLAKE3(id ‖ u64be(nonce))</code>. The <code>identity</code> vector also gives <code>identity_bits</code>: its work is searched from 0 at <code>MIN_BITS</code>, giving <code>work: 56</code> worth 5 bits for the root of seed <code>02…02</code>. Unit tests in <code>pow.rs</code> pin the discount arithmetic (<code>required_bits(22, 8, 40 days) == 12</code>, <code>required_bits(22, 0, 400 days) == 16</code>, <code>required_bits(4, 8, 0) == 0</code>) and the counting (<code>00 10 …</code> is 11 bits).</p>
+  </section>
+
+  <section class="wk-sec" id="next">
+    <h2>Read next</h2>
+    <div class="wk-cards">
+      <a class="wk-card g-coral" href="/wiki/records/"><i></i><b>Records &amp; encoding</b><span>The canonical bytes a stamp's id is the hash of.</span></a>
+      <a class="wk-card g-lilac" href="/wiki/identity/"><i></i><b>Keys &amp; identity</b><span>Roots, devices and what identity work buys.</span></a>
+      <a class="wk-card g-peach" href="/wiki/validation/"><i></i><b>Validation pipeline</b><span>Where the floor, the signature and the full check sit.</span></a>
+      <a class="wk-card g-mint" href="/wiki/web-app/"><i></i><b>Web app</b><span>The worker core and the pools around it.</span></a>
+    </div>
+  </section>
+</article>
+<!-- @wiki-close -->
+<!-- @include footer.html -->
+<script type="module" src="/src/pages/wiki.ts"></script>
+</body>
+</html>

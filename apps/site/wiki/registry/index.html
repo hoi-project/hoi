@@ -1,0 +1,633 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <!-- @include head.html title="Registry · hoi wiki" description="Names to community keys: the log, proofs, mirrors and verification." -->
+</head>
+<body class="wiki">
+<!-- @include header.html nav="wiki" -->
+<!-- @wiki-open -->
+<article class="wk-doc">
+  <!-- @wiki-crumbs -->
+  <h1>Registry</h1>
+  <p class="wk-lead">A registry maps public names to community keys inside its own namespace, keeps every name it retained in a signed append-only log, and lists public nodes that announced themselves. It is optional: the published app uses none. Three implementations speak one API on one database shape. This page documents every endpoint and field, the log's bytes and hashes, and exactly how a client checks what a registry tells it.</p>
+  <p class="wk-src-list">Source <a href="{{REPO_URL}}/blob/main/registry/server.mjs">registry/server.mjs</a> <a href="{{REPO_URL}}/blob/main/registry/protocol.mjs">protocol.mjs</a> <a href="{{REPO_URL}}/blob/main/registry/store.mjs">store.mjs</a> <a href="{{REPO_URL}}/blob/main/registry/log.mjs">log.mjs</a> <a href="{{REPO_URL}}/blob/main/registry/worker-runtime.mjs">worker-runtime.mjs</a> <a href="{{REPO_URL}}/blob/main/registry/admin.mjs">admin.mjs</a> <a href="{{REPO_URL}}/blob/main/registry/conformance.mjs">conformance.mjs</a> <a href="{{REPO_URL}}/blob/main/registry/public/verify.js">public/verify.js</a> <a href="{{REPO_URL}}/blob/main/registry/public/log.js">public/log.js</a> <a href="{{REPO_URL}}/tree/main/core/crates/hoi-node/src/registry">hoi-node/src/registry/</a> <a href="{{REPO_URL}}/blob/main/apps/web/src/lib/registry.ts">apps/web/src/lib/registry.ts</a></p>
+  <div class="wk-head-rule"></div>
+
+  <section class="wk-sec" id="overview">
+    <h2>What a registry is, and is not</h2>
+    <p>A registry is a naming and discovery service. It reserves a public name such as <code>c/hiking</code> for one community key, keeps the owner's signed proof of that, says which protocol and index edition the community was published for, and points apps at public nodes that may carry it. It serves no HTML, app assets or user content: no posts, messages, profiles, owners or membership lists, and no account system. Browsing, signature checking, name pinning and peer selection happen in the client.</p>
+    <p>It is never an authorization service or the community's identity. Its operator can omit an entry or stop the service; it cannot change the community key, sign the community's records or disable an existing invite. A signature proves the community key approved a name, not a real-world identity or who registered first. A registry entry alone cannot supply a community either: at least one compatible node must hold its records and be reachable. See <a href="/wiki/discovery/">Discovery</a> for how apps find communities without one.</p>
+    <div class="wk-note info"><b>Each registry is its own namespace</b><p>Names are unique within one registry while it runs. Independently operated registries can reserve the same name for different keys; when none is reachable, two communities may carry the same name under different keys, and the apps show both keys without merging them. A name is not a global identity. Compatibility filtering never releases an old name for somebody else.</p></div>
+    <h3 id="overview-impl">Three implementations</h3>
+    <p>All three answer the same requests with the same status codes, headers and bodies, and keep the same SQLite tables, so a database file moves between the first two by copying it. One conformance suite runs against each (<a href="#conformance">Conformance</a>).</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Implementations">
+      <table>
+        <thead><tr><th></th><th>Node service</th><th>hoi-node role</th><th>Worker</th></tr></thead>
+        <tbody>
+          <tr><td>Code</td><td><code>registry/server.mjs</code></td><td><code>core/crates/hoi-node/src/registry/</code></td><td><code>registry/worker.mjs</code>, <code>worker-runtime.mjs</code></td></tr>
+          <tr><td>Run</td><td><code>node registry/server.mjs</code> (Node 22.13+, built-in <code>node:sqlite</code>, no packages)</td><td><code>hoi-node --public --registry 127.0.0.1:7845 --registry-url …</code></td><td><code>wrangler deploy --config registry/wrangler.toml</code></td></tr>
+          <tr><td>API root</td><td><code>/</code></td><td><code>/</code></td><td><code>/registry</code></td></tr>
+          <tr><td>Namespace</td><td>the file the database file</td><td><code>DIR/registry.db</code></td><td>one SQLite Durable Object, <code>idFromName('public-community-names')</code></td></tr>
+          <tr><td>Configuration</td><td>environment variables</td><td>flags</td><td>Worker variables and secrets</td></tr>
+          <tr><td>Operator tools</td><td><code>node registry/admin.mjs</code></td><td><code>hoi-node admin registry</code></td><td>configuration lists</td></tr>
+          <tr><td>Release manifest</td><td><code>HOI_RELEASE_CONFIG</code> or <code>release.json</code>, read per request</td><td><code>--registry-release</code> or compiled, read per request</td><td><code>release.json</code> bundled at deploy</td></tr>
+          <tr><td>Mirrors another registry</td><td>no</td><td><code>--registry-mirror URL</code></td><td>no</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="wk-sec" id="names">
+    <h2>Names, keys and signed statements</h2>
+    <h3 id="names-rule">Public names</h3>
+    <p>A public name is 1 to 32 ASCII letters, digits, <code>.</code>, <code>_</code> or <code>-</code>, starting with a letter or digit. It is trimmed and lowercased before anything else (<code>normalizeName</code>, <code>community_registration_name</code>), so <code>Hiking</code> and <code>hiking</code> are one name. Local display names can still use Unicode and spaces without making a registry claim. The app accepts the familiar <code>c/name</code> spelling in search and strips the <code>c/</code>.</p>
+    <h3 id="names-keys">Strong keys</h3>
+    <p>Community keys and endpoint keys are 32-byte Ed25519 public keys written as 64 lowercase hex characters. <code>keyIsStrong</code> (<code>key_is_strong</code> in Rust) refuses a key that would verify forged signatures: one of libsodium's seven small-order points (the sign bit masked off), a non-canonical encoding (<code>y ≥ p</code>, <code>p = 2²⁵⁵ − 19</code>), or bytes that are no valid point. Node's verifier accepts small-order points, so the registry refuses them itself, like the Rust core. Signatures are 128 lowercase hex characters (64 bytes).</p>
+    <h3 id="names-statements">The three statements</h3>
+    <p>Each claim is an Ed25519 signature over exact UTF-8 bytes: lines joined by <code>\n</code>, no final newline. The name must be canonical first.</p>
+    <div class="wk-bytes" data-title="A name claim (v1), signed by the community key">
+"hoi community name v1" | 21 B | mute | 4 | fixed first line
+\n | 1 B | mute | 1 |
+name | 1–32 B | coral | 3 | canonical
+\n | 1 B | mute | 1 |
+community | 64 B | mint | 3 | lowercase hex key
+    </div>
+    <div class="wk-bytes" data-title="A publication (v2), signed by the community key">
+"hoi community index v2" | 22 B | mute | 4 | fixed first line
+\n | 1 B | mute | 1 |
+name | 1–32 B | coral | 3 | canonical
+\n | 1 B | mute | 1 |
+community | 64 B | mint | 3 | lowercase hex key
+
+\n | 1 B | mute | 1 |
+protocolVersion | 1–64 B | sky | 4 | e.g. <code>0.3</code>
+\n | 1 B | mute | 1 |
+indexVersion | decimal | sky | 4 | 1 to 2147483647
+    </div>
+    <div class="wk-bytes" data-title="A node announcement, signed by the node's transport key">
+"hoi public node v2" | 18 B | mute | 3 | fixed first line
+\n | 1 B | mute | 1 |
+registry | origin | sun | 4 | <code>https://host[:port]</code> of the registry it is for
+\n | 1 B | mute | 1 |
+endpoint | 64 B | lilac | 3 | lowercase hex transport key
+
+\n | 1 B | mute | 1 |
+issuedAt | decimal | peach | 2 | Unix seconds
+\n | 1 B | mute | 1 |
+routes | ≤ 8 | cobalt | 4 | joined by <code>,</code>, in try order
+\n | 1 B | mute | 1 |
+communities | ≤ 64 | mint | 3 | sorted keys joined by <code>,</code>
+    </div>
+    <div class="wk-code" data-lang="js" data-title="registry/protocol.mjs (trimmed)"><pre><code>export function registrationStatement(name, community) {
+  return `hoi community name v1\n${name}\n${community}`;
+}
+
+export function publicationStatement(name, community, protocolVersion, indexVersion) {
+  return `hoi community index v2\n${name}\n${community}\n${protocolVersion}\n${indexVersion}`;
+}
+
+export function announcementStatement(registry, endpoint, issuedAt, routes, communities) {
+  return `hoi public node v2\n${registry}\n${endpoint}\n${issuedAt}\n${routes.join(',')}\n${communities.join(',')}`;
+}</code></pre></div>
+    <p>The core creates the community's proofs at the moment it creates the community and then discards the community's signing key; only the public proofs are kept, so a reservation can be retried after an outage from the device that created it. Older communities have no proof and stay usable by invite. A key file carries up to 64 proofs of each kind, so a restored device can still claim its names (<a href="/wiki/identity/">Keys &amp; identity</a>).</p>
+    <h3 id="names-vector">The shared vector</h3>
+    <p><code>core/vectors/community-registration.json</code> pins the v1 claim: the Ed25519 seed <code>2a…2a</code> (32 bytes of 0x2a), its public key <code>197f6b23…368d61</code>, the name <code>garden_1.v2-test</code>, the exact statement and the signature <code>028a8eb3…347900</code>. The Rust core, <code>hoi-node</code>'s registry and the JavaScript conformance suite accept it without translation and refuse it once the name changes. Its siblings <code>community-publication.json</code> (the same key, protocol <code>0.3</code>, index edition 1) and <code>node-announcement.json</code> pin the other two statements (<a href="/wiki/vectors/">Test vectors</a>).</p>
+  </section>
+
+  <section class="wk-sec" id="api">
+    <h2>Endpoints</h2>
+    <p>Paths are relative to the API root: <code>/v1/meta</code> on the Node service and hoi-node, <code>/registry/v1/meta</code> on the Worker. Every answer is JSON. Anything else answers 404 <code>{"error":"not-found"}</code>, including <code>/</code>, <code>/index.html</code>, <code>/v1/meta/</code> and <code>/v3/communities</code>.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Endpoints">
+      <table>
+        <thead><tr><th>Method</th><th>Path</th><th>Query or body</th><th>Answer</th><th>Origins</th><th>Budget</th></tr></thead>
+        <tbody>
+          <tr><td>GET</td><td><code>/v1/meta</code></td><td>none allowed</td><td><a href="#api-meta">metadata</a></td><td>configured</td><td>reads</td></tr>
+          <tr><td>GET</td><td><code>/release.json</code></td><td>none allowed</td><td>the validated release manifest</td><td>configured</td><td>reads</td></tr>
+          <tr><td>GET</td><td><code>/v1/communities</code></td><td><code>name</code> or <code>prefix</code></td><td><a href="#api-v1">v1 mapping or list</a></td><td>configured</td><td>reads</td></tr>
+          <tr><td>PUT</td><td><code>/v1/communities</code></td><td>JSON, ≤ 2048 B</td><td><a href="#api-v1">v1 mapping</a></td><td>configured</td><td>claims</td></tr>
+          <tr><td>GET</td><td><code>/v2/communities</code></td><td><code>name</code>, <code>community</code>, or <code>prefix</code> [+ <code>after</code>]</td><td><a href="#api-listing">listing or page</a></td><td>configured</td><td>reads</td></tr>
+          <tr><td>PUT</td><td><code>/v2/communities</code></td><td>JSON, ≤ 2048 B</td><td><a href="#api-listing">listing</a></td><td>configured</td><td>claims</td></tr>
+          <tr><td>GET</td><td><code>/v2/nodes</code></td><td><code>community</code></td><td><code>{publicNodes}</code></td><td>any</td><td>reads</td></tr>
+          <tr><td>PUT</td><td><code>/v2/nodes</code></td><td>JSON, ≤ 8192 B</td><td><a href="#announcements">the node as stored</a></td><td>configured</td><td>announcements</td></tr>
+          <tr><td>GET</td><td><code>/v2/log/head</code></td><td>none allowed</td><td><a href="#log-head">signed head</a></td><td>any</td><td>reads</td></tr>
+          <tr><td>GET</td><td><code>/v2/log/entries</code></td><td><code>start</code>, <code>end</code></td><td><code>{entries, leaves}</code></td><td>any</td><td>reads</td></tr>
+          <tr><td>GET</td><td><code>/v2/log/proof</code></td><td><code>leaf</code>, <code>size</code></td><td><code>{index, size, path}</code></td><td>any</td><td>reads</td></tr>
+          <tr><td>GET</td><td><code>/v2/log/consistency</code></td><td><code>first</code>, <code>second</code></td><td><code>{first, second, path}</code></td><td>any</td><td>reads</td></tr>
+          <tr><td>OPTIONS</td><td>any path above</td><td><code>Access-Control-Request-Method</code></td><td>204, or 405 for a method the path lacks</td><td>as the path</td><td>none</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>The metadata, release and log paths take only GET; the others GET and PUT. Another method answers 405 <code>method-not-allowed</code> with <code>Allow: GET, OPTIONS</code> or <code>Allow: GET, PUT, OPTIONS</code> (HEAD included: <code>HEAD /v1/meta</code> is 405). There is no rename, transfer, delete or administrative endpoint of any kind.</p>
+
+    <h3 id="api-meta">GET /v1/meta</h3>
+    <dl class="wk-defs">
+      <dt>release<small>object</small></dt><dd>The validated release manifest (<a href="#release">below</a>); <code>GET /release.json</code> returns just this.</dd>
+      <dt>registry.apiVersion<small>2</small></dt><dd>The API's version. A carrier refuses any other.</dd>
+      <dt>registry.schemaVersion<small>3</small></dt><dd>The shape of the answers. It stays 3 while the database file is at version 5.</dd>
+      <dt>registry.indexVersion<small>integer</small></dt><dd>The release's index edition.</dd>
+      <dt>publicNodes<small>string[] ≤ 16</small></dt><dd>Routes to try: the operator's configured ones first, then those of nodes announced within 30 minutes, newest first, one route per node per round.</dd>
+      <dt>appUrl<small>URL</small></dt><dd>The app the registry points people at: <code>HOI_APP_URL</code>/<code>--registry-app-url</code>, default <code>https://hoi.sh/app/</code>; the Worker defaults to its own origin's <code>/app/</code>.</dd>
+    </dl>
+    <p>A query string on either metadata path answers 400 <code>Metadata requests do not use query parameters.</code></p>
+
+    <h3 id="api-listing">GET and PUT /v2/communities</h3>
+    <p>Exactly one of these queries; any other combination is 400 <code>Use one name, community or prefix query; v2 prefix may also include after.</code></p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="v2 queries">
+      <table>
+        <thead><tr><th>Query</th><th>Answer</th><th>Not found</th></tr></thead>
+        <tbody>
+          <tr><td><code>?name=hiking</code></td><td>the listing</td><td>404 <code>not-found</code> <i>This public name has not been reserved.</i>, or 404 <code>withheld</code></td></tr>
+          <tr><td><code>?community=&lt;64 hex&gt;</code></td><td>the same listing, by key (a carrier asking whether a key a browser offered is listed)</td><td>404 <code>not-found</code> <i>This community key has no public name.</i>, or 404 <code>withheld</code></td></tr>
+          <tr><td><code>?prefix=hi</code>, optionally <code>&amp;after=hiking</code></td><td>an array of at most 50 currently compatible listings in name order; the last name is the next page's exclusive cursor; an empty prefix lists all</td><td><code>[]</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>A listing has these fields:</p>
+    <dl class="wk-defs">
+      <dt>name<small>string</small></dt><dd>The canonical public name.</dd>
+      <dt>community<small>64 hex</small></dt><dd>The community key it belongs to.</dd>
+      <dt>protocolVersion<small>string | null</small></dt><dd>The protocol family the community was published for; null for a reservation without index metadata.</dd>
+      <dt>indexVersion<small>integer | null</small></dt><dd>The index edition it was published for.</dd>
+      <dt>compatible<small>bool</small></dt><dd>True when the newest proof is a v2 publication, its index edition equals the release's and its protocol is among <code>supportedProtocols</code>.</dd>
+      <dt>indexed<small>bool</small></dt><dd>Equal to <code>compatible</code>. Clients recompute both from the authenticated versions.</dd>
+      <dt>proof<small>object | null</small></dt><dd>The newest retained proof: <code>{version: 2, signature, protocolVersion, indexVersion}</code> for a publication, <code>{version: 1, signature}</code> for a signed reservation, <code>null</code> for an unsigned legacy row.</dd>
+    </dl>
+    <p><code>PUT /v2/communities</code> takes exactly <code>{name, community, protocolVersion, indexVersion, signature}</code> and no query (400 <code>Reservation requests do not use query parameters.</code>). <code>protocolVersion</code> is 1–64 characters of letters, digits, <code>.</code>, <code>_</code>, <code>-</code> starting with a letter or digit; <code>indexVersion</code> an integer from 1 to 2147483647. A body with any other key, a non-canonical name, a weak key or a signature that does not verify is 400 <code>invalid-proof</code>. Success is 200 with the listing; the conflicts are in <a href="#reservations">Reservations and publications</a>.</p>
+
+    <h3 id="api-v1">GET and PUT /v1/communities</h3>
+    <p>The first API, kept with its original statement and an added <code>proof</code> field. <code>?name=</code> answers <code>{name, community, proof}</code> or 404; <code>?prefix=</code> an array of at most 50 mappings in name order (every reserved name, compatible or not); there is no <code>community</code> or <code>after</code> query. <code>PUT</code> takes exactly <code>{name, community, signature}</code>. A v1 reservation alone does not appear in v2 discovery: it has no version metadata, so its listing has null versions and false flags.</p>
+
+    <h3 id="api-nodes">GET /v2/nodes</h3>
+    <p><code>?community=&lt;64 hex&gt;</code> and nothing else (400 <code>Ask for the public nodes carrying one community key.</code>). The answer is <code>{publicNodes}</code>: the operator's configured routes, then routes of announced nodes that list that key, then the other announced nodes, each group one route per node per round, at most 16. For a withheld community the answer is the general order, naming nobody as its carrier. Any app may read this, wherever it is served: as a tracker, the registry's list of carriers is public.</p>
+
+    <h3 id="api-log">The log paths</h3>
+    <p>Four GET paths serve the <a href="#log">log of names</a>. Each takes exactly its query keys, once each; numbers are decimal without leading zeros, at most 10 digits.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Log queries">
+      <table>
+        <thead><tr><th>Path</th><th>Query</th><th>Answer</th><th>Refused (400 <code>invalid</code>) when</th></tr></thead>
+        <tbody>
+          <tr><td><code>/v2/log/head</code></td><td>none</td><td><code>{logKey, size, root, timestamp, signature}</code>, signed now</td><td>any query</td></tr>
+          <tr><td><code>/v2/log/entries</code></td><td><code>start</code>, <code>end</code></td><td><code>{entries, leaves}</code>: entry texts (<code>null</code> for a withheld listing) and their leaf hashes, for <code>start ≤ i &lt; end</code></td><td>not <code>start &lt; end ≤ size</code>, or more than 256</td></tr>
+          <tr><td><code>/v2/log/proof</code></td><td><code>leaf</code> (64 hex), <code>size</code></td><td><code>{index, size, path}</code>: the audit path of that leaf in the tree of <code>size</code> entries; 404 <code>not-logged</code> if it is not among them</td><td>not <code>1 ≤ size ≤</code> current size</td></tr>
+          <tr><td><code>/v2/log/consistency</code></td><td><code>first</code>, <code>second</code></td><td><code>{first, second, path}</code>: that the tree of <code>second</code> extends the tree of <code>first</code>; empty when <code>first</code> is 0</td><td>not <code>first ≤ second ≤</code> current size</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="wk-sec" id="errors">
+    <h2>Status codes and error codes</h2>
+    <p>Every refusal has a JSON body <code>{error, message}</code>. Clients act on <code>error</code>; the message is for people.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Errors">
+      <table>
+        <thead><tr><th>Status</th><th><code>error</code></th><th>When</th></tr></thead>
+        <tbody>
+          <tr><td>400</td><td><code>invalid</code></td><td>a malformed query: wrong keys, a bad name, key, prefix, cursor or log number; a query on metadata, claims or announcements</td></tr>
+          <tr><td>400</td><td><code>invalid-request</code></td><td>a PUT body that is not JSON (<i>Expected a JSON registration proof.</i>)</td></tr>
+          <tr><td>400</td><td><code>invalid-proof</code></td><td>a claim with other keys, a bad name, a weak key, or a signature that does not verify</td></tr>
+          <tr><td>400</td><td><code>invalid-announcement</code></td><td>an announcement that does not verify, including the old unnamed v1 statement</td></tr>
+          <tr><td>400</td><td><code>wrong-registry</code></td><td>an announcement signed for another registry's origin</td></tr>
+          <tr><td>403</td><td><code>origin-denied</code></td><td>a browser origin the operator did not allow, outside the public reads</td></tr>
+          <tr><td>403</td><td><code>announcements-disabled</code></td><td>the operator turned announcements off, or the registry does not know its own URL</td></tr>
+          <tr><td>403</td><td><code>announcer-not-allowed</code></td><td>allowlist mode, and this endpoint is not listed</td></tr>
+          <tr><td>403</td><td><code>announcer-refused</code></td><td>the operator dropped this node</td></tr>
+          <tr><td>404</td><td><code>not-found</code></td><td>an unknown path, name or key</td></tr>
+          <tr><td>404</td><td><code>withheld</code></td><td>a lookup of a listing the operator withholds; the answer names no key</td></tr>
+          <tr><td>404</td><td><code>not-logged</code></td><td>a proof for a leaf not among the first <code>size</code> entries</td></tr>
+          <tr><td>405</td><td><code>method-not-allowed</code></td><td>a method the path lacks</td></tr>
+          <tr><td>408</td><td><code>request-timeout</code></td><td>a body that took longer than 10 s (hoi-node, Worker)</td></tr>
+          <tr><td>409</td><td><code>name-taken</code></td><td>the name belongs to another community; the body carries that mapping and its proof</td></tr>
+          <tr><td>409</td><td><code>community-registered</code></td><td>the key already has another name; the body carries that mapping</td></tr>
+          <tr><td>409</td><td><code>index-version-conflict</code></td><td>the key already has different, immutable index metadata</td></tr>
+          <tr><td>409</td><td><code>withheld</code></td><td>a claim touching a withheld name or key</td></tr>
+          <tr><td>413</td><td><code>too-large</code> or <code>invalid-request</code></td><td>a body over 2048 B (claims) or 8192 B (announcements)</td></tr>
+          <tr><td>415</td><td><code>content-type</code></td><td>a PUT that is not <code>application/json</code> (a <code>charset</code> parameter is fine); checked before the size</td></tr>
+          <tr><td>429</td><td><code>rate-limited</code></td><td>the minute's budget is spent; <code>Retry-After</code> says how many seconds</td></tr>
+          <tr><td>503</td><td><code>unavailable</code></td><td>storage failed, or the release manifest no longer validates</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="wk-note tip"><b>Uncertain answers</b><p>Retry the same signed claim after a timeout. Retrying an identical claim is safe and answers 200; an uncertain response must never lead to creating a replacement community key. The app turns a failed request into "availability is unknown", never into "the name is free".</p></div>
+  </section>
+
+  <section class="wk-sec" id="cors">
+    <h2>Origins, CORS and headers</h2>
+    <p>The operator lists exact browser origins (an environment setting, or <code>--registry-origin</code>): an <code>http(s)</code> origin with no path or trailing slash, or the desktop's <code>tauri://localhost</code>. The opaque origin <code>null</code> is always refused. A request without <code>Origin</code> is not a browser and passes; the carrier and scripts send none.</p>
+    <ul>
+      <li>A request whose <code>Origin</code> is not allowed answers 403 <code>origin-denied</code> and changes nothing, except a GET of <code>/v2/nodes</code> or a log path: those are public, answered with <code>Access-Control-Allow-Origin: *</code>.</li>
+      <li>An allowed origin is echoed in <code>Access-Control-Allow-Origin</code>. The Worker also treats its own origin as allowed.</li>
+      <li>A preflight (<code>OPTIONS</code>) answers 204 with <code>Access-Control-Allow-Methods</code> (<code>GET</code> or <code>GET, PUT</code>) and <code>Access-Control-Allow-Headers: Content-Type</code>, or 405 if the requested method is not one of them. Preflights are not counted against any budget.</li>
+      <li>No cookies or credentials are required, set or read.</li>
+    </ul>
+    <p>Every answer carries <code>Content-Type: application/json; charset=utf-8</code>, <code>Cache-Control: no-store</code>, <code>X-Content-Type-Options: nosniff</code>, <code>Referrer-Policy: no-referrer</code>, <code>Strict-Transport-Security: max-age=31536000; includeSubDomains</code> and <code>Vary: Origin</code>.</p>
+  </section>
+
+  <section class="wk-sec" id="reservations">
+    <h2>Reservations and publications</h2>
+    <p>The database holds permanent <code>name → community</code> pairs under two uniqueness constraints (a name has one key, a key has one name), separate <code>community → {protocolVersion, indexVersion}</code> index metadata, and the owner-signed proofs. SQLite arbitrates both constraints inside one <code>BEGIN IMMEDIATE</code> transaction, including across processes.</p>
+    <ol class="wk-steps">
+      <li><b>Withheld?</b><p>A claim touching a withheld name or key, or a row whose name or key is withheld, answers 409 <code>withheld</code> and learns nothing about the row.</p></li>
+      <li><b>Reserve</b><p><code>INSERT … ON CONFLICT DO NOTHING RETURNING</code>. A new row, or the same mapping again, is 200. The name with another key is 409 <code>name-taken</code> with the existing mapping, so the app can offer that community. The key with another name is 409 <code>community-registered</code>.</p></li>
+      <li><b>Index metadata (v2)</b><p>If the key already has metadata with another protocol or edition: 409 <code>index-version-conflict</code>, and nothing changes. Metadata is immutable; a legacy reservation gains it only with a valid v2 proof for the same name and key.</p></li>
+      <li><b>Proof</b><p>Insert the signature as claim version 1 or 2 (<code>ON CONFLICT DO NOTHING</code>: the first retained proof of each version stays).</p></li>
+      <li><b>Log</b><p>Append the retained claim to the log of names in the same transaction, once (<a href="#log">below</a>).</p></li>
+    </ol>
+    <p>Old reservations are never silently assigned the current protocol, and compatibility filtering never frees a name. Duplicate offline communities stay different communities and are never merged: a creation made without reaching the registry stays provisional, and only a successful reservation makes its name registered. Checking availability reserves nothing.</p>
+    <div class="wk-seq" data-title="Publishing a public name from the founder's app">
+lanes: App | Core | Registry | Trust store
+-- On the founder's device --
+Core: creating the community signs <code>hoi community index v2</code>, then forgets the key
+App -> Core: <code>communityPublication(id)</code>
+Core --> App: <code>{name, community, protocolVersion, indexVersion, signature}</code>
+-- The claim --
+App -> Registry: <code>PUT /v2/communities</code>, <code>Content-Type: application/json</code>
+Registry: check origin, budget, size, exact keys, strong key, signature
+Registry: one transaction: reserve, index metadata, proof, log entry
+Registry --> App: 200 listing, or 409 <code>name-taken</code> with the other mapping
+-- The app checks --
+App: verify the proof locally; name, key, versions must match; <code>compatible</code> and <code>indexed</code>
+App -> Trust store: pin name, key and publication version
+App -> Registry: <code>GET /v2/log/head</code>, consistency, proof for the new entry
+Registry --> App: signed head and audit path
+App -> Trust store: keep the head
+    </div>
+  </section>
+
+  <section class="wk-sec" id="announcements">
+    <h2>Node announcements</h2>
+    <p>Public nodes started with <code>--index URL</code> (and trackers, see <a href="/wiki/hoi-node/">hoi-node</a>) announce their own routes and the keys of the open communities they carry. This is the only table with a time in it. Routes are addresses a node deliberately advertises; addresses and public keys can still relate to people.</p>
+    <h3 id="announcements-body">The body</h3>
+    <dl class="wk-defs">
+      <dt>registry<small>origin</small></dt><dd>This registry's origin as the node was given it. Signed: a registry cannot pass on what it was sent to another one.</dd>
+      <dt>endpoint<small>64 hex</small></dt><dd>The node's 32-byte Ed25519 transport public key (its iroh endpoint id); must be strong.</dd>
+      <dt>routes<small>string[], 1–8, unique</small></dt><dd><code>rtc:&lt;fingerprint&gt;@&lt;ip&gt;:&lt;port&gt;</code> or <code>&lt;endpoint&gt;@&lt;ip&gt;:&lt;port&gt;</code> or a bare endpoint; a native or bare route must name this same endpoint; every address outside a visitor's own network.</dd>
+      <dt>communities<small>string[], ≤ 64</small></dt><dd>Community keys, lowercase hex, strictly ascending (sorted, unique). When the node holds more than 64 open communities, the core lists the 64 most recently joined.</dd>
+      <dt>issuedAt<small>integer</small></dt><dd>Unix seconds, within 600 s (<code>ANNOUNCEMENT_SKEW_SECONDS</code>) of the registry's clock either way: a captured announcement cannot be replayed later.</dd>
+      <dt>signature<small>128 hex</small></dt><dd>The transport key's signature over the <a href="#names-statements">announcement statement</a>.</dd>
+    </dl>
+    <p>Any other key (a name, say) makes the body invalid: nothing about a person travels in an announcement. Route rules are the same in both languages (<code>validateRoute</code>, <code>validate_route</code>; see <a href="/wiki/hoi-node/">hoi-node</a> for the address table): loopback, private, link-local, carrier-grade NAT, unspecified and multicast ranges are refused, the documentation ranges are allowed so the shared vectors work.</p>
+    <h3 id="announcements-admit">Admission, in order</h3>
+    <ol class="wk-steps">
+      <li><b>Announcements off</b><p>403 <code>announcements-disabled</code>: <i>This registry lists only operator-configured public nodes.</i> Then a query is 400, a non-JSON type 415, an oversized body 413.</p></li>
+      <li><b>Which origin</b><p>The configured URL's origin, or, with none, the loopback address the connection reached (read from the socket, never a header): <code>http://127.0.0.1:P</code> or <code>http://[::1]:P</code>, and <code>http://localhost:P</code>. With no origin to answer to: 403 <code>announcements-disabled</code>. The Worker, without the public URL, answers to the origin requests reach it at.</p></li>
+      <li><b>For another registry</b><p>A body whose <code>registry</code> is some other origin: 400 <code>wrong-registry</code>.</p></li>
+      <li><b>Verify</b><p>Exact keys, strong endpoint, fresh <code>issuedAt</code>, valid routes and communities, signature: else 400 <code>invalid-announcement</code>.</p></li>
+      <li><b>Allowlist</b><p>With announcers configured (at most 1024), an endpoint not among them: 403 <code>announcer-not-allowed</code>. Verification still comes first.</p></li>
+      <li><b>Refused node</b><p>An endpoint the operator dropped: 403 <code>announcer-refused</code>; nothing is stored.</p></li>
+    </ol>
+    <h3 id="announcements-store">Storage: 30 minutes, 64 nodes</h3>
+    <p>In one transaction the registry deletes announcements whose <code>issuedAt</code> is older than 30 minutes (<code>NODE_TTL_SECONDS = 1800</code>): expired rows are pruned when new announcements arrive. It then upserts the node: a newer announcement replaces the node's routes and communities; an older one changes nothing. <code>first_seen</code> stays with the node's first live announcement. Finally it keeps the first 64 nodes by <code>first_seen</code>, then <code>issued_at</code>, then endpoint (<code>MAX_ANNOUNCED_NODES</code>): when the list is full, the nodes that were there first stay and a newcomer is not kept, so a flood of fresh keys cannot push out the carriers people rely on.</p>
+    <p>The answer is 200 with what discovery now holds for that node, <code>{endpoint, routes, communities, issuedAt}</code>, or the announcement with <code>retained: false</code> when it was not kept. A node unheard of for 30 minutes drops out and frees its place. There is no withdrawal API: stop announcing and the listing lapses. Carriers re-announce every five minutes.</p>
+    <h3 id="announcements-order">Discovery order</h3>
+    <p><code>selectPublicNodes(configured, live, community)</code>: the operator's configured routes always come first (nobody can announce them out of the list); then nodes that announced carrying <code>community</code>; then the other live nodes (newest first). Each group is taken one route per node per round, so a node announcing eight routes cannot crowd out the rest. Duplicates are dropped and the list stops at 16 (<code>MAX_PUBLIC_NODES</code>), which is also the most a client accepts. In allowlist mode only allowed nodes are live; refused nodes never are.</p>
+  </section>
+
+  <section class="wk-sec" id="log">
+    <h2>The log of names</h2>
+    <p>Every registry keeps a public log of each owner-signed claim it retained, in the order it retained them: an append-only Merkle tree in the shape of RFC 6962, whose head the registry signs with its own Ed25519 log key. A registry can still choose what it answers, but it cannot tell two people two keys for one name without logging both, where anyone who reads the log sees it. Entries never change or disappear; a withheld listing's entry is served as its leaf alone.</p>
+    <h3 id="log-entry">Entries</h3>
+    <p>An entry is UTF-8 text with seven lines. For a v1 reservation the protocol and index lines are empty.</p>
+    <div class="wk-bytes" data-title="One log entry (entry text)">
+"hoi name log v1" | 15 B | mute | 3 | fixed first line
+\n | 1 B | mute | 1 |
+version | 1 B | sun | 1 | <code>1</code> or <code>2</code>
+\n | 1 B | mute | 1 |
+name | 1–32 B | coral | 3 | canonical
+\n | 1 B | mute | 1 |
+community | 64 B | mint | 2 | hex key
+
+\n | 1 B | mute | 1 |
+protocolVersion | 0–64 B | sky | 2 | empty for v1
+\n | 1 B | mute | 1 |
+indexVersion | decimal | sky | 2 | empty for v1
+\n | 1 B | mute | 1 |
+signature | 128 B | lilac | 4 | the retained proof, hex
+    </div>
+    <div class="wk-code" data-lang="js" data-title="registry/public/log.js (trimmed)"><pre><code>export function logEntryText({ name, community, proof }) {
+  const v2 = proof.version === 2;
+  return `hoi name log v1\n${proof.version}\n${name}\n${community}\n${v2 ? proof.protocolVersion : ''}\n${v2 ? proof.indexVersion : ''}\n${proof.signature}`;
+}</code></pre></div>
+    <p>The <code>name_log</code> table assigns each entry the next index (<code>SELECT COUNT(*)</code>) and refuses a duplicate text (<code>entry … UNIQUE</code>, inserted <code>WHERE NOT EXISTS</code>). The entry is built from the proof as stored, so an idempotent retry adds nothing. A community that first reserved its name with v1 and then published with v2 has two entries; a refused claim has none.</p>
+    <h3 id="log-tree">Leaves, nodes and the tree</h3>
+    <div class="wk-bytes" data-title="Hashes (SHA-256)">
+0x00 | 1 B | mute | 1 | leaf prefix
+entry text | n B | sun | 5 | UTF-8
+leaf | 32 B | coral | 3 | SHA-256 of the two
+
+0x01 | 1 B | mute | 1 | node prefix
+left | 32 B | sky | 3 | hash of the left subtree
+right | 32 B | sky | 3 | hash of the right subtree
+node | 32 B | coral | 3 | SHA-256 of the three
+    </div>
+    <p>The root of <code>n</code> leaves, <code>MTH(D[n])</code>: the empty tree is <code>SHA-256("")</code> (<code>e3b0c442…b855</code>); one leaf is its own root; otherwise split at <code>k</code>, the largest power of two below <code>n</code>, and hash <code>0x01 ‖ MTH(D[0:k]) ‖ MTH(D[k:n])</code>. An audit path <code>PATH(m, D[n])</code> and a consistency proof <code>PROOF(m, D[n])</code> follow RFC 6962 exactly; the server keeps every leaf hash in memory, caught up from the table on each request, since entries never change.</p>
+    <figure class="wk-fig">
+      <svg viewBox="0 0 680 300" role="img" aria-label="The Merkle tree over seven log entries, with the audit path of entry 3 highlighted">
+        <line class="d-line" x1="360" y1="44" x2="180" y2="92"/>
+        <line class="d-line" x1="360" y1="44" x2="540" y2="92"/>
+        <line class="d-line" x1="180" y1="124" x2="90" y2="172"/>
+        <line class="d-line" x1="180" y1="124" x2="270" y2="172"/>
+        <line class="d-line" x1="540" y1="124" x2="450" y2="172"/>
+        <line class="d-line" x1="540" y1="124" x2="630" y2="252"/>
+        <line class="d-line" x1="90" y1="204" x2="45" y2="252"/>
+        <line class="d-line" x1="90" y1="204" x2="135" y2="252"/>
+        <line class="d-line" x1="270" y1="204" x2="225" y2="252"/>
+        <line class="d-line" x1="270" y1="204" x2="315" y2="252"/>
+        <line class="d-line" x1="450" y1="204" x2="405" y2="252"/>
+        <line class="d-line" x1="450" y1="204" x2="495" y2="252"/>
+        <rect class="d-box" x="295" y="12" width="130" height="32" rx="8"/>
+        <text class="d-sub" x="360" y="32" text-anchor="middle">root, size 7</text>
+        <rect class="d-box" x="120" y="92" width="120" height="32" rx="8"/>
+        <text class="d-sub" x="180" y="112" text-anchor="middle">MTH(0..4)</text>
+        <rect class="d-box acc c-sun" x="480" y="92" width="120" height="32" rx="8"/>
+        <text class="d-sub" x="540" y="112" text-anchor="middle">MTH(4..7)</text>
+        <rect class="d-box acc c-sun" x="40" y="172" width="100" height="32" rx="8"/>
+        <text class="d-sub" x="90" y="192" text-anchor="middle">MTH(0..2)</text>
+        <rect class="d-box" x="220" y="172" width="100" height="32" rx="8"/>
+        <text class="d-sub" x="270" y="192" text-anchor="middle">MTH(2..4)</text>
+        <rect class="d-box" x="400" y="172" width="100" height="32" rx="8"/>
+        <text class="d-sub" x="450" y="192" text-anchor="middle">MTH(4..6)</text>
+        <rect class="d-box" x="10" y="252" width="70" height="32" rx="8"/>
+        <text class="d-sub" x="45" y="272" text-anchor="middle">leaf 0</text>
+        <rect class="d-box" x="100" y="252" width="70" height="32" rx="8"/>
+        <text class="d-sub" x="135" y="272" text-anchor="middle">leaf 1</text>
+        <rect class="d-box acc c-sun" x="190" y="252" width="70" height="32" rx="8"/>
+        <text class="d-sub" x="225" y="272" text-anchor="middle">leaf 2</text>
+        <rect class="d-box acc c-coral" x="280" y="252" width="70" height="32" rx="8"/>
+        <text class="d-sub" x="315" y="272" text-anchor="middle">leaf 3</text>
+        <rect class="d-box" x="370" y="252" width="70" height="32" rx="8"/>
+        <text class="d-sub" x="405" y="272" text-anchor="middle">leaf 4</text>
+        <rect class="d-box" x="460" y="252" width="70" height="32" rx="8"/>
+        <text class="d-sub" x="495" y="272" text-anchor="middle">leaf 5</text>
+        <rect class="d-box" x="595" y="252" width="70" height="32" rx="8"/>
+        <text class="d-sub" x="630" y="272" text-anchor="middle">leaf 6</text>
+      </svg>
+      <figcaption>The tree over the seven entries of <code>core/vectors/name-log.json</code>. Seven splits at four, three at two. The audit path of entry 3 (coral) in the tree of 7 is the three highlighted hashes, in this order: leaf 2, <code>MTH(0..2)</code>, <code>MTH(4..7)</code>.</figcaption>
+    </figure>
+    <h3 id="log-head">The signed head</h3>
+    <div class="wk-bytes" data-title="What the log key signs for a head">
+"hoi name log head v1" | 20 B | mute | 3 | fixed first line
+\n | 1 B | mute | 1 |
+logKey | 64 B | lilac | 3 | hex public key
+\n | 1 B | mute | 1 |
+size | decimal | sun | 2 | entries in the tree
+
+\n | 1 B | mute | 1 |
+root | 64 B | coral | 3 | hex <code>MTH</code>
+\n | 1 B | mute | 1 |
+timestamp | decimal | peach | 3 | Unix seconds when signed
+    </div>
+    <p><code>GET /v2/log/head</code> signs a fresh head on every request: <code>{logKey, size, root, timestamp, signature}</code>. The log key's 32-byte secret is made on first use (<code>log_secret</code>, one row, <code>id = 1</code>) and kept in the database with the names it signs for, so the key moves with the file: hoi-node and the Node service opening the same file produce the same signed head. The key is the registry's own; it never signs names, only heads.</p>
+    <h3 id="log-vector">The vector</h3>
+    <p><code>core/vectors/name-log.json</code> holds seven entry texts (the v1 and v2 claims for <code>garden_1.v2-test</code>, then v1 claims <code>name-2</code> to <code>name-6</code>), their leaves, the root of every prefix from 0 to 7 entries, seven audit paths and nine consistency proofs, one entry with its fields and text, and a head signed with the fixed secret <code>42…42</code> at timestamp 1793800000: log key <code>2152f8d1…81db12</code>, size 7, root <code>4e2fe945…0192db</code>. <code>hoi-node</code>'s <code>log.rs</code> and the JavaScript <code>log.mjs</code> are both held to it.</p>
+  </section>
+
+  <section class="wk-sec" id="verify">
+    <h2>How clients verify</h2>
+    <p>Authority comes from the community key, not from a successful HTTPS response. <code>registry/public/verify.js</code> and <code>registry/public/log.js</code> are shared by the app and the conformance suite and use WebCrypto only. <code>apps/web/src/lib/registry.ts</code> puts them together.</p>
+    <h3 id="verify-read">Reading an answer</h3>
+    <p><code>readRegistryJson</code> refuses a body over 128 KiB (by <code>Content-Length</code> or while streaming) and decodes UTF-8 strictly. Requests go out with <code>credentials: 'omit'</code>, <code>referrerPolicy: 'no-referrer'</code>, <code>cache: 'no-store'</code>, <code>redirect: 'error'</code> and a 10 s timeout. Metadata must say <code>apiVersion</code> 2 and <code>schemaVersion</code> 3 and list at most 16 routes of at most 128 characters; <code>/v2/nodes</code> the same limits.</p>
+    <h3 id="verify-entry">Checking an entry</h3>
+    <p><code>verifyRegistryEntry(value, release)</code>: the name must match <code>^[a-z0-9][a-z0-9._-]{0,31}$</code>, the key 64 lowercase hex, the proof version 1 or 2 with exactly its keys (<code>signature, version</code> or <code>indexVersion, protocolVersion, signature, version</code>). It rebuilds the statement and verifies the Ed25519 signature against the community key. With a release, the listing's versions must equal the proof's (or be null for v1), its flags must be booleans, and the client recomputes <code>compatible</code> itself from the authenticated versions and its own <code>supportedProtocols</code>; <code>indexed</code> is true only if both agree. Anything wrong: <i>The directory entry could not be verified. Use a trusted community invite.</i></p>
+    <h3 id="verify-pins">Pins</h3>
+    <p>The device keeps a trust store in IndexedDB, database <code>hoi-registry-trust-v1</code> version 2, scoped to the registry's URL (absolute, without a trailing slash):</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Trust store">
+      <table>
+        <thead><tr><th>Store</th><th>Key</th><th>Holds</th><th>Rule</th></tr></thead>
+        <tbody>
+          <tr><td><code>names</code></td><td><code>[scope, name]</code></td><td><code>community</code>, <code>publication</code> (<code>{protocolVersion, indexVersion}</code> or null)</td><td>A changed key, a changed publication version, or a downgrade from a publication to a bare reservation stops: <i>This public name has changed since it was verified on this device.</i> A v1 pin may gain a publication.</td></tr>
+          <tr><td><code>logs</code></td><td><code>scope</code></td><td><code>logKey</code>, <code>size</code>, <code>root</code> of the last head checked</td><td><code>advance</code> keeps the larger of the saved and the new head, with the same key, in one transaction, so tabs never step back.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>One read-write transaction compares and saves a whole verified result set; IndexedDB serializes them across tabs. A 404 for a pinned name stops too (<i>This previously verified public name is missing from the directory.</i>). Blocked, full, corrupt or unavailable storage stops discovery rather than falling back to memory; there is no bypass or reset button. Clearing browser data removes the pins.</p>
+    <h3 id="verify-log">Checking the log</h3>
+    <p>Exact lookups and writes (<code>lookupIndexed</code>, <code>lookup</code>, <code>publish</code>, <code>reserve</code>, and the entry a 409 conflict returns) are pinned and then checked against the log. Directory pages are not, one request each; a name is checked when it is opened.</p>
+    <ol class="wk-steps">
+      <li><b>Head</b><p><code>verifiedLogHead</code>: exactly the five keys, hex shapes, safe integers, and a valid Ed25519 signature by the key it names over the head statement.</p></li>
+      <li><b>Against the saved head</b><p>A different log key, a smaller size, or the same size with another root: <i>This registry's public log no longer matches what this device saw before.</i></p></li>
+      <li><b>Consistency</b><p>If the head grew from a saved size above 0, <code>GET /v2/log/consistency?first=OLD&amp;second=NEW</code> and <code>verifyConsistency</code> (RFC 9162 §2.1.4.2; sizes up to 2³⁰, paths up to 64 hashes).</p></li>
+      <li><b>Inclusion</b><p>The leaf of <code>logEntryText(entry)</code>, then <code>GET /v2/log/proof?leaf=…&amp;size=NEW</code> and <code>verifyInclusion</code> (RFC 9162 §2.1.3.2) against the head's root. A missing or wrong path: <i>This registry did not show this name in its public log.</i></p></li>
+      <li><b>Keep</b><p><code>advance(head)</code>.</p></li>
+    </ol>
+    <div class="wk-seq" data-title="Opening c/hiking from a registry">
+lanes: App | Registry | Trust store
+App -> Registry: <code>GET /v2/communities?name=hiking</code>
+Registry --> App: listing with <code>proof</code> v2
+App: verify the community key's signature over the v2 statement
+App: recompute <code>compatible</code> from the signed versions
+App -> Trust store: <code>names</code>: same key and version as before, or a first pin
+Trust store --> App: accepted, or stop: the name changed
+App -> Registry: <code>GET /v2/log/head</code>
+Registry --> App: <code>{logKey, size, root, timestamp, signature}</code>
+App -> Trust store: <code>logs</code>: last head seen
+App -> Registry: <code>GET /v2/log/consistency?first=OLD&amp;second=NEW</code>
+Registry --> App: path; the new tree extends the old one
+App -> Registry: <code>GET /v2/log/proof?leaf=…&amp;size=NEW</code>
+Registry --> App: <code>{index, size, path}</code>
+App: the path leads from the entry's leaf to the signed root
+App -> Trust store: keep the new head
+    </div>
+    <div class="wk-note limit"><b>What pins prove</b><p>Pins detect changes after the first lookup on this device. They are not an independent witness of who first registered a name, and a first lookup trusts the registry's answer as far as the signature and the log can show.</p></div>
+  </section>
+
+  <section class="wk-sec" id="mirrors">
+    <h2>Mirrors and audits</h2>
+    <p>A registry is one participant among others. <code>hoi-node --registry-mirror URL</code> makes a registry hold another's names when that one stops, and audit its log while it runs. Every five minutes (first after 5 s) it:</p>
+    <ol class="wk-steps">
+      <li><b>Checks the other's head</b><p>It must be signed by the key it names, with the same key and no smaller size than last time.</p></li>
+      <li><b>Reads every new entry</b><p>256 per request, up to 10,240 per pass; each text must hash to its leaf and hold a claim a community key signed, exactly as that claim logs; no name may move to another key and no key take a second name (kept in <code>witnessed_names</code>). Every leaf is kept (<code>witnessed_leaves</code>).</p></li>
+      <li><b>Recomputes the root</b><p>Once all leaves are read, it must equal the head's root; the head is saved in <code>witnessed</code>.</p></li>
+      <li><b>Imports</b><p>Pages through <code>/v2/communities?prefix=</code> (50 a page, 40 pages), keeps the listings whose leaf is in the audited log, re-verifies each v2 proof, and publishes it here when the name and key are both still free. A name already taken here stays with the local first claim: both communities exist under their distinct keys, and the app shows both.</p></li>
+    </ol>
+    <p>A registry whose log changed its key, shrank, does not match its head, or moved a name is no longer mirrored, and the node says why once; <code>hoi-node admin registry unwitness URL</code> starts the audit over. Legacy v1 names without a versioned proof are not mirrored, nothing is ever taken over, and announced nodes are not mirrored: a public node announces to each registry it is given.</p>
+  </section>
+
+  <section class="wk-sec" id="release">
+    <h2>Release metadata and compatibility</h2>
+    <p><code>release.json</code> at the repository root defines protocol compatibility and the index edition; every surface is built from it. The registry validates it at startup (an invalid one stops the service before it listens) and, on the Node service and hoi-node, reads it again for each metadata and directory request, so an updated notice or compatibility filter takes effect without a rebuild. A replacement file over 16 KiB, or one that stops validating, fails closed with 503. Changing it does not upgrade old records or installed clients.</p>
+    <dl class="wk-defs">
+      <dt>schemaVersion<small>1</small></dt><dd>The manifest format.</dd>
+      <dt>revision<small>integer &gt; 0</small></dt><dd>Increases with each edit.</dd>
+      <dt>channel<small>preview | stable</small></dt><dd>The release channel.</dd>
+      <dt>protocolVersion<small>string</small></dt><dd>This build's protocol family, among <code>supportedProtocols</code>.</dd>
+      <dt>indexVersion<small>1 to 2³¹−1</small></dt><dd>The index edition listings must match to be compatible.</dd>
+      <dt>supportedProtocols<small>1–16 distinct strings</small></dt><dd>Protocol families a listing may name.</dd>
+      <dt>notice<small>{title ≤ 100, message ≤ 1200}</small></dt><dd>The preview notice people see.</dd>
+    </dl>
+    <p>The checked-in manifest is <code>{"schemaVersion": 1, "revision": 1, "channel": "preview", "protocolVersion": "0.3", "indexVersion": 1, "supportedProtocols": ["0.3"], …}</code>. A carrier mirrors only listings for its own build's protocol and edition (<code>hoi_core::release_versions()</code>).</p>
+  </section>
+
+  <section class="wk-sec" id="limits">
+    <h2>Limits and rate budgets</h2>
+    <p>Three global, in-memory, fixed one-minute windows: reads (every GET, logs and metadata included), name claims (PUT <code>/v1</code> or <code>/v2/communities</code>) and announcements (PUT <code>/v2/nodes</code>). Each has its own counter, so a flood of reads cannot stop names being claimed or carriers announcing. No client identifier is retained, which also means the budgets give no fairness under attack: per-address limits belong at the edge, where the provider already sees addresses (a Cloudflare WAF rule, or nginx <code>limit_req_zone $binary_remote_addr</code>).</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Limits">
+      <table>
+        <thead><tr><th>Limit</th><th>Default</th><th>Node service / Worker</th><th>hoi-node</th></tr></thead>
+        <tbody>
+          <tr><td>Reads a minute</td><td>600</td><td>Read budget</td><td><code>--registry-limits R,·,·</code></td></tr>
+          <tr><td>Name claims a minute</td><td>30</td><td>Claim budget</td><td><code>--registry-limits ·,C,·</code></td></tr>
+          <tr><td>Announcements a minute</td><td>120</td><td>Announcement budget</td><td><code>--registry-limits ·,·,A</code></td></tr>
+          <tr><td>Claim body</td><td>2048 B</td><td>fixed</td><td>fixed</td></tr>
+          <tr><td>Announcement body</td><td>8192 B</td><td>fixed</td><td>fixed</td></tr>
+          <tr><td>Headers</td><td></td><td>Node: 8192 B, 10 s; request 10 s; 100 requests per socket; idle socket 15 s</td><td>16 KiB buffer, 10 s; one request per connection; 30 s per connection; 256 connections</td></tr>
+          <tr><td>Body time</td><td>10 s</td><td>Node: its request timeout; Worker: 408</td><td>408</td></tr>
+          <tr><td>Configured routes</td><td>16</td><td><code>HOI_PUBLIC_NODES</code></td><td><code>--registry-public-node</code></td></tr>
+          <tr><td>Announced nodes kept</td><td>64</td><td>fixed</td><td>fixed</td></tr>
+          <tr><td>Routes and communities per announcement</td><td>8 and 64</td><td>fixed</td><td>fixed</td></tr>
+          <tr><td>Listings per page</td><td>50</td><td>fixed</td><td>fixed</td></tr>
+          <tr><td>Log entries per request</td><td>256</td><td>fixed</td><td>fixed</td></tr>
+          <tr><td>Allowed announcers</td><td>1024</td><td>Announcer allowlist</td><td><code>--registry-announcer</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Over budget answers 429 <code>rate-limited</code> with <code>Retry-After</code>: the seconds left in the minute, rounded up, at least 1. Rate limits must be positive integers or the service refuses to start.</p>
+  </section>
+
+  <section class="wk-sec" id="storage">
+    <h2>The database</h2>
+    <p>Eight STRICT tables, the same in all three implementations. Nothing in them is a post, profile, owner or client address, and there is no access log.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Tables">
+      <table>
+        <thead><tr><th>Table</th><th>Columns</th><th>Holds</th></tr></thead>
+        <tbody>
+          <tr><td><code>communities</code></td><td><code>name</code> PK, <code>community</code> UNIQUE</td><td>the permanent reservations</td></tr>
+          <tr><td><code>community_index</code></td><td><code>community</code> PK → communities, <code>protocol_version</code>, <code>index_version</code> &gt; 0</td><td>immutable index metadata</td></tr>
+          <tr><td><code>community_proofs</code></td><td><code>community</code> → communities, <code>claim_version</code> 1 or 2, <code>signature</code>; PK (community, claim_version)</td><td>owner-signed proofs</td></tr>
+          <tr><td><code>public_nodes</code></td><td><code>endpoint</code> PK, <code>routes</code>, <code>communities</code> (comma-joined), <code>issued_at</code> ≥ 0, <code>first_seen</code></td><td>live announcements</td></tr>
+          <tr><td><code>withheld</code></td><td><code>key</code> PK (a name or a key), <code>withheld_at</code></td><td>the operator's withheld listings</td></tr>
+          <tr><td><code>refused_nodes</code></td><td><code>endpoint</code> PK, <code>refused_at</code></td><td>the operator's refused nodes</td></tr>
+          <tr><td><code>name_log</code></td><td><code>idx</code> PK ≥ 0, <code>name</code>, <code>community</code>, <code>entry</code> UNIQUE</td><td>the log of names</td></tr>
+          <tr><td><code>log_secret</code></td><td><code>id</code> PK = 1, <code>secret</code></td><td>the log key's secret, hex</td></tr>
+          <tr><td><code>witnessed</code>, <code>witnessed_leaves</code>, <code>witnessed_names</code></td><td>per mirrored source: log key, size, root, fault; every leaf; every name and key it showed</td><td>a mirror's audit (hoi-node with <code>--registry-mirror</code> only)</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>The file's version is <code>PRAGMA user_version = 5</code> (<code>DATABASE_VERSION</code>): 4 added the operator's lists, 5 the log. A registry refuses a newer file (<i>This registry database requires a newer registry server.</i>) rather than serve what its operator withheld. Schema 0–2 files from older Node services are upgraded in place without inventing proofs or versions: legacy rows stay reserved, unsigned rows are excluded from current discovery, and their owners retry the signed claim. A schema-3 file gains <code>public_nodes.first_seen</code>. The Node service and hoi-node open it with <code>journal_mode=WAL</code>, <code>synchronous=FULL</code>, <code>busy_timeout=5000</code>, <code>foreign_keys=ON</code>. A Durable Object has no <code>user_version</code>; the Worker keeps its version in a <code>registry_schema</code> table and accepts versions 2 to 5.</p>
+    <div class="wk-note warn"><b>One file per namespace</b><p>Run a single database for a public namespace: independent copies cannot share a uniqueness guarantee. Several processes may share one local SQLite file; do not put it on an unsupported network file system or replicate it with last-write-wins storage. Back it up with SQLite's backup tooling, including committed WAL contents; copying the main file alone while the service runs is not a safe backup. Do not put it under a static website directory.</p></div>
+  </section>
+
+  <section class="wk-sec" id="operator">
+    <h2>Operator tools</h2>
+    <p>An operator can stop serving an identified listing or node without an admin endpoint and without signing anything on a community's behalf. Whoever can run the tools can already read and write the database.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Operator tools">
+      <table>
+        <thead><tr><th></th><th>Withhold a listing</th><th>Drop a node</th><th>See both lists</th></tr></thead>
+        <tbody>
+          <tr><td>Node service</td><td><code>node registry/admin.mjs hide NAME|KEY</code></td><td><code>node registry/admin.mjs drop-node ENDPOINT</code></td><td><code>node registry/admin.mjs list</code></td></tr>
+          <tr><td>hoi-node</td><td><code>hoi-node admin --data DIR registry hide NAME|KEY</code></td><td><code>hoi-node admin --data DIR registry drop-node ENDPOINT</code></td><td><code>hoi-node admin --data DIR registry list</code></td></tr>
+          <tr><td>Worker</td><td>add it to the withheld list</td><td>add it to the refused-nodes list</td><td>the two variables</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p><code>unhide</code> and <code>allow-node</code> undo them. <code>admin.mjs</code> takes <code>--db FILE</code> (default the database file, then <code>hoi-registry.db</code>), refuses to create a missing file (a typo must not make an empty namespace next to the real one), and on any error prints the reason and exits 2. Both shell tools work while the registry runs, which reads the database on every request. A Durable Object's database is reachable from no shell, so the Worker's lists are configuration: comma-separated names, keys or endpoint keys, applied when the new version starts (<code>syncOperatorLists</code> replaces both tables), so removing an entry lifts it.</p>
+    <ul>
+      <li><b>Withholding</b> keeps the reservation: nobody else can claim the name or key (409 <code>withheld</code>), lookups by name or key answer 404 <code>withheld</code> without the mapping, prefix lists and mirrors leave it out, <code>/v2/nodes?community=</code> names no carrier for it, and its log entry is served as a leaf only.</li>
+      <li><b>Dropping a node</b> deletes its announcement and refuses its next ones (403 <code>announcer-refused</code>).</li>
+      <li>Neither touches the community: its key, records and invites stay valid wherever else they are held. Carriers keep what they carry until their own operators act.</li>
+      <li><code>list</code> shows withheld entries (what they cover, since when), refused nodes, and nodes announced now with route and community counts, to build an allowlist from.</li>
+    </ul>
+    <p>A database backup taken before a change still holds the listing as served; a restored backup serves it again until the step is repeated.</p>
+  </section>
+
+  <section class="wk-sec" id="config">
+    <h2>Running one</h2>
+    <h3 id="config-node">The Node service</h3>
+    <p>From the repository root: <code>node registry/server.mjs</code>. The database's parent directory must exist. It prints <code>hoi public name registry listening on HOST:PORT</code> and, with announcements on but no public URL set, a note that they are taken only when signed for this machine's loopback address. SIGINT and SIGTERM close it.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Node service environment">
+      <table>
+        <thead><tr><th>Setting</th><th>Type</th><th>Default</th><th>Effect</th></tr></thead>
+        <tbody>
+          <tr><td>Listen address</td><td>address</td><td><code>127.0.0.1</code> (image: <code>0.0.0.0</code>)</td><td>listen address</td></tr>
+          <tr><td>Listen port</td><td>1–65535</td><td><code>7845</code></td><td>listen port</td></tr>
+          <tr><td>Database file</td><td>file</td><td><code>hoi-registry.db</code> (image: <code>/data/community-names.db</code>)</td><td>the namespace</td></tr>
+          <tr><td>Allowed browser origins</td><td>comma-separated origins</td><td>empty (browsers refused)</td><td>allowed browser origins</td></tr>
+          <tr><td>Public URL</td><td>URL</td><td>none</td><td>the public URL carriers are given; only its origin counts</td></tr>
+          <tr><td>Announcements switch</td><td><code>on</code> | <code>off</code></td><td><code>on</code></td><td>take node announcements</td></tr>
+          <tr><td>Announcer allowlist</td><td>comma-separated endpoint keys</td><td>none (any)</td><td>allowlist mode</td></tr>
+          <tr><td><code>HOI_PUBLIC_NODES</code></td><td>JSON array</td><td><code>[]</code></td><td>routes listed first, at most 16</td></tr>
+          <tr><td><code>HOI_APP_URL</code></td><td>URL</td><td><code>https://hoi.sh/app/</code></td><td><code>appUrl</code> in the metadata</td></tr>
+          <tr><td>Read budget</td><td>integer &gt; 0</td><td>600</td><td>read budget</td></tr>
+          <tr><td>Claim budget</td><td>integer &gt; 0</td><td>30</td><td>claim budget</td></tr>
+          <tr><td>Announcement budget</td><td>integer &gt; 0</td><td>120</td><td>announcement budget</td></tr>
+          <tr><td><code>HOI_RELEASE_CONFIG</code></td><td>file</td><td>the repository's <code>release.json</code></td><td>a replacement release manifest, read per request</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Each setting is an environment variable; <a href="{{REPO_URL}}/blob/main/registry/README.md">registry/README.md</a> names them. Put a TLS reverse proxy in front of the loopback listener for production, and turn off access logs and request-body capture on it if the deployment must keep no request metadata. <code>createRegistryServer({ allowPrivateRoutesForTests: true })</code> is the one way to make the Node service accept loopback routes in announcements, for an end-to-end test on one machine; it is an option of the function only, never read from the environment.</p>
+    <h3 id="config-docker">The container</h3>
+    <p><code>registry/Dockerfile</code> builds on <code>node:24-slim</code> pinned by digest, runs as the unprivileged <code>node</code> user (UID 1000), sets the listen address to <code>0.0.0.0</code>, the port to <code>7845</code> and the database to <code>/data/community-names.db</code>, exposes 7845, declares the volume <code>/data</code> and runs <code>node registry/server.mjs</code>. It copies <code>release.json</code>, <code>scripts/release-config.mjs</code>, <code>scripts/release-schema.mjs</code> and <code>registry/server.mjs</code>, <code>protocol.mjs</code>, <code>store.mjs</code>, <code>admin.mjs</code>. Inside it, <code>docker exec hoi-registry node registry/admin.mjs list</code> runs the operator's tool.</p>
+    <div class="wk-note limit"><b>Module list</b><p><code>server.mjs</code> and <code>store.mjs</code> also import <code>registry/log.mjs</code> and <code>registry/public/log.js</code>, which the Dockerfile as checked in does not copy.</p></div>
+    <div class="wk-code" data-lang="sh" data-title="registry/README.md (trimmed)"><pre><code>docker build -f registry/Dockerfile -t hoi-registry .
+docker run --name hoi-registry --restart unless-stopped \
+  --read-only --cap-drop ALL --security-opt no-new-privileges \
+  -p 127.0.0.1:7845:7845 -v hoi-registry-data:/data \
+  hoi-registry
+# plus the allowed browser origins and the public URL, as environment
+# variables named in registry/README.md</code></pre></div>
+    <h3 id="config-worker">The Worker</h3>
+    <p><code>registry/wrangler.toml</code>: name <code>hoi-registry</code>, main <code>worker.mjs</code>, <code>compatibility_date = "2026-10-01"</code>, <code>nodejs_compat</code>, observability disabled, one Durable Object binding <code>REGISTRY</code> of class <code>CommunityRegistry</code> (migration <code>registry-v1</code>, a SQLite class). The fetch handler routes only the API paths under <code>/registry</code> to the single object and answers 404 to the rest; it serves no website.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Worker configuration">
+      <table>
+        <thead><tr><th>Setting</th><th>Default</th><th>Effect</th></tr></thead>
+        <tbody>
+          <tr><td>Allowed browser origins</td><td>empty</td><td>allowed browser origins (its own origin is always allowed)</td></tr>
+          <tr><td>Public URL</td><td>the origin requests reach</td><td>the origin announcements must name; set it when carriers are given another address for the same Worker</td></tr>
+          <tr><td>Announcements switch</td><td><code>on</code></td><td><code>on</code> or <code>off</code></td></tr>
+          <tr><td>Announcer allowlist</td><td>none</td><td>allowlist mode</td></tr>
+          <tr><td><code>HOI_PUBLIC_NODES</code></td><td><code>[]</code></td><td>configured routes</td></tr>
+          <tr><td><code>HOI_APP_URL</code></td><td>its own origin's <code>/app/</code></td><td><code>appUrl</code></td></tr>
+          <tr><td>Withheld list</td><td>empty</td><td>withheld names or keys, comma-separated; set as a secret (<code>wrangler secret put</code>) so the list is not published with the code, or as a variable</td></tr>
+          <tr><td>Refused-nodes list</td><td>empty</td><td>refused endpoint keys</td></tr>
+          <tr><td>the three <code>…_PER_MINUTE</code> budgets</td><td>600, 30, 120</td><td>as the Node service</td></tr>
+          <tr><td>Private-routes switch</td><td>must be unset</td><td>if set at all, the Worker refuses to start: it is reachable from everywhere, and its routes are dialed by every visitor</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 id="config-node-role">hoi-node</h3>
+    <p><code>hoi-node --public --registry 127.0.0.1:7845 --registry-url https://registry.example --registry-origin https://hoi.sh --registry-origin tauri://localhost</code>. Every option is on the <a href="/wiki/hoi-node/">hoi-node</a> page; adding <code>--index</code> with the registry's own public URL makes the node announce to and carry from its own registry, as the installers' <code>registry</code> role does (<a href="/wiki/deploy/">Deploying &amp; hosting</a>).</p>
+    <h3 id="config-apps">Connecting the apps</h3>
+    <p>Every build defaults to no registry, and the project's own deployment pins it empty. A copy of the app uses one only when built with the registry address (HTTPS, or HTTP on loopback; no credentials, query or fragment); the web build then allows that exact origin in its content security policy, and the desktop scripts add it to the native policy. All builds sharing a namespace must use the same registry, and its the allowed browser origins must list their origins. The app sends the public name, community key, versions and the public proof; never cookies, tokens, profile names, posts or member routes. Builds without a registry keep names local and unregistered.</p>
+  </section>
+
+  <section class="wk-sec" id="conformance">
+    <h2>Conformance and tests</h2>
+    <p><code>registry/conformance.mjs</code> drives a registry over <code>fetch</code> only, never its database, with a random prefix on every name so runs never collide. It exports four suites:</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Conformance suites">
+      <table>
+        <thead><tr><th>Suite</th><th>Covers</th><th>Run against</th></tr></thead>
+        <tbody>
+          <tr><td><code>runConformance(root, {origins, clock, advance})</code></td><td>headers and the API-only surface (404s, 405s with <code>Allow</code>); v1 claims, first claim wins, idempotent retries; prefix discovery, ordering, literal <code>_</code>; v2 publications, immutable metadata, filtering before pagination, cursors; the shared vectors; CORS and preflight; tracker reads with <code>*</code>; request bounds (413, 415, 400); announcements: signed for this registry, <code>wrong-registry</code>, the old statement refused, carriers first, ±700 s refused, private addresses refused, native routes must name the signer, older replays ignored, newer ones replace; with <code>advance</code>, the 31-minute expiry</td><td>Node service, hoi-node</td></tr>
+          <tr><td><code>runAllowlistConformance(root)</code></td><td>only <code>ALLOWED_ANNOUNCER</code> (key from 32 bytes of 0x61) is listed; others get 403 <code>announcer-not-allowed</code>; a bad signature is still 400</td><td>Node service, hoi-node, Worker</td></tr>
+          <tr><td><code>runOperatorConformance(root, {hide, unhide, dropNode})</code></td><td>withheld by name and by key: 404 without the key, absent from v1 and v2 prefixes, 409 on claims, no carrier named; listed again after unhide; a dropped node unlisted and refused</td><td>Node service, hoi-node, Worker</td></tr>
+          <tr><td><code>runLogConformance(root, {hide})</code></td><td>the head verifies; existing names are in it; a reservation and a publication are one entry each, in order, whatever the retries; a refused claim is not logged; proofs 404 outside their tree; consistency between heads; entries and leaves readable by any origin; withheld texts null, leaves kept; bounds; PUT is 405</td><td>Node service, hoi-node, Worker</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Test scripts">
+      <table>
+        <thead><tr><th>Command</th><th>What it proves</th></tr></thead>
+        <tbody>
+          <tr><td><code>node --test registry/server.test.mjs registry/worker.test.mjs</code></td><td>the Node service and the Worker: competing reservations, retries, restarts, legacy migrations, signatures, compatibility, pagination, schema, CORS, rate and body limits, allowlist mode, operator tools</td></tr>
+          <tr><td><code>node scripts/e2e-registry-node.mjs</code></td><td>a real <code>hoi-node --public --registry 127.0.0.1:0</code> passes all four suites with the operator's tools run from a shell while it serves; then the Node service opens the <code>registry.db</code> it left: <code>user_version</code> 5, the same eight tables, names, proofs, metadata, operator lists, and an identical signed log head. A second node runs in allowlist mode.</td></tr>
+          <tr><td><code>node scripts/e2e-registry.mjs</code></td><td>the compiled WASM core makes v1 and v2 claims for two competing keys against a real HTTP registry: one 200, one 409; retries idempotent; proofs survive a reload</td></tr>
+          <tr><td><code>node scripts/e2e-registry-browser.mjs</code></td><td>a real browser publishes a community, sees a conflict blocked, retries the same key, joins publicly, and handles an incompatible protocol</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="wk-sec" id="next">
+    <h2>Read next</h2>
+    <div class="wk-cards">
+      <a class="wk-card g-sun" href="/wiki/hoi-node/"><i></i><b>hoi-node</b><span>The registry role, mirrors and the carrier loop that announces to a registry.</span></a>
+      <a class="wk-card g-sky" href="/wiki/discovery/"><i></i><b>Discovery</b><span>How apps find communities with and without a registry.</span></a>
+      <a class="wk-card g-mint" href="/wiki/deploy/"><i></i><b>Deploying &amp; hosting</b><span>Installing a registry with Caddy, and what the static site never runs.</span></a>
+      <a class="wk-card g-coral" href="/wiki/vectors/"><i></i><b>Test vectors</b><span>The registration, publication, announcement and log vectors.</span></a>
+    </div>
+  </section>
+</article>
+<!-- @wiki-close -->
+<!-- @include footer.html -->
+<script type="module" src="/src/pages/wiki.ts"></script>
+</body>
+</html>

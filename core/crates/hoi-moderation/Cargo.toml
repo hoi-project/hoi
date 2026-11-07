@@ -1,0 +1,16 @@
+[package]
+name = "hoi-moderation"
+description = "Community state from the signed moderation ledger (PROTOCOL.md §5, §6)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+hoi-types.workspace = true
+hoi-crypto.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

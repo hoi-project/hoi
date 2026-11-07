@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <!-- @include head.html title="Run a relay · hoi.sh" description="One switch in the hoi desktop app keeps your communities reachable while members are away: encrypted on the way, signed so nobody can change anything, no logs." -->
+</head>
+<body>
+<!-- @include header.html nav="site" -->
+
+<main id="main">
+<section class="wrap page-hero">
+  <span class="eyebrow">one switch · no logs</span>
+  <h1>Run a relay. <span class="blue">Keep communities reachable.</span></h1>
+  <p class="lead">Keep a public community available when its members are away. Your computer can carry its signed posts and attachments for other devices to catch up. Public carriers can read the public content they hold; every receiving device checks its authorship and rules. Private communities use a separate encrypted relay, with readable content and keys staying on invited devices.</p>
+</section>
+
+<section class="wrap two" aria-labelledby="switch-title">
+  <div class="stack">
+    <h2 id="switch-title" class="sr-only">What the switch does</h2>
+    <div class="rows">
+      <div class="row">
+        <div class="row-k plain"><span>Lets members in</span></div>
+        <div class="row-v"><p>Members' browsers reach it over WebRTC and members' computers over QUIC, from the routes in their invites. Every invite carries the routes of members who were around lately, so anyone whose computer is on can let a newcomer in. Only the communities your computer is in pass through it.</p></div>
+      </div>
+      <div class="row">
+        <div class="row-k plain"><span>Can't be tampered with</span></div>
+        <div class="row-v"><p>Every connection is encrypted on the way (TLS 1.3 or DTLS), so nobody watching the network reads anything. Every post, vote and decision is signed by its author and checked by every device, yours included: your computer can pass things on, never change them.</p></div>
+      </div>
+      <div class="row">
+        <div class="row-k plain"><span>Shows what passes, keeps no logs</span></div>
+        <div class="row-v"><p>The app shows how much passed through and when, per connection and minute by minute, and how it was encrypted. Never what a post says, never an address, nothing written down: it starts over when the app does. <strong>0 bytes logged, ever.</strong></p></div>
+      </div>
+      <div class="row">
+        <div class="row-k plain"><span>Knows its limits</span></div>
+        <div class="row-v"><p>You pick a daily cap; relaying naps until tomorrow when it's reached. Off means only your own devices connect. Blocking single devices comes with the packet relay below.</p></div>
+      </div>
+      <div class="row">
+        <div class="row-k plain"><span>Is on by default, politely</span></div>
+        <div class="row-v"><p>The desktop app keeps your communities reachable from the start, tells you so on its first run, and can be switched off any time.</p></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="stack">
+    <div class="frame" id="relay-demo">
+      <div class="set">
+        <span class="l" id="sw-label">Keep communities reachable</span>
+        <span class="h">Members' browsers and computers may connect here and catch up. Encrypted on the way, signed, no logs. Pause anytime.</span>
+        <span class="v"><span class="tag t-soft nojs-only">a switch in the app</span><button type="button" class="sw js-only" role="switch" aria-checked="false" aria-labelledby="sw-label" id="relaySw"><i></i></button></span>
+      </div>
+      <div class="set">
+        <span class="l">Daily cap</span>
+        <span class="h">Relaying takes a nap for the day once you hit this.</span>
+        <span class="v">5 GB</span>
+      </div>
+      <div class="set">
+        <span class="l">Status</span>
+        <span class="h">What your friends see as the relay their app rides on.</span>
+        <span class="v"><span class="relay-pill" id="relayPill"><i></i><span id="relayText">relaying is off</span></span></span>
+      </div>
+    </div>
+    <div class="stats" aria-label="Relay stats (a demo)">
+      <div class="frame stat"><b id="statPeers">41</b><span>peers right now</span></div>
+      <div class="frame stat"><b id="statHelped">0</b><span>friends' phones &amp; browsers helped</span></div>
+      <div class="frame stat sunny"><b>0</b><span>bytes logged. ever.</span></div>
+    </div>
+
+    <div class="frame notice" id="notice" aria-labelledby="notice-title">
+      <h3 id="notice-title">Before you turn on relaying</h3>
+      <ul>
+        <li><span>1</span><span>Your node stores and serves community records. Public records are readable by the peers carrying them. Transport encryption protects the connection; it does not make public content private.</span></li>
+        <li><span>2</span><span>To pass packets along, your computer sees <strong>the IP addresses of the devices it helps</strong>, and when and how much they send. The peer code does not write access logs. Public connection routes can be shared in invites or registry announcements; network infrastructure may retain connection metadata.</span></li>
+        <li><span>3</span><span>You choose a daily cap. When it's reached, relaying naps until tomorrow.</span></li>
+        <li><span>4</span><span>A signature proves who wrote something, not that it belongs anywhere. Community moderation decides what a community keeps; what your own node carries is up to you.</span></li>
+        <li><span>5</span><span>You can switch relaying off at any time. Stored community records remain on your device until removed or expired; stopping the node does not erase its database.</span></li>
+      </ul>
+      <div class="btnrow js-only"><button type="button" class="pill pill-ink pill-sm" id="noticeOn">Turn it on</button><button type="button" class="pill pill-sm" id="noticeOff">Not now</button></div>
+    </div>
+    <p class="aside js-only">This one's a demo. The real switch lives in the desktop app, in the companion and under <em>You → Connection</em>.</p>
+  </div>
+</section>
+
+<section class="section" id="block" aria-labelledby="block-title">
+  <div class="wrap two">
+    <div class="section-head">
+      <span class="eyebrow">next · the packet relay</span>
+      <h2 id="block-title">Block a node id. Done.</h2>
+      <p class="lead">Next comes a packet relay inside the app, for computers that can't reach each other directly: it passes along QUIC packets it can't read at all. Running one means you pass along traffic you can't see, so you may one day hear from someone who says a device behind your relay misbehaved. You'll act on it without reading anything:</p>
+    </div>
+    <div class="stack">
+      <div class="rows">
+        <div class="row"><div class="row-k"><span class="num">1</span><span>Find the node id</span></div><div class="row-v"><p>A credible complaint names the device: a long id like <code>7c1e0f9a…</code>, plus when and what happened.</p></div></div>
+        <div class="row"><div class="row-k"><span class="num fill-mint">2</span><span>Block it</span></div><div class="row-v"><p>Paste it under <em>Relay → Blocked</em> with a short note to yourself. Your relay stops passing packets to and from that device right away.</p></div></div>
+        <div class="row"><div class="row-k"><span class="num fill-sky">3</span><span>That's all</span></div><div class="row-v"><p>No packet inspection, no records of past traffic: there aren't any. Unblock whenever you like.</p></div></div>
+      </div>
+      <div class="frame">
+        <div class="kv-title"><span>Relay → Blocked</span><span class="tag t-soft">2 node ids</span></div>
+        <div class="kv blocked">
+          <div><span class="mono ink">7c1e·0f9a·b2d4·61ce</span><span class="tag t-peach">blocked</span><span class="kv-h">complaint from my hosting provider · 2 Oct</span></div>
+          <div><span class="mono ink">e22b·91d0·4a7f·0c13</span><span class="tag t-peach">blocked</span><span class="kv-h">hammered the cap three days running · 14 Oct</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section soft" id="home-node" aria-labelledby="home-title">
+  <div class="wrap two">
+    <div class="section-head">
+      <span class="eyebrow">home node</span>
+      <h2 id="home-title">Your desktop looks after your phone.</h2>
+      <p class="lead">Phones can't keep connections open in the background, and browsers can't take connections at all. So your desktop, or a <a href="#node">hoi-node</a>, keeps your communities in sync and serves your phone and browser whenever they wake up. It's yours, it's at home, and nobody else is involved. A browser on the same computer pairs with one click, a phone with one scan: it reaches your computer over your Wi-Fi with WebRTC, encrypted, with no certificate to buy and no server in between.</p>
+    </div>
+    <div class="stack">
+      <div class="frame pair">
+        <svg viewBox="0 0 28 28" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="1.6"><rect x="1.5" y="1.5" width="7" height="7" rx="1.5"/><rect x="19.5" y="1.5" width="7" height="7" rx="1.5"/><rect x="1.5" y="19.5" width="7" height="7" rx="1.5"/></g><g fill="currentColor"><rect x="4" y="4" width="2" height="2"/><rect x="22" y="4" width="2" height="2"/><rect x="4" y="22" width="2" height="2"/><rect x="11" y="2" width="2" height="2"/><rect x="14" y="5" width="2" height="2"/><rect x="11" y="8" width="2" height="2"/><rect x="2" y="12" width="2" height="2"/><rect x="6" y="14" width="2" height="2"/><rect x="11" y="12" width="3" height="3"/><rect x="16" y="11" width="2" height="2"/><rect x="20" y="12" width="2" height="2"/><rect x="24" y="14" width="2" height="2"/><rect x="13" y="17" width="2" height="2"/><rect x="11" y="21" width="2" height="2"/><rect x="14" y="24" width="2" height="2"/><rect x="18" y="19" width="2" height="2"/><rect x="22" y="22" width="3" height="3"/><rect x="19" y="25" width="2" height="2"/><rect x="25" y="19" width="2" height="2"/></g><circle cx="14" cy="14" r="2.6" fill="#FF6B4A"/></svg>
+        <div class="stack gap-8">
+          <b>Pair a phone or browser</b>
+          <span class="muted fs-15">Scan it with your phone's camera, or let the app open it in your browser.</span>
+          <span class="keybox">https://hoi.sh/app/#/pair?u=ws://127.0.0.1:7842&amp;t=&lt;pairing token&gt;&amp;n=&lt;name&gt;&amp;w=&lt;certificate fingerprint&gt;@&lt;address&gt;</span>
+        </div>
+      </div>
+      <div class="rows">
+        <div class="row"><div class="row-k"><span class="num">1</span><span>On the desktop</span></div><div class="row-v"><p>The companion (or <em>You → Connection</em>) shows a QR code and an <em>Open hoi in my browser</em> button. <code>hoi-node</code> prints the same link when it starts.</p></div></div>
+        <div class="row"><div class="row-k"><span class="num fill-mint">2</span><span>On the phone</span></div><div class="row-v"><p>Point the camera at the code and tap <em>Connect</em>. The link carries the node's addresses, its certificate's fingerprint and a pairing token, nothing else. Tap <em>Link this phone</em> and compare four digits with your computer to give it your key.</p></div></div>
+        <div class="row"><div class="row-k"><span class="num fill-lilac">3</span><span>That's it</span></div><div class="row-v"><p>The pill at the top now says <em>via</em> your computer's name. A wrong token is turned away at the door, and a new pairing link makes the old one stop working. Each device keeps a key of its own, blessed by yours; you can revoke any of them under <em>You → Your devices</em>.</p></div></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="node" aria-labelledby="node-title">
+  <div class="wrap two">
+    <div class="section-head">
+      <span class="eyebrow">hoi-node · build it today</span>
+      <h2 id="node-title">A peer node with no website.</h2>
+      <p class="lead">Anyone can run the same peer software on their own machine. Public mode accepts and provides peer connections without a website, user accounts or a personal-data sign-up form. The static client connects directly to it. It stores public content, so this is more than temporary packet forwarding. The repository includes a Dockerfile and self-hosting instructions; <code>--peer-only</code> disables the paired-device control listener.</p>
+    </div>
+    <div class="stack">
+      <div class="rows">
+        <div class="row"><div class="row-k plain"><span>Home node</span></div><div class="row-v"><p>Keeps your communities warm and serves your phone and browser.</p></div></div>
+        <div class="row"><div class="row-k plain"><span>Pinner</span></div><div class="row-v"><p>Holds a community's whole live window so newcomers can catch up from it. Moderators pin by default; anyone can. <a href="/communities/">What pinners are responsible for</a>.</p></div></div>
+        <div class="row"><div class="row-k plain"><span>Keeps them reachable</span></div><div class="row-v"><p>Members' browsers catch up from it over WebRTC on UDP 7844: on a VPS with a public address, no domain and no certificate needed. Same rules as the switch: no logs, a daily cap; <code>--no-relay</code> turns it off.</p></div></div>
+        <div class="row"><div class="row-k plain"><span>A public node</span></div><div class="row-v"><p>Every home node is one unless you start it with <code>--no-public-relay</code>: it carries open communities for anyone who asks, tells whoever connects about the other public nodes it reached, and prints a link anyone can open to find what it carries. Nobody runs a directory: a node you keep on is where people find communities.</p></div></div>
+      </div>
+      <div class="code">
+        <div class="code-h"><span>terminal</span><span class="tag t-mint">works today</span></div>
+        <pre><code><span class="c"># needs Rust stable; from the repository root</span>
+cargo run --release -p hoi-node -- \
+  --data ~/hoi-node --listen 127.0.0.1:7842 \
+  --name "lena's pi" --rtc-port 7844
+<span class="c"># writes a pairing link for your phone, and prints a node link to share</span></code></pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="wrap pad-bottom">
+  <div class="cta">
+    <h2>Flip the switch. Your friends' phones will thank you.</h2>
+    <div class="btnrow"><a href="/download/" class="pill pill-sun">Get the desktop app</a><a href="/protocol/#relays" class="pill pill-ghost">How relays work</a></div>
+  </div>
+</section>
+</main>
+
+<!-- @include footer.html -->
+<script type="module" src="/src/pages/relay.ts"></script>
+</body>
+</html>

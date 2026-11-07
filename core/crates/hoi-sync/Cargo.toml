@@ -1,0 +1,14 @@
+[package]
+name = "hoi-sync"
+description = "Sync messages between hoi nodes: hello, have/want set difference, records."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+hoi-types.workspace = true
+# Salted community hashes in hellos; already in the tree through hoi-types.
+blake3.workspace = true

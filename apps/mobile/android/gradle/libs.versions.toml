@@ -1,0 +1,22 @@
+# Mid-2025 releases known to work together. Android Studio's upgrade assistant bumps them.
+[versions]
+agp = "8.11.1"
+kotlin = "2.2.0"
+composeBom = "2025.07.00"
+coroutines = "1.10.2"
+jna = "5.17.0"
+annotation = "1.9.1"
+
+[libraries]
+jna = { module = "net.java.dev.jna:jna", version.ref = "jna" }
+androidx-annotation = { module = "androidx.annotation:annotation", version.ref = "annotation" }
+kotlinx-coroutines-android = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-android", version.ref = "coroutines" }
+androidx-compose-bom = { module = "androidx.compose:compose-bom", version.ref = "composeBom" }
+androidx-compose-ui = { module = "androidx.compose.ui:ui" }
+androidx-compose-foundation = { module = "androidx.compose.foundation:foundation" }
+androidx-compose-material3 = { module = "androidx.compose.material3:material3" }
+
+[plugins]
+android-library = { id = "com.android.library", version.ref = "agp" }
+kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
+kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }

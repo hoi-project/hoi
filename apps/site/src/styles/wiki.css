@@ -1,0 +1,444 @@
+/* The wiki: a documentation shell in the spirit of anime.js's docs (a dark stage, colour-coded
+   sections, monospace chrome, live demos), built from hoi's own tokens and parts.
+   Wiki pages set data-theme="dark" on <html>, so tokens.css gives the dark palette everywhere.
+   Like site.css, nothing here sets an inline style: the CSP forbids them. */
+
+body.wiki { background: var(--bg) }
+.wiki {
+  --stage: #0E0E12;
+  --code: #111116;
+  --edge: rgba(244, 242, 234, .09);
+  --text: #D9D7CE;
+  --accent: var(--sun);
+}
+.g-sun { --accent: var(--sun) } .g-coral { --accent: var(--coral) } .g-peach { --accent: var(--peach) }
+.g-mint { --accent: var(--mint) } .g-sky { --accent: var(--sky) } .g-lilac { --accent: var(--lilac) }
+.g-cobalt { --accent: var(--cobalt) }
+.c-sun { --c: var(--sun) } .c-coral { --c: var(--coral) } .c-peach { --c: var(--peach) } .c-mint { --c: var(--mint) }
+.c-sky { --c: var(--sky) } .c-lilac { --c: var(--lilac) } .c-cobalt { --c: var(--cobalt) } .c-mute { --c: var(--mute) }
+
+/* ---------- layout ---------- */
+.wk { display: grid; grid-template-columns: 276px minmax(0, 1fr) 236px; max-width: 1520px; margin: 0 auto; min-height: calc(100vh - 74px) }
+.wk-side { position: sticky; top: calc(74px + env(safe-area-inset-top, 0px)); align-self: start; height: calc(100vh - 74px - env(safe-area-inset-top, 0px)); overflow-y: auto; overscroll-behavior: contain; border-right: 1px solid var(--edge); padding: 22px 14px 64px 18px; scrollbar-width: thin; scrollbar-color: var(--line) transparent }
+.wk-main { min-width: 0; padding: clamp(28px, 4vw, 48px) clamp(16px, 4vw, 64px) 96px; outline: 0 }
+.wk-doc { max-width: 860px; margin: 0 auto; color: var(--text) }
+.wk-doc.wide { max-width: 1120px }
+.wk-toc { position: sticky; top: calc(74px + env(safe-area-inset-top, 0px)); align-self: start; max-height: calc(100vh - 74px); overflow-y: auto; padding: 48px 18px 40px 6px; scrollbar-width: thin; scrollbar-color: var(--line) transparent }
+.wk-menu { display: none }
+@media (max-width: 1260px) { .wk { grid-template-columns: 256px minmax(0, 1fr) } .wk-toc { display: none } }
+@media (max-width: 900px) {
+  .wk { grid-template-columns: minmax(0, 1fr) }
+  .wk-side { display: none }
+  .wk-menu { display: block }
+}
+/* Full-width pages (the playground) give up the right column. */
+.wk.full { grid-template-columns: 276px minmax(0, 1fr) }
+@media (max-width: 900px) { .wk.full { grid-template-columns: minmax(0, 1fr) } }
+
+/* ---------- sidebar ---------- */
+.wk-nav { display: flex; flex-direction: column; gap: 22px; font-size: 14.5px }
+.wk-group-t { display: flex; align-items: center; gap: 9px; margin: 0 0 6px; font-family: var(--mono); font-size: 11px; font-weight: 500; letter-spacing: .14em; text-transform: uppercase; color: var(--mute) }
+.wk-group-t i { width: 9px; height: 9px; border-radius: 2px; background: var(--accent); display: inline-block; transform: rotate(45deg); flex: none }
+.wk-group ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; border-left: 1px solid var(--edge) }
+.wk-group a { display: flex; align-items: center; min-height: 32px; padding: 4px 10px 4px 14px; margin-left: -1px; border-left: 2px solid transparent; color: var(--mute); font-weight: 600; line-height: 1.25; transition: color .15s, border-color .15s, background .15s }
+.wk-group a:hover { color: var(--ink); border-left-color: var(--line) }
+.wk-group a[aria-current="page"] { color: var(--accent); border-left-color: var(--accent); background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 12%, transparent), transparent 80%) }
+.wk-search-btn { width: 100%; display: flex; align-items: center; gap: 10px; min-height: 40px; padding: 0 10px 0 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); color: var(--mute); font-family: var(--mono); font-size: 12.5px; text-align: left; transition: border-color .15s, color .15s }
+.wk-search-btn:hover { border-color: var(--mute); color: var(--ink) }
+.wk-search-btn span:nth-child(2) { flex: 1 }
+.wk-search-i { width: 13px; height: 13px; border: 2px solid currentColor; border-radius: 50%; position: relative; flex: none }
+.wk-search-i::after { content: ""; position: absolute; width: 2px; height: 6px; background: currentColor; right: -4px; bottom: -5px; transform: rotate(-45deg); border-radius: 1px }
+kbd { font-family: var(--mono); font-size: 11px; padding: 1px 6px; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 6px; color: var(--mute); background: var(--soft) }
+
+/* Phone menu: the same sidebar inside a <details>, so it needs no script. */
+.wk-menu { margin: -8px 0 26px; border: 1px solid var(--line); border-radius: 16px; background: var(--card) }
+.wk-menu summary { display: flex; align-items: center; gap: 12px; min-height: 52px; padding: 6px 16px; cursor: pointer; list-style: none; font-weight: 700 }
+.wk-menu summary::-webkit-details-marker { display: none }
+.wk-menu summary::after { content: ""; margin-left: auto; width: 9px; height: 9px; border-right: 2px solid var(--ink); border-bottom: 2px solid var(--ink); transform: rotate(45deg) translateY(-3px); transition: transform .2s; flex: none }
+.wk-menu[open] summary::after { transform: rotate(-135deg) translateY(-2px) }
+.wk-menu-k { font-family: var(--mono); font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: var(--accent); flex: none }
+.wk-menu-v { color: var(--ink); font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0 }
+.wk-menu .wk-nav { padding: 8px 16px 18px; border-top: 1px solid var(--edge) }
+.wk-menu .wk-group a { min-height: 44px; font-size: 15.5px }
+.wk-menu .wk-search-btn { min-height: 46px }
+
+/* ---------- table of contents ---------- */
+.wk-toc-t { margin: 0 0 10px; font-family: var(--mono); font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: var(--mute) }
+.wk-toc ol { list-style: none; margin: 0; padding: 0; border-left: 1px solid var(--edge) }
+.wk-toc a { display: block; padding: 4px 8px 4px 12px; margin-left: -1px; border-left: 2px solid transparent; color: var(--mute); font-size: 13px; line-height: 1.35; transition: color .15s, border-color .15s }
+.wk-toc li.l3 a { padding-left: 24px; font-size: 12.5px }
+.wk-toc a:hover { color: var(--ink) }
+.wk-toc a.on { color: var(--accent); border-left-color: var(--accent) }
+
+/* ---------- page head ---------- */
+.wk-doc .wk-crumbs ol { list-style: none; margin: 0 0 18px; padding: 0; display: flex; flex-direction: row; flex-wrap: wrap; align-items: center; gap: 6px; font-family: var(--mono); font-size: 12px; color: var(--mute) }
+.wk-doc .wk-crumbs li { font-size: 12px; line-height: 1.4 }
+.wk-crumbs li + li::before { content: "/"; margin-right: 6px; color: var(--line) }
+.wk-doc .wk-crumbs a { color: var(--accent); display: inline-flex; min-height: 24px; align-items: center; text-decoration: none; font-weight: 500 }
+.wk-doc .wk-crumbs a:hover { text-decoration: underline }
+.wk-crumbs [aria-current] { color: var(--ink) }
+/* Phones: the crumb is a real 44px target; the source chips flow as text, so they are links in a line. */
+@media (max-width: 900px) {
+  .wk-doc .wk-crumbs a { min-height: 44px }
+  .wk-doc .wk-src-list { display: block; line-height: 2.4 }
+  .wk-doc .wk-src-list a { display: inline; margin-right: 4px; white-space: normal }
+}
+.wk-doc h1 { font-size: clamp(40px, 6.2vw, 78px); line-height: .95; letter-spacing: -0.045em; color: var(--ink); margin: 0 0 22px; max-width: 14em }
+.wk-doc h1 .ch { display: inline-block; will-change: transform }
+.wk-doc h1 .wd { display: inline-block; white-space: nowrap }
+.wk-doc h1 .acc { color: var(--accent) }
+.wk-lead { font-size: clamp(18px, 1.7vw, 21px); line-height: 1.55; color: var(--mute); max-width: 38em; margin: 0 0 18px }
+.wk-src-list { font-family: var(--mono); font-size: 12px; color: var(--mute); display: flex; flex-wrap: wrap; gap: 6px 8px; align-items: center; margin: 0 0 8px }
+.wk-doc .wk-src-list a, .wk-doc a.wk-src { font-family: var(--mono); font-size: 12px; color: var(--ink); background: var(--soft); border: 1px solid var(--edge); border-radius: 6px; padding: 2px 7px; text-decoration: none; font-weight: 500; overflow-wrap: anywhere }
+.wk-doc .wk-src-list a:hover, .wk-doc a.wk-src:hover { border-color: var(--accent); color: var(--accent) }
+.wk-head-rule { height: 1px; background: var(--edge); margin: 30px 0 0; position: relative; overflow: visible }
+.wk-head-rule::before { content: ""; position: absolute; left: 0; top: -1px; width: 72px; height: 3px; background: var(--accent); border-radius: 2px }
+
+/* ---------- sections and prose ---------- */
+.wk-sec { padding-top: clamp(44px, 5vw, 64px); scroll-margin-top: 90px }
+.wk-sec > h2 { display: flex; align-items: baseline; gap: 14px; font-size: clamp(28px, 3.3vw, 40px); line-height: 1.05; letter-spacing: -0.035em; color: var(--ink); margin: 0 0 18px }
+.wk-sec > h2::before { content: ""; flex: none; width: 13px; height: 13px; border-radius: 3px; background: var(--accent); transform: translateY(-.12em) rotate(45deg) }
+.wk-doc h3 { font-size: 21px; letter-spacing: -0.02em; line-height: 1.2; color: var(--ink); margin: 34px 0 12px; scroll-margin-top: 90px }
+.wk-doc h4 { font-family: var(--mono); font-size: 12px; letter-spacing: .12em; text-transform: uppercase; color: var(--accent); margin: 26px 0 10px; font-weight: 500 }
+.wk-doc p, .wk-doc li { font-size: 16.5px; line-height: 1.72 }
+.wk-doc p { margin: 0 0 16px }
+.wk-doc ul, .wk-doc ol { margin: 0 0 18px; padding-left: 1.35em; display: flex; flex-direction: column; gap: 6px }
+.wk-doc li::marker { color: var(--accent) }
+.wk-doc strong, .wk-doc b { color: var(--ink); font-weight: 800 }
+.wk-doc em { color: var(--ink) }
+.wk-doc a:not([class]) { color: var(--cobalt); font-weight: 700; text-decoration: underline; text-decoration-thickness: 1.5px; text-underline-offset: 3px }
+.wk-doc a:not([class]):hover { color: var(--ink) }
+.wk-doc :not(pre) > code { font-family: var(--mono); font-size: .84em; background: var(--soft); color: var(--ink); border: 1px solid var(--edge); border-radius: 6px; padding: 1px 5px; overflow-wrap: anywhere }
+.wk-doc hr { border: 0; height: 1px; background: var(--edge); margin: 36px 0 }
+
+/* ---------- code ---------- */
+.wk-code { margin: 0 0 20px; border: 1px solid var(--edge); border-radius: 14px; background: var(--code); overflow: hidden; min-width: 0 }
+.wk-code-h { display: flex; align-items: center; gap: 10px; min-height: 40px; padding: 4px 6px 4px 14px; border-bottom: 1px solid var(--edge); font-family: var(--mono); font-size: 12px; color: var(--mute) }
+.wk-code-h .t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.wk-code-h .dots { display: inline-flex; gap: 5px; flex: none }
+.wk-code-h .dots i { width: 9px; height: 9px; border-radius: 50%; background: var(--line) }
+.wk-code-h .dots i:nth-child(1) { background: var(--coral) } .wk-code-h .dots i:nth-child(2) { background: var(--sun) } .wk-code-h .dots i:nth-child(3) { background: var(--mint) }
+.wk-code-h .lang { color: var(--accent); text-transform: lowercase }
+.wk-code pre { margin: 0; padding: 16px 18px; overflow-x: auto; font-family: var(--mono); font-size: 13px; line-height: 1.7; color: #E7E5DC; white-space: pre; tab-size: 4; scrollbar-width: thin; scrollbar-color: var(--line) transparent }
+.wk-code pre code { font-family: inherit; font-size: inherit; background: none; border: 0; padding: 0; color: inherit }
+.wk-copy { display: inline-flex; align-items: center; min-height: 30px; padding: 0 11px; border: 1px solid var(--line); border-radius: 999px; font-family: var(--mono); font-size: 11.5px; color: var(--mute); flex: none }
+.wk-copy:hover { color: var(--ink); border-color: var(--mute) }
+.wk-copy.done { color: #1A1A1A; background: var(--mint); border-color: var(--mint) }
+@media (max-width: 900px) { .wk-copy { min-height: 44px; padding: 0 14px } }
+.tk-k { color: #FF8A70 } .tk-s { color: #BFF0D0 } .tk-n { color: #FFE16A } .tk-c { color: #8B8B83; font-style: italic }
+.tk-t { color: #9FD0FF } .tk-f { color: #DCD2FF } .tk-m { color: #FFD2C2 } .tk-p { color: #8B8B83 }
+
+/* ---------- tables ---------- */
+.wk-table { margin: 0 0 22px; overflow-x: auto; border: 1px solid var(--edge); border-radius: 14px; background: var(--card); scrollbar-width: thin; scrollbar-color: var(--line) transparent }
+.wk-table table { min-width: 560px; font-size: 14.5px; border-collapse: collapse; width: 100% }
+.wk-table th { background: var(--soft); color: var(--mute); font-family: var(--mono); font-size: 11px; font-weight: 500; letter-spacing: .1em; text-transform: uppercase; padding: 11px 14px; text-align: left; white-space: nowrap }
+.wk-table td { padding: 11px 14px; border-top: 1px solid var(--edge); vertical-align: top; color: var(--text); line-height: 1.55 }
+.wk-table td:first-child { color: var(--ink) }
+.wk-table td code { white-space: nowrap }
+.wk-table td.wrap code, .wk-table td .wrap { white-space: normal }
+.wk-table tr:hover td { background: color-mix(in srgb, var(--accent) 4%, transparent) }
+.wk-table.narrow table { min-width: 0 }
+
+/* ---------- callouts ---------- */
+.wk-note { margin: 0 0 20px; padding: 14px 18px 14px 16px; border: 1px solid var(--edge); border-left: 3px solid var(--c, var(--accent)); border-radius: 4px 14px 14px 4px; background: color-mix(in srgb, var(--c, var(--accent)) 6%, var(--card)) }
+.wk-note > b:first-child, .wk-note > strong:first-child { display: block; font-family: var(--mono); font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: var(--c, var(--accent)); margin-bottom: 4px; font-weight: 500 }
+.wk-note p { margin: 0 0 8px; font-size: 15.5px } .wk-note p:last-child { margin: 0 }
+.wk-note.warn { --c: var(--coral) } .wk-note.tip { --c: var(--mint) } .wk-note.info { --c: var(--sky) } .wk-note.limit { --c: var(--peach) }
+
+/* ---------- definitions ---------- */
+.wk-defs { margin: 0 0 22px; border-top: 1px solid var(--edge); display: grid; grid-template-columns: minmax(0, 220px) minmax(0, 1fr) }
+.wk-defs dt, .wk-defs dd { padding: 12px 0; border-bottom: 1px solid var(--edge); margin: 0 }
+.wk-defs dt { font-family: var(--mono); font-size: 13px; color: var(--ink); padding-right: 16px; overflow-wrap: anywhere }
+.wk-defs dt small { display: block; color: var(--accent); font-size: 11.5px; margin-top: 2px }
+.wk-defs dd { font-size: 15.5px; line-height: 1.6; color: var(--text) }
+.wk-defs dd p { margin: 0 0 6px; font-size: inherit } .wk-defs dd p:last-child { margin: 0 }
+@media (max-width: 600px) { .wk-defs { grid-template-columns: 1fr } .wk-defs dt { border-bottom: 0; padding-bottom: 0 } }
+
+/* ---------- cards ---------- */
+.wk-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 240px), 1fr)); gap: 12px; margin: 0 0 24px }
+.wk-card { position: relative; display: flex; flex-direction: column; gap: 6px; min-height: 108px; padding: 16px 18px 18px; border: 1px solid var(--edge); border-radius: 16px; background: var(--card); transition: border-color .2s, transform .2s, background .2s; overflow: hidden }
+.wk-card:hover { border-color: var(--accent); transform: translateY(-2px); background: color-mix(in srgb, var(--accent) 5%, var(--card)) }
+.wk-card b { color: var(--ink); font-size: 17px; letter-spacing: -0.01em; line-height: 1.2 }
+.wk-card span { color: var(--mute); font-size: 14px; line-height: 1.45 }
+.wk-card i { position: absolute; top: 16px; right: 16px; width: 10px; height: 10px; border-radius: 2px; background: var(--accent); transform: rotate(45deg) }
+.wk-card .k { font-family: var(--mono); font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--accent) }
+
+/* ---------- steps ---------- */
+.wk-steps { list-style: none; counter-reset: st; padding: 0 !important; margin: 0 0 22px !important; gap: 0 !important }
+.wk-steps > li { counter-increment: st; position: relative; padding: 0 0 22px 50px; min-height: 40px }
+.wk-steps > li::before { content: counter(st); position: absolute; left: 0; top: 0; width: 32px; height: 32px; border-radius: 9px; background: var(--accent); color: #1A1A1A; font-family: var(--mono); font-size: 13px; font-weight: 500; display: flex; align-items: center; justify-content: center }
+.wk-steps > li::after { content: ""; position: absolute; left: 15px; top: 38px; bottom: 6px; width: 2px; background: var(--edge) }
+.wk-steps > li:last-child::after { display: none }
+.wk-steps > li > b:first-child { display: block; color: var(--ink); font-size: 17px; margin-bottom: 2px }
+
+/* ---------- sequence diagrams (rendered from text by plugins/wiki-blocks.ts) ---------- */
+.wk-seq { margin: 0 0 24px; border: 1px solid var(--edge); border-radius: 16px; background: var(--stage); padding: 0 0 14px; overflow: hidden }
+.wk-seq > figcaption { padding: 12px 16px; border-bottom: 1px solid var(--edge); font-family: var(--mono); font-size: 12px; color: var(--mute); display: flex; gap: 10px; align-items: center }
+.wk-seq > figcaption::before { content: ""; width: 8px; height: 8px; border-radius: 2px; background: var(--accent); transform: rotate(45deg); flex: none }
+.wk-seq-in { padding: 0 8px; background-repeat: no-repeat; position: relative }
+.wk-seq-head, .wk-seq-row { display: grid; align-items: end }
+.lanes-2 .wk-seq-head, .lanes-2 .wk-seq-row { grid-template-columns: repeat(4, minmax(0, 1fr)) }
+.lanes-3 .wk-seq-head, .lanes-3 .wk-seq-row { grid-template-columns: repeat(6, minmax(0, 1fr)) }
+.lanes-4 .wk-seq-head, .lanes-4 .wk-seq-row { grid-template-columns: repeat(8, minmax(0, 1fr)) }
+.lanes-5 .wk-seq-head, .lanes-5 .wk-seq-row { grid-template-columns: repeat(10, minmax(0, 1fr)) }
+.lanes-2 .wk-seq-in { background-image: linear-gradient(var(--line), var(--line)), linear-gradient(var(--line), var(--line)); background-size: 1px 100%; background-position: calc(25% + 4px) 0, calc(75% - 4px) 0 }
+.lanes-3 .wk-seq-in { background-image: linear-gradient(var(--line), var(--line)), linear-gradient(var(--line), var(--line)), linear-gradient(var(--line), var(--line)); background-size: 1px 100%; background-position: calc(16.666% + 6px) 0, 50% 0, calc(83.333% - 6px) 0 }
+.lanes-4 .wk-seq-in { background-image: linear-gradient(var(--line), var(--line)), linear-gradient(var(--line), var(--line)), linear-gradient(var(--line), var(--line)), linear-gradient(var(--line), var(--line)); background-size: 1px 100%; background-position: calc(12.5% + 6px) 0, calc(37.5% + 2px) 0, calc(62.5% - 2px) 0, calc(87.5% - 6px) 0 }
+.lanes-5 .wk-seq-in { background-image: linear-gradient(var(--line), var(--line)), linear-gradient(var(--line), var(--line)), linear-gradient(var(--line), var(--line)), linear-gradient(var(--line), var(--line)), linear-gradient(var(--line), var(--line)); background-size: 1px 100%; background-position: calc(10% + 6px) 0, calc(30% + 3px) 0, 50% 0, calc(70% - 3px) 0, calc(90% - 6px) 0 }
+.wk-seq-head { position: sticky; top: 0; padding: 14px 0 10px; z-index: 1; background: linear-gradient(var(--stage) 80%, transparent) }
+.wk-seq-head span { grid-row: 1; text-align: center; font-family: var(--mono); font-size: 11.5px; color: var(--ink); padding: 6px 4px; margin: 0 2px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); overflow-wrap: anywhere; line-height: 1.25 }
+.wk-seq-row { min-height: 40px; padding: 2px 0 }
+.wk-seq-a { grid-row: 1; position: relative; display: block; padding: 0 6px 6px; font-family: var(--mono); font-size: 12px; line-height: 1.35; color: var(--ink); text-align: center; border-bottom: 2px solid var(--c, var(--accent)); overflow-wrap: anywhere }
+.wk-seq-a::after { content: ""; position: absolute; bottom: -6px; width: 0; height: 0; border-top: 5px solid transparent; border-bottom: 5px solid transparent }
+.wk-seq-row:not(.back) .wk-seq-a::after { right: -2px; border-left: 8px solid var(--c, var(--accent)) }
+.wk-seq-row.back .wk-seq-a::after { left: -2px; border-right: 8px solid var(--c, var(--accent)) }
+.wk-seq-row.reply .wk-seq-a { border-bottom-style: dashed }
+.wk-seq-row.bulk .wk-seq-a { border-bottom-width: 4px }
+.wk-seq-row.note .wk-seq-a { border: 1px dashed var(--line); border-radius: 8px; padding: 6px 8px; background: var(--card); color: var(--mute); margin: 4px 2px }
+.wk-seq-row.note .wk-seq-a::after { display: none }
+.wk-seq-row.phase { display: block; padding: 14px 8px 4px }
+.wk-seq-row.phase .wk-seq-a { border: 0; text-align: left; color: var(--accent); font-size: 11px; letter-spacing: .12em; text-transform: uppercase; padding: 0 }
+.wk-seq-row.phase .wk-seq-a::after { display: none }
+.wk-seq-ft { display: none }
+/* Each lane is two grid tracks; lane n's centre is the line between them (track 2n). */
+.wk-seq .s1 > .wk-seq-a, .wk-seq-head .h1 { grid-column-start: 2 } .wk-seq .e1 > .wk-seq-a { grid-column-end: 2 }
+.wk-seq .s2 > .wk-seq-a { grid-column-start: 4 } .wk-seq .e2 > .wk-seq-a { grid-column-end: 4 }
+.wk-seq .s3 > .wk-seq-a { grid-column-start: 6 } .wk-seq .e3 > .wk-seq-a { grid-column-end: 6 }
+.wk-seq .s4 > .wk-seq-a { grid-column-start: 8 } .wk-seq .e4 > .wk-seq-a { grid-column-end: 8 }
+.wk-seq .s5 > .wk-seq-a { grid-column-start: 10 } .wk-seq .e5 > .wk-seq-a { grid-column-end: 10 }
+.wk-seq-head .h1 { grid-column: 1 / 3 } .wk-seq-head .h2 { grid-column: 3 / 5 } .wk-seq-head .h3 { grid-column: 5 / 7 } .wk-seq-head .h4 { grid-column: 7 / 9 } .wk-seq-head .h5 { grid-column: 9 / 11 }
+.wk-seq .note.n1 > .wk-seq-a { grid-column: 1 / 3 } .wk-seq .note.n2 > .wk-seq-a { grid-column: 3 / 5 } .wk-seq .note.n3 > .wk-seq-a { grid-column: 5 / 7 }
+.wk-seq .note.n4 > .wk-seq-a { grid-column: 7 / 9 } .wk-seq .note.n5 > .wk-seq-a { grid-column: 9 / 11 }
+.wk-seq .note.span > .wk-seq-a { grid-column: 1 / -1 }
+/* Narrow: a plain numbered list of "from → to: what". */
+@media (max-width: 620px) {
+  .wk-seq-in { background-image: none !important; padding: 8px 14px 0 }
+  .wk-seq-head { display: none }
+  .wk-seq-row { display: block; min-height: 0; padding: 8px 0; border-bottom: 1px solid var(--edge) }
+  .wk-seq-row:last-child { border-bottom: 0 }
+  .wk-seq-a, .wk-seq-row.note .wk-seq-a { border: 0 !important; padding: 0; text-align: left; margin: 0; background: none }
+  .wk-seq-a::after { display: none }
+  .wk-seq-ft { display: block; font-family: var(--mono); font-size: 11px; color: var(--c, var(--accent)); margin-bottom: 2px }
+}
+
+/* ---------- byte layouts ---------- */
+.wk-bytes { margin: 0 0 22px; border: 1px solid var(--edge); border-radius: 16px; background: var(--stage); padding: 14px }
+.wk-bytes > figcaption { font-family: var(--mono); font-size: 12px; color: var(--mute); margin: -2px 0 12px }
+.wk-bytes-row { display: flex; flex-wrap: wrap; gap: 4px }
+.wk-bytes-row > span { flex: var(--w, 1) 1 0; min-width: 72px; display: flex; flex-direction: column; gap: 2px; padding: 9px 10px; border-radius: 8px; background: color-mix(in srgb, var(--c, var(--accent)) 18%, var(--card)); border: 1px solid color-mix(in srgb, var(--c, var(--accent)) 55%, transparent); transform-origin: left center }
+.wk-bytes-row b { font-family: var(--mono); font-size: 12.5px; font-weight: 500; color: var(--ink); overflow-wrap: anywhere }
+.wk-bytes-row i { font-style: normal; font-family: var(--mono); font-size: 11px; color: var(--c, var(--accent)) }
+.wk-bytes-row em { font-style: normal; font-size: 12.5px; color: var(--mute); line-height: 1.35 }
+.w1 { --w: 1 } .w2 { --w: 2 } .w3 { --w: 3 } .w4 { --w: 4 } .w5 { --w: 5 } .w6 { --w: 6 } .w7 { --w: 7 } .w8 { --w: 8 } .w9 { --w: 9 } .w10 { --w: 10 } .w11 { --w: 11 } .w12 { --w: 12 }
+
+/* ---------- figures and diagrams ---------- */
+.wk-fig { margin: 0 0 24px; border: 1px solid var(--edge); border-radius: 16px; background: var(--stage); overflow: hidden }
+.wk-fig > svg { display: block; width: 100%; height: auto }
+.wk-fig > figcaption { padding: 12px 16px; border-top: 1px solid var(--edge); font-size: 14px; color: var(--mute); line-height: 1.5 }
+.wk-fig-scroll { overflow-x: auto; scrollbar-width: thin }
+.wk-fig-scroll > svg { min-width: 760px; display: block; width: 100%; height: auto }
+.d-box { fill: var(--card); stroke: var(--line); stroke-width: 1.5 }
+.d-box.acc { stroke: var(--c, var(--accent)); fill: color-mix(in srgb, var(--c, var(--accent)) 12%, var(--card)) }
+.d-text { fill: var(--ink); font-family: var(--display); font-size: 15px; font-weight: 700 }
+.d-sub { fill: var(--mute); font-family: var(--mono); font-size: 11px }
+.d-tag { fill: var(--c, var(--accent)); font-family: var(--mono); font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase }
+.d-line { stroke: var(--line); stroke-width: 1.5; fill: none }
+.d-line.acc { stroke: var(--c, var(--accent)) }
+.d-line.dash { stroke-dasharray: 5 6 }
+.d-flow { stroke: var(--c, var(--accent)); stroke-width: 2.5; fill: none; stroke-linecap: round; stroke-dasharray: 2 14 }
+.d-dot { fill: var(--c, var(--accent)) }
+.d-head { fill: var(--line) }
+.d-head.acc { fill: var(--c, var(--accent)) }
+
+/* ---------- live demo stages ---------- */
+.wk-stage { position: relative; margin: 0 0 24px; border: 1px solid var(--edge); border-radius: 16px; background-color: var(--stage); background-image: radial-gradient(var(--edge) 1px, transparent 1.5px); background-size: 18px 18px; overflow: hidden; min-height: 120px }
+.wk-stage-h { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 4px 6px 4px 14px; border-bottom: 1px solid var(--edge); background: var(--stage) }
+.wk-stage-h .t { flex: 1; min-width: 0; font-family: var(--mono); font-size: 12px; color: var(--mute) }
+.wk-stage-h .t b { color: var(--accent); font-weight: 500 }
+.wk-stage-body { position: relative; padding: 18px; min-height: 160px }
+.wk-stage-cap { padding: 10px 16px 14px; font-size: 14px; color: var(--mute); border-top: 1px solid var(--edge); background: var(--stage); line-height: 1.5 }
+.wk-stage-cap b { color: var(--ink) }
+.wk-btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 34px; padding: 0 14px; border-radius: 999px; border: 1px solid var(--line); color: var(--ink); background: var(--card); font-family: var(--mono); font-size: 12px; transition: border-color .15s, background .15s, color .15s; white-space: nowrap }
+.wk-btn:hover { border-color: var(--accent); color: var(--accent) }
+.wk-btn.on, .wk-btn[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #1A1A1A }
+.wk-btn:disabled { opacity: .5; cursor: default }
+@media (max-width: 900px) { .wk-btn { min-height: 44px; padding: 0 16px } }
+.wk-stage .nojs { color: var(--mute); font-size: 14px }
+
+/* demo parts */
+.dm-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center }
+.dm-cell { width: 26px; height: 26px; border-radius: 6px; background: var(--soft); border: 1px solid var(--edge); display: inline-flex; align-items: center; justify-content: center; font-family: var(--mono); font-size: 11px; color: var(--mute) }
+.dm-cell.on { background: var(--c, var(--accent)); color: #1A1A1A; border-color: transparent }
+.dm-cell.bad { background: var(--coral); color: #1A1A1A; border-color: transparent }
+.dm-cell.lost { background: transparent; border-style: dashed; color: var(--line) }
+.dm-hex { font-family: var(--mono); font-size: 13px; color: var(--ink); overflow-wrap: anywhere; line-height: 1.6; white-space: pre-wrap; margin: 0 0 10px }
+.dm-hex .z { color: var(--mint) } .dm-hex .nz { color: var(--mute) }
+.dm-k { font-family: var(--mono); font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--mute) }
+.dm-big { font-size: 34px; font-weight: 900; letter-spacing: -0.03em; color: var(--ink); font-variant-numeric: tabular-nums; line-height: 1 }
+.dm-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr)); gap: 14px }
+.dm-stagelist { display: flex; flex-direction: column; gap: 5px }
+.dm-stagelist > div { display: grid; grid-template-columns: 26px minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 6px 10px; border-radius: 8px; border: 1px solid var(--edge); background: var(--card); font-size: 14px; color: var(--mute) }
+.dm-stagelist > div.pass { color: var(--ink); border-color: color-mix(in srgb, var(--mint) 50%, transparent) }
+.dm-stagelist > div.fail { color: var(--ink); border-color: var(--coral); background: color-mix(in srgb, var(--coral) 12%, var(--card)) }
+.dm-stagelist .n { font-family: var(--mono); font-size: 11px; color: var(--mute) }
+.dm-stagelist .r { font-family: var(--mono); font-size: 11px }
+.dm-stagelist .pass .r { color: var(--mint) } .dm-stagelist .fail .r { color: var(--coral) }
+.dm-canvas { display: block; width: 100%; height: 260px }
+
+/* ---------- pager ---------- */
+.wk-pager { max-width: 860px; margin: 72px auto 0; display: grid; grid-template-columns: 1fr 1fr; gap: 12px }
+.wk-pg { display: flex; flex-direction: column; gap: 4px; padding: 16px 18px; min-height: 76px; border: 1px solid var(--edge); border-radius: 16px; background: var(--card); transition: border-color .2s, transform .2s }
+.wk-pg:hover { border-color: var(--accent); transform: translateY(-2px) }
+.wk-pg span { font-family: var(--mono); font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--accent) }
+.wk-pg b { color: var(--ink); font-size: 17px; line-height: 1.25 }
+.wk-pg.next { text-align: right; grid-column: 2 }
+@media (max-width: 560px) { .wk-pager { grid-template-columns: 1fr } .wk-pg.next { grid-column: 1 } }
+
+/* ---------- section explanations: optional, inline, and quiet until opened ---------- */
+.wk-help-open { display: inline-flex; align-items: center; justify-content: center; flex: none; vertical-align: middle; min-width: 44px; min-height: 44px; margin: -8px 0 -8px 4px; padding: 0; border: 0; background: transparent; color: var(--mute); cursor: pointer }
+.wk-help-open > span { display: grid; place-items: center; width: 19px; height: 19px; border: 1px solid var(--line); border-radius: 50%; font-family: var(--mono); font-size: 12px; font-weight: 500; line-height: 1; letter-spacing: 0; transition: color .15s, border-color .15s }
+.wk-help-open:hover > span, .wk-help-open[aria-expanded="true"] > span { color: var(--accent); border-color: var(--accent) }
+.wk-help { margin: 4px 0 24px; padding: clamp(16px, 3vw, 24px); border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--edge)); border-radius: 14px; background: var(--card); scroll-margin-top: 100px; overflow-wrap: anywhere }
+.wk-help-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: -8px -8px 2px 0 }
+.wk-help .wk-help-title { font-family: var(--mono); font-size: 12px; font-weight: 500; letter-spacing: .04em; color: var(--accent) }
+.wk-help button, .wk-help textarea { font: inherit }
+.wk-help-close { flex: none; width: 44px; height: 44px; padding: 0; border: 0; border-radius: 8px; color: var(--mute); background: transparent; cursor: pointer; font-size: 24px !important }
+.wk-help-close:hover { color: var(--ink); background: var(--soft) }
+.wk-doc .wk-help p { font-size: 14px; line-height: 1.6; margin: 0 0 12px }
+.wk-doc .wk-help .wk-help-intro { color: var(--ink); font-size: 15px }
+.wk-doc .wk-help .wk-help-note { font-size: 12px; color: var(--mute); margin-bottom: 16px }
+.wk-help-options { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 18px }
+.wk-help-option { min-height: 44px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 9px; color: var(--text); background: var(--soft); text-align: left; font-size: 13px !important; cursor: pointer }
+.wk-help-option:hover { border-color: var(--accent); color: var(--ink) }
+.wk-help button:disabled { opacity: .5; cursor: default }
+.wk-help-result:empty { display: none }
+.wk-doc .wk-help .wk-help-asked { padding-top: 16px; border-top: 1px solid var(--edge); font-size: 12px; color: var(--mute) }
+.wk-help-answer p { white-space: pre-wrap }
+.wk-doc .wk-help .wk-help-sources, .wk-doc .wk-help .wk-help-finish { font-size: 12px; color: var(--mute) }
+.wk-help-connections { display: grid; gap: 8px; margin: 16px 0 20px }
+.wk-help .wk-help-next { display: flex; flex-direction: column; gap: 3px; padding: 12px 14px; min-height: 44px; border: 1px solid var(--line); border-radius: 10px; color: var(--text); font-size: 13px; line-height: 1.5; text-decoration: none }
+.wk-help-next:hover { border-color: var(--accent); background: var(--soft) }
+.wk-help-next .wk-help-next-label { font-family: var(--mono); font-size: 10px; letter-spacing: .03em; color: var(--accent); margin-bottom: 3px }
+.wk-help-next .wk-help-next-page { font-size: 11px; color: var(--mute); margin-bottom: 4px }
+.wk-help-form { display: flex; flex-direction: column; gap: 7px }
+.wk-help-form label { font-size: 12px; font-weight: 600; color: var(--mute) }
+.wk-help-input { width: 100%; min-height: 72px; resize: vertical; padding: 11px 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--bg); color: var(--ink); font-size: 14px !important; line-height: 1.5 }
+.wk-help-input::placeholder { color: var(--mute) }
+.wk-help-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-height: 44px }
+.wk-help-ask, .wk-help-stop { min-height: 44px; padding: 8px 16px; border: 1px solid var(--line); border-radius: 8px; background: var(--soft); color: var(--ink); font-size: 13px !important; cursor: pointer }
+.wk-help-ask:hover, .wk-help-stop:hover { border-color: var(--accent) }
+.wk-doc .wk-help .wk-help-status { flex: 1 1 140px; margin: 0; font-size: 12px; color: var(--mute) }
+.wk-help-about { margin-top: 8px; color: var(--mute); font-size: 11px }
+.wk-help-about summary { display: inline-flex; align-items: center; min-height: 44px; cursor: pointer; text-decoration: underline; text-underline-offset: 3px }
+.wk-doc .wk-help-about p { font-size: 12px; margin: 0 }
+.wk-help [hidden] { display: none }
+@media (prefers-reduced-motion: no-preference) { .wk-help { animation: wk-help-in .18s ease-out } }
+@keyframes wk-help-in { from { opacity: 0; transform: translateY(-4px) } to { opacity: 1; transform: translateY(0) } }
+@media print { .wk-help, .wk-help-open { display: none !important } }
+
+/* ---------- search dialog ---------- */
+.wk-dlg { width: min(680px, calc(100vw - 24px)); max-height: min(640px, calc(100vh - 80px)); margin: 64px auto auto; padding: 0; border: 1px solid var(--line); border-radius: 18px; background: var(--card); color: var(--ink); box-shadow: 0 30px 80px rgba(0, 0, 0, .55); overflow: hidden }
+.wk-dlg::backdrop { background: rgba(8, 8, 11, .72); backdrop-filter: blur(3px) }
+.wk-dlg-in { display: flex; flex-direction: column; max-height: inherit }
+.wk-dlg-q { display: flex; align-items: center; gap: 12px; padding: 0 12px 0 18px; border-bottom: 1px solid var(--edge) }
+.wk-dlg-q input { flex: 1; min-width: 0; min-height: 58px; border: 0; background: none; color: var(--ink); font: inherit; font-size: 18px; outline: 0 }
+.wk-dlg-q input::placeholder { color: var(--mute) }
+.wk-dlg-res { list-style: none; margin: 0; padding: 8px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px }
+.wk-dlg-res a { display: grid; grid-template-columns: 10px minmax(0, 1fr); gap: 4px 12px; padding: 10px 12px; border-radius: 12px; color: var(--mute); font-size: 13.5px; line-height: 1.45 }
+.wk-dlg-res a i { grid-row: 1 / span 2; width: 8px; height: 8px; margin-top: 7px; border-radius: 2px; background: var(--accent); transform: rotate(45deg) }
+.wk-dlg-res a b { color: var(--ink); font-size: 15px }
+.wk-dlg-res a b small { font-family: var(--mono); font-size: 11px; color: var(--accent); font-weight: 500; margin-left: 8px }
+.wk-dlg-res a[aria-selected="true"], .wk-dlg-res a:hover { background: var(--soft) }
+.wk-dlg-res mark { background: color-mix(in srgb, var(--sun) 35%, transparent); color: var(--ink); border-radius: 3px; padding: 0 1px }
+.wk-dlg-empty { padding: 28px 18px; color: var(--mute); font-size: 15px; text-align: center }
+.wk-dlg-foot { display: flex; gap: 16px; padding: 10px 18px; border-top: 1px solid var(--edge); font-family: var(--mono); font-size: 11px; color: var(--mute); flex-wrap: wrap }
+
+/* ---------- wiki home ---------- */
+.wk-hero { position: relative; padding: 8px 0 8px; }
+.wk-hero .eyebrow { margin-bottom: 18px }
+.wk-grid-bg { position: relative; height: 150px; margin: 6px 0 34px; border: 1px solid var(--edge); border-radius: 18px; background: var(--stage); overflow: hidden; display: grid; place-items: center }
+.wk-dots { display: grid; grid-template-columns: repeat(var(--cols, 32), 1fr); gap: 7px; width: calc(100% - 36px) }
+.wk-dots i { display: block; aspect-ratio: 1; border-radius: 3px; background: var(--line) }
+.wk-dots i.a { background: var(--coral) } .wk-dots i.b { background: var(--sun) } .wk-dots i.c { background: var(--mint) } .wk-dots i.d { background: var(--sky) } .wk-dots i.e { background: var(--lilac) }
+.wk-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 124px), 1fr)); gap: 10px; margin: 0 0 26px }
+.wk-stat { padding: 14px 16px; border: 1px solid var(--edge); border-radius: 14px; background: var(--card) }
+.wk-stat b { display: block; font-size: 30px; font-weight: 900; letter-spacing: -0.03em; color: var(--c, var(--accent)); font-variant-numeric: tabular-nums; line-height: 1.05 }
+.wk-stat span { font-size: 13px; color: var(--mute) }
+.wk-groups { display: flex; flex-direction: column; gap: 34px; margin-top: 8px }
+.wk-groups h3 { display: flex; align-items: center; gap: 10px; margin: 0 0 12px !important; font-family: var(--mono); font-size: 12px !important; letter-spacing: .14em; text-transform: uppercase; color: var(--accent) !important; font-weight: 500 }
+.wk-groups h3::before { content: ""; width: 9px; height: 9px; border-radius: 2px; background: var(--accent); transform: rotate(45deg) }
+
+/* ---------- SBOM ---------- */
+.sb-tools { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 0 0 16px }
+.sb-q { flex: 1 1 260px; min-width: 0; min-height: 44px; padding: 0 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--card); color: var(--ink); font: inherit; font-size: 15px }
+.sb-q:focus { outline: 2px solid var(--accent); outline-offset: 1px; border-color: transparent }
+.sb-filters { display: flex; flex-wrap: wrap; gap: 6px }
+.sb-count { font-family: var(--mono); font-size: 12px; color: var(--mute); margin: 0 0 10px }
+.sb-prog { margin: 0 0 14px; border: 1px solid var(--edge); border-radius: 16px; background: var(--card); overflow: hidden }
+.sb-prog > summary { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; min-height: 58px; padding: 10px 16px; cursor: pointer; list-style: none }
+.sb-prog > summary::-webkit-details-marker { display: none }
+.sb-prog > summary::before { content: ""; width: 8px; height: 8px; border-right: 2px solid var(--mute); border-bottom: 2px solid var(--mute); transform: rotate(-45deg); transition: transform .2s; flex: none }
+.sb-prog[open] > summary::before { transform: rotate(45deg) }
+.sb-prog > summary b { color: var(--ink); font-size: 17px }
+.sb-prog > summary .mono { font-size: 12px }
+.sb-prog > summary .sb-n { margin-left: auto; font-family: var(--mono); font-size: 12px; color: var(--accent) }
+.sb-prog > p { margin: 0; padding: 0 16px 12px 38px; font-size: 14.5px; color: var(--mute) }
+.sb-prog .wk-table { margin: 0; border: 0; border-top: 1px solid var(--edge); border-radius: 0; max-height: 640px; overflow-y: auto }
+.sb-prog .wk-table th { position: sticky; top: 0; z-index: 1 }
+.sb-prog td { font-size: 13.5px }
+.sb-prog td:first-child a { font-family: var(--mono); font-size: 13px; color: var(--ink); font-weight: 500; text-decoration: none }
+.sb-prog td:first-child a:hover { color: var(--accent) }
+.sb-v { font-family: var(--mono); font-size: 12.5px; color: var(--accent); white-space: nowrap }
+.sb-l { font-family: var(--mono); font-size: 11.5px; color: var(--text); overflow-wrap: anywhere }
+.sb-d { font-size: 13px; color: var(--mute); line-height: 1.45 }
+.sb-dir { display: inline-block; font-family: var(--mono); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; padding: 1px 6px; border-radius: 999px; margin-left: 6px; vertical-align: 1px; background: var(--accent); color: #1A1A1A }
+.sb-dir.dev { background: var(--soft); color: var(--mute); border: 1px solid var(--line) }
+.sb-dir.patch { background: var(--coral) }
+.sb-src a { font-family: var(--mono); font-size: 12px; color: var(--cobalt) }
+.sb-hide { display: none }
+
+/* Reduced motion: demos land on their last frame, nothing loops. */
+@media (prefers-reduced-motion: reduce) {
+  .wk-card, .wk-pg, .wk-group a, .wk-btn { transition: none }
+}
+
+/* SBOM extras */
+.sb-progs { display: flex; flex-direction: column; gap: 0 }
+.sb-tg { font-size: 13px !important; color: var(--mute); padding: 0 16px 10px 38px !important; margin: 0 !important; display: flex; flex-wrap: wrap; gap: 4px 6px; align-items: center }
+.sb-direct { padding: 0 16px 14px 38px !important; margin: 0 !important; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 13px !important }
+.sb-direct > span { font-family: var(--mono); font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--mute); margin-right: 4px }
+.sb-direct a { display: inline-flex; gap: 6px; align-items: center; padding: 3px 9px; border: 1px solid var(--edge); border-radius: 999px; font-family: var(--mono); font-size: 12px; color: var(--ink); background: var(--soft) }
+.sb-direct a span { color: var(--accent) }
+.sb-direct a:hover { border-color: var(--accent) }
+.sb-sel { min-height: 44px; padding: 0 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--card); color: var(--ink); font: inherit; font-size: 14px; max-width: 100% }
+.sb-u .tag { font-size: 11px; padding: 1px 8px; margin: 1px 2px 1px 0; white-space: nowrap }
+.sb-all { max-height: 900px; overflow: auto }
+.sb-all th { position: sticky; top: 0; z-index: 1 }
+.sb-all table { min-width: 860px }
+.sb-all td:first-child { min-width: 240px; max-width: 360px }
+.sb-all td:first-child a { font-family: var(--mono); font-size: 13px; color: var(--ink); font-weight: 500 }
+.sb-all td:first-child a:hover { color: var(--accent) }
+.sb-src a { margin-right: 8px }
+.sb-all tr:target td { background: color-mix(in srgb, var(--sun) 14%, transparent) }
+@media (max-width: 900px) { .sb-direct a { min-height: 44px } }
+.sb-u .tag small { font-family: var(--mono); font-size: 9.5px; margin-left: 5px; opacity: .75 }
+.wk-doc .sb-all td:first-child a, .wk-doc .sb-direct a { text-decoration: none; color: var(--ink); font-weight: 500 }
+.wk-doc .sb-all td:first-child a:hover { color: var(--accent) }
+.wk-doc .sb-src a { font-weight: 500; font-size: 12px }
+
+/* architecture diagram */
+.arch .d-text { font-size: 17px }
+.arch .d-sub { font-size: 12.5px }
+.arch .d-tag { font-size: 12px }
+.arch .d-text.arch-s { font-size: 14px }
+.arch .arch-b { cursor: pointer }
+.arch .arch-b:focus { outline: none }
+.arch .arch-b:focus-visible rect { stroke: var(--sun); stroke-width: 3 }
+.arch .arch-b, .arch .arch-c { transition: opacity .2s }
+.arch.focus .arch-b:not(.lit) { opacity: .35 }
+.arch.focus .arch-c:not(.lit) { opacity: .2 }
+.arch .arch-c.lit { stroke: var(--sun); stroke-width: 2.5 }
+.arch .arch-b.lit rect { stroke: var(--sun) }
+.arch > figcaption { min-height: 64px }
+.arch-say { display: block; color: var(--ink) }
+@media (prefers-reduced-motion: reduce) { .arch .arch-b, .arch .arch-c { transition: none } }

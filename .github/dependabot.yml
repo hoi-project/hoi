@@ -1,0 +1,40 @@
+# Version updates only for GitHub Actions. npm and Cargo get security updates only
+# (open-pull-requests-limit: 0 stops routine version bumps but not security updates, which are
+# enabled in the repository's security settings). Why: every lockfile change needs a regenerated
+# SBOM (`pnpm sbom`, enforced by check:quick) and Cargo changes need `cargo vet` audits, so
+# unattended bumps would always fail checks. A maintainer updates those dependencies on purpose.
+# cooldown: a version must be a week old before it is proposed, so a compromised release that is
+# pulled within days never reaches a pull request. Security updates are not delayed.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: ci(deps)
+
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: chore(deps)
+
+  - package-ecosystem: cargo
+    directories: [/core, /apps/desktop/src-tauri, /apps/setup/src-tauri]
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: chore(deps)

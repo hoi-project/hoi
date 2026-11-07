@@ -1,0 +1,54 @@
+[package]
+name = "hoi-net"
+description = "Authenticated iroh peers, paired home-node WebSockets and WebRTC for browsers."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+hoi-core.workspace = true
+hoi-sync.workspace = true
+hoi-types.workspace = true
+hoi-crypto.workspace = true
+# Mailboxes and pieces a desktop keeps for others (sync_piece_store), in SQLite.
+hoi-store = { workspace = true, features = ["sqlite"] }
+str0m.workspace = true
+str0m-proto.workspace = true
+dimpl.workspace = true
+rcgen.workspace = true
+aes.workspace = true
+aes-gcm.workspace = true
+ctr.workspace = true
+hmac.workspace = true
+sha1.workspace = true
+sha2.workspace = true
+netdev.workspace = true
+base64.workspace = true
+tokio.workspace = true
+tokio-tungstenite.workspace = true
+futures-util.workspace = true
+iroh.workspace = true
+# The router's UPnP service on the local network (portmap): plain HTTP through the reqwest and
+# rustls iroh already brings into the tree, on ring. No default features: no system proxy.
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+url = "2"
+# Pinning sockets to the VPN's interface (vpn): the same socket2 tokio already brings in.
+socket2 = { version = "0.6", features = ["all"] }
+# The DHT among public nodes (dht), run only by public nodes.
+mainline.workspace = true
+# Mozilla's roots for link previews over HTTPS (preview): the same crate hoi-node
+# already uses for registries, so a desktop needs no system certificate store either.
+webpki-roots = "1"
+# Asking the system's resolver for a handle's TXT record (handle): the DNS packets
+# crate iroh already brings in.
+simple-dns = "0.12"
+# Media between native nodes: iroh's own blob transfer, verified as it streams. No
+# disk store and no RPC (default features off): the node's media stays in its own store.
+iroh-blobs = { version = "=0.103.1", default-features = false }
+
+[dev-dependencies]
+image.workspace = true

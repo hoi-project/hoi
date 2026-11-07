@@ -1,0 +1,21 @@
+[package]
+name = "hoi-setup-engine"
+version = "1.0.0-preview.1"
+description = "What the hoi node setup app does: one SSH session with a pinned host key, uploads, commands with sudo prompts answered, saved servers, and the same steps on this computer."
+edition = "2024"
+license = "AGPL-3.0-only"
+repository = "https://github.com/hoi-project/hoi"
+rust-version = "1.94"
+publish = false
+
+[dependencies]
+# Pure-Rust SSH on ring (already in every hoi lockfile); no OpenSSL, no aws-lc-rs, no compression.
+# No `rsa` feature: the rsa crate leaks private-key timing (RUSTSEC-2023-0071) and has no fix.
+# RSA key files are refused with advice (ssh.rs, load_key); Ed25519 and ECDSA keys and passwords work.
+russh = { version = "0.65", default-features = false, features = ["ring"] }
+tokio = { version = "1.54", features = ["rt-multi-thread", "net", "sync", "time", "macros", "io-util", "process"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Already in the lockfile through russh: the hash of an uploaded hoi-node, compared with the server's.
+sha2 = "0.11"
+thiserror = "2"

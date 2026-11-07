@@ -1,0 +1,339 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <!-- @include head.html title="Simulator · hoi wiki" description="hoi-sim, the pentest and sturdiness harness: the in-process battle and its invariants, forged attacks with a local oracle, live agents and the referee, and the ladder, placement, life, load and address models." -->
+</head>
+<body class="wiki">
+<!-- @include header.html nav="wiki" -->
+<!-- @wiki-open -->
+<article class="wk-doc">
+  <!-- @wiki-crumbs -->
+  <h1>The <span class="acc">simulator</span></h1>
+  <p class="wk-lead"><code>hoi-sim</code> attacks the protocol and reports whether it held. It reimplements no rule: honest participants are real <code>hoi-core</code> nodes driven through the ordinary API, hostile ones send raw wire bytes over the sync protocol, and the models of scattered delivery and the ladder call the same functions every device runs. So every number it prints is the protocol's own verdict.</p>
+  <p class="wk-src-list">Source <a href="{{REPO_URL}}/tree/main/core/crates/hoi-sim">core/crates/hoi-sim</a> · <a href="{{REPO_URL}}/blob/main/core/crates/hoi-sim/README.md">README.md</a> · <a href="{{REPO_URL}}/blob/main/core/crates/hoi-sim/src/bin/hoi-sim.rs">src/bin/hoi-sim.rs</a> · <a href="{{REPO_URL}}/blob/main/core/crates/hoi-sim/src/scenario.rs">scenario.rs</a> · <a href="{{REPO_URL}}/blob/main/core/crates/hoi-sim/src/forge.rs">forge.rs</a> · <a href="{{REPO_URL}}/blob/main/core/crates/hoi-sim/src/report.rs">report.rs</a></p>
+  <div class="wk-head-rule"></div>
+
+  <section class="wk-sec" id="commands">
+    <h2>Five commands</h2>
+    <div class="wk-table" tabindex="0" role="region" aria-label="hoi-sim commands">
+      <table>
+        <thead><tr><th>Command</th><th>What it does</th><th>Network</th><th>Code</th></tr></thead>
+        <tbody>
+          <tr><td><code>battle</code></td><td>A whole siege in one process over accelerated time: honest members against forgers, spammers and a Sybil ring, scored against the protocol's invariants. Exits non-zero if any broke.</td><td>none</td><td><code>scenario.rs</code>, <code>forge.rs</code>, <code>report.rs</code></td></tr>
+          <tr><td><code>agent</code></td><td>One persistent participant against a running hub (a <code>hoi-node</code>): syncs, does one thing, prints JSON, exits. Honest verbs and <code>forge</code>.</td><td>WebSocket to the hub</td><td><code>bin/hoi-sim.rs</code>, <code>wire.rs</code>, <code>forge.rs</code></td></tr>
+          <tr><td><code>referee</code></td><td>An honest observer's scoreboard of community health, once or every five seconds.</td><td>WebSocket to the hub</td><td><code>bin/hoi-sim.rs</code>, <code>wire.rs</code></td></tr>
+          <tr><td><code>ladder</code></td><td>The trust ladder and consent with hundreds of members against Sybil rings, a turncoat pair and patient Sybils.</td><td>none (a model)</td><td><code>ladder.rs</code></td></tr>
+          <tr><td><code>scatter</code></td><td>Scattered delivery: piece placement against a party's share of places, objects over their whole life, a peak hour of load, and who can link an address to a record.</td><td>none (models)</td><td><code>scatter.rs</code>, <code>life.rs</code>, <code>load.rs</code>, <code>address.rs</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="wk-code" data-lang="sh" data-title="from core/"><pre><code>cargo run -p hoi-sim -- battle --honest 4 --attackers 3
+cargo run -p hoi-sim -- ladder --days 360 --seed 1
+cargo run -p hoi-sim -- scatter                 # placement report
+cargo run -p hoi-sim -- scatter --life --objects 1000 --days 90
+cargo run -p hoi-sim -- scatter --load
+cargo run -p hoi-sim -- scatter --address
+cargo run -p hoi-sim -- --version                # hoi-sim 1.0.0-preview.1</code></pre></div>
+    <p><code>hoi-sim</code> with no command, <code>help</code>, <code>-h</code> or <code>--help</code> prints the command list and the forge attacks. An unknown command or option prints an error and exits with failure. It is a developer tool: it depends on <code>hoi-core</code> like any other host and ships in no release. The crate's dependencies are on <a href="/wiki/crates/">Crates</a>.</p>
+  </section>
+
+  <section class="wk-sec" id="battle">
+    <h2>battle: the in-process siege</h2>
+    <div class="wk-code" data-lang="sh" data-title="hoi-sim battle"><pre><code>hoi-sim battle [--honest N] [--attackers M] [--days D] [--pow-bits B] [--json]</code></pre></div>
+    <dl class="wk-defs">
+      <dt>--honest<small>default 4, at least 2</small></dt><dd>Honest members besides the founder.</dd>
+      <dt>--attackers<small>default 3, at least 1</small></dt><dd>Forgers, each also running a spam flood.</dd>
+      <dt>--days<small>default 30</small></dt><dd>Only printed in the scorecard's header; the siege advances its own clock.</dd>
+      <dt>--pow-bits<small>default 8</small></dt><dd>The community's stamp difficulty. Cheap but real stamps, so a siege runs in seconds.</dd>
+      <dt>--json<small>flag</small></dt><dd>Print the scorecard as JSON instead of the scoreboard.</dd>
+    </dl>
+    <h3 id="battle-setup">The setup</h3>
+    <p>Everything runs on <code>Ephemeral</code> storage under one shared clock starting at <code>1_790_000_000</code>. The <b>hub</b> is a headless node (platform <code>node</code>) serving at <code>ws://127.0.0.1:7842</code>, like a session's <code>hoi-node</code>; the topology is a star. The <b>founder</b> <code>mira</code> creates the community <code>privacy</code> with fast limits: stamp difficulty from <code>--pow-bits</code>, 30-day retention, four newcomer posts a day, identity work 4 bits, <b>one</b> established voucher to admit, established after one day, a one-hour contest window. Admission on a single vouch is deliberate: the Sybil ring gets in on the turncoat's one vouch, so what the ladder does with it shows clearly. Every honest node joins with the invite and pairs with the hub through a fresh pairing link, since each link pairs one device.</p>
+    <p>Honest actions go through the API (<code>create_post</code>, <code>vouch</code>, <code>review</code>, <code>set_limits</code>); after each step the battle delivers every queued message in both directions until the star goes quiet (at most 200 passes) and commits every node. Attackers are <code>Forger</code>s with no node at all: they connect to the hub as a <code>Client</code>, send a <code>hello</code> with the hub's current pairing token, then <code>recs</code> in chunks of 500, stopping if the hub cuts them off.</p>
+    <h3 id="battle-phases">The phases and the invariants</h3>
+    <ol class="wk-steps">
+      <li><b>Honest members join</b><p>The founder vouches every honest member in; the clock moves a day and a minute. <i>Check:</i> “honest members become established by being vouched in and waiting”.</p></li>
+      <li><b>They post</b><p>One friendly post each (<code>honest_posts</code>).</p></li>
+      <li><b>Attack 1: a forgery barrage</b><p>Every attacker sends every refusable artifact of the whole <a href="#forge">catalogue</a>, without introducing its identity first: a key with no identity work is one of the things that must bounce. <i>Check:</i> “forged records (bad signatures, backdating, oversize, unstamped, no identity, …) never reach the feed”, counted by author in the founder's feed.</p></li>
+      <li><b>Attack 2: a spam flood</b><p>Each attacker brings a fresh key with valid credentials and five <code>CHEAP PILLS</code> posts. Every honest member then reviews each visible spam post as <code>hide</code> / <code>spam</code>. <i>Check:</i> “spam is held for newcomers and the community naps the rest without a moderator”: none left showing un-napped.</p></li>
+      <li><b>Attack 3: a Sybil ring</b><p>Six fresh keys are introduced; the established member <code>h0</code> turns and vouches all six in, in one quarter. A day later: <i>Check:</i> “a Sybil ring vouched in together shares one voucher's voice, never multiplies it”: the ring's voice summed is at most the turncoat's.</p></li>
+      <li><b>Attack 4: the mob</b><p>Every Sybil hides the last honest member, objects to them (a −1 vouch, <code>spam</code>) and hides each of their posts as <code>off-topic</code>. <i>Check:</i> “a Sybil mob cannot block a real member (voice, not heads, decides)”.</p></li>
+      <li><b>Governance</b><p>The founder proposes raising <code>identity_bits</code> to 16, which the honest electors never agree to. <i>Check:</i> “rules and limits change only by the community's consent, not an owner alone”: the limit is unchanged.</p></li>
+      <li><b>Churn, when asked for</b><p>With churn, a different share of honest members is offline at each settling: they drop their link and pair again when back. At the end everyone returns. <i>Check:</i> “members who came and went catch up with everything once back”.</p></li>
+      <li><b>Convergence</b><p><i>Check:</i> “honest nodes holding the same records compute the same standing”: every honest node agrees with the founder's node on every member's level.</p></li>
+    </ol>
+    <p>The command runs <code>siege</code>, which is <code>siege_with_churn</code> with no churn: seven checks. The tests also run it with churn (<a href="#tests">below</a>), which adds the eighth.</p>
+    <h3 id="battle-output">The scorecard</h3>
+    <p><code>report.rs</code> keeps one <code>Check { invariant, held, detail }</code> per invariant and free-form <code>tallies</code>: <code>honest_posts</code>, <code>forged_injected</code>, <code>spam_posted</code>, <code>spam_reached_hub</code>, <code>sybil_ring_size</code>, and <code>churn_percent</code> with churn. The text form:</p>
+    <div class="wk-code" data-lang="text" data-title="hoi-sim battle --honest 4 --attackers 3 (shape, from Scorecard::render)"><pre><code>
+  hoi protocol siege · scenario: siege · 4 honest, 3 adversarial · 30 days simulated
+  ──────────────────────────────────────────────────────────────────────────
+  ✓ held   honest members become established by being vouched in and waiting
+            4/4 honest members are established
+  ✓ held   forged records (bad signatures, backdating, oversize, unstamped, no identity, …) never reach the feed
+            feed held at &lt;posts&gt; legit posts; 39 malformed records injected, 0 displayed
+  ✓ held   spam is held for newcomers and the community naps the rest without a moderator
+            15 spam posts, 0 left showing after community hides
+  ✓ held   a Sybil ring vouched in together shares one voucher's voice, never multiplies it …
+            6 sybils hold &lt;x&gt; voice between them; their voucher holds &lt;y&gt; — the ring did not multiply it
+  …
+  ──────────────────────────────────────────────────────────────────────────
+  counters: honest_posts=…  forged_injected=39  spam_posted=15  spam_reached_hub=…  sybil_ring_size=6
+  ──────────────────────────────────────────────────────────────────────────
+  VERDICT: the protocol held. 7/7 invariants stood against the attack.</code></pre></div>
+    <p>A broken check prints <code>✗ BROKE</code> and the verdict “the protocol BROKE. n/m invariants held; see ✗ above.”. Each attacker injects 13 refusable forgeries (every attack gives one, <code>dup-flood</code> five), so three attackers make 39; five spam posts each make 15. With <code>--json</code> the same <code>Scorecard</code> is printed as <code>{scenario, honest, attackers, days, checks: [{invariant, held, detail}], tallies: [[name, n]]}</code>.</p>
+  </section>
+
+  <section class="wk-sec" id="forge">
+    <h2>Forged attacks</h2>
+    <p>A <code>Forger</code> is what a real attacker's tool would be: a root key with the cheapest acceptable identity work (<code>MIN_BITS</code>, 4 bits) and a device key it blessed, able to sign anything, well formed or not. <code>credentials(now)</code> gives its identity and delegation records, each stamped to the global floor of 16 bits. <code>forge(attack, forger, community, now, bits)</code> builds the artifacts, stamped to the community's <code>pow_bits</code> so each one gets past the stamp and reaches the stage it tests.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Forge catalogue">
+      <table>
+        <thead><tr><th>Attack</th><th>What it builds</th><th>Expected</th><th>What must refuse it</th></tr></thead>
+        <tbody>
+          <tr><td><code>bad-sig</code></td><td>A stamped post whose signature has its first byte flipped</td><td>refused</td><td>the signature check</td></tr>
+          <tr><td><code>future</code></td><td>A post dated an hour ahead</td><td>refused</td><td>the time check: <code>created_at</code> beyond now plus the 600-second clock skew on live gossip</td></tr>
+          <tr><td><code>expired</code></td><td>A post made two hours ago that expired an hour ago</td><td>refused</td><td>the time check</td></tr>
+          <tr><td><code>unstamped</code></td><td>A signed post with nonce 0</td><td>refused</td><td>the stamp floor, for the price of one hash</td></tr>
+          <tr><td><code>oversize</code></td><td>A post with 70,000 characters of text</td><td>refused</td><td>decoding: past the 64 KiB cap for posts</td></tr>
+          <tr><td><code>noncanonical</code></td><td>A valid wire with one trailing <code>0x00</code></td><td>refused</td><td>the strict decoder</td></tr>
+          <tr><td><code>dup-flood</code></td><td>Six posts with the same copy-pasted text, a second apart</td><td>first contained, five refused</td><td>the duplicate-text fingerprint within 7 days and the rate windows</td></tr>
+          <tr><td><code>no-identity</code></td><td>A post from a device whose root never published an identity</td><td>refused</td><td>the identity check</td></tr>
+          <tr><td><code>wrong-root-delegation</code></td><td>A delegation of someone else's device key, blessed by the attacker's root but signed by the attacker's own device</td><td>refused</td><td>consent: a delegation must be signed by the device it delegates</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>"Contained" means a correct node may accept the record but must hold it or count it late: it must never reach the feed. The module also has helpers the strategies use: <code>review</code> (a hide, veto or ok signed with the 8-bit kind discount), <code>backdated_vouch</code> (a vouch claiming an earlier time, which a node that had caught up counts from arrival), <code>hostile_ledger</code> (a ledger body for governance capture) and <code>fake_media_ref</code>.</p>
+  </section>
+
+  <section class="wk-sec" id="agent">
+    <h2>agent: one participant against a hub</h2>
+    <div class="wk-code" data-lang="sh" data-title="hoi-sim agent"><pre><code>hoi-sim agent --data DIR [--hub URL] [--name NAME] [--days D] [--pow-bits B] &lt;verb&gt; [args]</code></pre></div>
+    <p>An agent keeps its identity and records in <code>DIR/hoi.db</code> (plain SQLite, platform <code>desktop</code>, identity work at the default 10 bits), so each <code>--data</code> directory is one independent member and an agent can be run as many times, from as many sessions, as you like. The hub is <code>--hub ws://…</code>, or the home node the directory paired with. Every result is pretty-printed JSON; failures are <code>{"ok": false, "error": "…"}</code> with exit status 1. This is what the Docker sandbox drives.</p>
+    <div class="wk-code" data-lang="sh" data-title="core/crates/hoi-sim/README.md"><pre><code>hoi-sim agent --data ./mira  --name mira  init
+hoi-sim agent --data ./mira  pair 'hoi://pair?...'      # the hub's pairing link
+hoi-sim agent --data ./mira  --hub ws://hub:7842 create privacy
+hoi-sim agent --data ./mallory --name mallory init
+hoi-sim agent --data ./mallory pair 'hoi://pair?...'
+hoi-sim agent --data ./mallory --hub ws://hub:7842 join 'hoi://join?...'
+hoi-sim agent --data ./mallory --hub ws://hub:7842 post &lt;community-hex&gt; "title" "text"
+hoi-sim agent --data ./mallory --hub ws://hub:7842 vouch &lt;community-hex&gt; &lt;key&gt;</code></pre></div>
+    <h3 id="agent-verbs">Verbs</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Agent verbs">
+      <table>
+        <thead><tr><th>Verb</th><th>Arguments</th><th>Does</th></tr></thead>
+        <tbody>
+          <tr><td><code>init</code></td><td>(uses <code>--name</code>, default <code>agent</code>)</td><td>Makes the identity, offline. Says <code>already</code> if one exists.</td></tr>
+          <tr><td><code>pair</code></td><td><code>&lt;pair-link&gt;</code></td><td>Pairs with the hub, then syncs once if a hub is known.</td></tr>
+          <tr><td><code>join</code></td><td><code>&lt;invite-uri&gt;</code></td><td>Joins, then syncs.</td></tr>
+          <tr><td><code>create</code></td><td><code>[name]</code> (default <code>sandbox</code>)</td><td>Founds a community with sandbox limits (below), then syncs; returns its id and invite.</td></tr>
+          <tr><td><code>invite</code></td><td><code>&lt;community-hex&gt;</code></td><td>The invite, <code>uri</code> and <code>web</code>.</td></tr>
+          <tr><td><code>link-approve</code></td><td><code>&lt;device-link-request&gt;</code></td><td>Approves a device link request with this agent's root (how the sandbox's owner tab becomes a real delegated device).</td></tr>
+          <tr><td><code>whoami</code>, <code>sync</code></td><td>none</td><td>Identity, communities and network status after a sync.</td></tr>
+          <tr><td><code>feed</code></td><td><code>[community-hex]</code></td><td>Fresh-sorted posts: id, title, author, text, link, score, votes, replies, napping.</td></tr>
+          <tr><td><code>context</code></td><td><code>&lt;community-hex&gt;</code></td><td>What a person sees, with enough conversation to answer: the community, your standing, the 12 newest posts with text clipped to 4,000 characters and their 12 most recent comments (1,200 characters), the standing of up to 24 people met there, and 12 ledger entries. Opening posts records ordinary reads, as a person's would.</td></tr>
+          <tr><td><code>thread</code></td><td><code>&lt;post-id&gt;</code></td><td>The full <code>PostView</code>.</td></tr>
+          <tr><td><code>post</code>, <code>post-link</code></td><td><code>&lt;community&gt; &lt;title&gt; &lt;text…&gt;</code>; <code>&lt;community&gt; &lt;title&gt; &lt;url&gt; [text…]</code></td><td>Creates a post (stamped by the core).</td></tr>
+          <tr><td><code>comment</code></td><td><code>&lt;post-or-comment-id&gt; &lt;text…&gt;</code></td><td>Replies.</td></tr>
+          <tr><td><code>vote</code></td><td><code>&lt;target-id&gt; &lt;1|-1|0&gt;</code></td><td>Returns the new tally.</td></tr>
+          <tr><td><code>vouch</code></td><td><code>&lt;community&gt; &lt;key&gt; [1|-1|0] [reason]</code></td><td>Returns the person's level and voice.</td></tr>
+          <tr><td><code>review</code></td><td><code>&lt;target-id&gt; &lt;ok|hide|veto|none&gt; [reason]</code></td><td></td></tr>
+          <tr><td><code>standing</code></td><td><code>&lt;community&gt; [key]</code></td><td>The <code>StandingView</code>.</td></tr>
+          <tr><td><code>community</code>, <code>ledger</code></td><td><code>&lt;community-hex&gt;</code></td><td>The <code>CommunityView</code>; the ledger entries.</td></tr>
+          <tr><td><code>propose-rules</code></td><td><code>&lt;community&gt; &lt;text…&gt;</code></td><td>A rules proposal (owners only).</td></tr>
+          <tr><td><code>propose-limits</code></td><td><code>&lt;community&gt; &lt;field&gt; &lt;value&gt;</code></td><td>A limits proposal; <code>field</code> is <code>identity-bits</code>, <code>pow-bits</code>, <code>newcomer-posts</code>, <code>hide-quorum</code>, <code>block-quorum</code>, <code>veto-quorum</code> or <code>max-retention</code>.</td></tr>
+          <tr><td><code>forge</code></td><td><code>&lt;attack&gt; &lt;community-hex&gt;</code></td><td>An attack with a local oracle (below).</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p><code>create</code>'s sandbox limits: stamp difficulty <code>--pow-bits</code> or 12, retention 7 days, four newcomer posts a day, identity work 8 bits, one voucher to admit, a ten-minute contest window, and established after <code>--days</code> × 60 seconds (30 minutes by default; 300 seconds with <code>--days 0</code>), so a pentest doesn't wait two weeks. Its rules are “1. Be kind. 2. No spam. 3. Stay on topic.”</p>
+    <h3 id="agent-wire">One session</h3>
+    <p>Every verb but <code>init</code>, <code>pair</code>, <code>join</code>, <code>create</code>, <code>invite</code> and <code>link-approve</code> needs an identity and a hub, and runs inside <code>wire::session</code>: a one-shot WebSocket client that mirrors <code>hoi_net::dial</code> without looping forever.</p>
+    <div class="wk-seq" data-title="wire::session(node, url, act)">
+lanes: Agent node | wire.rs | Hub
+wire.rs -> Hub: WebSocket connect (message cap <code>MAX_MESSAGE</code>)
+Agent node: <code>net_connect("hub", Role::Home)</code>
+Agent node => Hub @sky: <code>hello</code>, catch-up, records, until quiet
+Hub => Agent node @sky: what the hub has
+wire.rs: quiet for 400 ms, or 20 s in all
+Agent node: <code>act(node)</code>: the verb's one action
+Agent node => Hub @sky: what the action produced, until quiet again
+wire.rs -> Hub: close
+Agent node: <code>net_disconnect("hub")</code>, <code>commit()</code>
+</div>
+    <h3 id="agent-forge">forge, with a local oracle</h3>
+    <p><code>agent … forge &lt;attack&gt; &lt;community&gt;</code> builds the attack with a fresh <code>Forger</code> at the community's <code>pow_bits</code> (8 if unknown). First it feeds each artifact to the agent's own node with <code>ingest</code>, as if a peer named <code>oracle</code> sent it, and records the exact stage that refused it. Then <code>wire::inject</code> connects, syncs, pushes the forger's credentials and the artifacts as raw <code>recs</code> in chunks of 500, syncs again and reports whether the hub kept the link (it drops peers that send too many invalid records).</p>
+    <div class="wk-code" data-lang="json" data-title="hoi-sim agent --data ./mallory forge bad-sig &lt;community&gt; (shape)"><pre><code>{
+  "ok": true,
+  "attack": "bad-sig",
+  "community": "…",
+  "injected_to_hub": true,
+  "hub_kept_link": true,
+  "all_held_locally": true,
+  "forgeries": [
+    { "forgery": "post with a forged signature", "expected": "refused",
+      "local_verdict": "refused at: …", "held": true, "note": "signature doesn't verify over the id" }
+  ],
+  "reading": "every forgery should be refused or contained; run the referee to confirm the honest network never shows it"
+}</code></pre></div>
+    <p>The exit status is 1 when any artifact was not held locally. Whether the honest network shows any of it is the referee's question.</p>
+  </section>
+
+  <section class="wk-sec" id="referee">
+    <h2>referee: the scoreboard</h2>
+    <div class="wk-code" data-lang="sh" data-title="hoi-sim referee"><pre><code>hoi-sim referee --data DIR [--hub URL] [--community HEX | -c HEX] [--watch] [--json]</code></pre></div>
+    <p>An honest observer. Without an identity it makes a quiet one (named <code>--name</code> or <code>referee</code>). It syncs in a session and reads, for every joined community (or only <code>--community</code>): name and id, established members, moderators, bans, pending proposals, posts showing and napping in the fresh feed, and, for everyone who posted, their short key, level, voice to three decimals, and whether they are blocked or struck.</p>
+    <div class="wk-code" data-lang="text" data-title="render_scoreboard (shape)"><pre><code>
+  hoi referee · &lt;network label&gt;
+  ──────────────────────────────────────────────────────────────
+  privacy  (3f9a0c21b7d4)
+    established 5  mods 0  banned 0  proposals pending 1
+    posts: 6 showing, 15 napping
+           a7f2·91c0  established  voice 1
+           0c44·e1b9  member       voice 0 [struck]
+  ──────────────────────────────────────────────────────────────</code></pre></div>
+    <p>With <code>--watch</code> it clears the screen and prints again every five seconds until interrupted (one compact JSON line per round with <code>--json</code>); without it, once. The JSON is <code>{ok, hub, communities: [{id, name, members, mods, banned, proposals, posts_visible, posts_napping, people: [{key, level, voice, blocked, struck}]}]}</code>.</p>
+  </section>
+
+  <section class="wk-sec" id="ladder">
+    <h2>ladder: hundreds of members, adversarial vouching</h2>
+    <div class="wk-code" data-lang="sh" data-title="hoi-sim ladder"><pre><code>hoi-sim ladder [--days D] [--seed S]        # defaults: 360 days, seed 1</code></pre></div>
+    <p>A model, with no nodes and no network: the community's records so far go through <code>hoi_moderation::ladder::settle</code>, the function every device runs, once a week. Quarters line up with the ladder's 90-day vouch epoch. The community uses the default ladder with two established vouchers to admit and 14 days to become established.</p>
+    <ul>
+      <li><b>Honest life.</b> About one newcomer a day (90%) until the community is full, vouched in by up to two established honest members who are around. Members post (30% a day), go away for 20 to 79 days now and then, a few leave for good; established members come across recent posts (20% a day), hide spam and defend members they vouched for.</li>
+      <li><b>Governance.</b> The owner proposes a change on day 15 of every 30; honest electors agree within the week, or leave it unanswered.</li>
+    </ul>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Ladder strategies">
+      <table>
+        <thead><tr><th>Strategy</th><th>The party plays</th></tr></thead>
+        <tbody>
+          <tr><td><code>none</code></td><td>No party: the baseline.</td></tr>
+          <tr><td><code>ring</code></td><td>Sybils vouch only for each other. Nobody established ever vouched for them.</td></tr>
+          <tr><td><code>turncoat</code></td><td>From day 60, two established members turn together (one alone can't admit anyone with two vouchers needed). Each quarter each vouches a batch of four Sybils in, the other countersigning, and every established Sybil does the same. The ring hides honest posts, tries to block an honest member, objects to every proposal and posts spam.</td></tr>
+          <tr><td><code>patient</code></td><td>Sybils that behave: each talks an honest member into a vouch now and then (15% a quarter), they vouch for each other, post well and wait; from day 180 all strike at once.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>The report runs every strategy at 100 and at 300 honest members, one line each, under the header <code>hoi-sim ladder · &lt;days&gt; days · settled weekly with hoi_moderation::ladder::settle · seed &lt;seed&gt;</code>:</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Ladder report columns">
+      <table>
+        <thead><tr><th>Column</th><th>Meaning</th></tr></thead>
+        <tbody>
+          <tr><td><code>admitted(h/p)</code></td><td>Honest people and party members who reached member or above.</td></tr>
+          <tr><td><code>share max/end</code></td><td>The party's share of established voice: the largest seen at a weekly settle, and at the end.</td></tr>
+          <tr><td><code>quarters over 2×</code></td><td>Quarters in which the party's voice grew past twice what it had (or one voice), plus what honest vouches handed it: the bound the ladder is built on. Must be 0.</td></tr>
+          <tr><td><code>blocked(h/p)</code></td><td>Honest people and party members the community blocked.</td></tr>
+          <tr><td><code>hidden honest</code>, <code>spam hidden</code></td><td>Honest posts hidden; spam posts hidden out of those posted.</td></tr>
+          <tr><td><code>proposals passed/lapsed/open</code></td><td>The owner's proposals.</td></tr>
+          <tr><td><code>late electors</code></td><td>Electors of a proposal vouched in after it was made. Must stay 0.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>The tests (200 days, 80 members, seed 7) pin the results down: a ring nobody vouched for is admitted nowhere and holds no voice; a turncoat ring gets in but never more than doubles a quarter, blocks nobody honest, and adds no late electors; patient Sybils stay within what they were given; without a party at least five proposals are made and none lapses.</p>
+  </section>
+
+  <section class="wk-sec" id="scatter">
+    <h2>scatter: placement against a party</h2>
+    <div class="wk-code" data-lang="sh" data-title="hoi-sim scatter"><pre><code>hoi-sim scatter [--trials N] [--seed S]     # defaults: 20,000 trials, seed 1</code></pre></div>
+    <p>Generations of pieces placed with the core's own rules (<code>hoi_sync::place::place</code>) among places a party runs a share of, sized with the core's own function (<code>hoi_crypto::scatter::size::size</code>). Each place is a node in a network of its own, so a fair party's draws are exactly hypergeometric. Each trial spends a generation's whole index budget, the worst case repair can reach: <code>n</code> pieces first, then <code>m − n</code> more on places that never held a sibling. It counts whether the party ended up able to <b>rebuild</b> (k of all m placed) or to <b>withhold</b> (more than n − k of the n live).</p>
+    <p>The report covers 30, 80, 100, 400 and 1,000 places, levels 10, 15 and 20, and party shares of 5, 10, 15, 20 and 30%, one line each:</p>
+    <div class="wk-code" data-lang="text" data-title="the header and one line's format"><pre><code>places  level  party   k/n (m)    rebuilt (exact)            withheld (exact)           most  hard
+  1000    10%    10%   k/n   (  m)       0 ( 1.234e-3 )        0 ( 5.678e-4 )   …</code></pre></div>
+    <dl class="wk-defs">
+      <dt>k/n (m)<small>Size</small></dt><dd>The size the core chose for generation 0 at that level and number of places.</dd>
+      <dt>rebuilt (exact)<small>count (expected)</small></dt><dd>Trials where the party could rebuild, and the exact chance times the trials, from <code>hyper_tail(places, party, m, k)</code>.</dd>
+      <dt>withheld (exact)<small>count (expected)</small></dt><dd>The same for withholding, <code>hyper_tail(places, party, n, n − k + 1)</code>.</dd>
+      <dt>most<small>pieces</small></dt><dd>The most pieces of one generation the party ever held.</dd>
+      <dt>hard<small>yes or blank</small></dt><dd>The party runs fewer places than k: it can never rebuild, whatever the luck.</dd>
+    </dl>
+    <p>Two closing lines show the <b>poisoned</b> case at 400 and 1,000 places: half the places are the party's, all reached through one introducer (a poisoned node list), which placement caps at ⌈n/4⌉ of a generation. The tests check that the floating-point tail agrees with known values (15 of 28 with a budget of 35 at 10% in a large network ≈ 4.6·10⁻⁷), that a tenth of the places in networks of 12 to 90 never rebuilds or withholds, that observed counts stay within five standard deviations of the formula far above the level, that at the level's own share nothing happens in 3,000 trials, and that a poisoned node list or poisoned rosters get no more than ⌈n/4⌉ and rebuild nothing, where the same places reached fairly rebuild in more than half the trials.</p>
+  </section>
+
+  <section class="wk-sec" id="life">
+    <h2>scatter --life: objects over their whole life</h2>
+    <div class="wk-code" data-lang="sh" data-title="hoi-sim scatter --life"><pre><code>hoi-sim scatter --life [--objects N] [--days D] [--seed S]   # defaults: 1,000 objects, 90 days</code></pre></div>
+    <p>A network of places that come and go. Objects are placed and sized with the core's functions and repaired the way members' durable devices repair them, four rounds a day (every six hours):</p>
+    <ul>
+      <li>An index is lost when its holder answered "not kept", or stayed silent for more than two probes in a row (half a day): a holder only briefly away is not lost. Honest holders answer 90% of probes.</li>
+      <li>Repair starts once a third of the spare pieces are gone (<code>size::repair_margin</code>): fresh indexes go to places that never held one of the generation, within the budget; with the budget spent, the next generation, sized for its smaller share of the risk, at most once a day unless fewer than k are left. Readers keep the generation before as a fallback.</li>
+      <li>Every placement is carried by three forwarder places, at most k − 1 indexes of a generation each; the most any carried is recorded.</li>
+      <li>Places leave for good at the churn rate each day and a new node takes the slot; the party keeps its share.</li>
+    </ul>
+    <p>The party keeps every piece it is ever given. It may <b>force repairs</b> (its holders answer "not kept" for everything, so devices re-place those indexes elsewhere and the party gets more draws), and a member of it may make <b>bad updates</b> (a new generation onto its own places once a day, which it then withholds).</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Life report cases">
+      <table>
+        <thead><tr><th>Places</th><th>Party</th><th>Churn a day</th><th>Forced repairs</th><th>Bad updates</th></tr></thead>
+        <tbody>
+          <tr><td>1,000</td><td>10%</td><td>1%, 5%, 10%, 20%</td><td></td><td></td></tr>
+          <tr><td>1,000</td><td>10%</td><td>10%</td><td>yes</td><td></td></tr>
+          <tr><td>1,000</td><td>10%</td><td>10%</td><td></td><td>yes</td></tr>
+          <tr><td>80</td><td>10%</td><td>10%</td><td>yes</td><td></td></tr>
+          <tr><td>1,000</td><td>30%</td><td>10%</td><td>yes</td><td></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>All at level 10. Columns: <code>readable</code> (the share of object-rounds in which the object could be read), <code>lost</code> (objects unreadable at the end), <code>rebuilt (expected)</code> (objects some generation of which the party could rebuild, against the sum of every generation's exact chance), <code>withheld</code>, <code>gens/object</code> and <code>over k</code> (placements where a forwarder would have carried k or more; must be 0). The tests hold it to at least 99.9% readable at 10% churn a day in networks of 80 and 1,000 places with nothing lost, rebuilt or withheld; forced repairs buying the party no more than the exact tails allow; and bad updates delaying a post without making it unreadable.</p>
+  </section>
+
+  <section class="wk-sec" id="load">
+    <h2>scatter --load: a peak hour</h2>
+    <div class="wk-code" data-lang="sh" data-title="hoi-sim scatter --load"><pre><code>hoi-sim scatter --load [--seed S]</code></pre></div>
+    <p>One peak hour of a network with 10,000 to 200,000 devices online, sampled. There is one public node per hundred devices online (at least 12), each a holder and a forwarder in a place of its own, linked to 64 others and vouching for 32 (or 64) of them. 400 sampled devices keep three forwarder links (70%, browsers and phones) or six (30%, desktops); a device reaches the holders its forwarders vouch for and places a generation among them; a reader can rebuild only if k of the holders are among those its own forwarders reach.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Load assumptions">
+      <table>
+        <thead><tr><th>Assumption</th><th>Value</th></tr></thead>
+        <tbody>
+          <tr><td>Writes per device and hour</td><td>one text post (1,536 bytes) and a picture every ten hours (300,000 bytes)</td></tr>
+          <tr><td>Reads per device and hour</td><td>60 posts and 10 pictures, k + 2 pieces each</td></tr>
+          <tr><td>Hops</td><td>two each way: a forwarder, then a holder</td></tr>
+          <tr><td>Envelope overhead</td><td>177 bytes per put, a fixed 256-byte get, 54 bytes per answer</td></tr>
+          <tr><td>Life</td><td>90 days, for storage</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Rows: the earlier layout at 10k, 20k, 50k, 100k and 200k online (pictures in up to eleven 256 KiB chunks per object, base64 inside JSON, padded to the next class), wider vouch lists alone at 200k, and the current layout at the same five sizes (raw bytes, each object filled to a class it fits, and a forwarder that doesn't reach a holder passing the request to a link of its own that vouches for it). Columns: <code>online</code>, <code>nodes</code>, <code>vouches</code>, <code>relay</code>, <code>media</code> (<code>before</code> or <code>fitted</code>), <code>k/n</code>, <code>placed</code> and <code>reach</code> (shares of writes placed and reads that found k), <code>ops/s (busiest)</code>, <code>MB/s</code>, <code>GB stored</code> and <code>sessions</code> per public node, and <code>picture stored/read</code> (bytes stored and downloaded per byte of a picture).</p>
+  </section>
+
+  <section class="wk-sec" id="address">
+    <h2>scatter --address: who can link an address to a record</h2>
+    <div class="wk-code" data-lang="sh" data-title="hoi-sim scatter --address"><pre><code>hoi-sim scatter --address [--trials N] [--seed S]</code></pre></div>
+    <p>A device sends through forwarders it links to; a party runs a share of the public nodes. Two things could tie the device's address to what it does: its own records (a post's pointer, a vote, a reply) and its uploads of pieces. The model compares two designs for parties running 5, 10 and 20% of the nodes. In the row labeled <code>before</code>, the device offers each new record to its own links, so the first link has both, and uploads go in two hops. In the row labeled <code>since S7</code>, the current code, a record goes sealed through an entry link to an injector, another of its links, and uploads go in three hops: linking needs two of the party's nodes on one path. Columns: the share of own records one node links by itself, the share the party links with all its nodes, and the same two for uploads.</p>
+    <p>The test checks that before, the first link always could (1.0), that now no single node can (0.0), and that the party's share is about the square of its share of the nodes, within 0.01 over 20,000 trials.</p>
+  </section>
+
+  <section class="wk-sec" id="tests">
+    <h2>Tests and the sandbox</h2>
+    <div class="wk-table" tabindex="0" role="region" aria-label="hoi-sim tests">
+      <table>
+        <thead><tr><th>Test</th><th>Runs</th></tr></thead>
+        <tbody>
+          <tr><td><code>the_protocol_holds_against_a_small_siege</code></td><td><code>siege(3, 2, 30, Some(8))</code>: every invariant holds, and forgeries and spam were actually injected.</td></tr>
+          <tr><td><code>a_siege_with_churn_holds</code></td><td>Six honest members, three attackers, a third offline at any time, a different third each time.</td></tr>
+          <tr><td><code>a_bigger_siege_also_holds</code></td><td><code>siege(5, 4, 30, Some(8))</code>.</td></tr>
+          <tr><td><code>two_hundred_nodes_with_churn_hold</code></td><td>Ignored by default (minutes): 200 honest nodes, 20 attackers, a fifth offline. The major-release workflow runs it with <code>--ignored</code> in release mode.</td></tr>
+          <tr><td><code>every_catalogued_attack_builds_something_refusable</code></td><td>Each attack yields wire bytes and at least one artifact that must be refused.</td></tr>
+          <tr><td>three tests in <code>bin/hoi-sim.rs</code></td><td><code>context</code> exposes nested conversation and real votes; rules proposals keep owner permissions and members' objections; <code>context</code> bounds history and keeps recent nested replies.</td></tr>
+          <tr><td><code>ladder.rs</code>, <code>scatter.rs</code>, <code>life.rs</code>, <code>load.rs</code>, <code>address.rs</code></td><td>The model tests described above; <code>compare_repair_triggers</code> is ignored and prints the evidence for the repair margin.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="wk-code" data-lang="sh" data-title="from core/"><pre><code>cargo test -p hoi-sim                                           # the quick ones
+cargo test --release -p hoi-sim two_hundred -- --ignored --nocapture</code></pre></div>
+    <p>The Docker sandbox in <code>sandbox/</code> builds <code>hoi-node</code> and <code>hoi-sim</code> into one image. Its controller runs agents as <code>hoi-sim agent --data /data --hub ws://hub:7842 …</code>, the referee as <code>hoi-sim referee --data /data --hub ws://hub:7842 --json</code>, and a battle as <code>hoi-sim battle --honest N --attackers M --pow-bits 8 --json</code>; the container is the real boundary, the binary only speaks the protocol. See <a href="/wiki/development/">Building &amp; testing</a>.</p>
+  </section>
+
+  <section class="wk-sec" id="next">
+    <h2>Where to go next</h2>
+    <div class="wk-cards">
+      <a class="wk-card g-peach" href="/wiki/validation/"><i></i><b>Validation pipeline</b><span>The stages the forged records are refused at.</span></a>
+      <a class="wk-card g-mint" href="/wiki/standing/"><i></i><b>Standing &amp; review</b><span>The ladder, voice and vetoes the battle and the model test.</span></a>
+      <a class="wk-card g-lilac" href="/wiki/scatter/"><i></i><b>Scattered delivery</b><span>Sizing and placement, the rules the scatter models call.</span></a>
+      <a class="wk-card g-sky" href="/wiki/spam/"><i></i><b>Spam &amp; rate limits</b><span>Why the spam flood naps and the copy-paste flood bounces.</span></a>
+    </div>
+  </section>
+</article>
+<!-- @wiki-close -->
+<!-- @include footer.html -->
+<script type="module" src="/src/pages/wiki.ts"></script>
+</body>
+</html>

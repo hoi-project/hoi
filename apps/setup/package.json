@@ -1,0 +1,16 @@
+{
+  "name": "@hoi/setup",
+  "version": "1.0.0-preview.1",
+  "private": true,
+  "type": "module",
+  "description": "hoi node setup: a small Tauri 2 app that installs and manages a public node on a server over SSH, or on this computer, with a wizard.",
+  "scripts": {
+    "tauri": "node scripts/tauri.mjs",
+    "dev": "node scripts/tauri.mjs dev",
+    "build": "node scripts/tauri.mjs build",
+    "icons": "node ../desktop/scripts/icon-png.mjs src-tauri/icons && tauri icon src-tauri/icons/source.png"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.12.4"
+  }
+}

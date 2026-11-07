@@ -1,0 +1,488 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <!-- @include head.html title="Scattered delivery · hoi wiki" description="Sealing, the all-or-nothing transform, Reed–Solomon pieces and envelopes." -->
+</head>
+<body class="wiki">
+<!-- @include header.html nav="wiki" -->
+<!-- @wiki-open -->
+<article class="wk-doc">
+  <!-- @wiki-crumbs -->
+  <h1>Scattered <span class="acc">delivery</span></h1>
+  <p class="wk-lead">A post can be kept in pieces instead of whole: sealed under a key of its own, wrapped so that fewer than <i>k</i> pieces reveal nothing, cut into <i>n</i> pieces any <i>k</i> of which rebuild it, and placed one per independent place on public nodes that hold pieces. Devices reach those holders through forwarders, so a holder never sees who stored or fetched. This page describes the code that implements it: the pieces library in <code>hoi-crypto</code>, the shapes in <code>hoi-types</code>, the sealed envelopes, the holders' storage and how the core uses all of it.</p>
+  <p class="wk-src-list">Source <a href="{{REPO_URL}}/tree/main/core/crates/hoi-crypto/src/scatter">hoi-crypto/src/scatter/</a> <a href="{{REPO_URL}}/blob/main/core/crates/hoi-crypto/src/envelope.rs">hoi-crypto/src/envelope.rs</a> <a href="{{REPO_URL}}/blob/main/core/crates/hoi-types/src/scatter.rs">hoi-types/src/scatter.rs</a> <a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/scatter.rs">hoi-core/src/scatter.rs</a> <a href="{{REPO_URL}}/blob/main/core/crates/hoi-store/src/pieces.rs">hoi-store/src/pieces.rs</a> <a href="{{REPO_URL}}/blob/main/core/vectors/scatter.json">core/vectors/scatter.json</a></p>
+  <div class="wk-head-rule"></div>
+
+  <section class="wk-sec" id="overview">
+    <h2>What it does</h2>
+    <p>The library has no network in it. It seals an object, cuts a generation of it into pieces, and computes locators, piece hashes, drop secrets and the sizing that keeps a party running less than the community's share of places from rebuilding or withholding an object:</p>
+    <div class="wk-code" data-lang="text" data-title="core/crates/hoi-crypto/src/scatter/mod.rs"><pre><code>content ──pad to its class──► plain ──XChaCha20-Poly1305(K_obj)──► sealed
+sealed ──AONT(K_a,g)──► package ──split into k──► data pieces ──Reed–Solomon──► piece i, any i &lt; 256</code></pre></div>
+    <div class="wk-stage" data-demo="scatter" data-title="An object in pieces">
+      <p class="nojs">An object is sealed, wrapped by the all-or-nothing transform and split into k data pieces and further parity pieces. Some pieces are lost; any k that remain rebuild the package, the transform is undone and the object opens. With fewer than k, nothing of it can be read.</p>
+      <p class="wk-stage-cap">Any k of the pieces rebuild the object; fewer reveal nothing about it.</p>
+    </div>
+    <ul>
+      <li><b>Who holds pieces.</b> Public nodes with the holder role: <code>hoi-node --hold-pieces GB</code> (2 GB by default on a node that serves strangers; 0 turns it off) or a desktop that is a public node with <b>Keep mailboxes for others</b> on. A holder keeps at most one piece of any generation and can read none of them.</li>
+      <li><b>Who forwards.</b> Public nodes pass sealed <code>piece</code> requests on to the holder they name, and the sealed answer back, without reading either.</li>
+      <li><b>What goes in pieces.</b> Private groups' posts, comments, edits and attachments, and open communities' when their limits say <code>scatter.open</code> (<a href="#wired">below</a>). The same holders keep private groups' mailbox slots (<a href="/wiki/mailboxes/">Mailboxes</a>).</li>
+    </ul>
+  </section>
+
+  <section class="wk-sec" id="classes">
+    <h2>Size classes and parameters</h2>
+    <p>An object's content is padded to one of seven classes, so its size says only which class it is. Longer media are cut into objects first.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Size classes">
+      <table>
+        <thead><tr><th>Class</th><th>Content up to</th><th>Sealed</th><th>Package</th><th>Piece at k = 15</th><th>Smallest k</th></tr></thead>
+        <tbody>
+          <tr><td>0</td><td>4 KiB</td><td>4,140 B</td><td>4,188 B</td><td>280 B</td><td>3</td></tr>
+          <tr><td>1</td><td>16 KiB</td><td>16,428 B</td><td>16,476 B</td><td>1,099 B</td><td>3</td></tr>
+          <tr><td>2</td><td>64 KiB</td><td>65,580 B</td><td>65,628 B</td><td>4,376 B</td><td>3</td></tr>
+          <tr><td>3</td><td>256 KiB</td><td>262,188 B</td><td>262,236 B</td><td>17,483 B</td><td>3</td></tr>
+          <tr><td>4</td><td>1 MiB</td><td>1,048,620 B</td><td>1,048,668 B</td><td>69,912 B</td><td>3</td></tr>
+          <tr><td>5</td><td>2 MiB</td><td>2,097,196 B</td><td>2,097,244 B</td><td>139,817 B</td><td>3</td></tr>
+          <tr><td>6</td><td>4 MiB</td><td>4,194,348 B</td><td>4,194,396 B</td><td>279,627 B</td><td>5</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Sealed = content capacity + 44 (nonce 24, length 4, tag 16). Package = sealed + 48 (canary 16, masked key 32). A piece is ⌈package / k⌉. The smallest <i>k</i> is <code>MIN_K</code>, or what keeps a piece within <code>MAX_PIECE</code>.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Scatter parameters">
+      <table>
+        <thead><tr><th>Constant</th><th>Value</th><th>Meaning</th></tr></thead>
+        <tbody>
+          <tr><td><code>CLASSES</code></td><td>4, 16, 64, 256 KiB; 1, 2, 4 MiB</td><td>What an object may hold, by class index.</td></tr>
+          <tr><td><code>MAX_PIECE</code></td><td>1 MiB</td><td>No piece is longer.</td></tr>
+          <tr><td><code>MIN_K</code></td><td>3</td><td>The fewest pieces that rebuild a generation.</td></tr>
+          <tr><td><code>MAX_N</code></td><td>160</td><td>The most pieces a generation places at first.</td></tr>
+          <tr><td><code>MAX_M</code></td><td>200</td><td>The most indexes a generation may ever use: <code>MAX_N</code> and its budget.</td></tr>
+          <tr><td><code>budget(n)</code></td><td><i>n</i> + ⌈<i>n</i>/4⌉</td><td>Indexes a generation that places <i>n</i> may use, repairs included.</td></tr>
+          <tr><td><code>LEVELS</code></td><td>10, 15, 20</td><td>Shares of places, in percent, a community may choose; 10 is the default and the floor.</td></tr>
+          <tr><td>Indexes</td><td>0 to 255</td><td>One per field element.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 id="classes-fit">Media in classes</h3>
+    <p><code>fit(len, header)</code> picks the classes of the objects a media item goes in: one object of the smallest class that holds the rest whenever that class is at most twice the rest, else an object of the largest class it fills and the rest again. A 300 KB picture goes in a 256 KiB and a 64 KiB object (1.1 times its size), not one of 1 MiB.</p>
+  </section>
+
+  <section class="wk-sec" id="seal">
+    <h2>Sealing an object</h2>
+    <p>Each object gets a random 32-byte id (not secret) and a random 32-byte object key <code>K_obj</code>. <code>seal_object</code> pads the content to its class and seals it with XChaCha20-Poly1305:</p>
+    <div class="wk-bytes" data-title="A sealed object (class capacity + 44 bytes)">
+nonce | 24 B | sun | 3 | synthetic, from the key, id, class and plaintext
+length | 4 B | coral | 1 | u32 BE content length
+content | len | lilac | 4 | the object's content
+zeros | to capacity | mute | 2 | padding
+tag | 16 B | peach | 2 | Poly1305
+    </div>
+    <dl class="wk-defs">
+      <dt>AAD</dt><dd><code>hoi scatter object v1</code> ‖ object id (32) ‖ class index (1): the sealed object is bound to its id and its class.</dd>
+      <dt>Nonce</dt><dd>The first 24 bytes of BLAKE3 keyed with <code>derive_key("hoi scatter nonce v1", K_obj)</code> over object id ‖ class ‖ padded plaintext. The same content under the same key and id always seals to the same bytes, so a member who kept the content can make the sealed object again; different content never shares a nonce, even under a reused key.</dd>
+      <dt>Opening</dt><dd><code>open_object</code> requires the class's exact length, a valid tag, zero padding after the content, a length within the class, and the nonce the content seals with (compared in constant time). A hand-sealed object with any other nonce is refused even though its tag verifies.</dd>
+      <dt>Sealed hash</dt><dd><code>sealed_hash</code>: BLAKE3 in derive mode under <code>hoi scatter sealed v1</code>. Generation 0's manifest fixes it; every later generation must rebuild to the same bytes.</dd>
+    </dl>
+  </section>
+
+  <section class="wk-sec" id="aont">
+    <h2>The all-or-nothing transform</h2>
+    <p>The transform is the one of AONT-RS (Resch and Plank, FAST 2011). Each generation draws a fresh one-time key <code>K</code>:</p>
+    <div class="wk-bytes" data-title="A package (sealed + 48 bytes)">
+C | sealed + 16 B | lilac | 8 | ChaCha20(K, nonce 0) over sealed ‖ 16 zero bytes (the canary)
+masked key | 32 B | coral | 4 | K ⊕ BLAKE3 <code>derive_key("hoi scatter aont v1", C)</code>
+    </div>
+    <ul>
+      <li>Without every byte of <code>C</code> nobody learns <code>K</code>, and without <code>K</code> no byte of the sealed object follows: fewer than <i>k</i> pieces of a generation reveal nothing, whatever key the inner seal used.</li>
+      <li>Unpacking recomputes the mask from <code>C</code>, recovers <code>K</code>, runs the keystream again and checks the canary is zero; any changed byte, in the body or the masked key, fails it.</li>
+      <li>A key wraps exactly one package, so the zero nonce never repeats under it, and packages of two generations share no keystream: their pieces never combine.</li>
+    </ul>
+    <div class="wk-code" data-lang="rust" data-title="core/crates/hoi-crypto/src/scatter/aont.rs (trimmed)"><pre><code>pub fn package(sealed: &amp;[u8], key: &amp;[u8; 32]) -&gt; Vec&lt;u8&gt; {
+    let mut out = Vec::with_capacity(sealed.len() + OVERHEAD);
+    out.extend_from_slice(sealed);
+    out.extend_from_slice(&amp;[0u8; CANARY]);
+    keystream(key, &amp;mut out);
+    let mut mask = blake3::derive_key(CONTEXT, &amp;out);
+    for (m, k) in mask.iter_mut().zip(key) {
+        *m ^= k;
+    }
+    out.extend_from_slice(&amp;mask);
+    mask.zeroize();
+    out
+}</code></pre></div>
+  </section>
+
+  <section class="wk-sec" id="rs">
+    <h2>Reed–Solomon over GF(2⁸)</h2>
+    <p>The code is systematic Reed–Solomon, the one Backblaze published and many libraries share. It does arithmetic only, on ciphertext: no secrets and no <code>unsafe</code>.</p>
+    <ul>
+      <li><b>Field</b>: GF(2)[x] / (x⁸ + x⁴ + x³ + x² + 1), polynomial <code>0x11D</code>, generator 2, with log and exp tables built at compile time.</li>
+      <li><b>Matrix</b>: the Vandermonde rows <code>[r⁰, r¹, …, r^(k−1)]</code> (with 0⁰ = 1), multiplied on the right by the inverse of the top <i>k</i> × <i>k</i> block. Rows 0 to <i>k</i>−1 are the identity, so pieces 0 to <i>k</i>−1 are the data itself.</li>
+      <li><b>Any row, any time</b>: row <i>r</i> depends only on <i>r</i> and <i>k</i>, never on how many pieces exist. That is what lets a repair make fresh indexes later that combine with the old ones.</li>
+      <li><b>Decoding</b> takes exactly <i>k</i> pieces with distinct indexes below 256 and equal lengths, inverts their rows by Gauss–Jordan elimination and returns the <i>k</i> data pieces; with every data piece present it just copies them.</li>
+    </ul>
+    <h3 id="rs-generation">A generation's pieces</h3>
+    <p><code>Shards::new(sealed, class, k)</code> packages the sealed object under a fresh key, pads the package with zeros to <i>k</i> × piece length and cuts it into <i>k</i> data pieces. <code>piece(i)</code> gives any index. <code>Shards::rebuild</code> takes <i>k</i> pieces, checks that the zero padding after the package decoded as zeros, and <code>sealed()</code> undoes the transform and checks the class length.</p>
+    <div class="wk-bytes" data-title="One generation">
+data 0 | ⌈P/k⌉ | sky | 3 | package bytes from 0
+data 1 | ⌈P/k⌉ | sky | 3 | the next slice
+data k−1 | ⌈P/k⌉ | sky | 3 | the last slice, zero padded
+
+piece r, k ≤ r &lt; 256 | ⌈P/k⌉ | sun | 6 | row r of the matrix applied to the data pieces
+    </div>
+    <p>Each listed index has a piece hash: 16 bytes of BLAKE3 in derive mode under <code>hoi scatter piece v1</code> over object id ‖ generation ‖ index ‖ u32 BE length ‖ piece, so a piece can stand for no other. A reader checks every piece against it before rebuilding; three pieces of one generation and two of another rebuild nothing.</p>
+  </section>
+
+  <section class="wk-sec" id="sizing">
+    <h2>How many pieces</h2>
+    <p><code>size.rs</code> sizes each generation from the community's level ℓ and the number of independent places N the device chooses holders from. A party running a share ℓ of the places is assumed to hold ⌊ℓ·N/100⌋ of them. The smallest generation is chosen for which:</p>
+    <ol class="wk-steps">
+      <li><b>No rebuilding</b><p>The party gets <i>k</i> or more of all <i>m</i> indexes ever placed with probability at most 1 / (<code>LIFE</code> · 2<sup>g+1</sup>), <code>LIFE</code> = 1,000,000, so all generations of an object together stay under one in a million.</p></li>
+      <li><b>No withholding</b><p>The party gets <i>n</i>−<i>k</i>+1 or more of the <i>n</i> live pieces with probability at most the same bound.</p></li>
+      <li><b>Readable</b><p>At least <i>k</i> of <i>n</i> are up with probability at least 999/1000 when each holder is up 4/5 of the time.</p></li>
+      <li><b>Uploadable</b><p><i>n</i> ≤ 3 × (<i>k</i> − 1): a browser's three links each carry at most <i>k</i>−1 pieces of a generation. And 3 ≤ <i>k</i> ≤ <i>n</i> − 2, <i>n</i> ≥ 5.</p></li>
+    </ol>
+    <p>Up to 1000 places (<code>EXACT_UP_TO</code>) the risk is hypergeometric, exact for the places seen, and <i>m</i> is capped at the places; above, binomial with the level as the share, which is slightly stricter. Everything is exact integer arithmetic on a small big-integer type, never floats, so every host agrees on which generations meet a level, and the vectors fix the answers. With too few places there is no size and the object is not scattered.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Generation 0 sizes by places">
+      <table>
+        <thead><tr><th>Places seen</th><th>Level 10: k / n / m</th><th>Level 15</th><th>Level 20</th></tr></thead>
+        <tbody>
+          <tr><td>9, 11</td><td>none</td><td>none</td><td>none</td></tr>
+          <tr><td>12</td><td>5 / 12 / 12 †</td><td>5 / 12 / 12 †</td><td>5 / 12 / 12 †</td></tr>
+          <tr><td>15 to 20</td><td>5 / 12 / 15 †</td><td>5 / 12 / 15 †</td><td>5 / 12 / 15 †</td></tr>
+          <tr><td>30</td><td>5 / 12 / 15 †</td><td>5 / 12 / 15 †</td><td>7 / 15 / 19 †</td></tr>
+          <tr><td>40</td><td>5 / 12 / 15 †</td><td>7 / 15 / 19 †</td><td>9 / 18 / 23 †</td></tr>
+          <tr><td>50</td><td>6 / 14 / 18 †</td><td>8 / 17 / 22 †</td><td>11 / 21 / 27 †</td></tr>
+          <tr><td>60</td><td>7 / 15 / 19 †</td><td>10 / 20 / 25 †</td><td>13 / 25 / 32 †</td></tr>
+          <tr><td>80</td><td>9 / 18 / 23 †</td><td>13 / 24 / 30 †</td><td>17 / 32 / 40 †</td></tr>
+          <tr><td>90</td><td>10 / 20 / 25 †</td><td>13 / 24 / 30</td><td>18 / 34 / 43</td></tr>
+          <tr><td>100</td><td>10 / 20 / 25</td><td>14 / 26 / 33</td><td>19 / 35 / 44</td></tr>
+          <tr><td>150</td><td>12 / 23 / 29</td><td>16 / 30 / 38</td><td>23 / 43 / 54</td></tr>
+          <tr><td>200</td><td>13 / 24 / 30</td><td>18 / 33 / 42</td><td>26 / 48 / 60</td></tr>
+          <tr><td>300</td><td>13 / 24 / 30</td><td>20 / 37 / 47</td><td>30 / 55 / 69</td></tr>
+          <tr><td>500</td><td>14 / 26 / 33</td><td>22 / 40 / 50</td><td>33 / 60 / 75</td></tr>
+          <tr><td>1000</td><td>15 / 27 / 34</td><td>23 / 42 / 53</td><td>35 / 64 / 80</td></tr>
+          <tr><td>more than 1000</td><td>15 / 28 / 35</td><td>24 / 44 / 55</td><td>39 / 71 / 89</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>† the hard bound: the party could never hold <i>k</i> places at all (only counted where the risk is exact). Values are from <code>core/vectors/scatter.json</code>.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Sizes by generation">
+      <table>
+        <thead><tr><th>Generation</th><th>0</th><th>1</th><th>2</th><th>4</th><th>8</th><th>16</th></tr></thead>
+        <tbody>
+          <tr><td>Level 10, large network: k / n / m</td><td>15 / 28 / 35</td><td>16 / 29 / 37</td><td>17 / 31 / 39</td><td>19 / 35 / 44</td><td>22 / 40 / 50</td><td>28 / 52 / 65</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <ul>
+      <li><code>meets(level, g, places, size)</code> checks the rebuild and withhold bounds alone, as a reader checks a manifest; <code>reading</code> gives the highest level a size meets. A size that meets generation 0 may miss a later generation's tighter budget, and 3 of 6 meets no level.</li>
+      <li><code>size_at_least</code> sizes a hot object's larger generation: <i>k</i> grows with <i>n</i>, so the bounds hold at the same risk.</li>
+      <li><code>repair_margin(k, n)</code> = ⌈2(<i>n</i>−<i>k</i>)/3⌉: a generation is repaired once a third of its spare pieces are gone. Its comment records that the first figure, ⌈<i>k</i>/3⌉, lost about one post in fifty over a month at 10% churn a day in <code>hoi-sim scatter --life</code>, and this one kept every post readable there (<a href="/wiki/simulator/">Simulator</a>).</li>
+    </ul>
+  </section>
+
+  <section class="wk-sec" id="locators">
+    <h2>Locators, drops and stamps</h2>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Derived values">
+      <table>
+        <thead><tr><th>Value</th><th>Definition</th><th>Why</th></tr></thead>
+        <tbody>
+          <tr><td>Locator <code>loc_g,i</code></td><td>BLAKE3 keyed with <code>derive_key("hoi scatter loc v1", S_g)</code> over object id ‖ <i>g</i> ‖ <i>i</i></td><td>Where a holder keeps piece <i>i</i>. Without the generation's locator secret <code>S_g</code>, which only the sealed manifest carries, nobody computes a sibling's locator from one they hold.</td></tr>
+          <tr><td>Drop token <code>D</code></td><td>BLAKE3 keyed with <code>derive_key("hoi scatter drop v1", A)</code> over the locator, <code>A</code> the creator's drop secret</td><td>Lets only the creator drop what it stored. Only its hash travels with a piece; <code>D</code> itself only in a <code>drop</code>.</td></tr>
+          <tr><td>Drop hash</td><td>BLAKE3 derive mode <code>hoi scatter drop hash v1</code> over <code>D</code></td><td>What a holder keeps to check a token later, in constant time.</td></tr>
+          <tr><td>Drop key id</td><td>First 16 bytes of BLAKE3 derive mode <code>hoi scatter drop key v1</code> over the drop key's public part</td><td>Stored with a piece of a community that has a drop key.</td></tr>
+          <tr><td>Drop statement</td><td><code>hoi/scatter-drop/1\n</code> ‖ locator</td><td>What a committer's or moderator's device signs with the community drop key to drop a removed post's piece.</td></tr>
+          <tr><td>Device drop secret</td><td><code>derive_key("hoi scatter drop secret v1", device key)</code> (the endpoint key before there is a device)</td><td>The creator's <code>A</code>.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 id="locators-stamps">Stamps on puts</h3>
+    <p>Storage costs its sender in proportion to what it asks a holder to keep. A put carries a nonce such that BLAKE3 in derive mode under <code>hoi scatter stamp v1</code>, over holder endpoint ‖ locator ‖ u32 length ‖ u32 expiry day ‖ u64 nonce, has enough leading zero bits. The stamp is bound to all of these, so one made for one holder, piece, length or day is worth nothing for another.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Stamp bits by piece length">
+      <table>
+        <thead><tr><th>Piece up to</th><th>1 KiB</th><th>2 KiB</th><th>4 KiB</th><th>16 KiB</th><th>64 KiB</th><th>256 KiB</th><th>512 KiB</th><th>1 MiB</th></tr></thead>
+        <tbody>
+          <tr><td>Bits (<code>stamp_bits</code>)</td><td>8</td><td>9</td><td>10</td><td>12</td><td>14</td><td>16</td><td>17</td><td>18</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Eight bits (<code>STAMP_BASE_BITS</code>) up to 1 KiB, one more for each doubling past that. A 1 MiB piece needs 18 bits, about a quarter million hashes (<a href="/wiki/stamps/">Stamps &amp; work</a>).</p>
+  </section>
+
+  <section class="wk-sec" id="manifest">
+    <h2>The manifest and the pointer</h2>
+    <p>A manifest describes one generation. It holds the object key and the locator secret: whoever reads it can fetch and open the object, so it only ever travels sealed, inside MLS for private groups, or under the community's read key for open ones. It is canonical DAG-CBOR with one-letter keys (written in sorted order), decoded strictly: unknown fields are refused.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Manifest fields">
+      <table>
+        <thead><tr><th>Key</th><th>Field</th><th>Type</th><th>Meaning</th></tr></thead>
+        <tbody>
+          <tr><td><code>v</code></td><td>version</td><td>uint</td><td><code>1</code>.</td></tr>
+          <tr><td><code>o</code></td><td><code>object</code></td><td>32 bytes</td><td>The object's id: random, not secret.</td></tr>
+          <tr><td><code>s</code></td><td><code>sealed</code></td><td>32 bytes</td><td>The sealed hash, the same in every generation.</td></tr>
+          <tr><td><code>c</code></td><td><code>class</code></td><td>uint</td><td>Class index 0 to 6.</td></tr>
+          <tr><td><code>g</code></td><td><code>generation</code></td><td>uint ≤ 255</td><td>Which generation.</td></tr>
+          <tr><td><code>l</code></td><td><code>level</code></td><td>uint</td><td>The level it was sized for: 10, 15 or 20.</td></tr>
+          <tr><td><code>p</code></td><td><code>places</code></td><td>u32</td><td>The places the device that made it could choose from.</td></tr>
+          <tr><td><code>k</code>, <code>n</code>, <code>m</code></td><td>sizes</td><td>uint</td><td>Any <i>k</i> rebuild; <i>n</i> placed at first; <i>m</i> indexes at most.</td></tr>
+          <tr><td><code>h</code></td><td><code>hashes</code></td><td>array of 16 bytes</td><td>The piece hash of each index placed so far, index 0 first.</td></tr>
+          <tr><td><code>d</code></td><td><code>holders</code></td><td>array of 32 bytes</td><td>The holder of each of those indexes: endpoint ids, each at most once.</td></tr>
+          <tr><td><code>x</code></td><td><code>loc_secret</code></td><td>32 bytes</td><td>The generation's locator secret <code>S_g</code>.</td></tr>
+          <tr><td><code>y</code></td><td><code>key</code></td><td>32 bytes</td><td>The object key <code>K_obj</code>.</td></tr>
+          <tr><td><code>e</code></td><td><code>expires_at</code></td><td>uint</td><td>When its pieces expire, Unix seconds.</td></tr>
+          <tr><td><code>z</code></td><td><code>keys</code></td><td>array of 32 bytes, optional</td><td>Each holder's X25519 key when it took its piece, in index order: one per holder, or absent. A reader whose forwarders do not vouch for a holder seals to it anyway.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="wk-bytes" data-title="The vector's manifest: 1,618 bytes of canonical CBOR, keys in sorted order">
+map | 1 B | sun | 1 | <code>af</code>: 15 entries (16 with <code>z</code>)
+c | 3 B | coral | 1 | class 0
+d | 956 B | lilac | 8 | 28 holders: array header, then 28 × (2 + 32)
+e | 7 B | peach | 1 | <code>expires_at</code>
+g | 3 B | coral | 1 | generation 0
+
+h | 480 B | sky | 6 | 28 piece hashes: 28 × (1 + 16)
+k l m n | 14 B | coral | 2 | 15, 10, 35, 28
+o | 36 B | mute | 2 | object id
+p | 7 B | peach | 1 | places
+s | 36 B | mute | 2 | sealed hash
+
+v | 3 B | coral | 1 | 1
+x | 36 B | cobalt | 2 | locator secret
+y | 36 B | cobalt | 2 | object key
+z | optional | mute | 2 | holder keys: 32 bytes each
+    </div>
+    <h3 id="manifest-floors">Floors every manifest keeps</h3>
+    <ul>
+      <li>A known level; <i>k</i> ≥ 3; <i>k</i> + 2 ≤ <i>n</i> ≤ 160; <i>n</i> ≤ <i>m</i> ≤ budget(<i>n</i>); <i>places</i> ≥ <i>m</i>; the class's piece length at <i>k</i> within 1 MiB.</li>
+      <li>As many hashes as holders, from <i>n</i> to <i>m</i> of them; no holder twice; keys for every holder or none.</li>
+      <li>At most 512 + 200 × 100 bytes to decode (about 85 bytes per index, keys included); a 15-of-28 manifest encodes in under 1900 bytes. Whatever decodes re-encodes to the same bytes. <code>Debug</code> output leaves the secrets out, and the key and locator secret are zeroized on drop.</li>
+    </ul>
+    <h3 id="manifest-updates">Updates</h3>
+    <p>A later manifest of the same object is checked by <code>update_to</code> before it counts. It must keep the object, sealed hash, key and class. Then it is one of two things:</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Manifest updates">
+      <table>
+        <thead><tr><th>Update</th><th>Rules</th></tr></thead>
+        <tbody>
+          <tr><td><code>Extend</code></td><td>The same generation: same level, places, <i>k</i>, <i>n</i>, <i>m</i>, locator secret and expiry; every earlier index, holder and key left as it was; at least one fresh index appended within the budget.</td></tr>
+          <tr><td><code>Regenerate</code></td><td>The next generation (<i>g</i> + 1, never a skip), with a locator secret of its own, living no shorter.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>The reader also checks that a new generation's size meets a level and takes at most one regeneration a day. A <code>Pointer</code> is what members pass each other: canonical CBOR <code>{v: 1, t: made_at, m: manifest}</code>, at most 1024 + 200 × 64 bytes. The first pointer for an object makes it known; later ones are updates.</p>
+    <div class="wk-bytes" data-title="A pointer">
+map | 1 B | sun | 1 | <code>a3</code>: 3 entries
+m | manifest | lilac | 8 | the manifest's map, as above
+t | 3–11 B | peach | 2 | <code>made_at</code>, Unix seconds
+v | 3 B | coral | 1 | 1
+    </div>
+  </section>
+
+  <section class="wk-sec" id="envelope">
+    <h2>Sealed envelopes</h2>
+    <p>Every request to a holder is sealed to the holder's X25519 key (<code>xk</code>) with HPKE (RFC 9180): base mode, DHKEM(X25519, HKDF-SHA256), HKDF-SHA256, ChaCha20-Poly1305. The forwarder between them sees only the envelope. The holder answers sealed to a one-time key the request carries, so the forwarder cannot read the answer either, and an old answer opens under no new request. The implementation is <code>hpke-rs</code> 0.8 with its RustCrypto provider; <code>envelope.rs</code> only narrows the provider to this one suite.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Envelope kinds">
+      <table>
+        <thead><tr><th>Kind</th><th>Tag</th><th>HPKE <code>info</code></th><th>Envelope length</th></tr></thead>
+        <tbody>
+          <tr><td><code>put</code></td><td>1</td><td><code>hoi scatter v1 put</code></td><td>177 + piece (<code>PUT_OVERHEAD</code>)</td></tr>
+          <tr><td><code>get</code></td><td>2</td><td><code>hoi scatter v1 get</code></td><td>256 (<code>REQUEST_LEN</code>)</td></tr>
+          <tr><td><code>has</code></td><td>3</td><td><code>hoi scatter v1 has</code></td><td>256</td></tr>
+          <tr><td><code>drop</code></td><td>4</td><td><code>hoi scatter v1 drop</code></td><td>256</td></tr>
+          <tr><td><code>stored</code></td><td>5</td><td><code>hoi scatter v1 stored</code></td><td>64 (<code>SHORT_REPLY_LEN</code>)</td></tr>
+          <tr><td><code>got</code></td><td>6</td><td><code>hoi scatter v1 got</code></td><td>54 + the get's <code>want_len</code> (<code>GOT_OVERHEAD</code>)</td></tr>
+          <tr><td><code>had</code></td><td>7</td><td><code>hoi scatter v1 had</code></td><td>64</td></tr>
+          <tr><td><code>dropped</code></td><td>8</td><td><code>hoi scatter v1 dropped</code></td><td>64</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p><code>info</code> names the kind, so an envelope made for one kind opens as no other. A request's AAD is <code>hoi scatter to v1</code> ‖ holder endpoint ‖ key id (8 bytes of BLAKE3 derive mode <code>hoi scatter xk id v1</code> over <code>xk</code>); an answer's AAD is <code>hoi scatter reply v1</code> ‖ the locator asked about. Sizes say which kind of message passed, never which request: every request but a put is 256 bytes, every short answer 64, pieces travel at their class's piece length.</p>
+    <div class="wk-bytes" data-title="A put envelope">
+enc | 32 B | sun | 2 | HPKE encapsulated key
+tag | 1 B | coral | 1 | 1
+loc | 32 B | lilac | 2 | locator
+reply | 32 B | mint | 2 | one-time answer key
+expiry_day | 4 B | peach | 1 | UTC days since 1970
+
+drop_hash | 32 B | cobalt | 2 | creator's drop hash, or zeros
+drop_key_id | 16 B | cobalt | 2 | community drop key id, or zeros
+stamp | 8 B | sun | 1 | u64 BE nonce
+len | 4 B | coral | 1 | u32 BE
+piece | len | sky | 3 | at most 1 MiB
+AEAD tag | 16 B | peach | 1 | Poly1305
+    </div>
+    <div class="wk-bytes" data-title="get, has and drop: 256 bytes">
+enc | 32 B | sun | 2 | encapsulated key
+tag | 1 B | coral | 1 | 2, 3 or 4
+loc | 32 B | lilac | 2 | locator
+reply | 32 B | mint | 2 | answer key
+fields | 0–97 B | peach | 2 | get: u32 <code>want_len</code>; drop: 0 ‖ token, or 1 ‖ key ‖ signature
+zeros | to 208 B | mute | 2 | padding, checked
+AEAD tag | 16 B | peach | 1 | Poly1305
+    </div>
+    <div class="wk-bytes" data-title="Answers">
+enc | 32 B | sun | 2 | encapsulated key
+tag | 1 B | coral | 1 | 5 to 8
+status | 1 B | lilac | 1 | the outcome, or 0/1 for absent/present
+len | 4 B | coral | 1 | had and got only
+piece | got only | sky | 3 | padded with zeros to <code>want_len</code>
+zeros | to 16 B | mute | 2 | short answers
+AEAD tag | 16 B | peach | 1 | Poly1305
+    </div>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Answer status codes">
+      <table>
+        <thead><tr><th>Answer</th><th>Codes</th></tr></thead>
+        <tbody>
+          <tr><td><code>stored</code></td><td>0 <code>Ok</code> · 1 <code>Full</code> · 2 <code>BadStamp</code> · 3 <code>Refused</code> · 4 <code>Taken</code> (something else is kept under this locator; never overwritten)</td></tr>
+          <tr><td><code>had</code></td><td>0 with length 0 (not kept) · 1 with its length (kept), so a reader can ask for exactly that</td></tr>
+          <tr><td><code>got</code></td><td>0 nothing · 1 the piece; padded to <code>want_len</code> either way</td></tr>
+          <tr><td><code>dropped</code></td><td>0 <code>Dropped</code> · 1 <code>Unknown</code> · 2 <code>Refused</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Parsing is strict: the tag, exact lengths and zero padding are checked, and whatever parses writes back to the same bytes (a fuzz target checks this).</p>
+    <h3 id="envelope-keys">Holder keys</h3>
+    <p>A holder publishes its <code>xk</code> in its hellos, signed by its endpoint key over <code>hoi/scatter-xk/1\n</code> ‖ endpoint ‖ xk ‖ u64 BE <code>expires_at</code>. The key is derived from the endpoint key for each 30-day period (<code>derive_key("hoi scatter xk seed v1", endpoint secret ‖ period)</code>), so nothing new is stored and it changes by itself; it expires 7 days after its period ends (<code>KEY_GRACE</code>). Puts open with this period's key and, for 7 days, the last one; other requests open with any key of a piece's lifetime, since a reader may seal to the key a manifest listed. Over WebRTC, where a browser sees no endpoint, the holder also signs <code>hoi/rtc-endpoint/1\n</code> ‖ endpoint ‖ certificate hash, binding the certificate the browser pinned to the endpoint. Senders seal only to keys whose signature checks out against the authenticated endpoint.</p>
+    <h3 id="envelope-more">Other sealed messages</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Other HPKE uses">
+      <table>
+        <thead><tr><th>Function</th><th><code>info</code></th><th>What it seals</th></tr></thead>
+        <tbody>
+          <tr><td><code>seal_wrap</code></td><td><code>hoi scatter v1 wrap</code></td><td>A three-hop request's outer layer for the exit forwarder: holder endpoint ‖ inner kind tag ‖ the request's own envelope.</td></tr>
+          <tr><td><code>seal_inject</code></td><td><code>hoi scatter v1 inject</code></td><td>A device's own new records for a node that injects them into the network: u16 count ‖ (u32 length ‖ record)… ‖ zeros to a multiple of 1 KiB; at most 16 records, 192 KiB.</td></tr>
+          <tr><td><code>seal_drop_key</code></td><td><code>hoi drop key v1</code></td><td>A drop key's 32-byte secret for one device's seal key: 80 bytes.</td></tr>
+          <tr><td><code>seal_to</code></td><td>given by the caller</td><td>An invitation sealed to a newcomer's pickup key (<code>hoi invitation v1</code>), and other one-purpose seals.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="wk-sec" id="holders">
+    <h2>Holders and their storage</h2>
+    <p>A host turns the holder role on with <code>set_piece_store</code>. The node then answers sealed requests it can open:</p>
+    <ul>
+      <li><b>put</b>: a bad stamp is <code>BadStamp</code>; an expiry day before today or more than 400 days on (<code>MAX_TTL_DAYS</code>) is <code>Refused</code>; the same bytes again under a kept locator are <code>Ok</code>, different ones <code>Taken</code>; no room is <code>Full</code>.</li>
+      <li><b>get</b> answers the piece if kept, unexpired and no longer than <code>want_len</code>; <b>has</b> answers whether it is kept and its length; both count as the piece being asked for today.</li>
+      <li><b>drop</b> removes a piece only for the creator's token (its hash matches) or a signature by the community drop key whose id the piece was stored with; anything else is <code>Refused</code>.</li>
+      <li>Nothing about who sent a piece is kept. Requests are counted per link: 600 a minute and 16 MiB of puts (<code>REQUESTS_PER_MINUTE</code>, <code>PUT_BYTES_PER_MINUTE</code>), or 6000 and 128 MiB over a link that forwards for many devices. Over the limit there is no answer, and a peer that keeps at it is let go. A request that does not open earns its sender a penalty, unless it came through a forwarder.</li>
+    </ul>
+    <p><code>hoi-store/src/pieces.rs</code> keeps them: opaque bytes under a locator, with the expiry day, the creator's drop hash and the drop key id. Pieces are read on demand, never loaded whole at start, since a holder's budget runs to gigabytes.</p>
+    <div class="wk-code" data-lang="rust" data-title="core/crates/hoi-store/src/pieces.rs (trimmed)"><pre><code>"CREATE TABLE IF NOT EXISTS pieces(
+   loc BLOB PRIMARY KEY, expiry_day INTEGER NOT NULL, touched_day INTEGER NOT NULL,
+   drop_hash BLOB NOT NULL, drop_key_id BLOB NOT NULL, bytes BLOB NOT NULL);
+ CREATE INDEX IF NOT EXISTS pieces_expiry ON pieces(expiry_day);
+ CREATE INDEX IF NOT EXISTS pieces_touched ON pieces(touched_day);"</code></pre></div>
+    <p><code>SqlitePieces</code> is a file of its own next to the node's store (<code>DIR/pieces.db</code> for <code>hoi-node</code>, <code>pieces.db</code> in the desktop's app data), never in its vault: the pieces are ciphertext the node cannot read and the metadata names nobody. <code>MemPieces</code> keeps them in memory for tests and small nodes. A full store sheds expired pieces first, then pieces nobody asked for or probed in 30 days (<code>IDLE_DAYS</code>), oldest first, and only then answers <code>Full</code>. Turning the desktop setting off deletes the file.</p>
+  </section>
+
+  <section class="wk-sec" id="core">
+    <h2>How the core stores and loads</h2>
+    <h3 id="core-plan">Choosing holders and paths</h3>
+    <ul>
+      <li><b>Forwarders</b> are this device's own links that forward (never a browser or phone it serves). <b>Reachable holders</b> are those the forwarders vouch for in their node lists, with a signed key that checks out.</li>
+      <li><b>Qualified holders</b>: this device has known the holder for at least 2 days, sampled it in about 11 hours of its own running, and found it linked in at least 80% of those samples (<code>HolderBar</code>; the hourly counts decay over about a week); or the person's own devices vouch for it; or two introducers in different places, neither in the holder's own place, report it known and up at least that long. One node's list alone never makes a holder count. A community's rosters, where enough established voice lists a holder, count as one more place; holders that count only thanks to rosters share one introducer.</li>
+      <li><b>Places</b> merge every node of one network (IPv4 /24, IPv6 /48) or one named operator, and each weighs the same. A generation gets one piece per place, at most ⌈<i>n</i>/8⌉ per wider block (/16, /32) and ⌈<i>n</i>/4⌉ per introducer over its whole life, never a place that held a sibling, and never a place one of its forwarders is in.</li>
+      <li><b>Paths</b>: at least two forwarder places, and at most <i>k</i>−1 indexes of a generation through one forwarder place, so no forwarder place ever carries <i>k</i>. Holders that two forwarder places could not reach are left out of new placements for 6 hours.</li>
+    </ul>
+    <h3 id="core-store">Storing</h3>
+    <p><code>scatter_store(content, level, expires_at)</code> checks the level, a lifetime of at most 400 days and room for another operation (at most 256), seals the content, sizes generation 0 from the qualified places, checks the paths, places the <i>n</i> holders, makes the shards, and sends each holder its piece through a forwarder. Where it can it uses three hops: the request is wrapped for an exit forwarder that reaches the holder and sent through an entry forwarder in another place, so the link this device sends through never learns the holder.</p>
+    <div class="wk-seq" data-title="Storing a piece, three hops">
+lanes: Device | Entry | Exit | Holder
+Device: seal object, size generation, place holders, make shards
+Device: <code>put</code> for the holder: loc, stamp, drop hash, piece, sealed to its xk
+Device: wrapped for the exit: holder ‖ kind ‖ envelope, sealed to the exit's key
+Device => Entry: <code>piece</code> {op: wrap, rid, to: exit, env}
+Entry => Exit: the wrap, as any forwarded request
+Exit: opens the wrap: learns the holder, never the device
+Exit => Holder: <code>piece</code> {op: put, env}
+Holder: checks stamp and expiry day, stores under loc
+Holder --> Exit: <code>stored</code>, sealed to the one-time key
+Exit --> Entry: the sealed answer
+Entry --> Device: the sealed answer
+Device: every index stored: the manifest, with each holder's key
+    </div>
+    <p>A holder that refuses gets its index sent to another place. A put whose answer never comes goes to the same holder through another forwarder (up to 4 tries), and then a fresh index replaces it, so no index is ever placed twice. When every index is stored or lost, <code>scatter_take</code> hands back the manifest.</p>
+    <h3 id="core-load">Loading</h3>
+    <p><code>scatter_load(manifest)</code> checks the manifest's floors, then asks for <i>k</i> + 2 pieces (<code>SPARES</code>; one with "Use less data" and no home node), at random among indexes a forwarder outside the holder's place reaches; holders no forwarder vouches for are reached with the key the manifest lists, through any forwarder. Each piece is checked against its hash; a bad one or a failure asks another index. With <i>k</i> good pieces it rebuilds, checks the sealed hash and opens the object.</p>
+    <div class="wk-seq" data-title="Loading an object">
+lanes: Device | Forwarder | Holders
+Device: manifest checked; k + 2 indexes chosen
+Device -> Forwarder: <code>piece</code> {op: get, rid, to: holder, env}, want_len = piece length
+Forwarder -> Holders: <code>get</code>, passed on unread
+Holders => Forwarder: <code>got</code>: piece, sealed to the one-time key
+Forwarder => Device: the sealed answer
+Device: piece hash checked; a bad piece asks another index
+Device: k good pieces: rebuild, undo the transform, check the sealed hash
+Device: open with <code>K_obj</code>: the content
+    </div>
+    <p>Answers overdue after 60 s (<code>ANSWER_TIMEOUT</code>) count as unanswered. A load ends in <code>Loaded</code>, or fails with <i>"These pieces do not make the post they were said to be."</i> or <i>"Too few places are online for this post right now. It is still kept; try again later."</i> A store with too few places or paths fails with <code>scatter-few-places</code> or <code>scatter-few-paths</code> and the content stays as it is.</p>
+    <h3 id="core-keep">Keeping objects alive</h3>
+    <p><code>keep.rs</code> tracks every object this device sent or received a pointer for. Members' durable devices (desktops, nodes) probe each index with <code>has</code> through forwarders: every 6 hours for an object younger than 7 days, daily up to 30 days, then every 3 days. A holder's own "no" loses an index at once; silence loses it only after two failed probes through forwarders in different places at least 12 hours apart. Once a third of the spares are gone, the device waits a random 0 to 6 hours, stands down if someone else's update arrives, and otherwise rebuilds the generation and places fresh indexes in new places within the budget; with the budget spent it makes the next generation, at most once a day. An object whose fetches fail or stall 16 times in an hour is regenerated once with at least twice the pieces. A generation whose pieces rebuild into anything else is dropped and its sender not heard again for that object. Holders never repair: they cannot.</p>
+  </section>
+
+  <section class="wk-sec" id="wired">
+    <h2>Where the apps use it</h2>
+    <h3 id="wired-private">Private groups</h3>
+    <p>A private group's outbox (<a href="/wiki/private/">Private communities</a>) keeps posts, comments and edits in pieces whenever <code>can_scatter</code> holds: the level's generation 0 fits the qualified places, there are at least two forwarder places, and they have room for <i>n</i> pieces at <i>k</i>−1 each. Each such record becomes one object whose content is a JSON array with one <code>records</code> payload, kept until the group's 30-day retention. Attachments go in raw slices, each object as full as a class it fits:</p>
+    <div class="wk-bytes" data-title="A media slice object's content">
+magic | 13 B | coral | 2 | <code>hoi slice v1\n</code>
+header length | 4 B | sun | 1 | u32 BE
+header | n B | lilac | 4 | JSON {v: 1, community, hash, total, offset, posts}
+bytes | rest | sky | 4 | this slice of the item
+    </div>
+    <p>When every object of a batch is stored, the group gets <code>pointer</code> payloads with the manifests, sealed inside MLS like any message; if any part fails, the batch goes whole as before. Votes, deletions, profiles and a device's own authorization records always go whole, so a renewed member is recognised before any pointer from it. The pieces are stored with the group's drop key id, so committers can drop a removed post's pieces. The app tells the two cases apart with the group's <code>pieces</code> (<code>pieces</code> or <code>whole</code>) and <code>piecesLevel</code>, the lowest level the newest generations kept here meet: <i>"Posts go out in pieces through other public nodes: no single node holds or hands over a whole post, and the nodes that keep the pieces don't know who posted. Stopping one would take more than a tenth of the places its pieces go to."</i></p>
+    <h3 id="wired-open">Open communities</h3>
+    <p>Limits carry <code>scatter: {resist, open}</code>: <code>resist</code> is the level (10, 15 or 20; communities raise it by the usual consent, <a href="/wiki/communities/">Communities &amp; the ledger</a>), and <code>open</code> says whether an open community's posts travel in pieces. A new open community gets <code>open: true</code> unless its draft says otherwise. Then a post, comment or edit is kept in pieces and what the community syncs in its place is a <code>pointer</code> record (<a href="/wiki/kinds/">Record kinds</a>): the record's id, its kind, an optional media hash, and the pointer sealed with <code>hoi open pointer v1</code> under the read key <code>derive_key("hoi read v1", community key)</code>, so holders that never joined cannot open it. Joined devices rebuild the record on their own device and never offer it whole; carriers keep and pass on the pointer records and take votes and replies to what they hold by id. The app says only what holds there: <i>"No node that stores this community's posts knows who posted them, and no single node can stop a post."</i></p>
+    <h3 id="wired-hosts">Home nodes and holders</h3>
+    <p>A paired home node that says <code>rb</code> in its hello fetches and rebuilds objects for its own phones and browsers and hands them the content over the pairing link, so a phone needs one link instead of three forwarders; a device falls back to fetching through its own forwarders when the home node fails or does not answer within 120 s. Holders are <code>hoi-node</code> with <code>--hold-pieces</code> and desktops with the setting on (<a href="/wiki/hoi-node/">hoi-node</a>, <a href="/wiki/desktop/">Desktop companion</a>); browsers fetch and store through forwarders but hold nothing.</p>
+  </section>
+
+  <section class="wk-sec" id="vectors">
+    <h2>Vectors, fuzzing and tests</h2>
+    <p><code>core/vectors/scatter.json</code> fixes every byte layout above, with fixed secrets for reproduction only (<a href="/wiki/vectors/">Test vectors</a>):</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Scatter vectors">
+      <table>
+        <thead><tr><th>Part</th><th>What it pins down</th></tr></thead>
+        <tbody>
+          <tr><td><code>object</code></td><td>A 75-byte content in class 0 under a fixed key and id: its nonce, the 4,140 sealed bytes and the sealed hash.</td></tr>
+          <tr><td><code>generation</code></td><td>The transform key, locator secret, level 10, <i>k</i> 15, <i>n</i> 28, <i>m</i> 35, piece length 280; 35 pieces each with index, locator, hash and bytes; three sets of 15 indexes that rebuild the sealed object.</td></tr>
+          <tr><td><code>reed_solomon</code></td><td><i>k</i> 3: three data pieces and eight coded ones.</td></tr>
+          <tr><td><code>drops</code></td><td>A drop secret, locator, token and hash; a drop key, its id, the statement and its signature.</td></tr>
+          <tr><td><code>holder</code></td><td>A holder's key from its seed, endpoint, expiry, key id, signed statement and an answer key.</td></tr>
+          <tr><td><code>envelopes</code></td><td>Ten: put, get, has, drop by token, drop by drop key, stored, got, got nothing, had, dropped; each with its ephemeral seed.</td></tr>
+          <tr><td><code>manifest</code>, <code>pointer</code></td><td>Canonical CBOR of a manifest and a pointer, and an <code>extend</code> update of it.</td></tr>
+          <tr><td><code>sizing</code></td><td>360 cases of <code>size(level, generation, places)</code>: three levels, generations 0, 1, 2, 4, 8 and 16, places from 9 to 5000 and any large network; the constants; six readings.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Fuzz targets in <code>core/fuzz/fuzz_targets/</code> (<a href="/wiki/development/">Building &amp; testing</a>):</p>
+    <div class="wk-code" data-lang="rust" data-title="core/fuzz/fuzz_targets/manifest.rs (trimmed)"><pre><code>fuzz_target!(|data: &amp;[u8]| {
+    if let Ok(m) = Manifest::decode(data) {
+        assert!(m.check().is_ok());
+        assert_eq!(m.encode(), data);
+        assert!(m.update_to(&amp;m).is_err());
+    }
+    if let Ok(p) = Pointer::decode(data) {
+        assert!(p.manifest.check().is_ok());
+        assert_eq!(p.encode(), data);
+    }
+});</code></pre></div>
+    <ul>
+      <li><code>manifest.rs</code>: any bytes as a manifest or pointer: no panic; whatever decodes keeps the floors and re-encodes to the same bytes; an update to itself is never accepted.</li>
+      <li><code>envelope_plaintext.rs</code>: any bytes as any request's or answer's plaintext: no panic, and whatever parses writes back the same.</li>
+      <li><code>rebuild.rs</code>: any pieces and indexes: rebuilding and undoing the transform never panic, and a sealed object that comes out has its class's length.</li>
+      <li><code>sizing.rs</code>: any level, generation and places: sizing never panics, and every size keeps its own rules and meets its level.</li>
+    </ul>
+    <p>Unit and property tests in <code>hoi-crypto</code> and <code>hoi-types</code> cover round trips, every <i>k</i>-subset of small codes, the highest indexes, mixed generations, stamps and strict decoding. <code>hoi-core</code>'s <code>tests/scatter.rs</code> covers holders, stamps, drops, key periods and holder qualification, and <code>tests/forward.rs</code> storing and loading through forwarders with no holder seeing who stored or fetched, retries, repairs and regeneration, updates, drops of removed posts, mailboxes, and home-node rebuilds. <code>hoi-sim scatter</code> places generations with the core's own rules among places a party runs a share of and sets the counts against the exact tails.</p>
+    <div class="wk-cards">
+      <a class="wk-card g-lilac" href="/wiki/private/"><i></i><b>Private communities</b><span>The groups whose posts go in pieces and whose pointers travel inside MLS.</span></a>
+      <a class="wk-card g-sky" href="/wiki/mailboxes/"><i></i><b>Mailboxes &amp; encrypted relays</b><span>The same holders and envelopes, used as numbered slots.</span></a>
+      <a class="wk-card g-sun" href="/wiki/vectors/"><i></i><b>Test vectors</b><span>Every conformance vector, scatter.json among them.</span></a>
+      <a class="wk-card g-mint" href="/wiki/simulator/"><i></i><b>Simulator</b><span>The scatter scenario and the lifetime runs.</span></a>
+    </div>
+  </section>
+</article>
+<!-- @wiki-close -->
+<!-- @include footer.html -->
+<script type="module" src="/src/pages/wiki.ts"></script>
+</body>
+</html>

@@ -1,0 +1,697 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <!-- @include head.html title="Transports · hoi wiki" description="Every way two hoi programs talk: iroh QUIC, the home-node WebSocket, WebRTC data channels, relays, port mapping, VPN-only mode and the limits on each." -->
+</head>
+<body class="wiki">
+<!-- @include header.html nav="wiki" -->
+<!-- @wiki-open -->
+<article class="wk-doc">
+  <!-- @wiki-crumbs -->
+  <h1>Transports <span class="acc">&amp; NAT</span></h1>
+  <p class="wk-lead">Every hoi program speaks the same sync conversation; only the pipe differs. Native nodes (the desktop app and <code>hoi-node</code>) talk iroh QUIC to each other. A browser, the phone app or a second computer reaches its own home node over a WebSocket. Browsers reach native nodes, and with the person's say-so each other, over WebRTC data channels. This page is every pipe: how it is set up, authenticated, framed, kept alive and limited, and what each party on it can see.</p>
+  <p class="wk-src-list">Source <a href="{{REPO_URL}}/blob/main/core/crates/hoi-net/src/lib.rs">hoi-net/src/lib.rs</a> <a href="{{REPO_URL}}/blob/main/core/crates/hoi-net/src/p2p.rs">p2p.rs</a> <a href="{{REPO_URL}}/blob/main/core/crates/hoi-net/src/rtc.rs">rtc.rs</a> <a href="{{REPO_URL}}/tree/main/core/crates/hoi-net/src/rtc_crypto">rtc_crypto/</a> <a href="{{REPO_URL}}/blob/main/core/crates/hoi-net/src/blobs.rs">blobs.rs</a> <a href="{{REPO_URL}}/blob/main/core/crates/hoi-net/src/portmap.rs">portmap.rs</a> <a href="{{REPO_URL}}/blob/main/core/crates/hoi-net/src/vpn.rs">vpn.rs</a> <a href="{{REPO_URL}}/blob/main/core/crates/hoi-net/src/limit.rs">limit.rs</a> <a href="{{REPO_URL}}/blob/main/core/crates/hoi-net/src/preview.rs">preview.rs</a> <a href="{{REPO_URL}}/blob/main/core/crates/hoi-node/src/packet_relay.rs">hoi-node/src/packet_relay.rs</a> <a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/net.rs">hoi-core/src/net.rs</a> <a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/bind.rs">bind.rs</a> <a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/signal.rs">signal.rs</a> <a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/notice.rs">notice.rs</a> <a href="{{REPO_URL}}/blob/main/apps/web/src/lib/core/rtc-link.ts">apps/web/…/rtc-link.ts</a> <a href="{{REPO_URL}}/blob/main/apps/web/src/lib/core/rtc-frames.ts">rtc-frames.ts</a> <a href="{{REPO_URL}}/blob/main/apps/web/src/lib/core/rtc-direct.ts">rtc-direct.ts</a> <a href="{{REPO_URL}}/blob/main/apps/web/src/lib/core/core.worker.ts">core.worker.ts</a></p>
+  <div class="wk-head-rule"></div>
+
+  <section class="wk-sec" id="at-a-glance">
+    <h2>Three pipes, one conversation</h2>
+    <p>The core (<code>hoi-core</code>) never opens a socket. It decides what to say and reads what comes; a host (the <code>hoi-net</code> crate on native builds, the web worker in a browser) moves the bytes. Whatever the pipe, the bytes are the same <a href="/wiki/sync/">hoi-sync messages</a>, every record that arrives passes the same <a href="/wiki/validation/">validation pipeline</a>, and the first message on every link must be a <code>hello</code>, or the link is dropped. There is no separate gossip protocol: live records ride the same link as catch-up.</p>
+    <figure class="wk-fig">
+      <svg viewBox="0 0 760 330" role="img" aria-label="Which programs talk over which pipe: a browser to its desktop home node over WebSocket or WebRTC, a phone browser to the same desktop over WebRTC, the desktop to a public hoi-node over iroh QUIC, possibly through a packet relay, and a member's browser to the public node over WebRTC.">
+        <rect class="d-box acc c-sky" x="20" y="30" width="180" height="64" rx="10"></rect>
+        <text class="d-text" x="110" y="58" text-anchor="middle">Browser</text>
+        <text class="d-sub" x="110" y="78" text-anchor="middle">web app, no listener</text>
+        <rect class="d-box acc c-mint" x="290" y="30" width="180" height="64" rx="10"></rect>
+        <text class="d-text" x="380" y="58" text-anchor="middle">Desktop app</text>
+        <text class="d-sub" x="380" y="78" text-anchor="middle">your home node</text>
+        <rect class="d-box acc c-sun" x="560" y="30" width="180" height="64" rx="10"></rect>
+        <text class="d-text" x="650" y="58" text-anchor="middle">hoi-node</text>
+        <text class="d-sub" x="650" y="78" text-anchor="middle">a public node</text>
+        <rect class="d-box acc c-lilac" x="20" y="236" width="180" height="64" rx="10"></rect>
+        <text class="d-text" x="110" y="264" text-anchor="middle">Phone browser</text>
+        <text class="d-sub" x="110" y="284" text-anchor="middle">web app, same Wi-Fi</text>
+        <rect class="d-box" x="290" y="236" width="180" height="64" rx="10"></rect>
+        <text class="d-text" x="380" y="264" text-anchor="middle">Packet relay</text>
+        <text class="d-sub" x="380" y="284" text-anchor="middle">reads nothing</text>
+        <rect class="d-box acc c-sky" x="560" y="236" width="180" height="64" rx="10"></rect>
+        <text class="d-text" x="650" y="264" text-anchor="middle">Member's browser</text>
+        <text class="d-sub" x="650" y="284" text-anchor="middle">web app</text>
+        <path class="d-line acc c-sky" d="M200 62 H290"></path>
+        <text class="d-tag c-sky" x="245" y="52" text-anchor="middle">ws · rtc</text>
+        <path class="d-line acc c-mint" d="M470 62 H560"></path>
+        <text class="d-tag c-mint" x="515" y="52" text-anchor="middle">quic</text>
+        <path class="d-line acc c-lilac" d="M150 236 L330 94"></path>
+        <text class="d-tag c-lilac" x="196" y="160" text-anchor="middle">rtc</text>
+        <path class="d-line dash" d="M380 94 V236"></path>
+        <path class="d-line dash" d="M470 268 L600 94"></path>
+        <text class="d-sub" x="400" y="170">relayed quic</text>
+        <path class="d-line acc c-sky" d="M650 236 V94"></path>
+        <text class="d-tag c-sky" x="690" y="170" text-anchor="middle">rtc</text>
+      </svg>
+      <figcaption>One person's desktop as home node, and one public node. Every line carries the same messages; the dashed path is a relay the two native nodes use when neither can reach the other directly.</figcaption>
+    </figure>
+
+    <h3 id="pipes">The pipes</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="The pipes">
+      <table>
+        <thead><tr><th>Pipe</th><th>Between</th><th>Encryption</th><th>The other end is proven by</th><th>Framing</th><th>Default port</th></tr></thead>
+        <tbody>
+          <tr><td><a href="#iroh">iroh QUIC</a>, ALPN <code>hoi/sync/1</code></td><td>native ↔ native</td><td>QUIC, TLS 1.3</td><td>the endpoint key iroh authenticates</td><td>4-byte big-endian length, then the message, on one bidirectional stream</td><td>UDP, chosen by the system unless <code>--peer-bind</code></td></tr>
+          <tr><td><a href="#iroh-blobs">iroh-blobs</a>, ALPN <code>/iroh-bytes/4</code></td><td>native ↔ native, media only</td><td>the same endpoint</td><td>the same key, and a sync link to it</td><td>iroh-blobs, checked against the BLAKE3 hash as it streams</td><td>the same UDP socket</td></tr>
+          <tr><td><a href="#websocket">WebSocket</a></td><td>a device → its home node</td><td>none on loopback; TLS behind <code>wss://</code></td><td>the device's credential in its first <code>hello</code></td><td>one binary WebSocket message per sync message</td><td>TCP 7842, loopback</td></tr>
+          <tr><td><a href="#webrtc">WebRTC to a node</a></td><td>browser → native node</td><td>DTLS 1.2 or 1.3, SCTP</td><td>both certificate fingerprints, pinned; then the node's <code>bind</code></td><td>4-byte length, then the message, cut into 16 KiB channel messages</td><td>UDP 7844</td></tr>
+          <tr><td><a href="#direct">WebRTC direct</a></td><td>browser ↔ browser</td><td>DTLS</td><td>certificates in descriptions passed through a node</td><td>the same as to a node</td><td>whatever the browsers pick</td></tr>
+          <tr><td><a href="#relays">iroh relay</a></td><td>native ↔ relay ↔ native</td><td>QUIC end to end inside</td><td>the endpoint keys, end to end</td><td>iroh's relay protocol over HTTPS</td><td>the operator's choice</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3 id="who-uses-what">Who can use which</h3>
+    <p>Browsers can't accept connections and can't speak raw UDP, so they always dial, and only WebSocket and WebRTC. The phone app (the <a href="/wiki/mobile/">mobile libraries</a>) keeps one WebSocket to its home node while it is in the foreground and closes it in the background. Native nodes do everything else.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Which program uses which transport">
+      <table>
+        <thead><tr><th>Program</th><th>iroh QUIC</th><th>WebSocket</th><th>WebRTC to nodes</th><th>WebRTC direct</th><th>iroh-blobs</th><th>Relays</th></tr></thead>
+        <tbody>
+          <tr><td>Browser (web app)</td><td>no</td><td>dials its home node: <code>ws://</code> on this computer, else <code>wss://</code></td><td>dials: <code>h1c</code> to its home node, <code>h1p</code> to members' and public nodes</td><td>with <i>Direct links</i> on, through a node that says <code>signal</code></td><td>no: asks with <code>bwant</code></td><td>no</td></tr>
+          <tr><td>Phone app</td><td>no</td><td>dials its home node, foreground only</td><td>no</td><td>no</td><td>no</td><td>no</td></tr>
+          <tr><td>Phone browser</td><td colspan="6">the web app, as above; a <code>ws://</code> loopback address is skipped there in favour of the home node's WebRTC routes</td></tr>
+          <tr><td>Desktop app</td><td>dials and listens</td><td>serves <code>127.0.0.1:7842</code> (any free port if taken); dials a home node it paired with</td><td>listens on UDP 7844 (any free port if taken)</td><td>passes signals and answers STUN while relaying</td><td>fetches; serves what it pins</td><td>uses those invites name</td></tr>
+          <tr><td><code>hoi-node</code></td><td>dials and listens</td><td>serves <code>--listen</code> (default <code>127.0.0.1:7842</code>) unless <code>--peer-only</code> or <code>--public</code></td><td><code>--rtc-port</code> (default 7844, <code>0</code> off)</td><td>as the desktop</td><td>fetches; serves what it pins</td><td><code>--relay URL</code>; runs one with <code>--packet-relay</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3 id="ports">Ports</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Default ports">
+      <table>
+        <thead><tr><th>Port</th><th>What</th><th>Who</th><th>Set with</th></tr></thead>
+        <tbody>
+          <tr><td>TCP 7842</td><td>home-node WebSocket, loopback by default</td><td>desktop, <code>hoi-node</code></td><td><code>--listen</code></td></tr>
+          <tr><td>UDP, system-chosen</td><td>iroh QUIC and iroh-blobs</td><td>desktop, <code>hoi-node</code></td><td><code>--peer-bind</code></td></tr>
+          <tr><td>UDP 7844</td><td>WebRTC for browsers, and plain STUN answers while relaying</td><td>desktop, <code>hoi-node</code></td><td><code>--rtc-port</code>, <code>--rtc-bind</code>, <code>--rtc-advertise</code></td></tr>
+          <tr><td>TCP, the operator's</td><td>packet relay (iroh's relay server)</td><td><code>hoi-node</code> only</td><td><code>--packet-relay ADDR</code></td></tr>
+          <tr><td>UDP 7846, 7847</td><td>the DHT among public nodes, and its answer port</td><td>public nodes</td><td><code>--dht-port</code>, <code>--dht-answer-port</code> (see <a href="/wiki/discovery/">Discovery</a>)</td></tr>
+          <tr><td>UDP 7848</td><td>LAN beacons, multicast <code>239.255.70.74</code>, TTL 1</td><td>native nodes</td><td><code>--no-lan</code> (see <a href="/wiki/discovery/">Discovery</a>)</td></tr>
+          <tr><td>UDP 5351 on the gateway</td><td>PCP and NAT-PMP requests</td><td>the <a href="#portmap">port mapper</a></td><td><code>--port-mapping</code></td></tr>
+          <tr><td>UDP 1900, <code>239.255.255.250</code></td><td>SSDP search for a UPnP router</td><td>the port mapper</td><td>never through a VPN</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="wk-sec" id="host-core">
+    <h2>The host owns sockets, the node owns the conversation</h2>
+    <p>The contract between the two is six calls. The host says a connection opened (<code>net_connect</code>, with a role), says how it travels (<code>set_peer_meta</code>), hands over each whole message (<code>net_receive</code>, which returns <code>false</code> when the link should end), collects what to send (<code>take_outbox</code>, a list of <code>(peer, bytes)</code>), says a connection ended (<code>net_disconnect</code>) and asks now and then whether a catch-up stalled (<code>sync_stalled</code>: wanted ids outstanding and no progress for 120 seconds). The web worker calls the same functions through <code>hoi-wasm</code>; how the core spends them is on <a href="/wiki/sync/">Sync &amp; gossip</a>.</p>
+    <p>On native builds <code>hoi_net::Shared</code> holds one <code>Node</code> behind a lock. Every caller (UI commands, WebSocket handlers, the sweeper) goes through <code>Shared::with</code>, which runs the call, commits to storage, then routes the outbox into each link's queue and reports events.</p>
+    <div class="wk-code" data-lang="rust" data-title="core/crates/hoi-net/src/lib.rs (trimmed)"><pre><code>const QUEUED_MESSAGES: usize = 128;
+const QUEUED_BYTES: usize = 32 * 1024 * 1024;
+const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
+…
+for (peer, bytes) in msgs {
+    if let Some(link) = links.get(&peer) {
+        let permit = link.budget.clone().try_acquire_many_owned(bytes.len() as u32);
+        if let Ok(permit) = permit {
+            if link.tx.try_send(Queued { bytes, _permit: permit }).is_err() {
+                let _ = link.cancel.send(true);
+            }
+        } else {
+            let _ = link.cancel.send(true);
+        }
+    }
+}</code></pre></div>
+    <ul>
+      <li><b>Bounded queues.</b> Each link may have 128 messages and 32 MiB waiting. A message that doesn't fit cancels the link: a reader that can't keep up is dropped, never buffered without end. On the WebSocket and the iroh stream, any single write that takes longer than 30 seconds ends the link too.</li>
+      <li><b>Identity work off the lock.</b> <code>Shared::receive</code> scans a message for identity records before taking the lock, asks the node which of them it would really check, and runs those Argon2id checks (8 MiB each) on a blocking thread, at most two at once (<code>WORK_AT_ONCE</code>). Under the lock the pipeline only looks the answers up, so the UI and other links never wait on a stranger's identity work.</li>
+      <li><b>Storage failures stop the network.</b> When a commit fails, the outbox is thrown away and every link is closed; while storage keeps failing, incoming messages aren't taken in. The person sees "This node could not save changes. Sync is paused…", and "Storage is working again…" once a commit succeeds. Fresh links then catch up from what was saved.</li>
+    </ul>
+
+    <h3 id="peer-names">Peer names and roles</h3>
+    <p>The core knows a connection only by a name the host makes up, and a role: <code>Home</code> (we dialed our own home node), <code>Client</code> (a device we serve dialed us) or <code>Peer</code> (anyone else).</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Peer names">
+      <table>
+        <thead><tr><th>Name</th><th>Made by</th><th>Role</th><th>What it is</th></tr></thead>
+        <tbody>
+          <tr><td><code>client-N</code></td><td><code>serve</code></td><td>Client</td><td>a paired device on the WebSocket</td></tr>
+          <tr><td><code>home-N</code></td><td><code>dial</code></td><td>Home</td><td>a native program's link to its home node</td></tr>
+          <tr><td><code>peer-&lt;endpoint&gt;-&lt;stable id&gt;</code></td><td><code>start_p2p</code></td><td>Peer</td><td>one iroh connection</td></tr>
+          <tr><td><code>client-rtc-N</code>, <code>rtc-N</code></td><td><code>start_rtc</code></td><td>Client, Peer</td><td>a WebRTC session in mode <code>c</code> or <code>p</code></td></tr>
+          <tr><td><code>home</code>, <code>member-N</code>, <code>node-N</code></td><td>the web worker</td><td>Home, Peer, Peer</td><td>a browser's home link, member links, the public node it uses for finding things</td></tr>
+          <tr><td><code>direct-N</code></td><td>the web worker</td><td>Peer</td><td>a direct link with another browser</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3 id="peer-meta">What the host tells the core</h3>
+    <dl class="wk-defs">
+      <dt>transport<small>String</small></dt><dd><code>"quic"</code>, <code>"webrtc"</code> or <code>"websocket"</code>.</dd>
+      <dt>local<small>bool</small></dt><dd>The bytes never leave this machine: a loopback WebSocket that isn't behind a TLS proxy.</dd>
+      <dt>tls<small>bool</small></dt><dd>A WebSocket protected by TLS: the address is <code>wss://</code>.</dd>
+      <dt>incoming<small>bool</small></dt><dd>The other side dialed us.</dd>
+      <dt>endpoint, addr<small>Option&lt;String&gt;</small></dt><dd>On QUIC: the authenticated iroh endpoint and, while the path is direct, the UDP address. On WebRTC: the address the browser's first packet came from, kept in memory only.</dd>
+      <dt>dialed<small>Vec&lt;String&gt;</small></dt><dd>The <code>rtc:</code> routes a browser opened this link with (one node, one certificate). It decides which communities' routes led here.</dd>
+      <dt>rtc<small>Option&lt;RtcChannel&gt;</small></dt><dd>Both certificate fingerprints and the ICE username fragment, for the <a href="#rtc-bind">binding</a>.</dd>
+      <dt>direct<small>Option&lt;(String, [u8; 16])&gt;</small></dt><dd>A <a href="#direct">direct link</a>: the node that passed the offer, and the other browser's handle there.</dd>
+    </dl>
+    <p>The traffic view turns these into one phrase per connection:</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Encryption words">
+      <table>
+        <thead><tr><th>Transport</th><th>Shown as</th></tr></thead>
+        <tbody>
+          <tr><td>quic</td><td>encrypted · QUIC, TLS 1.3</td></tr>
+          <tr><td>webrtc</td><td>encrypted · WebRTC, DTLS</td></tr>
+          <tr><td>websocket, local</td><td>stays on this device</td></tr>
+          <tr><td>websocket, tls</td><td>encrypted · TLS</td></tr>
+          <tr><td>websocket, neither</td><td>not encrypted</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="wk-sec" id="iroh">
+    <h2>iroh QUIC between native nodes</h2>
+    <p>Native nodes run one <a href="https://www.iroh.computer/">iroh</a> endpoint (iroh 1.4). iroh gives authenticated QUIC with hole punching and optional relays, and on its own would also reach for its makers' DNS discovery and default relays. hoi turns all of that off: the endpoint starts from <code>presets::Minimal</code>, which installs only the TLS provider (ring), and from a relay map that is empty unless the operator or an invite supplies relays.</p>
+    <div class="wk-code" data-lang="rust" data-title="core/crates/hoi-net/src/p2p.rs (trimmed)"><pre><code>pub const SYNC_ALPN: &amp;[u8] = b"hoi/sync/1";
+…
+// Minimal installs only the TLS provider. An empty custom map enables later explicit
+// relay insertion without opting into N0's DNS, pkarr or relay infrastructure.
+let mut builder = Endpoint::builder(presets::Minimal)
+    .secret_key(SecretKey::from_bytes(&amp;secret))
+    .alpns(vec![SYNC_ALPN.to_vec(), iroh_blobs::ALPN.to_vec()])
+    .transport_config(
+        QuicTransportConfig::builder()
+            .max_concurrent_bidi_streams(1u32.into())
+            .max_concurrent_uni_streams(0u32.into())
+            .receive_window((4 * 1024 * 1024u32).into())
+            .send_window(4 * 1024 * 1024)
+            .build(),
+    )
+    .relay_mode(RelayMode::Custom(RelayMap::from_iter(relays.clone())));</code></pre></div>
+
+    <h3 id="iroh-alpns">ALPNs</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="ALPNs">
+      <table>
+        <thead><tr><th>ALPN</th><th>Carries</th><th>Who may open it</th></tr></thead>
+        <tbody>
+          <tr><td><code>hoi/sync/1</code></td><td>every sync message: hellos, reconciliation, records, media as <code>blob</code>, scattered pieces, directory messages</td><td>anyone, while this node <a href="#limits">accepts members</a>, within the per-source limits</td></tr>
+          <tr><td><code>/iroh-bytes/4</code> (<code>iroh_blobs::ALPN</code>)</td><td>media of communities this node pins, one blob per request</td><td>only an endpoint that has a <code>hoi/sync/1</code> link here</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>There is no separate gossip ALPN: live records travel on <code>hoi/sync/1</code> as <code>recs</code> messages, on the same link as catch-up (<a href="/wiki/sync/">Sync &amp; gossip</a>).</p>
+
+    <h3 id="node-ids">Endpoint keys are not posting keys</h3>
+    <p>The endpoint's secret is <code>Node::transport_secret</code>: an Ed25519 key of its own, made once, committed to storage before it is used, and separate from the person's root and device keys. So the address a node is reached at says nothing about who posts from it. A native node puts its endpoint key in the <code>node</code> field of its hellos; a browser has no endpoint, so it names a fresh random 32-byte id per connection to strangers, and its stored node id only to its own devices and home node. Strangers never get a name.</p>
+    <p>Routes for iroh are text: <code>&lt;endpoint hex&gt;@&lt;ip:port&gt;</code> for a direct address, or the bare <code>&lt;endpoint hex&gt;</code>, which means "through my relays". A node publishes the public side of a forwarded port first (from the <a href="#portmap">port mapper</a>), then up to eight of the endpoint's own direct addresses, and puts the bare key in front when it has relays. A hello carries at most four direct routes, the bare key and three WebRTC routes, eight in all (<code>OWN_DIRECT</code>, <code>OWN_RTC</code>, <code>MAX_ROUTES</code>). A desktop that isn't a public node strips internet-scope addresses from what strangers see.</p>
+
+    <h3 id="iroh-dial">Dialing</h3>
+    <p>Every five seconds (<code>RESCAN</code>) the supervisor asks the core for its dial candidates (<code>bootstrap_hints</code>): routes from accepted invites, paired devices, members met in the last 30 days, routes on trial for a public join, a few public nodes while this node serves strangers, holders for private mailboxes and forwarded pieces. Never a default relay, and under the consent gate never a node whose notice waits for an answer or was declined. WebRTC routes are left to browsers.</p>
+    <ul>
+      <li>A hint without a direct address needs a relay; a direct address must be reachable (not unspecified, not multicast, not port 0). Relay URLs must be <code>https://</code> (plain <code>http://</code> only to <code>127.0.0.1</code>, <code>localhost</code> or <code>[::1]</code>), with no credentials, query or fragment, at most 2,048 characters. At most 16 relays are configured, and at most 16 known in all; new ones from hints are added to the endpoint as they appear.</li>
+      <li>Each dial has 20 seconds (<code>CONNECT_TIMEOUT</code>). A failed endpoint waits 2, 4, 8, 16, 32 and then 60 seconds between tries (<code>min(2^n, 60)</code>, <code>n</code> capped at 6), and the core hears <code>dial_failed</code>.</li>
+      <li>Dials and accepted connections share 32 slots (<code>MAX_PEERS</code>), held from the attempt until the link ends, so a hostile handshake can't create unbounded work.</li>
+      <li>When both ends dial at once, they keep the connection dialed by the endpoint with the lower key and close the other with reason <code>duplicate</code>.</li>
+    </ul>
+
+    <h3 id="iroh-accept">Accepting</h3>
+    <p>An incoming connection is refused at once while the node doesn't <a href="#limits">accept members</a> (the relay switch is off, or today's cap is used up). A direct one must first answer a stateless QUIC retry, so its source address is one that receives; a relayed one counts as the endpoint the relay vouches for, since the relay's own address says nothing about the sender. Each source (an IPv4 address or IPv6 /64, or a relayed endpoint) may open ten connections a minute, in a table of at most 4,096 sources; then it waits for the next minute.</p>
+    <div class="wk-seq" data-title="An iroh link between two native nodes">
+lanes: Dialing node | Listening node
+-- QUIC --
+Dialing node -> Listening node: Initial, ALPN <code>hoi/sync/1</code>
+Listening node --> Dialing node: stateless Retry (an unvalidated address holds nothing)
+Dialing node -> Listening node: Initial with the retry token
+Listening node: relay switch on? ten a minute from this source? a free slot of 32?
+Dialing node .. Listening node: TLS 1.3: each side proves its endpoint key
+-- The sync stream --
+Dialing node -> Listening node: opens the one bidirectional stream, [length] <code>hello</code>
+Listening node: first frame within 15 s, and a <code>hello</code>, or the link ends
+Listening node --> Dialing node: [length] <code>hello</code>
+Dialing node => Listening node @mint: <code>rng</code>, <code>want</code>, <code>recs</code> in both directions
+-- Every 2 s --
+Listening node: reports the path (<code>direct</code> or <code>relay</code>) and its address to the core
+</div>
+    <p>A headless node never holds its hello back. A person's desktop under the <a href="#before-connecting">consent gate</a> waits for a stranger's hello before its own. A link ends with close reason <code>no sync stream</code> if no stream opens within 15 seconds, <code>storage unavailable</code> while storage fails, and <code>sync closed</code> otherwise.</p>
+
+    <h3 id="iroh-frames">Frames</h3>
+    <div class="wk-bytes" data-title="One sync message on the iroh stream (and on WebRTC)">
+length | 4 B | sun | 2 | big-endian u32, 1 to <code>MAX_MESSAGE</code>
+message | length B | sky | 10 | one canonical CBOR map, <code>{t: "hello", …}</code>
+</div>
+    <p>A zero length, or one over <code>MAX_MESSAGE</code> (16 MiB plus 64 KiB: the largest media item plus framing), ends the link before anything is buffered. The first byte of a frame may wait forever (quiet communities stay connected; iroh owns keepalives and loss detection), but once it arrives the rest of the frame must follow within 30 seconds.</p>
+
+    <h3 id="iroh-blobs">Media over iroh-blobs</h3>
+    <p>Between native nodes, pictures and videos go over iroh-blobs on the same endpoint instead of as <code>blob</code> messages on the sync link, so a large file never waits in front of records and a bad peer is caught at its first wrong chunk. A node says <code>blobs</code> in its hello when its host runs this.</p>
+    <ul>
+      <li><b>Serving.</b> A connection is taken only from an endpoint with a sync link here, and each request only for media the core says this node serves to it: a visible public post in a community the two share and this node pins. The bytes are copied into a small in-memory store just before they are sent; past 64 MiB (<code>SERVE_CACHE</code>) the ones added longest ago leave first, and the store's garbage collection runs every 30 seconds. Requests for many blobs, pushes and observing are refused. Eight connections are served at once (<code>BLOBS_SERVED</code>); a ninth is closed with <code>busy</code>. What goes out counts against the relay's daily cap like a <code>blob</code> message.</li>
+      <li><b>Fetching.</b> Every 250 ms the host takes the core's fetches, at most two under way (<code>BLOBS_FETCHED</code>), each over a connection of its own to the same paths the sync link uses. The stream must announce exactly the size the post states and match its BLAKE3 hash; dialing to the last byte has 60 seconds (<code>FETCH_SECS</code>). What arrives goes through every check a <code>blob</code> message gets. A fetch that fails turns that community's media on that link to <code>bwant</code> for the rest of the link.</li>
+    </ul>
+    <div class="wk-seq" data-title="A picture over iroh-blobs">
+lanes: Fetching node | Pinning node
+Fetching node: a visible post's media is missing; the peer said <code>blobs</code>
+Fetching node -> Pinning node: new QUIC connection, ALPN <code>/iroh-bytes/4</code>
+Pinning node: a sync link with this endpoint? else Permission
+Fetching node -> Pinning node: GET one blob by hash
+Pinning node: does it pin a shared community whose post uses it? copies the bytes into the cache
+Pinning node => Fetching node @mint: the blob, verified chunk by chunk
+Fetching node: size as the post says, hash matches: media checks, then kept
+Fetching node -> Pinning node: close <code>done</code>
+</div>
+  </section>
+
+  <section class="wk-sec" id="websocket">
+    <h2>The home-node WebSocket</h2>
+    <p>A home node (the desktop app, or <code>hoi-node</code> without <code>--peer-only</code>) serves the person's own browsers and phones on a WebSocket. Pairing links point at it; the link format is on <a href="/wiki/links/">Links &amp; URIs</a>.</p>
+
+    <h3 id="ws-serve">Serving</h3>
+    <ul>
+      <li><b>Address.</b> <code>hoi_net::serve</code> binds a TCP listener and tells the core it serves at <code>ws://&lt;bound address&gt;</code>. The listener doesn't look at the request path. The desktop takes <code>127.0.0.1:7842</code> and any free loopback port if another hoi holds it; <code>hoi-node</code> takes <code>--listen</code> (default <code>127.0.0.1:7842</code>), and with <code>--public-url</code> advertises a <code>wss://</code> address of a TLS proxy in front of it instead.</li>
+      <li><b>Pairing link rules.</b> A pairing link's address must be <code>wss://</code>, or <code>ws://</code> to this very machine: plain <code>ws://</code> would carry the token unencrypted. A link may carry only WebRTC routes instead.</li>
+      <li><b>Origins.</b> Any web page can try to open a WebSocket to a loopback port, so a request carrying <code>Origin</code> must come from the web app this node's pairing links open (its web base, normally <code>https://hoi.sh</code>) or from one listed in <code>HOI_ALLOWED_ORIGINS</code> (comma separated: a self-hosted app, a development server). Anything else gets <code>403 Forbidden</code> at the handshake. A request without <code>Origin</code> is a native app and goes on to the credential check.</li>
+      <li><b>Limits.</b> 32 paired devices at once (<code>MAX_CLIENTS</code>); the upgrade must finish within 10 seconds; messages and frames over <code>MAX_MESSAGE</code> are refused by the WebSocket layer itself.</li>
+      <li><b>Encryption, as reported.</b> A loopback client counts as local ("stays on this device") unless the advertised address is <code>wss://</code>: behind a TLS proxy, loopback is the proxy, not you.</li>
+    </ul>
+
+    <h3 id="ws-dial">Dialing</h3>
+    <p>Native programs dial with <code>hoi_net::dial</code>: a 10-second handshake, then the link runs until it ends, then a retry after 1 second, doubling to 60, reset after every success. The desktop dials only a <code>ws://</code> or <code>wss://</code> address (a WebRTC-only pairing link is for browsers and phones) and, with "only through my VPN" on, waits for the VPN unless the home node is on loopback or the home network.</p>
+    <p>The web worker tries the WebSocket first (fast on the same computer), giving it 5 seconds to open, then each group of the home node's WebRTC routes in turn (one certificate, one group), retrying with the same 1-to-60-second backoff. On a phone it skips a loopback address when the pairing has WebRTC routes: a loopback address there is someone else's. When Chrome's Local Network Access permission blocks the page, the app says which permission to allow.</p>
+
+    <h3 id="ws-frames">Frames</h3>
+    <p>One sync message is one binary WebSocket message: no length prefix, since WebSocket frames already have one. The first message must be a binary <code>hello</code> and must come within 15 seconds (<code>HELLO</code>); a text message or anything else first ends the link.</p>
+
+    <h3 id="ws-auth">The credential in the first hello</h3>
+    <p>A device that dialed in hears nothing, not even that a hoi node listens there, until its first hello shows a credential. The home node compares the token against every stored device credential, in constant time and all of them, so timing says nothing about which matched; credentials are stored only as <code>BLAKE3-derive-key("hoi 2026 pairing credential v1", token)</code>. Failing that it compares the pairing link's own token. A pairing link pairs one device: that device gets a credential of its own (32 random bytes, base64url) and the link is replaced by a new one (18 random bytes), so a link left in a screenshot or a browser history pairs nobody else. A wrong or missing token ends the link without a word. The home node keeps credentials for 32 devices (<code>MAX_PAIRED</code>); a 33rd pushes out the one seen longest ago. Rotating the pairing link (<code>--new-pairing</code>) forgets every credential: every device must pair again.</p>
+    <div class="wk-seq" data-title="Pairing a browser with its home node">
+lanes: Browser | Home node
+-- First contact, with the link's token --
+Browser -> Home node: WebSocket upgrade; <code>Origin</code> must be the app's
+Home node: registers <code>client-N</code>, says nothing
+Browser -> Home node: <code>hello</code> {token: the link's token, c: its public communities, fx}
+Home node: no stored credential matches; the link's token does
+Home node: joins and pins the browser's communities, while it is in fewer than 256
+Home node --> Browser: <code>hello</code> {token: its own credential, pt: the next link's token, lk: the link key, c: every public community}
+Home node: its other devices get a fresh hello with the new <code>pt</code>
+Browser: keeps the credential; the link's token is spent
+Browser => Home node @mint: <code>rng</code>, <code>want</code>, <code>recs</code>
+-- Every later connection --
+Browser -> Home node: <code>hello</code> {token: its credential}
+Home node --> Browser: <code>hello</code>
+-- A guessed token --
+Browser -> Home node: <code>hello</code> {token: "guess"}
+Home node: closes the link: no hello, no version, no reason
+</div>
+    <p>A hello with another sync version than 2 gets a <code>bye</code> ("this node speaks sync version 2") and the link ends. Route hints in a hello (<code>hints</code>) are taken only from a credentialed device, or from the home node once it delivered valid records: a pairing link could have come from anyone, and a stranger must never make a node dial addresses of its choosing.</p>
+
+    <h3 id="ws-keepalive">Keepalive and stalls</h3>
+    <ul>
+      <li>The native side of every WebSocket (serving or dialing) sends a ping every 30 seconds. Browsers answer pings by themselves and send none.</li>
+      <li>After the hello, a link with nothing read for 180 seconds ends: a pong counts as something.</li>
+      <li>At each 30-second tick the link also ends if the core says the catch-up on it stalled (<code>sync_stalled</code>). The web worker runs the same check every 30 seconds (<code>SYNC_WATCHDOG_MS</code>) over all its links and redials the home node.</li>
+    </ul>
+
+    <h3 id="sweeper">The sweeper</h3>
+    <p>Every native host runs <code>spawn_sweeper</code>: a tick every 5 seconds runs the scattered-delivery round (<code>scatter_tick</code>: answers that never came, holder sightings, private mailboxes), and every 36th tick, every three minutes, runs <code>sweep</code>. The web worker does the same (<code>TICK_MS</code> 5,000, <code>SWEEP_EVERY</code> 36). A sweep, among other things, asks for communities nobody here serves, ends range sessions idle for two minutes, refreshes direct-link handles, deletes expired records, lets go of carried communities nobody touches, gossips the directory, and frees unused media. Expiry itself is on <a href="/wiki/expiry/">Expiry &amp; removal</a>.</p>
+  </section>
+
+  <section class="wk-sec" id="webrtc">
+    <h2>WebRTC from browsers to native nodes</h2>
+    <p>A web page can't accept connections, and the only encrypted ones it can open are TLS (which needs a certificate from an authority, so a domain) and WebRTC. WebRTC needs no authority: the browser pins the node's DTLS certificate by its fingerprint. So a native node listens on UDP as an ICE-lite peer, and a route <code>rtc:&lt;fingerprint&gt;@&lt;ip:port&gt;</code> in a pairing link, an invite or a node list is all a browser needs. The browser writes the node's half of the session description itself. No STUN server, no TURN, no signaling server is involved.</p>
+
+    <h3 id="rtc-route">Routes and the certificate</h3>
+    <p>The fingerprint in a route is the SHA-256 of the node's DTLS certificate, base64url without padding (43 characters). The certificate is a self-signed ECDSA P-256 one, common name <code>hoi node</code>, valid from 2026-01-01 to 2099-12-31 with a random 16-byte serial (Firefox refuses two certificates with the same issuer and serial). Browsers check its fingerprint, never its dates or names, so it lives as long as the node and routes in old invites keep working. It is made once and kept with the node's other secrets.</p>
+    <p>The listener binds one socket per local address on the same port (ICE needs every packet's destination address): loopback, and every interface that is up, minus link-local addresses (a route can't carry a scope id), as the <a href="#vpn">VPN policy</a> allows; or only the <code>--rtc-bind</code> addresses. Unless a port was given, it tries UDP 7844 and takes any free port if that's taken. Interfaces are looked at again every 30 seconds, and at once when the VPN comes or goes.</p>
+    <p>Routes are ordered for the few a hello or a pairing link has room for (<code>MAX_PAIR_ROUTES</code> is 4): the best local address first (private IPv4 and carrier-grade NAT space, then other IPv4, then unique-local IPv6, then other IPv6), then up to two advertised addresses (<code>--rtc-advertise</code>, or a port the router forwards), then the rest. Loopback is never advertised. A browser offers them all as candidates of one session, in that order.</p>
+
+    <h3 id="rtc-ufrag">The username fragment carries the browser's certificate</h3>
+    <p>The browser picks the ICE username fragment, used for both sides, and the same string as the password. It carries the mode and the browser's own certificate fingerprint, so the node pins the browser's certificate too.</p>
+    <div class="wk-bytes" data-title="The ICE username fragment (and password)">
+version | 2 chars | sun | 2 | <code>h1</code>
+mode | 1 char | coral | 1 | <code>c</code> a paired device, <code>p</code> a member's browser
+fingerprint | 43 chars | sky | 8 | SHA-256 of the browser's certificate, standard base64, no padding
+random | ≥ 8 chars | mint | 3 | the web app sends 10 letters and digits
+</div>
+    <p>The node accepts 54 to 256 characters of letters, digits, <code>+</code> and <code>/</code>, mode <code>c</code> or <code>p</code>, and a fingerprint that decodes to 32 bytes; anything else is ignored. A <code>p</code> session starts only while the node <a href="#limits">accepts members</a>; paired devices (<code>c</code>) still prove themselves with their credential in the first hello.</p>
+
+    <h3 id="rtc-sdp">The answer the browser writes</h3>
+    <div class="wk-code" data-lang="ts" data-title="apps/web/src/lib/core/rtc-link.ts (trimmed)"><pre><code>const lines = [
+  'v=0',
+  `o=- 0 0 IN ${fam(first)} ${first.ip}`,
+  's=-',
+  `c=IN ${fam(first)} ${first.ip}`,
+  't=0 0',
+  'a=ice-lite',
+  `m=application ${first.port} UDP/DTLS/SCTP webrtc-datachannel`,
+  `a=mid:${mid}`,
+  'a=setup:passive',
+  `a=ice-ufrag:${ufrag}`,
+  `a=ice-pwd:${ufrag}`,
+  `a=fingerprint:sha-256 ${hex(first.fp)}`,
+  'a=sctp-port:5000',
+  'a=max-message-size:262144',
+  ...routes.map((r, i) =&gt; `a=candidate:${i + 1} 1 UDP ${2130706431 - i} ${r.ip} ${r.port} typ host`),
+  'a=end-of-candidates',
+  '',
+];</code></pre></div>
+    <p>The browser makes a fresh ECDSA P-256 certificate per link, creates an offer with no ICE servers, rewrites its <code>ice-ufrag</code> and <code>ice-pwd</code> to the fragment above, sets it, and sets this answer as the remote description. The node is ICE-controlled and DTLS-passive, so the browser is the DTLS client. The channel must open within 12 seconds (<code>OPEN_TIMEOUT_MS</code>). WebRTC lives on the page, since Web Workers can't create an <code>RTCPeerConnection</code>: the core worker asks the page with <code>rtc-open</code> and swaps whole sync messages with <code>rtc-send</code>.</p>
+
+    <h3 id="rtc-probe">Return routability before any state</h3>
+    <p>Every binding request carries the username fragment, so the password, in the clear: ICE checks prove nothing about where a packet came from, and anyone can write a binding request with any source address. So a first binding request costs the node one stateless binding request back (a probe, no larger than what came in) and nothing else. The browser, a full ICE agent, answers it; its answer proves it receives at that address, and only then does its next binding request start a session.</p>
+    <p>A probe's 12-byte transaction id is the first 12 bytes of <code>HMAC-SHA256(probe key, epoch ‖ local address ‖ remote address)</code>, addresses as IPv4-mapped IPv6 bytes plus a big-endian port, with a random probe key per run and 5-second epochs. An answer is checked against the current and the previous epoch, so nothing is kept per probe. An address that answered is <i>proven</i> for 10 seconds, in a table of 1,024 (when full, the oldest proof makes way). DTLS then asks for a cookie as well, before any key exchange or certificate (<a href="#rtc-dtls">below</a>).</p>
+    <div class="wk-seq" data-title="A member's browser opens a data channel to a node">
+lanes: Browser | Node
+-- Nothing central --
+Browser: a fresh certificate; ufrag = <code>h1p</code> + its fingerprint + 10 random characters
+Browser: writes the node's answer from the route: ice-lite, setup:passive, the node's fingerprint
+-- Return routability --
+Browser -> Node: STUN binding request, USERNAME <code>ufrag:ufrag</code>
+Node: no session for it, address not proven: keeps nothing
+Node -> Browser: probe: its own binding request; transaction id = MAC(addresses, epoch)
+Browser --> Node: binding success response
+Node: the MAC checks out: the address is proven for 10 s
+Browser -> Node: its next binding request
+Node: within 10 a minute from this source, 32 sessions, 8 opening: an ICE-lite session
+-- DTLS --
+Browser -> Node: ClientHello
+Node --> Browser: HelloVerifyRequest (1.2) or a HelloRetryRequest cookie (1.3)
+Browser -> Node: ClientHello with the cookie
+Node --> Browser: certificate, key exchange
+Browser .. Node: each side checks the certificate against the fingerprint it pinned
+-- SCTP and the channel --
+Browser -> Node: SCTP; channel <code>hoi</code>, negotiated id 0, opened within 15 s
+-- Sync --
+Node -> Browser: <code>hello</code>, then <code>bind</code> {s}
+Browser: the signature checks out against the hello's key and this channel
+Browser -> Node: <code>hello</code>
+Browser => Node @mint: <code>rng</code>, <code>want</code>, <code>recs</code>
+</div>
+    <p>In mode <code>c</code> the order of the hellos flips: the paired browser speaks first, with its credential, and the node answers only after checking it (<a href="#ws-auth">as on the WebSocket</a>).</p>
+
+    <h3 id="rtc-dtls">DTLS and the vendored crypto provider</h3>
+    <p>The WebRTC stack is <a href="https://github.com/algesten/str0m">str0m</a> (0.24) in sans-IO style: the host feeds it datagrams and timeouts and sends what it produces. Its crypto provider is str0m-rust-crypto 0.6.0, vendored into <code>hoi-net/src/rtc_crypto/</code>: DTLS through dimpl, SRTP ciphers, STUN's HMAC-SHA1 and SHA-256, all RustCrypto. Two things differ from upstream. The certificate is made with <code>rcgen</code> on <code>ring</code>, which iroh already brings in, instead of pulling <code>aws-lc-rs</code> (a C and CMake build) into every desktop, phone and node build. And DTLS server cookies are on, where upstream turns them off because "ICE verifies return routability": here it doesn't, since the node is ICE-lite and its ICE password travels in every binding request. DTLS version is <code>Auto</code>: 1.2 or 1.3, whichever the browser offers.</p>
+    <div class="wk-code" data-lang="rust" data-title="core/crates/hoi-net/src/rtc_crypto/dtls.rs (trimmed)"><pre><code>// The cookie (HelloVerifyRequest in DTLS 1.2, a HelloRetryRequest cookie in 1.3) makes
+// a client show it receives at its address before the server does key exchange or sends
+// its certificate flight.
+let mut builder = dimpl::Config::builder().use_server_cookie(true);</code></pre></div>
+
+    <h3 id="rtc-channel">The channel and its frames</h3>
+    <p>One data channel per session: label <code>hoi</code>, negotiated with id 0 (no in-band channel setup), ordered. It carries the same frames as the iroh stream (a 4-byte big-endian length, then the message, <a href="#iroh-frames">above</a>), cut into data channel messages of at most 16 KiB, which every browser takes in one message. A frame's length is checked as soon as its four bytes are in: zero or over <code>MAX_MESSAGE</code> ends the session before any of it is buffered.</p>
+    <div class="wk-bytes" data-title="A 40,000-byte message on the data channel">
+channel message 1 | 16,384 B | sky | 4 | length (4 B, <code>00 00 9c 40</code>), then 16,380 bytes of the message
+channel message 2 | 16,384 B | sky | 4 | the next 16,384 bytes
+channel message 3 | 7,236 B | sky | 2 | the last 7,236 bytes
+</div>
+    <ul>
+      <li><b>Node side.</b> SCTP may hold 1 MiB unacknowledged per session (<code>SCTP_BUFFER</code>); the rest waits in the session's queue and is written when the channel reports its buffered amount below 256 KiB. What a session may have waiting for the core is bounded at 4,096 frames and 32 MiB; a session past either ends.</li>
+      <li><b>Browser side.</b> <code>rtc-frames.ts</code> stops sending above 4 MiB unsent (<code>HIGH_WATER</code>) and resumes when the channel drains below 1 MiB. Each incoming frame is allocated once at its announced size and filled at a running offset, so a 16 MiB frame trickled in 16 KiB pieces costs one copy per byte.</li>
+      <li><b>Endings.</b> The channel closing, ICE disconnecting, or the session not opening within 15 seconds ends it. Before closing, the node lets the last queued messages (a <code>bye</code>) go out.</li>
+    </ul>
+
+    <h3 id="rtc-bind">The binding: the key behind the channel</h3>
+    <p>The channel is encrypted between the two pinned certificates, and a hello names the node's endpoint key; but nothing yet shows that the key's holder is the one at the other end of the channel, rather than someone who forwards another node's hello. So right after its hello on a WebRTC link it accepted, a native node sends <code>bind</code>: its endpoint key's Ed25519 signature over this statement.</p>
+    <div class="wk-code" data-lang="text" data-title="what a node signs for one WebRTC channel (hoi-core/src/bind.rs)"><pre><code>hoi/rtc-binding/1
+&lt;the node's certificate fingerprint, hex&gt;
+&lt;the browser's certificate fingerprint, hex&gt;
+&lt;the ICE username fragment&gt;
+&lt;the node's endpoint key, hex&gt;</code></pre></div>
+    <p>The browser takes nothing from that link but <code>hello</code>, <code>bind</code> and <code>bye</code> until the signature checks out against the key the hello named and the channel the browser actually opened; anything else, or a bad signature, ends the link. Nothing binds in the other direction: browsers name no lasting key to strangers, and paired devices prove themselves with their credential.</p>
+
+    <h3 id="rtc-limits">Listener limits</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="WebRTC listener limits">
+      <table>
+        <thead><tr><th>Constant</th><th>Value</th><th>Bounds</th></tr></thead>
+        <tbody>
+          <tr><td><code>DEFAULT_PORT</code></td><td>7844</td><td>the UDP port, unless taken</td></tr>
+          <tr><td><code>MAX_SESSIONS</code></td><td>32</td><td>sessions at once, paired devices and members together</td></tr>
+          <tr><td><code>MAX_OPENING</code></td><td>8</td><td>sessions still in ICE, DTLS or SCTP setup</td></tr>
+          <tr><td><code>OPEN_TIMEOUT</code></td><td>15 s</td><td>to open the data channel</td></tr>
+          <tr><td><code>NEW_PER_SOURCE</code></td><td>10 a minute</td><td>new sessions per source (IPv4 address, IPv6 /64)</td></tr>
+          <tr><td><code>ANSWERS_PER_SOURCE</code></td><td>30 a minute</td><td>probe answers taken per source</td></tr>
+          <tr><td><code>SOURCES</code></td><td>4,096</td><td>sources counted per minute</td></tr>
+          <tr><td><code>PROVEN_FOR</code>, <code>MAX_PROVEN</code></td><td>10 s, 1,024</td><td>how long, and how many, proven addresses wait</td></tr>
+          <tr><td><code>PROBE_EPOCH</code></td><td>5 s</td><td>a probe id is good for this and one more epoch</td></tr>
+          <tr><td><code>STUN_PER_SOURCE</code>, <code>STUN_PER_MINUTE</code></td><td>20, 6,000 a minute</td><td>plain STUN answers per source and in all</td></tr>
+          <tr><td><code>CHUNK</code></td><td>16 KiB</td><td>data channel messages written</td></tr>
+          <tr><td><code>SCTP_BUFFER</code></td><td>1 MiB</td><td>unacknowledged bytes per session</td></tr>
+          <tr><td><code>INBOUND_FRAMES</code>, <code>INBOUND_BYTES</code></td><td>4,096, 32 MiB</td><td>waiting for the core per session</td></tr>
+          <tr><td><code>RESCAN</code></td><td>30 s</td><td>interfaces looked at again</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>The node's port also answers plain STUN (a binding request with no USERNAME, 20 to 512 bytes, as browsers send their STUN server) with the address the request came from, while it passes signals between browsers (<a href="#direct">next</a>). An answer is at most 52 bytes and goes only to the request's source, so spoofed requests make the port send at most about 5 KB a second to anyone.</p>
+
+    <h3 id="rtc-browser">Which nodes a browser dials</h3>
+    <ul>
+      <li><b>Its home node</b>, as <code>home</code>, in mode <code>c</code>: the WebSocket first, then its WebRTC routes.</li>
+      <li><b>Members' and public nodes</b>, as <code>member-N</code>, in mode <code>p</code>: routes from accepted invites, public joins and members met in the last 30 days (<code>rtc_candidates</code>, at most 8, never its own home node's). At most two such links (<code>MAX_MEMBER_LINKS</code>), plus those private mailboxes need. A node that doesn't answer, or closes the link within a minute, counts as a refusal: it waits 60 seconds, doubling to 30 minutes.</li>
+      <li><b>One public node for finding things</b>, as <code>node-N</code>: three candidates are dialed at once (<code>DISCOVERY_RACE</code>) and the first to answer is kept; the others are closed before they carry anything. See <a href="/wiki/discovery/">Discovery</a>.</li>
+    </ul>
+    <p>The worker looks at both every 15 seconds, and 3 seconds after starting.</p>
+  </section>
+
+  <section class="wk-sec" id="direct">
+    <h2>Direct links between browsers</h2>
+    <p>Two members' browsers linked to the same native node can open a data channel to each other, so records and media flow between them without going through that node. The browsers learn each other's addresses, which is why the setting (<i>Direct links with members' browsers</i>, <code>direct_links</code>) is off at first.</p>
+    <ul>
+      <li><b>The node</b> says <code>signal</code> while its WebRTC listener runs and it accepts members. To each browser link that said <code>direct</code> it gives a random 16-byte handle, and sends it, per community, the handles of the other such browsers that share it (<code>here</code>, at most 16). It passes <code>sig</code> messages (an offer or an answer) between two such links that share a public community, at most 30 a minute per link (<code>SIGS_PER_MINUTE</code>; more costs peer score), naming the sender by its handle. Its port answers plain STUN so each browser learns the address it is seen from.</li>
+      <li><b>A browser</b> with the setting on says <code>direct</code>. Of two handles, the lower one offers. Its page makes the connection (<code>rtc-direct.ts</code>) with the node's own <code>stun:ip:port</code> addresses (from the routes it dialed, at most 4) as ICE servers and nothing else, gathers candidates for up to 3 seconds (no trickling: one message each way), and gives the channel 15 more seconds to open. At most four direct links (<code>MAX_DIRECT</code>), none for private communities; a handle tried and not linked is offered again after 10 minutes.</li>
+      <li><b>On the channel</b> the browsers speak the usual sync protocol as peers: every record is checked as from anyone, and the hello names communities only as salted hashes.</li>
+    </ul>
+    <div class="wk-bytes" data-title="A sig payload, as the browser sends it">
+run key | 16 B | lilac | 3 | random per run of the app, so the other side links once however many handles it has
+description | ≤ 8 KiB − 16 B | sky | 8 | JSON <code>{"type", "sdp"}</code>: an offer or an answer, candidates gathered
+</div>
+    <div class="wk-seq" data-title="Two browsers link directly through a node">
+lanes: Browser A | Node | Browser B
+Browser A -> Node: <code>hello</code> {fx: [<code>direct</code>, …]}
+Browser B -> Node: <code>hello</code> {fx: [<code>direct</code>, …]}
+Node -> Browser A: <code>here</code> {c, y: handle A, h: [handle B]}
+Node -> Browser B: <code>here</code> {c, y: handle B, h: [handle A]}
+Browser A: handle A is the lower one: A offers
+Browser A -> Node: plain STUN binding request: where am I seen from?
+Node --> Browser A: XOR-MAPPED-ADDRESS
+Browser A -> Node: <code>sig</code> {p: handle B, d: run key ‖ offer}
+Node -> Browser B: <code>sig</code> {p: handle A, d: run key ‖ offer}
+Browser B -> Node: <code>sig</code> {p: handle A, d: run key ‖ answer}
+Node -> Browser A: <code>sig</code> {p: handle B, d: run key ‖ answer}
+Browser A .. Browser B: ICE, DTLS, data channel <code>hoi</code> id 0
+Browser A => Browser B @mint: <code>hello</code>, <code>rng</code>, <code>want</code>, <code>recs</code>
+</div>
+    <p>If two direct links end up joining the same pair of browsers (through two nodes), both sides keep the same one, the lowest by the offering side's run key and the two handles, and close the other.</p>
+  </section>
+
+  <section class="wk-sec" id="relays">
+    <h2>Relays</h2>
+    <p>When neither of two native nodes can reach the other directly (both behind routers that won't forward), their QUIC packets can go through an iroh relay. A relay forwards packets it can't read, by destination endpoint, from an in-memory table of who is connected now. The protocol assumes relays are untrusted.</p>
+
+    <h3 id="relay-config">Where relays come from</h3>
+    <p>Never from hoi or iroh defaults. A node uses the relays its operator configured (<code>--relay URL</code>, at most 16) and those an accepted invite or a credentialed device's hints name for a community (at most 8 per community, <code>MAX_HINT_RELAYS</code>), added to the endpoint as the dial loop meets them. While a node has relays, its routes include its bare endpoint key, which a dialer can reach only through those relays.</p>
+
+    <h3 id="packet-relay">The packet relay in hoi-node</h3>
+    <p><code>hoi-node --packet-relay ADDR</code> runs iroh's own relay server beside the node, so a community's members can connect through a relay their community's operator runs instead of anyone's default. Its public address (<code>--packet-relay-url</code>, or <code>http://ADDR</code> for one on loopback) goes first in the node's relays, so its routes and invites name it.</p>
+    <ul>
+      <li><b>Who may use it.</b> Everyone but the endpoints on the operator's block list: <code>packet-relay-blocked.txt</code> in the data directory, one 64-hex endpoint key at the start of a line, <code>#</code> comments, read again within 30 seconds of a change (<code>hoi-node admin relay block|unblock|list</code>). With <code>--packet-relay-members</code>, only endpoints this node knows as members of the communities it carries: connected now and sharing one, or named in a route it learned or was invited with. iroh's clients send no token of their own, so this stands in for one.</li>
+      <li><b>How much.</b> Each client may send at most 1 MiB a second, in bursts of up to 4 MiB.</li>
+      <li><b>TLS.</b> Plain HTTP behind a TLS proxy, or HTTPS from a PEM certificate chain and key (<code>--packet-relay-cert</code>, <code>--packet-relay-key</code>, together or not at all); then the plain HTTP side (captive-portal checks) moves one port down.</li>
+      <li><b>Logs.</b> None: the node installs no tracing subscriber.</li>
+    </ul>
+    <div class="wk-code" data-lang="rust" data-title="core/crates/hoi-node/src/packet_relay.rs (trimmed)"><pre><code>impl AccessControl for Gate {
+    async fn on_connect(&amp;self, request: &amp;ClientRequest) -&gt; Access {
+        let id = *request.endpoint_id().as_bytes();
+        if self.blocked.read().is_ok_and(|b| b.contains(&amp;id)) {
+            return Access::Deny { reason: Some("this relay's operator refuses this endpoint".into()) };
+        }
+        if self.members_only &amp;&amp; !self.shared.0.with(|n| n.relay_member(&amp;Id(id))) {
+            return Access::Deny { reason: Some("this relay serves the members of the communities its node carries".into()) };
+        }
+        Access::Allow
+    }
+}</code></pre></div>
+    <div class="wk-seq" data-title="Two nodes that reach each other only through a packet relay">
+lanes: Node A | Packet relay | Node B
+Node A -> Packet relay: HTTPS, iroh's relay handshake with its endpoint key
+Packet relay: on the block list? members only and not a member? else allowed
+Node B -> Packet relay: the same
+Node B: an invite named only A's endpoint key and the relay
+Node B => Packet relay @sky: QUIC packets for endpoint A
+Packet relay => Node A @sky: forwarded as they are, 1 MiB/s per client
+Node A .. Node B: QUIC and TLS 1.3 end to end: the relay reads nothing
+</div>
+    <div class="wk-note info"><b>Browsers and relays</b><p>A browser never uses an iroh relay. Its way into the network when nothing can reach it is its own home node, or a public node it dials over WebRTC. That is why something a browser alone posts is readable by others only once a node carrying the community has it.</p></div>
+  </section>
+
+  <section class="wk-sec" id="portmap">
+    <h2>Port mapping</h2>
+    <p>A public node at home is reachable from the internet only if the router in front of it forwards its UDP ports. <code>hoi_net::portmap</code> asks the router itself, and the router says which public address it forwards from: no outside service (no STUN) learns that the node exists, and the project runs nothing for it. <code>hoi-node</code> does this by default for its WebRTC port, its iroh IPv4 ports and, on a public node, its DHT ports (<code>--port-mapping</code>; <code>--no-port-mapping</code>, and off with <code>--no-public-relay</code>). The desktop does it for its WebRTC and native ports while <i>Be a public node</i> is on, showing the address before publishing it. What the router forwards from joins the node's routes near the front: first among the iroh routes, right after the best local address among the WebRTC ones.</p>
+    <ol class="wk-steps">
+      <li><b>PCP</b><p>One UDP MAP request (RFC 6887) to the default gateway's port 5351. A NAT-PMP-only router answers in its own version 0, which counts as silence here.</p></li>
+      <li><b>NAT-PMP</b><p>One UDP map request (RFC 6886) to the same port, then an external-address request for the public address.</p></li>
+      <li><b>UPnP IGD</b><p>Only on the default route, never through a VPN. An SSDP <code>M-SEARCH</code> for <code>InternetGatewayDevice:1</code> and <code>:2</code>, answers collected for 2 seconds and taken only from the gateway's own address; its description fetched over plain HTTP from that same private address (up to four tried); the first of <code>WANIPConnection:2</code>, <code>WANIPConnection:1</code>, <code>WANPPPConnection:1</code>; then <code>AddPortMapping</code> and <code>GetExternalIPAddress</code> by SOAP to a control URL on that same host and port.</p></li>
+    </ol>
+    <p>A UDP request is sent up to three times, waiting 250, 500 and 1,000 ms; an answer must come from the gateway's address and match the request (the PCP nonce, the opcode, the internal port). Every HTTP answer is read to at most 64 KiB within 5 seconds, with no proxy and no redirects. A UPnP router that keeps only permanent forwards (error 725) gets one with lease 0; a port another computer holds (718) makes way for a random one between 20,000 and 59,999, at most twice. Mappings show as <code>hoi-node</code> on the router's page.</p>
+    <div class="wk-bytes" data-title="The PCP MAP request (60 bytes)">
+version | 1 B | sun | 1 | <code>2</code>
+opcode | 1 B | sun | 1 | <code>1</code>, a MAP request
+reserved | 2 B | mute | 1 | zero
+lifetime | 4 B | coral | 2 | seconds; 7,200, or 0 to delete
+client address | 16 B | sky | 6 | this computer, IPv4-mapped
+
+nonce | 12 B | lilac | 4 | random, kept to renew and delete
+protocol | 1 B | sun | 1 | <code>17</code>, UDP
+reserved | 3 B | mute | 1 | zero
+internal port | 2 B | mint | 1 |
+external port | 2 B | mint | 1 | the same port wished for
+
+external address | 16 B | sky | 6 | <code>::ffff:0.0.0.0</code>, any
+</div>
+    <div class="wk-bytes" data-title="The NAT-PMP map request (12 bytes)">
+version | 1 B | sun | 1 | <code>0</code>
+opcode | 1 B | sun | 1 | <code>1</code>, map UDP (answer: 129)
+reserved | 2 B | mute | 1 | zero
+internal port | 2 B | mint | 2 |
+external port | 2 B | mint | 2 | wished for; 0 with lifetime 0 deletes
+lifetime | 4 B | coral | 3 | seconds
+</div>
+    <p>A forward is asked for 7,200 seconds and renewed after half the granted lifetime, but no sooner than 60 seconds and no later than an hour, which also notices a new public address. After a round with a port not forwarded, the next comes within 5 minutes. When the network changes (another router), the old forwards are forgotten; when the mapper stops, it removes them (lifetime 0, or <code>DeletePortMapping</code>), all within 3 seconds.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="What the port mapper reports">
+      <table>
+        <thead><tr><th>State</th><th>Means</th></tr></thead>
+        <tbody>
+          <tr><td><code>own-address</code></td><td>this computer's own address is public: nothing in front of it to ask</td></tr>
+          <tr><td><code>no-router</code></td><td>no IPv4 default route, or the VPN interface is down or has no IPv4 address</td></tr>
+          <tr><td><code>forwarded</code></td><td>every port forwarded from an address other networks can reach; those addresses are announced</td></tr>
+          <tr><td><code>behind-nat</code></td><td>the router forwards from an address that isn't public: carrier-grade NAT or a second router; nothing is announced</td></tr>
+          <tr><td><code>refused</code></td><td>the router said no, with its reason (for example "PCP: not authorized")</td></tr>
+          <tr><td><code>silent</code></td><td>nothing answered PCP, NAT-PMP or UPnP; forward the ports by hand and pass <code>--rtc-advertise PUBLIC-IP:PORT</code></td></tr>
+          <tr><td><code>failed</code></td><td>the mapper couldn't start</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Through a VPN (<code>Via::Interface</code>) only the VPN's own gateway is asked, over PCP and NAT-PMP: the address the system names, else the first address of the interface's /24 (10.2.0.1 for 10.2.0.2), where VPNs that forward ports answer. An SSDP search would find the home router and publish the home's address, which is what the VPN is there to hide.</p>
+  </section>
+
+  <section class="wk-sec" id="vpn">
+    <h2>Only through a VPN</h2>
+    <p>A native node can be told to reach the internet through one network interface only, a VPN's (<code>hoi-node --vpn-only wg0</code>, or the desktop's setting), so the peers it talks to see the VPN's address and never the home's. It is off by default. Three things hold while it is on:</p>
+    <ol class="wk-steps">
+      <li><b>Bound to the VPN</b><p>Every socket toward the internet is bound to the VPN interface's own address, and pinned to the interface where the system allows it: <code>SO_BINDTODEVICE</code> on Linux and Android, <code>IP_BOUND_IF</code> on macOS and iOS; on Windows the strong host model sends from an address only over its own interface. A pin the system refuses leaves the address binding and the route check in place. Home-network addresses may still be used directly if the person allows it (<code>home_network</code>, on by default; <code>--no-home-network</code>), so a phone on the Wi-Fi keeps working. A home-network socket never sends to an internet address.</p></li>
+      <li><b>Routed through it</b><p>The system itself must send internet traffic through the VPN: the source address it would pick toward <code>192.0.2.1</code> (a documentation address, never contacted) must be one of the VPN's. This is asked the way connecting a UDP socket asks it, which sends nothing, and it follows policy routing (the way WireGuard and most VPN apps route), not just the main table's default route.</p></li>
+      <li><b>A kill switch</b><p>While the VPN is down, or the system routes around it (split tunnelling), nothing goes to the internet: the sockets on it close and the host stops the native transport until the VPN is back. <code>hoi-node</code> waits for the VPN before starting anything.</p></li>
+    </ol>
+    <div class="wk-table" tabindex="0" role="region" aria-label="VPN states">
+      <table>
+        <thead><tr><th>State</th><th>Shown as</th><th>Allowed addresses</th></tr></thead>
+        <tbody>
+          <tr><td><code>Off</code></td><td>no VPN asked for</td><td>every interface</td></tr>
+          <tr><td><code>Up(addresses)</code></td><td>up, with its addresses</td><td>loopback, the VPN's addresses, and home-network addresses if allowed</td></tr>
+          <tr><td><code>Down(Missing)</code></td><td>"is down"</td><td>loopback, home network if allowed</td></tr>
+          <tr><td><code>Down(NoAddress)</code></td><td>"has no address yet"</td><td>the same</td></tr>
+          <tr><td><code>Down(NotRouted)</code></td><td>"doesn't carry this computer's internet traffic (not connected, or split tunnelling)"</td><td>the same</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>A home-network address is private or link-local IPv4, or unique-local IPv6. Carrier-grade NAT space (100.64/10) is not: overlay VPNs use it. Every packet the WebRTC listener sends goes through <code>may_send</code>: always without a VPN; with one, from the VPN's addresses anywhere, and from any other address only to this computer or, if allowed, from the home network to the home network. The iroh endpoint binds the VPN's IPv4 address. <a href="#portmap">Port mapping</a>, <a href="#link-previews">link previews</a> and handle checks follow the same policy. To pick the interface, the app lists interfaces that are up, tunnels and point-to-point links first, with the name the system gives them.</p>
+  </section>
+
+  <section class="wk-sec" id="limits">
+    <h2>Connection limits</h2>
+    <p>The listeners strangers reach (QUIC and WebRTC) count sources with one small structure, <code>PerSource</code>: how many connections each source may start per minute, in a table of at most a given number of sources. The window is a fixed minute: the first count after a minute has passed clears the table. A full table turns newcomers away until the minute is over rather than forgetting anyone's count early. Only addresses that proved they receive what is sent to them are counted (the QUIC retry, the WebRTC probe), so a spoofed flood can neither use up someone else's allowance nor fill the table. Nothing is logged or kept past a minute.</p>
+    <div class="wk-code" data-lang="rust" data-title="core/crates/hoi-net/src/limit.rs"><pre><code>/// The source an address counts as: an IPv4 address, or the /64 an IPv6 address is in (what one
+/// host or household gets, so fresh addresses inside it are free to whoever holds it).
+pub(crate) fn source(ip: IpAddr) -&gt; IpAddr {
+    match ip {
+        IpAddr::V6(v6) =&gt; match v6.to_ipv4_mapped() {
+            Some(v4) =&gt; IpAddr::V4(v4),
+            None =&gt; {
+                let s = v6.segments();
+                IpAddr::from([s[0], s[1], s[2], s[3], 0, 0, 0, 0])
+            }
+        },
+        v4 =&gt; v4,
+    }
+}</code></pre></div>
+    <h3 id="relay-switch">The relay switch and the daily cap</h3>
+    <p>Other people's devices may connect to a native node only while it <i>accepts members</i>: the relay switch is on (native nodes relay by default, and the app tells the person once) and today's bytes with them are under the daily cap (default 5 GB, settable from 0.1 to 1,000; <code>--daily-cap-gb</code>). The bytes counted are those in and out on links that someone else's device dialed in; the count outlives a restart. Hosts ask before accepting a connection. A link already open from someone else's node gets a <code>bye</code> on its next message: "this node isn't relaying right now", or "this node is done relaying for today". Paired devices and direct browser links are never turned away by it.</p>
+    <h3 id="all-limits">Every limit in one place</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Transport limits">
+      <table>
+        <thead><tr><th>Where</th><th>Limit</th></tr></thead>
+        <tbody>
+          <tr><td>Any link, any transport</td><td>a message at most <code>MAX_MESSAGE</code> (16 MiB + 64 KiB); first message a <code>hello</code> within 15 s; 128 messages and 32 MiB queued; a write within 30 s</td></tr>
+          <tr><td>The core, per peer</td><td>3,000 messages a minute, past which each costs peer score; at −20 the peer gets <code>bye</code> "too many messages" (<a href="/wiki/spam/">Spam &amp; rate limits</a>)</td></tr>
+          <tr><td>Identity work</td><td>two Argon2id checks at once per node, off the lock</td></tr>
+          <tr><td>iroh</td><td>32 peers (dials and accepts), 10 new per source a minute after a retry, 4,096 sources, 20 s to connect, one bidirectional stream, no unidirectional ones, 4 MiB windows</td></tr>
+          <tr><td>iroh-blobs</td><td>8 served and 2 fetched at once, 64 MiB serve cache, 60 s per fetch, single blobs only</td></tr>
+          <tr><td>WebSocket</td><td>32 paired devices, 10 s handshake, ping every 30 s, 180 s silence ends it</td></tr>
+          <tr><td>WebRTC</td><td>32 sessions, 8 opening, 10 new per source a minute, 30 probe answers per source a minute, 15 s to open (<a href="#rtc-limits">all of them</a>)</td></tr>
+          <tr><td>Direct links</td><td>4 per browser, 30 <code>sig</code> a minute per link through a node, 8 KiB per <code>sig</code></td></tr>
+          <tr><td>Packet relay</td><td>1 MiB/s per client, 4 MiB bursts</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="wk-sec" id="before-connecting">
+    <h2>Before connecting: notices and previews</h2>
+    <h3 id="consent-gate">The operator's notice comes first</h3>
+    <p>A public node's operator tells people what the node processes and keeps and, when they choose to, who runs it, where, and how to reach them (a <code>NodeNotice</code>, set with <code>hoi-node --notice FILE</code>). The node puts its canonical bytes and their BLAKE3 hash into every hello to a stranger (<code>nt</code> at most 2,048 bytes, <code>nh</code>), and, signed by its endpoint key over <code>"hoi node notice v1\n&lt;endpoint hex&gt;\n&lt;hash hex&gt;"</code>, into its node link.</p>
+    <p>A person's device runs the <b>consent gate</b> (on in browsers, the desktop and the phone app, never on a headless node). A stranger this device dialed hears nothing until its hello was read. No notice in it (an older node, a member's device): our hello follows at once. A notice the person accepted before, the same. Otherwise the link ends there without counting as a refusal, the words are kept to be shown (at most 64 notices; the oldest not accepted go first), and the node is dialed again once the person accepted. A declined node is not dialed and gets a <code>bye</code> "declined" until the person forgets it. A hello whose notice is missing, over 2,048 bytes, doesn't match its hash or doesn't decode costs the peer score. What the device says of itself (its communities, hashed or named) waits for the person's answer; the node has seen this device's address by then, as any connection shows it, and the app's own network notice says so before the first connection is ever made.</p>
+    <div class="wk-seq" data-title="Informed before connected">
+lanes: Browser | Public node
+Browser -> Public node: opens a link (WebRTC, mode <code>p</code>)
+Public node -> Browser: <code>hello</code> {nh, nt: the notice, …}
+Browser: never accepted: keeps the notice, ends the link, has said nothing of itself
+Browser: shows the notice; the person accepts it, by its hash
+Browser -> Public node: dials again
+Public node -> Browser: <code>hello</code> {nh, nt}
+Browser: the hash is the accepted one
+Browser -> Public node: <code>hello</code> {n, ch: salted community hashes, …}
+</div>
+    <p>A node link the person opens is previewed before anything is dialed (<code>preview_node_link</code>): where it points (the first route's address and whether it is on this machine, the local network or the internet), the endpoint it names, and its notice, kept as pending and marked verified only if the endpoint's signature checks out. Under the consent gate a link whose notice wasn't accepted is refused with "Read and accept the operator's notice first." The notice format is on <a href="/wiki/hoi-node/">hoi-node</a>.</p>
+
+    <h3 id="link-previews">Link previews</h3>
+    <p>When the person turns previews on (<code>link_previews</code>, off by default), a post's link shows the page's title, description and picture. Only native programs fetch: a desktop or <code>hoi-node</code> fetches for itself and for the browsers paired with it, which ask over the sealed home link; a browser with no home node fetches nothing. The core decides what to fetch; <code>hoi_net::preview</code> does the network part:</p>
+    <ul>
+      <li>https only, no credentials in the URL, at most 2,048 characters; at most three redirects, each hop checked like the first.</li>
+      <li>The host name must resolve only to addresses on the internet (the same <code>public_ip</code> test that refuses loopback, private, link-local, carrier-grade NAT, documentation, benchmarking and multicast ranges), and the connection goes to exactly those addresses: no second lookup an attacker's DNS could answer differently.</li>
+      <li>No cookies, no referrer, user agent <code>hoi link preview</code>, Mozilla's roots compiled in; <code>Accept</code> names only HTML pages or PNG, JPEG, WebP and GIF pictures.</li>
+      <li>At most 512 KiB (<code>PREVIEW_BYTES</code>) and 5 seconds (<code>PREVIEW_SECS</code>) per fetch, four fetches at once; a page is cut at the limit, a picture over it is none. The picture then passes the same sanitizer as a post's and must end up under 384 KiB.</li>
+      <li>With "only through my VPN", every request leaves from the VPN's address on its interface, and none while it is down.</li>
+    </ul>
+    <p>A preview is kept on this device (64 at most, fetched again after a week, a failed one after an hour) and never published. A browser asks its home node for at most 8 a minute, and a home node serves one paired device at most 12 a minute.</p>
+  </section>
+
+  <section class="wk-sec" id="observers">
+    <h2>What each party can observe</h2>
+    <div class="wk-table" tabindex="0" role="region" aria-label="What each party sees">
+      <table>
+        <thead><tr><th>Party</th><th>Sees</th><th>Doesn't see</th></tr></thead>
+        <tbody>
+          <tr><td>Your home node</td><td>everything your devices sync with it, their addresses, and the metadata of <code>link</code> messages: it holds the link key it hands out</td><td>nothing is hidden from it by design: it is yours</td></tr>
+          <tr><td>A member's or public node you connect to</td><td>your address and port and when you connect; your hello: from a browser, a fresh random id per connection and no name; in the clear only the communities whose routes led to it, the rest as hashes salted for this connection; the records you ask for and offer, and those you publish through it, first hand; your features</td><td>which other communities you're in, unless it holds them too and matches a salted hash</td></tr>
+          <tr><td>An iroh relay, a packet relay</td><td>both endpoint keys, both clients' addresses, timing and packet sizes</td><td>anything inside: QUIC is end to end</td></tr>
+          <tr><td>A node passing direct-link signals</td><td>who links with whom, by handle; the <code>sig</code> payloads it passes without interpreting them (plain session descriptions with the browsers' candidates, addresses it already sees on its own links)</td><td>what flows on the direct channel</td></tr>
+          <tr><td>The other browser on a direct link</td><td>your address; your hello as any stranger gets it</td><td>communities it doesn't hold</td></tr>
+          <tr><td>Your router</td><td>the port mapping requests</td><td>nothing else is told: no outside STUN service learns the node exists</td></tr>
+          <tr><td>A site fetched for a link preview</td><td>the native node's address (or its VPN's), the time, user agent <code>hoi link preview</code></td><td>cookies, a referrer, which post linked to it, who asked</td></tr>
+          <tr><td>Anyone on the path of a plain <code>ws://</code> link</td><td>everything: which is why pairing allows <code>ws://</code> only on this machine</td><td>—</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="wk-note warn"><b>Addresses are not hidden</b><p>Every node you connect to sees your IP address, as every internet connection does. hoi keeps your network key apart from your posting keys and names communities to strangers only as salted hashes, but it does not route through anonymizing networks. The VPN mode changes which address peers see, not whether they see one.</p></div>
+  </section>
+
+  <section class="wk-sec" id="next">
+    <h2>Read next</h2>
+    <div class="wk-cards">
+      <a class="wk-card g-sky" href="/wiki/sync/"><i></i><b>Sync &amp; gossip</b><span>The messages these pipes carry, range reconciliation, live push and warmth.</span></a>
+      <a class="wk-card g-mint" href="/wiki/discovery/"><i></i><b>Discovery</b><span>How a node finds routes to dial: invites, node lists, the DHT and LAN beacons.</span></a>
+      <a class="wk-card g-sun" href="/wiki/joining/"><i></i><b>Joining, step by step</b><span>Every connection made from opening a link to reading the first post.</span></a>
+      <a class="wk-card g-coral" href="/wiki/hoi-node/"><i></i><b>hoi-node</b><span>The flags that start each transport, the packet relay's admin commands, the notice.</span></a>
+      <a class="wk-card g-lilac" href="/wiki/links/"><i></i><b>Links &amp; URIs</b><span>Pairing links, node links and the routes inside them.</span></a>
+    </div>
+  </section>
+</article>
+<!-- @wiki-close -->
+<!-- @include footer.html -->
+<script type="module" src="/src/pages/wiki.ts"></script>
+</body>
+</html>

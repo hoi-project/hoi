@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <!-- @include head.html title="Running a community · hoi.sh" description="Owners, moderators and pinners run a hoi community, and they're responsible for it. How the signed ledger, thresholds, limits and labelers work." -->
+</head>
+<body>
+<!-- @include header.html nav="site" -->
+
+<main id="main">
+<section class="wrap page-hero">
+  <span class="eyebrow">for owners, mods &amp; pinners</span>
+  <h1>Running a community. <span class="blue">Your keys, your call, your job.</span></h1>
+  <p class="lead">A hoi community is a key, a handful of rules and the people who look after it. Nobody above you can overrule you, which is the point. It also means nobody above you can tidy up after you.</p>
+</section>
+
+<section class="wrap two" aria-labelledby="responsible">
+  <div class="frame status prose">
+    <h2 id="responsible">Who's responsible? You are.</h2>
+    <p>The people who run a community are the people with control: its <strong>owners</strong>, its <strong>moderators</strong> and its <strong>pinners</strong>. They write the rules, decide who gets in, remove posts, ban keys and keep the history. So they're also the ones responsible for what happens there. In legal terms, the operators of a community may be its "provider".</p>
+    <p>The hoi project isn't. It wrote the software and that's all: it has no key in your community and no say in it. A public node someone runs, one of ours included, may hold a copy of an open community's public records, as any member's device does; it carries them and can stop carrying them, nothing more. It can't remove a post, ban someone or change anything, for you or for anyone asking about you. Private communities are encrypted to their members and reach no public node at all.</p>
+  </div>
+  <div class="note-sun">
+    <b>The short version</b>
+    <p>Your community, your rules, your ledger. Every action is signed and public to your members. Write rules people can follow, act on problems quickly, and say why.</p>
+  </div>
+</section>
+
+<section class="section" aria-labelledby="roles">
+  <div class="wrap">
+    <div class="section-head">
+      <span class="eyebrow">who does what</span>
+      <h2 id="roles">Five roles, all held by members.</h2>
+    </div>
+    <div class="rows">
+      <div class="row"><div class="row-k"><span class="num fill-sun">O</span><span>Owners</span></div><div class="row-v"><p>The root keys named in the community's first record, with a threshold such as <strong>2 of 4</strong>. Changing who moderates takes that many owner signatures on one ledger entry. New rules and limits take that many to <em>propose</em>, and the members decide. One lost laptop can't take the community over, and neither can its owners.</p></div></div>
+      <div class="row"><div class="row-k"><span class="num fill-mint">M</span><span>Moderators</span></div><div class="row-v"><p>Keys the owners add (and remove) in the ledger. They remove posts, ban and unban keys, label, pin and admit newcomers. Every action is a signed entry with a reason, visible to every member, and established members can veto it: removals wait 72 hours for that, and a moderator overturned three times is suspended.</p></div></div>
+      <div class="row"><div class="row-k"><span class="num fill-sky">P</span><span>Pinners</span></div><div class="row-v"><p>Members who keep the community's whole live window on their device or <a href="/relay/#node">hoi-node</a>, so newcomers can catch up. Moderators pin by default. Pinners hold what members post, so they share the responsibility for it, and they delete what the ledger removes.</p></div></div>
+      <div class="row"><div class="row-k"><span class="num fill-peach">E</span><span>Established members</span></div><div class="row-v"><p>Members who have been vouched in and stayed a while. Reading a newcomer's posts without hiding them vouches for the newcomer; enough of them hiding a post makes it nap for everyone, and enough hiding someone's posts blocks them. They can also veto moderators. Quorums never exceed a third of them.</p></div></div>
+      <div class="row"><div class="row-k"><span class="num fill-lilac">♥</span><span>Members</span></div><div class="row-v"><p>Everyone who reads along. Newcomers post text; members add links; trusted members, whose posts the community responded to well, can share images and media. Their devices check every post against your rules and ledger, flag spam, and pick which labelers they trust on top of yours.</p></div></div>
+    </div>
+  </div>
+</section>
+
+<section class="section soft" id="ledger" aria-labelledby="ledger-title">
+  <div class="wrap">
+    <div class="section-head">
+      <span class="eyebrow">the ledger</span>
+      <h2 id="ledger-title">Every action, signed and public.</h2>
+      <p class="lead">The ledger is the community's append-only list of moderation actions. Each entry is signed by the key that took it, and copied to every member. Anyone holding the community's first record can check the whole thing, and any member can export it.</p>
+    </div>
+    <div class="tbl compact" tabindex="0" role="region" aria-label="An example ledger">
+      <table>
+        <thead><tr><th class="w-70">When</th><th class="w-110">What</th><th class="w-150">Who</th><th>Target · reason</th><th class="w-100 align-right">Signed</th></tr></thead>
+        <tbody>
+          <tr><td class="muted">35 m</td><td><span class="tag t-peach">removed</span></td><td>jonas.w</td><td>Comment by <span class="mono">9c21·e0b4</span> · rule 4, undisclosed vendor</td><td class="ok">88c1 ✓</td></tr>
+          <tr><td class="muted">2 h</td><td><span class="tag t-peach">bounced</span></td><td>spam shield</td><td><span class="mono">f30a·c812</span> · hit the rate limit 14× in an hour · 19 members flagged it</td><td class="ok">auto ✓</td></tr>
+          <tr><td class="muted">5 h</td><td><span class="tag t-sky">labelled</span></td><td>s.keller</td><td>Post by p.tran · <em>needs a threat model</em> · shown as a note, not hidden</td><td class="ok">d41e ✓</td></tr>
+          <tr><td class="muted">6 d</td><td><span class="tag t-mint">rules v7</span></td><td>mira, jonas.w, rav</td><td>Added rule 4, vendor disclosure · 3 of 4 owners signed</td><td class="ok">3 sigs ✓</td></tr>
+          <tr><td class="muted">24 d</td><td><span class="tag t-lilac">new mod</span></td><td>mira, jonas.w</td><td>Welcomed rav as a moderator · 2 of 4 owners signed</td><td class="ok">2 sigs ✓</td></tr>
+          <tr><td class="muted">31 d</td><td><span class="tag t-mint">unbanned</span></td><td>rav</td><td><span class="mono">7781·aa02</span> · appeal accepted, the duplicate was a client bug</td><td class="ok">02bb ✓</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="rows mt-rows">
+      <div class="row"><div class="row-k plain"><span>Remove</span></div><div class="row-v"><p>Every member's device deletes the post's body, keeps only its id and the reason, and refuses it if it shows up again. Readers see "Poof." with a link to the entry.</p></div></div>
+      <div class="row"><div class="row-k plain"><span>Ban &amp; unban</span></div><div class="row-v"><p>A ban drops everything that key signs in this community from then on. An unban is just another entry. Automatic bans carry their evidence: the ids of the flags that triggered them, never the posts.</p></div></div>
+      <div class="row"><div class="row-k plain"><span>Rules, limits, mods</span></div><div class="row-v"><p>These need the owners' threshold of signatures in one entry, and they stay until replaced. Rules and limits are then proposals: everyone established when one was proposed decides. It applies once they all agree; people who are away (nothing of theirs left in the community) don't hold it up; after one fade window, silence counts as yes and only objections stop it. Everything else in the ledger fades with the community's posts.</p></div></div>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="limits" aria-labelledby="limits-title">
+  <div class="wrap two">
+    <div class="section-head">
+      <span class="eyebrow">limits</span>
+      <h2 id="limits-title">The dials, and where they start.</h2>
+      <p class="lead">Every member's device enforces your limits before it shows anything. They live in the community's first record and change only when the owners propose it and the members agree. Start the way you mean to go on: changing them later is slow on purpose.</p>
+    </div>
+    <div class="frame">
+      <div class="kv-title"><span>c/yours · limits</span><span class="tag t-mint">defaults</span></div>
+      <div class="kv">
+        <div class="kv-row"><span class="kv-k">Identity work</span><span class="kv-v">8 bits</span><span class="kv-h">Work each key did once, when it was made. You can't ask for more than your own key carries.</span></div>
+        <div class="kv-row"><span class="kv-k">Stamp difficulty</span><span class="kv-v">22 bits</span><span class="kv-h">About a second of work per post on a laptop. Votes, vouches, reviews and labels need 8 bits less. Keys older than 30, 90 and 365 days get a small discount.</span></div>
+        <div class="kv-row"><span class="kv-k">Posts fade after</span><span class="kv-v">180 days</span><span class="kv-h">Any window you like. When it's up, posts leave every device.</span></div>
+        <div class="kv-row"><span class="kv-k">Newcomer posts a day</span><span class="kv-v">2</span><span class="kv-h">Until established members vouch them in. Text only.</span></div>
+        <div class="kv-row"><span class="kv-k">Admission</span><span class="kv-v">open</span><span class="kv-h"><strong>open</strong>: newcomers are shown, marked "new here". <strong>approve</strong>: shown to established members until vouched in. <strong>invite</strong>: held until an established member vouches (the newcomer sends them a link from the app). <strong>age-proof</strong>: newcomers show an anonymous age credential from an issuer the community names (<a href="/wiki/trust/#age">how it works</a>).</span></div>
+        <div class="kv-row"><span class="kv-k">Vouches to get in</span><span class="kv-v">2</span><span class="kv-h">From established members. Two weeks later, the newcomer is established too.</span></div>
+        <div class="kv-row"><span class="kv-k">Media after</span><span class="kv-v">5 posts</span><span class="kv-h">Recent posts or comments with a response score of 10 or more. It fades when they stop contributing.</span></div>
+        <div class="kv-row"><span class="kv-k">Hide · block · veto</span><span class="kv-v">3 · 5 · 5</span><span class="kv-h">Voices of established members needed, capped at a third of their voice, at least two people, and they must outweigh those who disagree. Someone vouched in alone holds a whole voice; people vouched in together share their voucher's.</span></div>
+        <div class="kv-row"><span class="kv-k">Auto-bounce after</span><span class="kv-v">12 flags</span><span class="kv-h">Flags count by trust. Fresh keys weigh almost nothing, so a pile of new keys can't ban anyone.</span></div>
+        <div class="kv-row"><span class="kv-k">Labelers</span><span class="kv-v">none</span><span class="kv-h">Nobody is subscribed by default. You pick.</span></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section soft" id="labelers" aria-labelledby="labelers-title">
+  <div class="wrap split">
+    <div class="copy">
+      <span class="eyebrow">labelers</span>
+      <h2 id="labelers-title">Labels, not deletes.</h2>
+      <p class="lead">A labeler is any key that publishes labels: "spam", "off-topic", "needs a threat model", "illegal". Your community can name default labelers in its first record; each member adds their own or ignores yours. A labelled post isn't gone, it's napping, and anyone can peek.</p>
+    </div>
+    <div class="rows">
+      <div class="row"><div class="row-k plain"><span>Pick carefully</span></div><div class="row-v"><p>Default labelers shape what your members see first. Choose keys you know, and say why in your rules.</p></div></div>
+      <div class="row"><div class="row-k plain"><span>Your community's choices</span></div><div class="row-v"><p>The app ships with no default labelers. Your community chooses its rules and the labels it follows. Shared discovery and storage services do not gain a vote in those decisions.</p></div></div>
+      <div class="row"><div class="row-k plain"><span>"Illegal" is special</span></div><div class="row-v"><p>The app honours "illegal" labels from the labelers a member follows, and a removal for that reason takes effect at once, without the usual wait for vetoes.</p></div></div>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="cant" aria-labelledby="cant-title">
+  <div class="wrap two">
+    <div class="section-head">
+      <span class="eyebrow">what we can't do</span>
+      <h2 id="cant-title">No back door. Not even a side door.</h2>
+      <p class="lead">So if someone asks the hoi project to act on your community, the honest answer is that we can't, and we'll point them to your moderators and your public ledger. That's not us dodging. It's the design.</p>
+    </div>
+    <div class="frame">
+      <div class="kv">
+        <div class="kv-row"><span class="kv-k">Remove a post</span><span class="kv-v blue">can't</span><span class="kv-h">Only your ledger, and time, can.</span></div>
+        <div class="kv-row"><span class="kv-k">Ban or unban a key</span><span class="kv-v blue">can't</span><span class="kv-h">We have no key in your community.</span></div>
+        <div class="kv-row"><span class="kv-k">Overrule your moderators</span><span class="kv-v blue">can't</span><span class="kv-h">No say, by construction.</span></div>
+        <div class="kv-row"><span class="kv-k">Read your community</span><span class="kv-v blue">open ones, like anyone</span><span class="kv-h">An open community's public records are readable by anyone who joins, a public node we run included. Private communities are encrypted to their members.</span></div>
+        <div class="kv-row"><span class="kv-k">Hand anything over</span><span class="kv-v blue">nothing you didn't publish</span><span class="kv-h">A public node holds an open community's public records, which are public already. No keys, no logs, no private communities, no record of who read what.</span></div>
+        <div class="kv-row"><span class="kv-k">Recover a lost key</span><span class="kv-v blue">can't</span><span class="kv-h">That's what your 3 of 5 friends are for.</span></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section soft" id="checklist" aria-labelledby="checklist-title">
+  <div class="wrap">
+    <div class="section-head">
+      <span class="eyebrow">before you invite people</span>
+      <h2 id="checklist-title">A six-line checklist.</h2>
+    </div>
+    <div class="rows">
+      <div class="row"><div class="row-k"><span class="num">1</span><span>Rules</span></div><div class="row-v"><p>Write rules a newcomer can read in a minute. Number them; ledger entries will cite them.</p></div></div>
+      <div class="row"><div class="row-k"><span class="num">2</span><span>Owners</span></div><div class="row-v"><p>At least two owners and a threshold. 2 of 3 is a good start.</p></div></div>
+      <div class="row"><div class="row-k"><span class="num">3</span><span>Limits</span></div><div class="row-v"><p>Set the stamp, the fade window, newcomer limits and admission. Start strict.</p></div></div>
+      <div class="row"><div class="row-k"><span class="num">4</span><span>Labelers</span></div><div class="row-v"><p>Choose ones you trust, or none.</p></div></div>
+      <div class="row"><div class="row-k"><span class="num">5</span><span>Pinners</span></div><div class="row-v"><p>Make sure someone keeps the history, ideally on an always-on <a href="/relay/#node">hoi-node</a>, or ask a public node to keep it available. The app shows how many copies it can see: a community is <em>cold</em> on one device, <em>cool</em> with one node holding it, <em>warm</em> with two, <em>hot</em> with three.</p></div></div>
+      <div class="row"><div class="row-k"><span class="num">6</span><span>Notices</span></div><div class="row-v"><p>When someone complains: read it, check it against your rules, act with a ledger entry, and give the reason. Everyone can see what you did, so say why.</p></div></div>
+    </div>
+  </div>
+</section>
+
+<section class="wrap pad-bottom">
+  <div class="cta">
+    <h2>Got a dinner table's worth of people? Start one.</h2>
+    <div class="btnrow"><a href="{{APP_URL}}#/new" class="pill pill-sun">Start a community</a><a href="/protocol/#ledger" class="pill pill-ghost">How the ledger works</a></div>
+  </div>
+</section>
+</main>
+
+<!-- @include footer.html -->
+<script type="module" src="/src/pages/page.ts"></script>
+</body>
+</html>

@@ -1,0 +1,111 @@
+/* The playground owns the viewport; ordinary wiki pages keep their document layout. */
+html.pg-active, .pg-active body { overflow: hidden; height: 100% }
+.pg-active .site-header, .pg-active .preview-bar, .pg-active body > footer, .pg-active .wk-side,
+.pg-active .wk-menu, .pg-active .wk-pager, .pg-active .pg-intro { display: none }
+.pg-active .wk, .pg-active .wk-main, .pg-active .wk-doc { display: block; min-height: 0; max-width: none; margin: 0; padding: 0 }
+.pg-shell { position: fixed; inset: 0; height: 100vh; height: 100dvh; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; background: var(--stage); padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px) }
+.pg-toolbar { display: flex; align-items: center; gap: 16px; padding: 10px 16px; border-bottom: 1px solid var(--edge); background: var(--bg); min-width: 0 }
+.pg-title { flex: 1; min-width: 0 }
+.wk-doc .pg-title h1 { margin: 0; font-size: clamp(18px, 2vw, 26px); line-height: 1.2; letter-spacing: -.03em }
+.pg-shell .wk-btn { min-height: 44px; min-width: 44px }
+.wk-doc a.pg-back { flex: none; text-decoration: none; color: var(--ink) }
+.pg-tabs { display: flex; justify-content: flex-end; border-top: 1px solid var(--edge); background: var(--bg); padding: 4px 8px; gap: 4px }
+.pg-tabs button { min-height: 48px; min-width: 76px; padding: 8px 14px; border-radius: 10px; font-family: var(--mono); font-size: 12px; color: var(--mute) }
+.pg-tabs button[aria-pressed="true"] { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--card)) }
+.pg-tabs button:hover { color: var(--ink) }
+.pg-tabs [data-pg-panel="network"] { display: none }
+.pg > [data-pg-view] { min-width: 0; min-height: 0; grid-row: 1; grid-column: 2; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; border-left: 1px solid var(--edge) }
+.pg > .pg-stage { grid-column: 1; overflow: hidden; border: 0 }
+.pg-current { position: absolute; bottom: 8px; left: 12px; right: 12px; min-height: 44px; padding: 8px 12px; border: 1px solid var(--edge); border-radius: 10px; background: rgba(14, 14, 18, .94); color: var(--ink); font-size: 13px; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
+.pg-current::after { content: ' →'; color: var(--accent) }
+.pg-guide { padding: 18px; background: var(--card); overflow-wrap: anywhere }
+.pg-guide .wk-sec { padding-top: 28px; scroll-margin-top: 16px }
+.pg-guide .wk-sec > h2 { font-size: 25px }
+.pg-guide .wk-defs { grid-template-columns: 1fr }
+.pg-guide .wk-defs dt { border-bottom: 0; padding-bottom: 0 }
+.pg-guide .wk-lead, .pg-guide p, .pg-guide td { font-size: 14px; line-height: 1.6 }
+.pg-guide .wk-src-list { display: block; line-height: 2.4 }
+.pg-guide .wk-src-list a { display: inline; white-space: normal }
+.pg-guide .pg-help { padding: 12px; border: 1px solid var(--edge); border-radius: 10px; color: var(--accent) }
+.pg-shell .pg-speed input { flex: 1; min-width: 0; min-height: 44px }
+.pg-shell .pg-insp .bytes a { display: inline-flex; align-items: center; min-height: 44px; max-width: 100%; overflow-wrap: anywhere }
+.pg-shell .pg-opts .wk-btn { white-space: normal; text-align: left }
+.pg-shell .pg-side .pg-steps { flex: none; overflow: visible }
+.pg-shell .pg-steps li { min-height: 44px }
+.pg-log li > span:last-child { overflow-wrap: anywhere }
+@media (max-width: 900px) {
+  .pg-shell .pg { grid-template-columns: minmax(0, 1fr) }
+  .pg > [data-pg-view] { grid-column: 1; border-left: 0 }
+  .pg-toolbar { flex-wrap: wrap; gap: 6px 12px; padding: 6px 12px }
+  .pg-toolbar .pg-run { width: 100%; flex-wrap: nowrap }
+  .pg-toolbar .pg-run .wk-btn { flex: 1 }
+  .pg-tabs { justify-content: stretch; padding: 4px; gap: 2px }
+  .pg-tabs button { flex: 1; min-width: 0; padding: 8px 2px; font-size: 11px }
+  .pg-tabs [data-pg-panel="network"] { display: block }
+}
+@media (max-height: 500px) and (min-width: 600px) {
+  .pg-toolbar { flex-wrap: nowrap }
+  .pg-toolbar .pg-run { width: auto }
+  .pg-hud .pg-pill:nth-child(n+4) { display: none }
+  .pg-legend { display: none }
+}
+
+/* ---------- the network and its controls ---------- */
+.pg { display: grid; grid-template-columns: minmax(0, 1fr) clamp(320px, 30vw, 440px); min-height: 0; overflow: hidden; background: var(--stage) }
+.pg-stage { position: relative; min-height: 0; min-width: 0 }
+.pg-canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; cursor: grab }
+.pg-canvas.drag { cursor: grabbing }
+.pg-hud { position: absolute; left: 12px; top: 12px; right: 12px; display: flex; flex-wrap: wrap; gap: 6px; pointer-events: none }
+.pg-hud > * { pointer-events: auto }
+.pg-pill { display: inline-flex; align-items: center; gap: 7px; min-height: 30px; padding: 0 11px; border-radius: 999px; background: rgba(14, 14, 18, .82); border: 1px solid var(--edge); font-family: var(--mono); font-size: 11.5px; color: var(--mute); backdrop-filter: blur(4px) }
+.pg-pill b { color: var(--ink); font-weight: 500; font-variant-numeric: tabular-nums }
+.pg-pill i { width: 8px; height: 8px; border-radius: 50%; background: var(--c, var(--mint)); display: inline-block }
+.pg-legend { position: absolute; left: 12px; bottom: 64px; display: flex; flex-wrap: wrap; gap: 6px; max-width: calc(100% - 170px); pointer-events: none }
+.pg-side { border-left: 1px solid var(--edge); background: var(--card); display: flex; flex-direction: column; min-width: 0; min-height: 0 }
+.pg-sec { padding: 12px 16px; border-bottom: 1px solid var(--edge); flex: none }
+.pg-sec h3 { margin: 0 0 10px !important; font-family: var(--mono); font-size: 11px !important; font-weight: 500; letter-spacing: .14em; text-transform: uppercase; color: var(--mute) !important }
+.pg-opts { display: flex; flex-wrap: wrap; gap: 6px }
+.pg-opts .wk-btn { font-size: 11.5px }
+.pg-run { display: flex; gap: 8px; flex-wrap: wrap; align-items: center }
+.pg-speed { display: flex; align-items: center; gap: 8px; font-family: var(--mono); font-size: 11.5px; color: var(--mute); min-height: 34px }
+.pg-speed input { accent-color: var(--sun); width: 110px }
+.wk-doc .pg-steps { list-style: none; margin: 0; padding: 6px 8px; display: flex; flex-direction: column; gap: 2px; min-height: 0 }
+.pg-steps li { display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: 2px 10px; padding: 8px 10px; border-radius: 10px; color: var(--mute); font-size: 13.5px; line-height: 1.4; cursor: pointer; border: 1px solid transparent }
+.pg-steps li .n { grid-row: 1 / span 2; width: 22px; height: 22px; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-family: var(--mono); font-size: 10.5px; background: var(--soft); color: var(--mute) }
+.pg-steps li b { color: var(--ink); font-weight: 700; font-size: 13.5px }
+.pg-steps li .via { font-family: var(--mono); font-size: 11px; color: var(--mute) }
+.pg-steps li.done .n { background: var(--c, var(--mint)); color: #1A1A1A }
+.pg-steps li.now { border-color: var(--c, var(--sun)); background: color-mix(in srgb, var(--c, var(--sun)) 8%, transparent) }
+.pg-steps li.now .n { background: var(--c, var(--sun)); color: #1A1A1A }
+.pg-steps li:focus-visible { outline: 2px solid var(--sun) }
+.pg-insp { padding: 16px 18px 18px; background: var(--card) }
+.pg-insp h3 { margin: 0 0 6px !important; font-size: 16px !important; color: var(--ink) !important; letter-spacing: -0.01em; display: flex; gap: 8px; align-items: center; flex-wrap: wrap }
+.pg-insp h3 .tag { font-family: var(--mono); font-weight: 500; font-size: 10.5px; letter-spacing: .06em }
+.pg-insp p { font-size: 13.5px !important; line-height: 1.5 !important; color: var(--mute); margin: 0 0 10px !important }
+.pg-insp pre { margin: 0; padding: 12px 14px; max-height: 320px; overflow: auto; border: 1px solid var(--edge); border-radius: 10px; background: var(--code); font-family: var(--mono); font-size: 11.5px; line-height: 1.6; color: #E7E5DC; white-space: pre; scrollbar-width: thin }
+.pg-insp .bytes { font-family: var(--mono); font-size: 11px; color: var(--mute); margin-top: 8px; overflow-wrap: anywhere }
+.pg-tip { position: absolute; z-index: 2; pointer-events: none; padding: 8px 10px; border-radius: 10px; background: rgba(14, 14, 18, .94); border: 1px solid var(--line); font-family: var(--mono); font-size: 11.5px; color: var(--ink); max-width: 260px; line-height: 1.45; opacity: 0 }
+.pg-tip span { color: var(--mute); display: block }
+.wk-doc .pg-log { list-style: none; margin: 0; padding: 0; font-family: var(--mono); font-size: 11.5px; line-height: 1.55; border: 1px solid var(--edge); border-radius: 12px; background: var(--code) }
+.pg-log li { display: grid; grid-template-columns: 64px 18px minmax(0, 1fr); gap: 8px; padding: 5px 10px; border-top: 1px solid var(--edge); color: var(--text) }
+.pg-log li:first-child { border-top: 0 }
+.pg-log li .ts { color: var(--mute) }
+.pg-log li i { width: 8px; height: 8px; margin-top: 6px; border-radius: 2px; background: var(--c, var(--mint)); transform: rotate(45deg) }
+/* playground extras */
+.pg-zoom { position: absolute; right: 12px; bottom: 64px; display: flex; gap: 4px }
+.pg-zoom .wk-btn { min-width: 44px; padding: 0 10px; background: rgba(14, 14, 18, .85) }
+.pg-k { margin: 0 0 8px !important; font-family: var(--mono); font-size: 11px !important; letter-spacing: .14em; text-transform: uppercase; color: var(--mute) }
+.pg-caps { margin: 10px 0 0 !important; padding-left: 1.1em !important; gap: 2px !important }
+.pg-caps li { font-family: var(--mono); font-size: 11.5px !important; line-height: 1.5 !important; color: var(--text) }
+.pg-insp .bytes a { color: var(--cobalt); text-decoration: underline; text-underline-offset: 2px }
+.pg-below { display: flex; flex-direction: column; gap: 14px; padding: 16px }
+.pg-panel { border: 1px solid var(--edge); border-radius: 16px; background: var(--card); padding: 14px 16px }
+.pg-counters { margin: 0 !important; grid-template-columns: repeat(2, minmax(0, 1fr)) }
+.pg-counters .wk-stat { padding: 10px 12px; background: var(--stage) }
+.pg-counters .wk-stat b { font-size: 24px; display: inline-block }
+.pg-legend .pg-pill { font-size: 10.5px; min-height: 26px }
+@media (max-width: 620px) {
+  .pg-legend { display: none }
+  .pg-hud { gap: 4px; left: 8px; right: 8px; top: 8px }
+  .pg-hud .pg-pill { min-height: 24px; padding: 0 8px; font-size: 10px; gap: 5px }
+}

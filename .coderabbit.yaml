@@ -1,0 +1,41 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+# CodeRabbit (free for open source) reviews pull requests against AGENTS.md and .claude/rules/.
+# Its comments are suggestions: like any bot finding, they start no review clock (AGENTS.md
+# rule 14) until a maintainer confirms them.
+language: en-US
+reviews:
+  profile: chill
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  review_status: true
+  auto_review:
+    enabled: true
+    drafts: false
+    # Dependabot bumps are checked by CI and Security.
+    ignore_usernames: ["dependabot[bot]"]
+  path_filters:
+    - "!vendor/**"
+    - "!**/pnpm-lock.yaml"
+    - "!**/Cargo.lock"
+    - "!core/vectors/**"
+    - "!apps/site/wiki/sbom/**"
+    - "!apps/*/src-tauri/icons/**"
+  path_instructions:
+    - path: "core/**"
+      instructions: >-
+        Rust core: keys, signatures and validation live here. Flag logging of keys, record
+        bodies, tokens or peer addresses, unwrap/expect on network or storage input, and wire
+        or storage format changes without conformance vectors and an RFC.
+    - path: "docs/spec/**"
+      instructions: >-
+        Specification: section numbers are cited by code and must not change; new subsections go
+        at the end of a section.
+    - path: ".github/workflows/**"
+      instructions: >-
+        Actions are pinned by commit; permissions stay minimal; no secrets in pull request
+        workflows.
+knowledge_base:
+  code_guidelines:
+    enabled: true
+    filePatterns: ["AGENTS.md", ".claude/rules/*.md"]

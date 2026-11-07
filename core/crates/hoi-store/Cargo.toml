@@ -1,0 +1,19 @@
+[package]
+name = "hoi-store"
+description = "Records on this device: in-memory index plus durable persistence (SQLite natively, a change journal for the browser)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+sqlite = ["dep:rusqlite"]
+
+[dependencies]
+hoi-crypto.workspace = true
+hoi-types.workspace = true
+hoi-validate.workspace = true
+rusqlite = { workspace = true, optional = true }

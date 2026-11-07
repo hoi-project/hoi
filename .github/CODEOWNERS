@@ -1,0 +1,11 @@
+# Maintainers review everything. Paths that can lose data, break compatibility or affect
+# releases are listed separately so they keep a required review when more maintainers join.
+*                         @hoi-project/maintainers
+/core/                    @hoi-project/maintainers
+/docs/spec/               @hoi-project/maintainers
+/rfcs/                    @hoi-project/maintainers
+/.github/                 @hoi-project/maintainers
+/scripts/release-*        @hoi-project/maintainers
+/publication.json         @hoi-project/maintainers
+/release.json             @hoi-project/maintainers
+/vendor/                  @hoi-project/maintainers

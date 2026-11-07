@@ -1,0 +1,507 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <!-- @include head.html title="Records &amp; encoding · hoi wiki" description="The record envelope, canonical DAG-CBOR and its strict decoder, BLAKE3 ids, strict Ed25519 signatures, id strings, did:key, size caps, versions and time rules." -->
+</head>
+<body class="wiki">
+<!-- @include header.html nav="wiki" -->
+<!-- @wiki-open -->
+<article class="wk-doc">
+  <!-- @wiki-crumbs -->
+  <h1>Records <span class="acc">&amp; encoding</span></h1>
+  <p class="wk-lead">Everything hoi stores or sends about a community is a signed record: one small envelope, encoded as canonical DAG-CBOR, named by the BLAKE3 hash of those bytes and signed with Ed25519. This page goes through the envelope field by field, the exact encoding rules and what the strict decoder refuses, how the id and the signature are made, how keys and ids are written as text, and the size, version and time rules every receiver applies.</p>
+  <p class="wk-src-list">Source <a href="{{REPO_URL}}/blob/main/core/crates/hoi-types/src/record.rs">hoi-types/src/record.rs</a> <a href="{{REPO_URL}}/blob/main/core/crates/hoi-types/src/cbor.rs">hoi-types/src/cbor.rs</a> <a href="{{REPO_URL}}/blob/main/core/crates/hoi-types/src/id.rs">hoi-types/src/id.rs</a> <a href="{{REPO_URL}}/blob/main/core/crates/hoi-types/src/did.rs">hoi-types/src/did.rs</a> <a href="{{REPO_URL}}/blob/main/core/crates/hoi-crypto/src/lib.rs">hoi-crypto/src/lib.rs</a> <a href="{{REPO_URL}}/blob/main/core/crates/hoi-validate/src/lib.rs">hoi-validate/src/lib.rs</a> <a href="{{REPO_URL}}/blob/main/core/vectors/records.json">vectors/records.json</a></p>
+  <div class="wk-head-rule"></div>
+
+  <div class="wk-stats">
+    <div class="wk-stat c-coral"><b>8</b><span>envelope fields</span></div>
+    <div class="wk-stat c-sun"><b>24</b><span>record kinds</span></div>
+    <div class="wk-stat c-mint"><b>32 B</b><span>id: BLAKE3-256</span></div>
+    <div class="wk-stat c-sky"><b>64 B</b><span>Ed25519 signature</span></div>
+    <div class="wk-stat c-peach"><b>600 s</b><span>allowed clock skew</span></div>
+  </div>
+
+  <section class="wk-sec" id="envelope">
+    <h2>The envelope</h2>
+    <p>Every record has the same eight fields. Only <code>body</code> changes shape from kind to kind (<a href="/wiki/kinds/">Record kinds</a> lists them all). The Rust type is <code>hoi_types::Record</code>; on the wire each field is a key of one CBOR map, under the protocol's snake_case name.</p>
+    <div class="wk-code" data-lang="rust" data-title="hoi-types/src/record.rs"><pre><code>pub struct Record {
+    pub v: u64,
+    pub community: Option&lt;Id&gt;,
+    pub author: Id,
+    pub parent: Option&lt;Id&gt;,
+    pub created_at: u64,
+    pub expires_at: u64,
+    pub body: Body,
+    pub nonce: u64,
+}</code></pre></div>
+    <h3 id="envelope-fields">Fields</h3>
+    <dl class="wk-defs">
+      <dt>v<small>uint</small></dt><dd>Protocol version of the record format. Must equal <code>PROTOCOL_VERSION</code>, which is <code>1</code>; anything else is refused with <code>unsupported protocol version</code> before any other field is read (see <a href="#version">Versions</a>).</dd>
+      <dt>kind<small>text</small></dt><dd>Which body follows: one of the 24 strings <code>Kind::as_str</code> knows (<code>post</code>, <code>comment</code>, <code>vote</code>, <code>profile-color</code>…). It is not a field of the Rust struct: the encoder writes it from the body's variant and the decoder uses it to pick the body's schema. An unknown kind fails with <code>unknown kind</code>.</dd>
+      <dt>community<small>bytes(32), optional</small></dt><dd>The community's Ed25519 public key. Required for most kinds, forbidden for <code>delegation</code>, <code>revoke</code>, <code>identity</code> and <code>rotate</code>, optional for <code>label</code> (see <a href="#shape">Shape rules</a>). Left out of the map when absent.</dd>
+      <dt>author<small>bytes(32)</small></dt><dd>The public key that signed the record: a device key (blessed by a root through a <code>delegation</code>), a root key signing directly, a community key (only its genesis), or a recovery key (only a <code>rotate</code>).</dd>
+      <dt>parent<small>bytes(32), optional</small></dt><dd>What the record is about: a record id (the post a comment answers, the record a vote, edit, delete, label or review targets) or a person's root key (the person a <code>vouch</code>, <code>report</code> or <code>share</code> names). Left out when absent.</dd>
+      <dt>created_at<small>uint, Unix seconds</small></dt><dd>When the author says the record was made, UTC. It drives rate windows, time checks and ordering; it may be at most <code>CLOCK_SKEW</code> (600 s) in the future of a receiver's clock.</dd>
+      <dt>expires_at<small>uint, Unix seconds</small></dt><dd>When every compliant device deletes the record. Never earlier than <code>created_at</code>, never later than the community's <code>max_retention</code> allows (or 100 years for the kinds kept until superseded). See <a href="#time">Time fields</a>.</dd>
+      <dt>body<small>map</small></dt><dd>The kind's fields. Optional body fields are left out when absent; the decoder refuses unknown and mistyped ones.</dd>
+      <dt>nonce<small>uint</small></dt><dd>The stamp nonce the author's miner found. It is part of the record, so the id covers it. <a href="/wiki/stamps/">Stamps &amp; work</a> explains the search.</dd>
+    </dl>
+    <h3 id="envelope-wire">The wire wrapper</h3>
+    <p>A record travels and is stored as a <code>Wire</code>: a two-entry map holding the record under <code>r</code> and its 64-byte signature under <code>sig</code>. The signature is outside the record, so it is not part of what the id hashes.</p>
+    <div class="wk-code" data-lang="rust" data-title="hoi-types/src/record.rs (trimmed)"><pre><code>/// `Wire = { r: Record, sig: bytes64 }`
+pub struct Wire {
+    pub record: Record,
+    pub sig: Sig,
+}
+
+impl Wire {
+    pub fn encode(&amp;self) -&gt; Vec&lt;u8&gt; {
+        Value::map([("r", self.record.to_value()), ("sig", Value::B(self.sig.0.to_vec()))]).encode()
+    }
+}</code></pre></div>
+    <div class="wk-bytes" data-title="A Wire, as bytes">
+a2 | 1 B | mute | 1 | map, 2 entries
+"r" | 2 B | mute | 1 | key <code>61 72</code>
+record | n B | coral | 6 | the canonical record map: what the id hashes
+"sig" | 4 B | mute | 1 | key <code>63 73 69 67</code>
+58 40 | 2 B | mute | 1 | bytes, length 64
+sig | 64 B | sky | 3 | Ed25519 over the 32-byte id
+</div>
+    <p>The wrapper adds exactly 73 bytes to the record: the post in <a href="{{REPO_URL}}/blob/main/core/vectors/records.json">records.json</a> is 247 bytes of record and 320 bytes of wire. Size caps are measured on the whole wire (<a href="#sizes">Size caps</a>).</p>
+  </section>
+
+  <section class="wk-sec" id="cbor">
+    <h2>Canonical DAG-CBOR</h2>
+    <p>hoi encodes with a small, deterministic subset of DAG-CBOR, written by hand in <a href="{{REPO_URL}}/blob/main/core/crates/hoi-types/src/cbor.rs">hoi-types/src/cbor.rs</a> rather than by a general CBOR library. The point is that one value has exactly one encoding. The same record always gives the same bytes, so the same id and the same signature, and nobody can re-encode a record into different bytes that still verify. The module comment says it plainly: the decoder "rejects anything the encoder would not produce, so <code>encode(decode(b)) == b</code> for every accepted <code>b</code>".</p>
+    <h3 id="cbor-types">The value model</h3>
+    <p>The whole data model is eight variants of <code>cbor::Value</code>. There are no floats, no tags, no undefined, no indefinite lengths and no non-text map keys.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="CBOR values hoi uses">
+      <table>
+        <thead><tr><th>Variant</th><th>CBOR</th><th>Initial byte</th><th>Used for</th></tr></thead>
+        <tbody>
+          <tr><td><code>U(u64)</code></td><td>major 0, unsigned</td><td><code>0x00</code>–<code>0x1b</code></td><td>times, seqs, counts, nonces, limits</td></tr>
+          <tr><td><code>N(u64)</code></td><td>major 1, negative, stored as <code>-1 - n</code></td><td><code>0x20</code>–<code>0x3b</code></td><td>a downvote or an objection: <code>-1</code> is <code>0x20</code></td></tr>
+          <tr><td><code>B(Vec&lt;u8&gt;)</code></td><td>major 2, byte string</td><td><code>0x40</code>–<code>0x5b</code></td><td>keys and ids (always 32 bytes), signatures (64), media and sealed bytes</td></tr>
+          <tr><td><code>T(String)</code></td><td>major 3, UTF-8 text</td><td><code>0x60</code>–<code>0x7b</code></td><td>kind, titles, text, names, reasons</td></tr>
+          <tr><td><code>A(Vec&lt;Value&gt;)</code></td><td>major 4, array</td><td><code>0x80</code>–<code>0x9b</code></td><td>owners, evidence, scope, media, holders</td></tr>
+          <tr><td><code>M(Vec&lt;(String, Value)&gt;)</code></td><td>major 5, map with text keys</td><td><code>0xa0</code>–<code>0xbb</code></td><td>the record, its body, limits, ladder, media items</td></tr>
+          <tr><td><code>Bool(bool)</code></td><td>major 7, simple 20/21</td><td><code>0xf4</code> / <code>0xf5</code></td><td><code>scatter.open</code>, notice flags</td></tr>
+          <tr><td><code>Null</code></td><td>major 7, simple 22</td><td><code>0xf6</code></td><td>a few codes (<code>hoi:link:</code> approvals); never in a record</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 id="cbor-ints">Integers and lengths: shortest form</h3>
+    <p>Every integer, and every length of a string, array or map, is written in the shortest head that holds it. <code>cbor::head</code> picks the form:</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="CBOR head forms">
+      <table>
+        <thead><tr><th>Value n</th><th>Head</th><th>Bytes</th><th>Example</th></tr></thead>
+        <tbody>
+          <tr><td>0–23</td><td>major·32 + n</td><td>1</td><td><code>23</code> → <code>17</code></td></tr>
+          <tr><td>24–255</td><td>major·32 + 24, then 1 byte</td><td>2</td><td><code>24</code> → <code>18 18</code></td></tr>
+          <tr><td>256–65,535</td><td>major·32 + 25, then 2 bytes big-endian</td><td>3</td><td><code>1000</code> → <code>19 03 e8</code></td></tr>
+          <tr><td>65,536–2<sup>32</sup>−1</td><td>major·32 + 26, then 4 bytes</td><td>5</td><td><code>1790000060</code> → <code>1a 6a b1 3b bc</code></td></tr>
+          <tr><td>2<sup>32</sup> and up</td><td>major·32 + 27, then 8 bytes</td><td>9</td><td><code>4943600000</code> → <code>1b 00 00 00 01 26 a9 59 80</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>The decoder checks the reverse: a one-byte argument below 24, a two-byte argument that fits in one, and so on, are all refused with <code>integer not in shortest form</code>. The check applies to lengths as much as to numbers.</p>
+    <div class="wk-code" data-lang="rust" data-title="hoi-types/src/cbor.rs (trimmed)"><pre><code>24 =&gt; {
+    let n = self.byte()? as u64;
+    if n &lt; 24 {
+        return Err(CborError::NotShortest);
+    }
+    n
+}
+25 =&gt; {
+    let s = self.take(2)?;
+    let n = u16::from_be_bytes([s[0], s[1]]) as u64;
+    if n &lt;= u8::MAX as u64 {
+        return Err(CborError::NotShortest);
+    }
+    n
+}
+// 26 and 27 likewise; 31 is Indefinite, 28–30 are refused</code></pre></div>
+    <h3 id="cbor-keys">Map keys: length first, then bytes</h3>
+    <p>Map keys are text, and a map's entries are sorted the DAG-CBOR way: shorter keys first, keys of equal length bytewise. <code>Value::map</code> sorts whatever it is given, so code building a record never has to think about order.</p>
+    <div class="wk-code" data-lang="rust" data-title="hoi-types/src/cbor.rs"><pre><code>/// DAG-CBOR key order: shorter keys first, then bytewise.
+pub fn key_cmp(a: &amp;str, b: &amp;str) -&gt; Ordering {
+    a.len().cmp(&amp;b.len()).then_with(|| a.as_bytes().cmp(b.as_bytes()))
+}</code></pre></div>
+    <p>So a record's keys always come out in this order (those present): <code>v</code>, <code>body</code>, <code>kind</code>, <code>nonce</code>, <code>author</code>, <code>parent</code>, <code>community</code>, <code>created_at</code>, <code>expires_at</code>. <code>body</code> comes before <code>kind</code> because both have four letters and <code>b</code> sorts before <code>k</code>. The order matters to miners: <code>nonce</code> sits fourth, so most of the record comes after it (<a href="/wiki/stamps/">Stamps &amp; work</a> uses this).</p>
+    <h3 id="cbor-absent">Absent is not null, and defaults are not written</h3>
+    <p>Optional fields are left out of the map. <code>Value::map</code> keeps <code>Null</code> entries, so "absent" and "null" stay different values; record encoders never write <code>Null</code>. Where a field has a default, the encoder leaves the default out and the decoder refuses it written, so the value still has one encoding:</p>
+    <ul>
+      <li>A post with no media has no <code>media</code> key. <code>media: []</code> is refused (<code>media must be a non-empty array</code>).</li>
+      <li><code>limits.scatter</code> is written only when it differs from the default (<code>resist: 10, open: false</code>); written as the default it is refused (<code>the default scatter setting is left out</code>).</li>
+      <li><code>limits.trackers</code> and <code>limits.age_issuers</code> are written only when non-empty; an empty array is refused.</li>
+    </ul>
+    <p>This also keeps older communities readable: a decoder that predates a field still reads limits that never mention it.</p>
+  </section>
+
+  <section class="wk-sec" id="decoder">
+    <h2>The strict decoder</h2>
+    <p><code>cbor::decode</code> reads exactly one value that spans all of the input. Then the typed layer (<code>Fields</code> in <code>record.rs</code>) takes the fields it expects out of each map and complains about anything left. Together they refuse every encoding the encoder would not have made.</p>
+    <h3 id="decoder-cbor">What the CBOR layer refuses</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="CBOR decoder errors">
+      <table>
+        <thead><tr><th>Error</th><th>Message</th><th>When</th></tr></thead>
+        <tbody>
+          <tr><td><code>Eof</code></td><td>unexpected end of input</td><td>a head, string or container runs past the end</td></tr>
+          <tr><td><code>Trailing</code></td><td>trailing bytes after the value</td><td>anything after the one top-level value</td></tr>
+          <tr><td><code>NotShortest</code></td><td>integer not in shortest form</td><td>any integer or length with a longer head than needed</td></tr>
+          <tr><td><code>Indefinite</code></td><td>indefinite lengths are not allowed</td><td>additional info 31 (<code>0x5f</code>, <code>0x9f</code>, <code>0xbf</code>, <code>0xff</code>…)</td></tr>
+          <tr><td><code>Float</code></td><td>floats are not allowed</td><td>major 7 with info 25, 26 or 27 (half, single, double)</td></tr>
+          <tr><td><code>Tag</code></td><td>tags are not allowed</td><td>major 6, including the CID tag 42 general DAG-CBOR allows</td></tr>
+          <tr><td><code>KeyNotText</code></td><td>map keys must be text</td><td>a map key of any other major type</td></tr>
+          <tr><td><code>KeyOrder</code></td><td>map keys not in canonical order or duplicated</td><td>each key must sort strictly after the one before, so a repeated key fails too</td></tr>
+          <tr><td><code>Utf8</code></td><td>invalid utf-8 in text</td><td>a text string, or a key, that is not UTF-8</td></tr>
+          <tr><td><code>Simple</code></td><td>unsupported simple value</td><td>major 7 other than false, true and null; info 28–30 anywhere</td></tr>
+          <tr><td><code>Depth</code></td><td>nesting too deep</td><td>a value nested deeper than <code>MAX_DEPTH</code> = 16 (the top value is depth 0)</td></tr>
+          <tr><td><code>TooLong</code></td><td>length too large</td><td>an array claiming more items than bytes left, a map claiming more than half the bytes left, or a length that doesn't fit the platform</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>The <code>TooLong</code> checks happen before allocating: every array item and every map entry needs at least one byte (two for an entry), so a header claiming a billion items in a 300-byte message is refused at once instead of reserving memory for it. Property tests in <code>cbor.rs</code> pin both directions: any value round-trips, and any byte string the decoder accepts re-encodes to exactly the same bytes.</p>
+    <h3 id="decoder-fields">What the typed layer refuses</h3>
+    <ul>
+      <li><b>Unknown fields.</b> After a map's expected fields are taken, anything left fails with <code>&lt;what&gt;: unknown field "…"</code>. A record with one extra key, anywhere, does not decode. There is no forward-compatible "ignore what you don't know" inside records.</li>
+      <li><b>Missing or mistyped fields.</b> <code>missing or mistyped "…"</code>. Keys and ids must be byte strings of exactly 32 bytes (<code>expected 32 bytes, got n</code>), signatures exactly 64.</li>
+      <li><b>Out-of-range numbers.</b> Fields typed <code>u32</code> in Rust (<code>pow_bits</code>, <code>threshold</code>, ladder steps, media <code>w</code>/<code>h</code>) refuse values above 2<sup>32</sup>−1. Signed fields (<code>vote.value</code>, <code>vouch.value</code>) accept <code>U(n)</code> up to <code>i64::MAX</code> and <code>N(n)</code> below it.</li>
+      <li><b>Unknown enum strings.</b> An unknown <code>kind</code>, <code>admission</code>, <code>verdict</code> or ledger <code>action</code> fails by name.</li>
+      <li><b>Shape violations.</b> After decoding, <code>Record::from_value</code> runs <code>check_shape</code> (<a href="#shape">Shape rules</a>).</li>
+    </ul>
+    <div class="wk-note info"><b>Decoding is not validating</b><p>A record that decodes is well-formed, nothing more. Whether its signature holds, its stamp is strong enough, its author may write it and its text follows the content rules is decided by the later stages of the <a href="/wiki/validation/">validation pipeline</a>.</p></div>
+  </section>
+
+  <section class="wk-sec" id="layout">
+    <h2>A record, byte by byte</h2>
+    <p>The <code>post</code> vector in <a href="{{REPO_URL}}/blob/main/core/vectors/records.json">records.json</a>, as the generator in <a href="{{REPO_URL}}/blob/main/core/crates/hoi-validate/examples/vectors.rs">hoi-validate/examples/vectors.rs</a> writes it: 247 bytes of canonical record. Offsets are decimal; long values are cut in the middle.</p>
+    <div class="wk-code" data-lang="text" data-title="core/vectors/records.json · post · record_cbor (annotated)"><pre><code>  0  a8                          map, 8 entries (no parent)
+  1  61 76                       "v"
+  3  01                          1
+  4  64 626f6479                 "body"
+  9  a3                          map, 3 entries
+ 10  64 6e616d65                 "name"
+ 15  64 6c656e61                 "lena"
+ 20  64 74657874                 "text"
+ 25  78 28 53686f72…6761702e     text(40) "Short version: three apps close the gap."
+ 67  65 7469746c65               "title"
+ 73  78 24 57686963…6469743f     text(36) "Which messengers survived the audit?"
+111  64 6b696e64                 "kind"
+116  64 706f7374                 "post"
+121  65 6e6f6e6365               "nonce"
+127  19 01ab                     427
+130  66 617574686f72             "author"
+137  58 20 ed4928c6…ac8737d1     bytes(32): the device key
+171  69 636f6d6d756e697479       "community"
+181  58 20 8a88e3dd…b40f6f5c     bytes(32): the community key
+215  6a 637265617465645f6174     "created_at"
+226  1a 6ab13bbc                 1790000060
+231  6a 657870697265735f6174     "expires_at"
+242  1a 6b9e89bc                 1805552060   (180 days later)
+247</code></pre></div>
+    <div class="wk-bytes" data-title="The same record, by field">
+map | 1 B | mute | 1 | <code>a8</code>: 8 entries
+v | 3 B | mute | 1 | key and <code>01</code>
+body | 107 B | coral | 6 | key (5 B) and the body map (102 B)
+kind | 10 B | sun | 2 | <code>"post"</code>
+
+nonce key | 6 B | mute | 2 | <code>65 6e6f6e6365</code>: end of the miner's prefix (127 B)
+nonce | 3 B | coral | 1 | <code>19 01ab</code>: the only bytes a miner changes
+author | 41 B | sky | 4 | key and 32-byte key
+
+community | 44 B | sky | 4 | key and 32-byte key
+created_at | 16 B | peach | 3 | key and <code>1a …</code>
+expires_at | 16 B | peach | 3 | key and <code>1a …</code>: the suffix ends here (117 B)
+</div>
+    <p>Its id is <code>e9b6f330db2a75d5…3150ee294</code>, its nonce 427 gives a stamp of 9 bits (the vectors are mined at 8), and the wire adds the <code>r</code>/<code>sig</code> wrapper around these 247 bytes for 320 in all.</p>
+  </section>
+
+  <section class="wk-sec" id="id">
+    <h2>The record id</h2>
+    <p>A record's id is the 32-byte BLAKE3 hash of its canonical encoding: the record map, nonce included, signature not.</p>
+    <div class="wk-code" data-lang="rust" data-title="hoi-types/src/record.rs"><pre><code>/// `id = BLAKE3(canonical_cbor(Record))`
+pub fn id(&amp;self) -&gt; Id {
+    Id::hash(&amp;self.encode())
+}</code></pre></div>
+    <p>On the receiving side, <code>Wire::decode</code> takes the value under <code>r</code>, re-encodes it and hashes that. Because the decoder only accepts canonical bytes, the re-encoding is byte for byte what arrived, so the id is the hash of the exact bytes received.</p>
+    <div class="wk-code" data-lang="rust" data-title="hoi-types/src/record.rs"><pre><code>pub fn decode(bytes: &amp;[u8]) -&gt; Result&lt;(Wire, Id), TypesError&gt; {
+    let v = cbor::decode(bytes)?;
+    let mut f = Fields::new(v, "wire")?;
+    let rv = f.take("r")?;
+    let sig = Sig::from_slice(&amp;f.bytes("sig")?)?;
+    f.done()?;
+    let id = Id::hash(&amp;rv.encode());
+    let record = Record::from_value(rv)?;
+    Ok((Wire { record, sig }, id))
+}</code></pre></div>
+    <ul>
+      <li><b>Content addressing.</b> Two devices that hold the same record hold the same id, so sync can compare ids alone (<a href="/wiki/sync/">Sync &amp; gossip</a>), and a record fetched by id can be checked against it.</li>
+      <li><b>Any change is a new record.</b> One flipped bit gives a different id, so the old signature no longer verifies. A property test in <code>hoi-validate</code> flips random bits of a signed record and checks that the result either fails to decode or fails its signature.</li>
+      <li><b>Bytes that no longer decode.</b> <code>Wire::loose_id</code> hashes the <code>r</code> value of stored bytes that are still a CBOR map but no longer a valid record (an older format), so storage can find and delete them by id.</li>
+    </ul>
+    <div class="wk-stage" data-demo="hash" data-title="Canonical bytes, id and signature">
+      <p class="nojs">An interactive demo: edit a field of a small record and watch its canonical bytes change, then its BLAKE3 id, and finally the Ed25519 signature check fail, because the signature was made over the old id.</p>
+      <p class="wk-stage-cap">Change one character and every later step changes with it: new bytes, a new id, and a signature that no longer verifies.</p>
+    </div>
+  </section>
+
+  <section class="wk-sec" id="signatures">
+    <h2>Signatures</h2>
+    <p>The author signs the 32-byte id with Ed25519. Not the record bytes, not a hash of the wire: the id. Signing is <code>Keypair::sign_record</code>; checking is stage 3 of the pipeline, <code>hoi_validate::signature</code>, which verifies <code>sig</code> against <code>author</code> over <code>id</code>.</p>
+    <div class="wk-code" data-lang="rust" data-title="hoi-crypto/src/lib.rs (trimmed)"><pre><code>/// `sig = Ed25519.sign(author_sk, id)`
+pub fn sign_record(&amp;self, record: Record) -&gt; (Wire, Id) {
+    let id = record.id();
+    let sig = self.sign(id.as_bytes());
+    (Wire { record, sig }, id)
+}
+
+pub fn verify(pk: &amp;Id, msg: &amp;[u8], sig: &amp;Sig) -&gt; bool {
+    let Ok(vk) = VerifyingKey::from_bytes(pk.as_bytes()) else { return false };
+    let s = ed25519_dalek::Signature::from_bytes(&amp;sig.0);
+    vk.verify_strict(msg, &amp;s).is_ok()
+}</code></pre></div>
+    <h3 id="sig-strict">Strict verification</h3>
+    <p>Every signature in hoi goes through <code>verify</code>, which uses ed25519-dalek's <code>verify_strict</code>. Plain Ed25519 verification tolerates a few kinds of malleability; strict verification does not. A signature fails when:</p>
+    <ul>
+      <li>the public key is not a valid compressed curve point (<code>VerifyingKey::from_bytes</code> fails);</li>
+      <li>the scalar <code>s</code> (the last 32 bytes of the signature) is not canonical, that is not below the group order;</li>
+      <li><code>R</code> (the first 32 bytes) does not decompress, or is a small-order point;</li>
+      <li>the public key itself is a small-order point (a "weak" key);</li>
+      <li>the recomputed <code>R</code> differs from the encoded one, compared as bytes, so a non-canonical encoding of the right point fails too.</li>
+    </ul>
+    <p>Together with canonical CBOR this means a record has one valid byte form and its signature cannot be tweaked into a second one that still verifies.</p>
+    <h3 id="sig-weak">Weak keys</h3>
+    <p>A weak (small-order) public key can make signatures that verify for many messages. Strict verification already refuses signatures from one, and <code>key_is_strong</code> lets the code refuse such a key outright where a key becomes something: an identity (<code>hoi_validate::identity</code> answers <code>weak key</code>), both keys of a delegation (<code>delegation_consent</code> answers <code>bad signature</code>), a recovery key in a <code>rotate</code>, and an open community's drop key in a ledger entry.</p>
+    <div class="wk-code" data-lang="rust" data-title="hoi-crypto/src/lib.rs"><pre><code>/// A public key that is a valid curve point outside the small-order subgroup. Weak keys can
+/// produce signatures that verify for many messages; no identity may use one.
+pub fn key_is_strong(pk: &amp;Id) -&gt; bool {
+    VerifyingKey::from_bytes(pk.as_bytes()).is_ok_and(|vk| !vk.is_weak())
+}</code></pre></div>
+    <h3 id="sig-messages">Everything that is signed</h3>
+    <p>Four messages are signed in the record layer. Each is either a 32-byte BLAKE3 hash or, for notices, a short fixed text, so a signature made for one purpose can't be replayed as another.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Signed messages">
+      <table>
+        <thead><tr><th>Signature</th><th>Signed by</th><th>Message</th><th>Code</th></tr></thead>
+        <tbody>
+          <tr><td>a record's <code>sig</code></td><td><code>author</code></td><td>the 32-byte record id</td><td><code>Keypair::sign_record</code></td></tr>
+          <tr><td>a delegation's <code>root_sig</code></td><td>the root key</td><td><code>delegation_statement(root, device, scope, expires_at)</code>: BLAKE3 of a canonical map</td><td><code>hoi_crypto::bless</code></td></tr>
+          <tr><td>a ledger <code>cosign</code> entry</td><td>each cosigning owner</td><td><code>Record::proposal_id()</code>: the id of the record with <code>body.cosign</code> removed, <code>nonce</code> 0 and <code>author</code> 32 zero bytes</td><td><code>owner_action</code>, <code>cosign</code> in hoi-core</td></tr>
+          <tr><td>an operator notice in a node link</td><td>the node's endpoint key</td><td>UTF-8 text <code>hoi node notice v1\n&lt;endpoint hex&gt;\n&lt;notice hash hex&gt;</code>, no trailing newline</td><td><code>notice::statement</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="wk-bytes" data-title="What a root signs to bless a device: the map behind delegation_statement">
+a5 | 1 B | mute | 1 | map, 5 entries
+t | 19 B | lilac | 3 | <code>"t"</code>: <code>"hoi/delegation/1"</code>
+root | 39 B | sky | 4 | <code>"root"</code>: bytes(32)
+scope | 6 B + n | sun | 2 | <code>"scope"</code>: array of text, e.g. <code>["*"]</code>
+
+device | 41 B | sky | 4 | <code>"device"</code>: bytes(32), the delegation's author
+expires_at | 16 B | peach | 3 | <code>"expires_at"</code>: uint, the same as the record's
+hash | 32 B | coral | 4 | BLAKE3 of the map above: the message <code>root_sig</code> signs
+</div>
+    <p>The <code>t</code> field is a domain separator: the statement can never be mistaken for a record id, because no record has a <code>t</code> key. The proposal id zeroes the author and the nonce so that whichever owner collects the last cosignature can publish the entry under their own key; the publisher still signs the full id as usual. Delegations and cosigning are covered on <a href="/wiki/identity/">Keys &amp; identity</a> and <a href="/wiki/communities/">Communities &amp; the ledger</a>.</p>
+  </section>
+
+  <section class="wk-sec" id="ids">
+    <h2>Ids and keys as text</h2>
+    <p>Ids and public keys share one type, <code>hoi_types::Id</code>: 32 bytes. They appear as text in several forms, each with one job.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Text forms of ids and keys">
+      <table>
+        <thead><tr><th>Form</th><th>Example</th><th>Made by</th><th>Used for</th></tr></thead>
+        <tbody>
+          <tr><td>hex, 64 chars</td><td><code>e9b6f330…3150ee294</code></td><td><code>Id::hex</code>, <code>hex_encode</code></td><td>the API, JSON (<code>Id</code> serializes as hex), routes, storage keys. Written lowercase; <code>hex_decode</code> also takes uppercase and trims whitespace.</td></tr>
+          <tr><td>short id</td><td><code>b3:e9b6…e294</code></td><td><code>Id::short_id</code></td><td>record ids in the interface: <code>b3:</code> (for BLAKE3), the first 4 and last 4 hex digits.</td></tr>
+          <tr><td>short key</td><td><code>8139·770e</code></td><td><code>Id::short_key</code></td><td>keys next to names: the first 8 hex digits, split by a middle dot.</td></tr>
+          <tr><td>fingerprint</td><td><code>e04c · 2a9f · 7b31 · 0cd8</code></td><td><code>hoi_crypto::fingerprint</code></td><td>what two people compare in person: the first 8 bytes of <code>BLAKE3-derive-key("hoi 2026 key fingerprint v1", key)</code>, 25 characters.</td></tr>
+          <tr><td>did:key</td><td><code>did:key:z6Mko9hT…o8qVBiyH</code></td><td><code>did_key</code></td><td>a root key in a portable, standard form (<a href="#didkey">below</a>).</td></tr>
+          <tr><td>z-base-32, 52 chars</td><td><code>tkrq8zmwb8a3…1rydpyxp7qy</code></td><td><code>uri::zbase32_encode</code></td><td>the community key in legacy invite links (<code>c=</code>), see <a href="/wiki/links/">Links &amp; URIs</a>.</td></tr>
+          <tr><td>base64url, no padding</td><td><code>SE9JAlwZ1c9X…</code></td><td><code>uri::b64</code></td><td>codes in links, media and draft bytes across the JSON boundary.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p><code>parse_key</code> is what the apps use for a key a person pastes: it accepts 64 hex digits or a <code>did:key</code>, after trimming. The fingerprint uses BLAKE3's key-derivation mode with its own context string, so it is not a prefix of the key or of any id.</p>
+  </section>
+
+  <section class="wk-sec" id="didkey">
+    <h2>did:key</h2>
+    <p><code>did:key</code> is the W3C method that writes a public key as a DID. For Ed25519 the key is prefixed with the multicodec <code>ed25519-pub</code> code, written as the varint <code>0xed 0x01</code>, then encoded base58btc (the Bitcoin alphabet) under the multibase prefix <code>z</code>. Every hoi did:key therefore starts <code>did:key:z6Mk</code>.</p>
+    <div class="wk-bytes" data-title="did:key for an Ed25519 key">
+ed 01 | 2 B | lilac | 2 | multicodec ed25519-pub, as a varint
+key | 32 B | sky | 6 | the raw public key
+base58btc | ≈47 chars | sun | 4 | of the 34 bytes, after <code>did:key:z</code>
+</div>
+    <div class="wk-code" data-lang="rust" data-title="hoi-types/src/did.rs (trimmed)"><pre><code>const ED25519_PUB: [u8; 2] = [0xed, 0x01];
+
+pub fn did_key(pk: &amp;Id) -&gt; String {
+    let mut b = Vec::with_capacity(34);
+    b.extend_from_slice(&amp;ED25519_PUB);
+    b.extend_from_slice(pk.as_bytes());
+    format!("did:key:z{}", bs58::encode(b).into_string())
+}
+
+pub fn parse_did_key(s: &amp;str) -&gt; Result&lt;Id, TypesError&gt; {
+    let rest = s.trim().strip_prefix("did:key:z").ok_or(TypesError::Did)?;
+    let b = bs58::decode(rest).into_vec().map_err(|_| TypesError::Did)?;
+    if b.len() != 34 || b[..2] != ED25519_PUB {
+        return Err(TypesError::Did);
+    }
+    Id::from_slice(&amp;b[2..])
+}</code></pre></div>
+    <p>Parsing accepts nothing else: another multibase prefix, another codec, or a decoded length other than 34 bytes is <code>bad did:key</code>. The vector <code>did_key_root</code> in <a href="{{REPO_URL}}/blob/main/core/vectors/uris.json">uris.json</a> is <code>did:key:z6Mko9hTggMwjSTEaJaPUfE6tqcy2xvU6BnNq3e3o8qVBiyH</code>, the root of seed <code>02…02</code>. Display names can never pass for one: the name rules refuse any name starting <code>did:</code> or containing <code>·</code> (<a href="/wiki/content-rules/">Text, links &amp; names</a>).</p>
+  </section>
+
+  <section class="wk-sec" id="shape">
+    <h2>Shape rules</h2>
+    <p><code>Record::check_shape</code> runs inside <code>from_value</code>, so a record with the wrong shape doesn't even decode. It needs no state, only the record.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Which kinds carry a community and a parent">
+      <table>
+        <thead><tr><th>Rule</th><th>Kinds</th></tr></thead>
+        <tbody>
+          <tr><td>must have <code>community</code></td><td>every kind except <code>delegation</code>, <code>revoke</code>, <code>label</code>, <code>identity</code>, <code>rotate</code></td></tr>
+          <tr><td>must not have <code>community</code></td><td><code>delegation</code>, <code>revoke</code>, <code>identity</code>, <code>rotate</code></td></tr>
+          <tr><td>must have <code>parent</code></td><td><code>comment</code>, <code>vote</code>, <code>edit</code>, <code>delete</code>, <code>label</code>, <code>report</code>, <code>vouch</code>, <code>review</code>, <code>share</code></td></tr>
+          <tr><td>must not have <code>parent</code></td><td><code>profile</code>, <code>profile-color</code>, <code>post</code>, <code>delegation</code>, <code>revoke</code>, <code>community</code>, <code>ledger</code>, <code>identity</code>, <code>pointer</code>, <code>roster</code>, <code>rotate</code>, <code>trust</code>, <code>wiki</code>, <code>tally</code>, <code>blocklist</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>And per kind:</p>
+    <ul>
+      <li>A <code>community</code> record (the genesis) must have <code>community == author</code>: only the community key signs it.</li>
+      <li>A <code>delegation</code>'s <code>body.root</code> may not be its author (<code>a key can't be its own device</code>), and <code>body.expires_at</code> must equal the record's <code>expires_at</code>.</li>
+      <li>A <code>vouch</code> may not name its own author as parent (<code>nobody vouches for themselves</code>).</li>
+      <li>Lists must be sorted, each entry once, and within their caps: <code>roster.holders</code> 1–32, <code>trust.keys</code> 0–256, <code>blocklist.exact</code> and <code>.pdq</code> 0–1000 each, <code>tally.counts</code> 0–500 sorted by post.</li>
+      <li>A <code>wiki</code> edit names a valid page (1–64 of <code>a-z</code>, <code>0-9</code>, <code>-</code>, not starting or ending with <code>-</code>) and carries a non-empty update of at most 32 KiB.</li>
+      <li>For every kind, <code>expires_at</code> may not be before <code>created_at</code>.</li>
+    </ul>
+  </section>
+
+  <section class="wk-sec" id="sizes">
+    <h2>Size caps</h2>
+    <p>Stage 1 of the pipeline, <code>hoi_validate::decode</code>, limits size twice. Before decoding anything it refuses any wire longer than 65,792 bytes (64 KiB + 256). After decoding, it compares the wire's length with <code>Kind::max_size</code> for the record's kind. Either failure is <code>too big for its kind</code>, and the peer that sent it gets a strike.</p>
+    <div class="wk-code" data-lang="rust" data-title="hoi-validate/src/lib.rs"><pre><code>pub fn decode(bytes: &amp;[u8]) -&gt; Result&lt;Decoded, Reject&gt; {
+    if bytes.len() &gt; 64 * 1024 + 256 {
+        return Err(Reject::TooBig);
+    }
+    let (wire, id) = Wire::decode(bytes).map_err(|e| Reject::Decode(e.to_string()))?;
+    if bytes.len() &gt; wire.record.kind().max_size() {
+        return Err(Reject::TooBig);
+    }
+    Ok(Decoded { wire, id, size: bytes.len() })
+}</code></pre></div>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Size cap per kind">
+      <table>
+        <thead><tr><th>Cap (wire bytes)</th><th>Kinds</th></tr></thead>
+        <tbody>
+          <tr><td>512</td><td><code>profile-color</code>, <code>vote</code>, <code>label</code>, <code>delete</code>, <code>revoke</code>, <code>identity</code>, <code>vouch</code>, <code>rotate</code></td></tr>
+          <tr><td>1,024</td><td><code>review</code></td></tr>
+          <tr><td>2,048</td><td><code>delegation</code>, <code>report</code>, <code>roster</code></td></tr>
+          <tr><td>4,096</td><td><code>share</code></td></tr>
+          <tr><td>5,120</td><td><code>profile</code> (a picture of at most 4,096 bytes inside)</td></tr>
+          <tr><td>10,240</td><td><code>trust</code></td></tr>
+          <tr><td>16,384</td><td><code>comment</code>, <code>pointer</code></td></tr>
+          <tr><td>32,768</td><td><code>tally</code></td></tr>
+          <tr><td>33,792</td><td><code>wiki</code> (<code>MAX_WIKI_UPDATE</code> 32 KiB + 1 KiB)</td></tr>
+          <tr><td>65,536</td><td><code>post</code>, <code>edit</code>, <code>ledger</code>, <code>community</code></td></tr>
+          <tr><td>73,728</td><td><code>blocklist</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="wk-note limit"><b>The first bound wins</b><p>Because the 65,792-byte check runs before the per-kind one, no wire longer than that is accepted whatever its kind. The <code>blocklist</code> cap of 73,728 bytes is above it, so a blocklist's wire is limited to 65,792 bytes in practice.</p></div>
+    <p>Media never counts against these caps: a post carries only <code>MediaRef</code>s (hash, type, size, dimensions, alt text), and the bytes travel separately by hash (<a href="/wiki/media/">Media</a>). Text fields have their own character limits on top of the byte caps, set by the content rules (<a href="/wiki/kinds/">Record kinds</a> lists them per field).</p>
+  </section>
+
+  <section class="wk-sec" id="version">
+    <h2>Versions</h2>
+    <p>The <code>v</code> field is checked first: <code>Record::from_value</code> reads <code>v</code> and refuses anything but <code>PROTOCOL_VERSION</code> (<code>1</code>) with <code>TypesError::Version</code> before the kind or any other field is looked at. A record of an unknown version therefore costs a receiver one CBOR parse and nothing more.</p>
+    <p>Three other version numbers exist, each for its own layer, and none of them is the record's:</p>
+    <ul>
+      <li>the sync protocol's hello carries <code>v: SYNC_VERSION</code>, currently <code>2</code> (<a href="/wiki/sync/">Sync &amp; gossip</a>);</li>
+      <li>codes in links carry their own <code>v: 1</code> inside the code, and magic bytes with a version (<a href="/wiki/links/">Links &amp; URIs</a>);</li>
+      <li>the release metadata in <code>release.json</code> names a protocol label (<code>protocolVersion</code>, <code>supportedProtocols</code>) that registries and public join pages compare; it never changes how a record decodes.</li>
+    </ul>
+    <p>Domain-separation strings carry versions too: <code>hoi/delegation/1</code>, <code>hoi/identity/v1\0</code> (the identity-work salt), <code>hoi 2026 key fingerprint v1</code>. A new format gets a new string rather than reusing the old one.</p>
+  </section>
+
+  <section class="wk-sec" id="time">
+    <h2>Time fields</h2>
+    <p>Times are Unix seconds, UTC, as unsigned integers. Stage 4, <code>hoi_validate::time</code>, applies four rules, with <code>CLOCK_SKEW</code> = 600 seconds:</p>
+    <div class="wk-code" data-lang="rust" data-title="hoi-validate/src/lib.rs"><pre><code>pub fn time(record: &amp;Record, now: u64, live: bool, max_retention: Option&lt;u64&gt;) -&gt; Result&lt;(), Reject&gt; {
+    if record.created_at &gt; now + CLOCK_SKEW {
+        return Err(Reject::FromTheFuture);
+    }
+    if live &amp;&amp; record.created_at + CLOCK_SKEW &lt; now {
+        return Err(Reject::TooOld);
+    }
+    if record.expires_at &lt;= now {
+        return Err(Reject::Expired);
+    }
+    let cap = max_retention.unwrap_or(KEEP);
+    if record.expires_at &gt; record.created_at.saturating_add(cap) {
+        return Err(Reject::ExpiryTooFar);
+    }
+    Ok(())
+}</code></pre></div>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Time rules">
+      <table>
+        <thead><tr><th>Rule</th><th>Refused as</th><th>Applies to</th></tr></thead>
+        <tbody>
+          <tr><td><code>created_at</code> more than 10 minutes ahead of this device's clock</td><td><code>from the future</code></td><td>every record, however it arrives</td></tr>
+          <tr><td><code>created_at</code> more than 10 minutes behind</td><td><code>too old to arrive live</code></td><td>only records arriving live on gossip; catch-up sync and imports may be older</td></tr>
+          <tr><td><code>expires_at</code> at or before now</td><td><code>already expired</code></td><td>every record</td></tr>
+          <tr><td><code>expires_at</code> beyond <code>created_at</code> + the cap</td><td><code>expires later than the community allows</code></td><td>the cap is the community's <code>max_retention</code>, or <code>KEEP</code> (100 years) for kinds outside the retention window</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>The cap is <code>KEEP</code>, 100 × 365 days, for records <code>exempt_from_retention</code> lists: <code>community</code>, <code>delegation</code>, <code>revoke</code>, <code>identity</code>, <code>rotate</code>, <code>vouch</code>, <code>share</code> and <code>wiki</code>, and the ledger entries kept until superseded (<code>rules</code>, <code>limits</code>, <code>mod-add</code>, <code>mod-remove</code>, <code>retire</code>, <code>drop-key</code>). A review that answers a pending proposal is kept as long as the proposal. Everything else is capped by the community's <code>max_retention</code> (default 15,552,000 s, 180 days; allowed range one hour to ten years). The node uses the larger of the community's current retention and the one in force when the record was made, so a later tightening doesn't retroactively refuse old records.</p>
+    <ul>
+      <li><b>Delegations</b> also may not outlast <code>created_at</code> + 400 days (<code>MAX_DELEGATION</code>); the apps bless devices for 180 days at a time.</li>
+      <li><b>Threshold proposals</b> (ledger entries carrying cosignatures) are not judged "live", so cosigning can take time, but one older than 7 days (<code>PROPOSAL_MAX_AGE</code>) is refused when it arrives live or is made locally.</li>
+      <li><b>Key age</b> for stamp discounts counts from when this device first saw the key, never from a record's <code>created_at</code>, so backdating buys nothing (<a href="/wiki/stamps/">Stamps &amp; work</a>).</li>
+      <li><b>Rate windows</b> count by <code>created_at</code>, so every device reaches the same answer and backdated records can't skip them (<a href="/wiki/spam/">Spam &amp; rate limits</a>).</li>
+    </ul>
+    <p>What happens at <code>expires_at</code> (deletion, tombstones, what stays) is on <a href="/wiki/expiry/">Expiry &amp; removal</a>.</p>
+  </section>
+
+  <section class="wk-sec" id="immutable">
+    <h2>Immutability and edits</h2>
+    <p>A record never changes. Its id is the hash of its bytes, so "changing" one would make a different record with a different id, and the original signature would not cover it. Everything that looks like a change is a new record that points at an old one.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="How changes are expressed">
+      <table>
+        <thead><tr><th>Change</th><th>New record</th><th>What counts</th></tr></thead>
+        <tbody>
+          <tr><td>edit a post or comment</td><td><code>edit</code>, <code>parent</code> = the original, new <code>text</code> and optional <code>title</code></td><td>the edit with the latest <code>created_at</code> by the same root as the original; the original stays and keeps its id</td></tr>
+          <tr><td>delete your own post or comment</td><td><code>delete</code>, <code>parent</code> = the original, empty body</td><td>the original's body is dropped and it becomes a skeleton marked "deleted by the author"; replies under it stay</td></tr>
+          <tr><td>change a vote</td><td>a new <code>vote</code> with a higher <code>seq</code> (the app uses the time in seconds × 1000, always above its last one); value <code>0</code> takes it back</td><td>the highest <code>seq</code> per voter and target</td></tr>
+          <tr><td>change a vouch or a review</td><td>a new one with a higher <code>seq</code></td><td>the latest <code>(seq, created_at, id)</code> per author and target; older ones are dropped</td></tr>
+          <tr><td>a new profile picture or color</td><td><code>profile</code> / <code>profile-color</code> with a higher <code>seq</code></td><td>the highest <code>(seq, created_at, id)</code> per person and community</td></tr>
+          <tr><td>new trust list, tally or blocklist</td><td>a new record of the same kind</td><td>the latest <code>(created_at, id)</code> per author, community and kind; older ones are dropped</td></tr>
+          <tr><td>moderation</td><td>a <code>ledger</code> entry with the next <code>seq</code></td><td>replayed in order; removals tombstone their target (<a href="/wiki/communities/">Communities &amp; the ledger</a>)</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Only the author can edit or delete: the node checks that the edit's or delete's root is the original's root, that the target is a post or comment, and that both are in the same community. Edits carry their own <code>expires_at</code>, which the app sets to the original's (and at least a minute ahead).</p>
+  </section>
+
+  <section class="wk-sec" id="vectors">
+    <h2>Conformance vectors</h2>
+    <p><a href="{{REPO_URL}}/blob/main/core/vectors/records.json">core/vectors/records.json</a> holds one signed record of each common kind: genesis, identity, delegation, post, post with media, comment, vote, vouch, review, edit, label, report, delete, revoke, pointer, roster, two identities of a recovery line, rotate and share. Each entry gives the signer's seed (32 repeated bytes: <code>01…</code> for the community, <code>02…</code> for the root, <code>03…</code> for the device, <code>04…</code> and <code>05…</code> for two other members), the canonical record bytes, the id, the nonce, the stamp bits it carries, the signature and the full wire. Times start at <code>created_at_base</code> 1,790,000,000 and stamps are mined at 8 bits, searching nonces from 0, so the file is deterministic.</p>
+    <p>The generator is <code>cargo run -p hoi-validate --example vectors</code>; with <code>-- --check</code> it fails if the file would change. An implementation that decodes each <code>wire_cbor</code>, re-encodes the record to <code>record_cbor</code>, hashes it to <code>id</code> and verifies <code>sig</code> against <code>signer</code> agrees with this page. More on <a href="/wiki/vectors/">Test vectors</a>.</p>
+  </section>
+
+  <section class="wk-sec" id="next">
+    <h2>Read next</h2>
+    <div class="wk-cards">
+      <a class="wk-card g-coral" href="/wiki/kinds/"><i></i><b>Record kinds</b><span>Every kind, every body field, its limits and who may sign it.</span></a>
+      <a class="wk-card g-sun" href="/wiki/stamps/"><i></i><b>Stamps &amp; work</b><span>The nonce search, difficulty rules and identity work.</span></a>
+      <a class="wk-card g-lilac" href="/wiki/identity/"><i></i><b>Keys &amp; identity</b><span>Roots, devices, delegations, revocation and recovery.</span></a>
+      <a class="wk-card g-peach" href="/wiki/validation/"><i></i><b>Validation pipeline</b><span>The stages every record passes, in order.</span></a>
+    </div>
+  </section>
+</article>
+<!-- @wiki-close -->
+<!-- @include footer.html -->
+<script type="module" src="/src/pages/wiki.ts"></script>
+</body>
+</html>

@@ -1,0 +1,629 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <!-- @include head.html title="Sync &amp; gossip · hoi wiki" description="The hoi-sync conversation message by message: hello, range reconciliation, have, want, recs, bwant and blob, live gossip, warmth, carrying and forwarding, with every cap." -->
+</head>
+<body class="wiki">
+<!-- @include header.html nav="wiki" -->
+<!-- @wiki-open -->
+<article class="wk-doc">
+  <!-- @wiki-crumbs -->
+  <h1>Sync <span class="acc">&amp; gossip</span></h1>
+  <p class="wk-lead">Two hoi devices that meet say hello, compare what they hold of each community they share by range fingerprints, fetch what they lack in bounded pages, and from then on push every new valid record to each other as it arrives. This page is that conversation: every message and field, every cap, the order of a session, the reconciliation algorithm, how live records spread, how media is fetched, and the warmth reading a device makes of what it saw.</p>
+  <p class="wk-src-list">Source <a href="{{REPO_URL}}/blob/main/core/crates/hoi-sync/src/lib.rs">hoi-sync/src/lib.rs</a> <a href="{{REPO_URL}}/blob/main/core/crates/hoi-sync/src/range.rs">range.rs</a> <a href="{{REPO_URL}}/blob/main/core/crates/hoi-sync/src/warmth.rs">warmth.rs</a> <a href="{{REPO_URL}}/blob/main/core/crates/hoi-sync/src/place.rs">place.rs</a> <a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/net.rs">hoi-core/src/net.rs</a> <a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/node.rs">node.rs</a> <a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/warmth.rs">warmth.rs</a> <a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/carry.rs">carry.rs</a> <a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/forward.rs">forward.rs</a> <a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/blobs.rs">blobs.rs</a> <a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/dispatch.rs">dispatch.rs</a> <a href="{{REPO_URL}}/blob/main/core/vectors/sync-transcript.json">vectors/sync-transcript.json</a> <a href="{{REPO_URL}}/blob/main/core/vectors/warmth.json">warmth.json</a> <a href="{{REPO_URL}}/blob/main/core/vectors/carry.json">carry.json</a> <a href="{{REPO_URL}}/blob/main/core/vectors/hello-salted.json">hello-salted.json</a> <a href="{{REPO_URL}}/blob/main/core/vectors/hello-hints.json">hello-hints.json</a></p>
+  <div class="wk-head-rule"></div>
+
+  <section class="wk-sec" id="overview">
+    <h2>One conversation, any pipe</h2>
+    <p><code>hoi-sync</code> defines what two nodes say to each other over any byte pipe: the home-node WebSocket, <code>hoi/sync/1</code> on iroh between native nodes, and WebRTC data channels from browsers (the pipes are on <a href="/wiki/transports/">Transports</a>). Live records ride the same link as catch-up, so there is no separate gossip protocol: a community's "topic" is simply the set of linked peers that listed it, and a new record goes to each of them.</p>
+    <div class="wk-code" data-lang="text" data-title="core/crates/hoi-sync/src/lib.rs (the crate's own summary, trimmed)"><pre><code>A → B  hello { communities }            B → A  hello { communities }
+       (to strangers: only those its routes led here for, the rest as salted hashes)
+B → A  rng   { c, s, r }  (each shared community: B starts a session to learn what A holds,
+A → B  rng   { c, r }      fingerprints of ranges, split where they differ)
+B → A  want  { ids }      (what B lacks)          …and A starts its own session
+       (to a peer that doesn't say `range`: have { c, ids }, every live id, instead)
+A → B  recs  { [wire] }   (genesis, identities and delegations first)
+later: recs  { [wire] }   (live: every new record, gossiped to peers in its community)
+A → B  bwant { ids }      (media bytes a visible post references, by BLAKE3 hash)
+B → A  blob  { id, data } (one item per message; A checks the hash and the bytes)</code></pre></div>
+
+    <h3 id="messages">Every message</h3>
+    <p>Each message is one canonical CBOR map whose <code>t</code> names it (at most 16 bytes). Decoding refuses a message over <code>MAX_MESSAGE</code>, a list over its cap, a field of the wrong type, and an unknown <code>t</code>, so a peer can't make a node allocate or loop on its say-so. An undecodable message costs the sender 5 points of peer score.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Sync messages">
+      <table>
+        <thead><tr><th><code>t</code></th><th>Fields</th><th>What it does</th><th>Read more</th></tr></thead>
+        <tbody>
+          <tr><td><code>hello</code></td><td>v, node, c, n, ch, fx, … (<a href="#hello-fields">all</a>)</td><td>first message on every link: who, which communities, which features</td><td><a href="#hello">below</a></td></tr>
+          <tr><td><code>rng</code></td><td>c, n, s, r</td><td>one step of range reconciliation of one community</td><td><a href="#range">below</a></td></tr>
+          <tr><td><code>have</code></td><td>c, ids ≤ 100,000</td><td>every live id of one community, to a peer that doesn't say <code>range</code></td><td><a href="#have">below</a></td></tr>
+          <tr><td><code>want</code></td><td>ids ≤ 5,000</td><td>records asked for by id</td><td><a href="#want">below</a></td></tr>
+          <tr><td><code>recs</code></td><td>recs ≤ 500 wires</td><td>records, for catch-up and live</td><td><a href="#recs">below</a></td></tr>
+          <tr><td><code>bwant</code></td><td>ids ≤ 32</td><td>media bytes asked for by BLAKE3 hash</td><td><a href="#media">below</a></td></tr>
+          <tr><td><code>blob</code></td><td>id, data ≤ 16 MiB</td><td>one media item</td><td><a href="#media">below</a></td></tr>
+          <tr><td><code>bye</code></td><td>reason ≤ 1,024 bytes</td><td>the sender ends the link, saying why</td><td><a href="#bye">below</a></td></tr>
+          <tr><td><code>link</code></td><td>m (16 B mailbox), b (sealed, ≤ 512 KiB)</td><td>device linking, remote signing and previews through the home node, sealed with the link key</td><td><a href="/wiki/identity/">Keys &amp; identity</a></td></tr>
+          <tr><td><code>catalog</code></td><td>entries ≤ 64, ≤ 256 KiB in all</td><td>signed geneses of open communities and their routes, with a warmth hint <code>w</code></td><td><a href="/wiki/discovery/">Discovery</a></td></tr>
+          <tr><td><code>nodes</code></td><td>routes ≤ 32, h (vouches) ≤ 32</td><td>other public nodes the sender reached itself, holders it saw for days</td><td><a href="/wiki/discovery/">Discovery</a></td></tr>
+          <tr><td><code>find</code>, <code>found</code></td><td>c; c, r ≤ 16</td><td>who carries this community?</td><td><a href="/wiki/discovery/">Discovery</a></td></tr>
+          <tr><td><code>dht</code></td><td>a ≤ 4 contacts</td><td>where public nodes' DHT nodes listen</td><td><a href="/wiki/discovery/">Discovery</a></td></tr>
+          <tr><td><code>carry</code>, <code>carried</code></td><td>g (genesis ≤ 64 KiB); c, ok, reason ≤ 256</td><td>asking a public node to keep a community available</td><td><a href="#carry">below</a></td></tr>
+          <tr><td><code>piece</code></td><td>o, r, to?, e (envelope ≤ 1 MiB + 1 KiB)</td><td>scattered delivery: sealed requests and answers, possibly through a forwarder</td><td><a href="#forward">below</a>, <a href="/wiki/scatter/">Scattered delivery</a></td></tr>
+          <tr><td><code>rebuild</code>, <code>rebuilt</code></td><td>r, m (manifest ≤ 13,312 B); r, c? (≤ 4 MiB)</td><td>a device asks its home node to rebuild an object from pieces</td><td><a href="/wiki/scatter/">Scattered delivery</a></td></tr>
+          <tr><td><code>here</code>, <code>sig</code></td><td>c, y, h ≤ 16; p, d ≤ 8 KiB</td><td>direct links between browsers, through a node</td><td><a href="/wiki/transports/">Transports</a></td></tr>
+          <tr><td><code>bind</code></td><td>s (64 B)</td><td>a node binds its key to a WebRTC channel, right after its hello</td><td><a href="/wiki/transports/">Transports</a></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3 id="caps">Every cap</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="hoi-sync constants">
+      <table>
+        <thead><tr><th>Constant</th><th>Value</th><th>Bounds</th></tr></thead>
+        <tbody>
+          <tr><td><code>SYNC_VERSION</code></td><td>2</td><td>the only version a node speaks; any other gets a <code>bye</code></td></tr>
+          <tr><td><code>BATCH</code></td><td>200</td><td>records per <code>recs</code> sent, and ids per <code>want</code> page</td></tr>
+          <tr><td><code>MAX_RECS</code></td><td>500</td><td>records per <code>recs</code> accepted</td></tr>
+          <tr><td><code>MAX_WANT</code></td><td>5,000</td><td>ids per <code>want</code></td></tr>
+          <tr><td><code>MAX_HAVE</code></td><td>100,000</td><td>ids per <code>have</code>; ids in one <code>rng</code>; ids a peer may leave pending; records a node reconciles per community</td></tr>
+          <tr><td><code>MAX_HELLO</code></td><td>1,024</td><td>communities in <code>c</code>, and in <code>ch</code></td></tr>
+          <tr><td><code>MAX_BWANT</code></td><td>32</td><td>hashes per <code>bwant</code></td></tr>
+          <tr><td><code>MAX_BLOB</code></td><td>16 MiB</td><td>one media item (a video); also the bytes one <code>want</code> or <code>bwant</code> answer may carry</td></tr>
+          <tr><td><code>MAX_MESSAGE</code></td><td>16 MiB + 64 KiB</td><td>any message, a full <code>blob</code> plus framing</td></tr>
+          <tr><td><code>MAX_HINT_COMMUNITIES</code>, <code>MAX_HINT_PEERS</code>, <code>MAX_HINT_RELAYS</code></td><td>64, 16, 8</td><td>route hints in a hello, between a home node and its devices</td></tr>
+          <tr><td><code>MAX_ROUTES</code></td><td>8</td><td>the sender's own routes in a hello</td></tr>
+          <tr><td><code>MAX_FEATURES</code>, <code>SEND_FEATURES</code></td><td>16, 16</td><td>feature names read and sent</td></tr>
+          <tr><td><code>MAX_HERE</code>, <code>MAX_SIG</code></td><td>16, 8 KiB</td><td>handles in <code>here</code>, a <code>sig</code> payload</td></tr>
+          <tr><td><code>MAX_FOUND_ROUTES</code>, <code>MAX_DHT_CONTACTS</code></td><td>16, 4</td><td>routes in <code>found</code>, contacts in <code>dht</code></td></tr>
+          <tr><td><code>MAX_NODE_ROUTES</code>, <code>MAX_VOUCHES</code>, <code>MAX_VOUCH_DAYS</code>, <code>MAX_VOUCH_ROUTES</code></td><td>32, 32, 30, 2</td><td>a <code>nodes</code> list</td></tr>
+          <tr><td><code>MAX_CATALOG_ENTRIES</code>, <code>MAX_CATALOG_BYTES</code>, <code>MAX_GENESIS</code></td><td>64, 256 KiB, 64 KiB</td><td>a <code>catalog</code>; a genesis in it or in a <code>carry</code></td></tr>
+          <tr><td><code>MAX_WARMTH_HINT</code>, <code>MAX_LISTING_AGE</code></td><td>3, 60 days</td><td>a catalog entry's <code>w</code> and <code>a</code></td></tr>
+          <tr><td><code>MAX_CARRIED_REASON</code>, <code>MAX_LINK</code>, <code>MAX_ENVELOPE</code></td><td>256 B, 512 KiB, 1 MiB + 1 KiB</td><td><code>carried</code>, <code>link</code>, <code>piece</code></td></tr>
+          <tr><td><code>MAX_REBUILT</code>, <code>MAX_REBUILD_MANIFEST</code></td><td>4 MiB, 512 + 200 × 64 B</td><td><code>rebuilt</code>, <code>rebuild</code></td></tr>
+          <tr><td><code>range::IDS_THRESHOLD</code>, <code>BRANCHES</code>, <code>MAX_RANGES</code></td><td>64, 16, 8,192</td><td><a href="#range">reconciliation</a></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Text fields have caps too: <code>name</code>, <code>token</code> and <code>pt</code> 256 bytes; a route 128; a relay URL 512; a feature name 16; a <code>bye</code> reason 1,024.</p>
+  </section>
+
+  <section class="wk-sec" id="hello">
+    <h2>hello</h2>
+    <p>The first message on every link, from both sides, and sent again whenever what it says changes (a community joined or left, a transport address changed, a notice set): a newer hello replaces the last one, and when what the host says about a link changes what our hello names, a hello still waiting in the outbox is replaced in place. Nothing but <code>hello</code> or <code>bye</code> is taken before it.</p>
+
+    <h3 id="hello-fields">Fields</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Hello fields">
+      <table>
+        <thead><tr><th>Key</th><th>Type, cap</th><th>Meaning</th><th>Sent</th></tr></thead>
+        <tbody>
+          <tr><td><code>v</code></td><td>uint</td><td>sync version, 2; missing reads as 0</td><td>always</td></tr>
+          <tr><td><code>node</code></td><td>32 bytes, required</td><td>the transport identity, never a posting key: a native node's endpoint key; from a browser, its stored node id to its own devices and a fresh random id per connection to anyone else</td><td>always</td></tr>
+          <tr><td><code>name</code></td><td>text ≤ 256</td><td>what your devices call this node ("mira's computer", a headless node's own name)</td><td>to your own devices and home node only</td></tr>
+          <tr><td><code>token</code></td><td>text ≤ 256</td><td>device → home node: its credential, or the pairing link's token; home node → device that just spent the link: its own credential</td><td>between a home node and its devices</td></tr>
+          <tr><td><code>c</code></td><td>ids ≤ 1,024, required</td><td>communities named in the clear: every public one to your own devices; to anyone else only those whose routes led to this connection</td><td>always (may be empty)</td></tr>
+          <tr><td><code>n</code></td><td>16 bytes</td><td>a salt fresh for this connection</td><td>to strangers</td></tr>
+          <tr><td><code>ch</code></td><td>ids ≤ 1,024, sorted</td><td>the other public communities as <a href="#salted">salted hashes</a>; refused without <code>n</code></td><td>to strangers</td></tr>
+          <tr><td><code>serves</code></td><td>bool</td><td>the sender serves paired devices; believed only from your own home node</td><td>always</td></tr>
+          <tr><td><code>hints</code></td><td>≤ 64 × <code>{c, p ≤ 16, r ≤ 8}</code></td><td>routes and relays per community, for a device to dial</td><td>to your own devices and home node only; taken only from a credentialed device, or from the home node once it delivered records</td></tr>
+          <tr><td><code>routes</code></td><td>≤ 8 texts ≤ 128</td><td>the sender's own routes: all of them to your devices, what it publishes to anyone else</td><td>when it has any</td></tr>
+          <tr><td><code>fx</code></td><td>≤ 16 texts ≤ 16</td><td><a href="#features">features</a></td><td>always</td></tr>
+          <tr><td><code>pt</code></td><td>text ≤ 256</td><td>the token of the home node's current pairing link, so a device can show it to the next device</td><td>home node → device</td></tr>
+          <tr><td><code>lk</code></td><td>32 bytes</td><td>the key <code>link</code> messages are sealed with</td><td>home node → device</td></tr>
+          <tr><td><code>nh</code>, <code>nt</code></td><td>32 bytes; bytes ≤ 2,048</td><td>the operator's notice and its BLAKE3 hash</td><td>public node → stranger</td></tr>
+          <tr><td><code>sk</code></td><td><code>{k: 32 B, e: uint, s: 64 B, r?: {e, c, s}}</code></td><td>the holder key for scattered delivery, signed by the endpoint key; <code>r</code> binds the WebRTC certificate to the endpoint for browsers</td><td>from a node that holds pieces</td></tr>
+          <tr><td><code>fw</code></td><td>bool</td><td>passes <code>piece</code> requests on to holders</td><td>from a public node with an endpoint key</td></tr>
+          <tr><td><code>rb</code></td><td>bool</td><td>rebuilds objects kept in pieces for its devices</td><td>home node → its own devices</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>A malformed holder key refuses the whole hello rather than being half read; a binding (<code>r</code>) this release can't read is simply no binding. The keys go on the wire in canonical order (shorter keys first, then bytewise): <code>c</code>, <code>n</code>, <code>t</code>, <code>v</code>, <code>ch</code>, <code>fw</code>, <code>fx</code>, …</p>
+
+    <h3 id="features">Features</h3>
+    <p>Newer messages go only to peers that name the feature, so old peers keep working.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Hello features">
+      <table>
+        <thead><tr><th><code>fx</code></th><th>Says</th><th>Who says it</th></tr></thead>
+        <tbody>
+          <tr><td><code>link</code></td><td>sends and takes <code>link</code> messages</td><td>every node</td></tr>
+          <tr><td><code>catalog</code></td><td>takes <code>catalog</code> snapshots</td><td>every node</td></tr>
+          <tr><td><code>profile</code>, <code>profile-color</code></td><td>takes profile records, and palette choices, which older peers never get</td><td>every node</td></tr>
+          <tr><td><code>nodes</code></td><td>understands <code>nodes</code> lists</td><td>every node</td></tr>
+          <tr><td><code>directory</code></td><td>takes relayed catalog entries</td><td>every node</td></tr>
+          <tr><td><code>range</code></td><td>reconciles with <code>rng</code>; gets them in place of <code>have</code></td><td>every node</td></tr>
+          <tr><td><code>keeps</code></td><td>keeps records across restarts and can be reached: its copy counts as durable in <a href="#warmth">warmth</a></td><td>desktop, <code>hoi-node</code></td></tr>
+          <tr><td><code>carry</code></td><td>takes <code>carry</code> requests</td><td>a public node</td></tr>
+          <tr><td><code>unlisted</code></td><td>publishes no address of its own: don't remember it, pass it on or dial it back</td><td>browsers, phones, a desktop that isn't a public node</td></tr>
+          <tr><td><code>find</code>, <code>dht</code></td><td>answers <code>find</code>; runs a DHT node among public nodes</td><td>a public node</td></tr>
+          <tr><td><code>blobs</code></td><td>fetches and serves media over iroh-blobs</td><td>a native node whose endpoint runs</td></tr>
+          <tr><td><code>signal</code></td><td>passes <code>sig</code> between browsers and answers STUN</td><td>a native node relaying, with its WebRTC port open</td></tr>
+          <tr><td><code>direct</code></td><td>takes direct links with other browsers</td><td>a browser with <i>Direct links</i> on</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3 id="salted">Communities as salted hashes</h3>
+    <p>A stranger learns only what it needs. A hello to anyone but your own devices names in the clear only the communities whose routes led to that connection (a carrier learns what a member came to it for) and lists the others as hashes salted for that connection. Only a peer that already knows a key can match it, and a fresh salt per connection keeps the same list from being recognized on the next one. The hashes are sorted, so their order says nothing about the keys behind them.</p>
+    <div class="wk-code" data-lang="rust" data-title="core/crates/hoi-sync/src/lib.rs (trimmed)"><pre><code>pub const COMMUNITY_HASH_CONTEXT: &amp;str = "hoi 2026 hello community v1";
+
+pub fn community_hash(salt: &amp;[u8; 16], community: &amp;Id) -&gt; Id {
+    let mut h = blake3::Hasher::new_derive_key(COMMUNITY_HASH_CONTEXT);
+    h.update(salt);
+    h.update(community.as_bytes());
+    Id(*h.finalize().as_bytes())
+}</code></pre></div>
+    <p>The receiver hashes every public community it is in under the peer's salt and adds the matches to what the peer listed. It keeps the salt and hashes for the life of the link, so a community it takes on later (<code>rematch</code>, or a <code>carry</code> it accepts) is found among them without asking again. The vector <code>hello-salted.json</code> pins this: under salt <code>5a × 16</code> a stranger's hello of 165 bytes names community <code>8a88e3dd…</code> in <code>c</code> and lists <code>8a875fff…</code> only as <code>1995a315…</code> in <code>ch</code>, while the 279-byte hello from a home node to its device names both in the clear and carries <code>token</code>, <code>pt</code> and a 32-byte <code>lk</code>.</p>
+
+    <h3 id="hello-rules">What a node does with a hello</h3>
+    <ol class="wk-steps">
+      <li><b>Credential</b><p>From a device that dialed this node, the first hello must show a credential or the pairing link's token; otherwise the link ends without a word (<a href="/wiki/transports/">Transports</a>).</p></li>
+      <li><b>Version</b><p>Not 2: <code>bye</code> "this node speaks sync version 2".</p></li>
+      <li><b>Notice</b><p>On a person's device, a stranger's notice not accepted yet ends the link here, to be read first; a hello that lies about its notice costs score.</p></li>
+      <li><b>Communities</b><p>Private communities are dropped from <code>c</code> (a peer can't opt a private group into plaintext sync by guessing ids); salted hashes are matched. A home node joins and pins what its device lists (while it is in fewer than 256), then sends its own hello, with a new credential if the device just spent the link.</p></li>
+      <li><b>Hints and routes</b><p>Routes that aren't valid hints are dropped. Hints are remembered only from a credentialed device or a proven home node; from a home node not yet proven they wait until it delivers records.</p></li>
+      <li><b>Then</b><p>The node starts a session for every shared community (<a href="#range"><code>rng</code></a>, or <code>have</code>), and sends its catalog, its node list, pending link asks, carry requests and finds, as each applies.</p></li>
+    </ol>
+  </section>
+
+  <section class="wk-sec" id="have">
+    <h2>have, want, recs</h2>
+    <p>The catch-up messages. A <code>have</code> goes only to a peer whose hello doesn't say <code>range</code> (every current program says it, so <code>have</code> is the path for older peers and for the <a href="#transcript">test vector</a>); otherwise reconciliation finds the same ids with far fewer bytes. Either way, what one side lacks is asked for with <code>want</code> and answered with <code>recs</code>.</p>
+
+    <h3 id="have-msg">have</h3>
+    <p><code>{t: "have", c, ids}</code>: every live record id the sender offers of one community it holds the genesis of, at most 100,000. The receiver keeps the ids it neither holds nor deleted nor keeps a removed record's skeleton of as pending wants, and counts what the peer listed for <a href="#warmth">warmth</a>. If its pending ids from this peer, across all communities, would pass 100,000, it says <code>bye</code> "too much pending catch-up". A <code>have</code> also subscribes the peer to the community on this link. A peer this node dialed by a route it already trusted, listing records held here besides the genesis, is remembered as a member worth pointing newcomers at; a peer that dialed in proves that by delivering records instead.</p>
+
+    <h3 id="want">want</h3>
+    <p><code>{t: "want", ids}</code>, at most 5,000. The answering side sends, for each id it holds:</p>
+    <ul>
+      <li>only records of communities the peer subscribes to on this link (or no community at all), never private content, never a record held back or by a key the community blocked, never one kept only in pieces;</li>
+      <li>profile records and palette choices only to a peer that said <code>profile</code> or <code>profile-color</code>;</li>
+      <li>a person's own identity or device blessing that never came back from anywhere only to that person's own devices;</li>
+      <li>with each record its <i>carriers</i>, the records a peer needs before it: the author's identity, each later root's identity and rotation, and the device's delegation;</li>
+      <li>at most 16 MiB of records in one answer (<code>MAX_BLOB</code>): older or hostile peers can ask for 5,000 maximum-size records in one frame, so the answer is bounded before it is built.</li>
+    </ul>
+    <p>The records are sorted into dependency order (<a href="#priority">below</a>), then by time, and cut into <code>recs</code> messages of at most 200 records or about 1 MiB each.</p>
+
+    <h3 id="paging">Paging</h3>
+    <p>The asking side never has more than one page outstanding per peer, across all communities: one page at a time keeps a catch-up below the link's byte budget (200 maximum-size records plus their carriers fit the bounded queue). A page is up to 200 ids. When every id of it has arrived from that peer, the next page goes out. When nothing is pending and no range session is still open, the community is caught up with that peer: the time is saved as <code>sync_completed</code>, which <a href="#warmth">warmth</a> reads. A catch-up that made no progress for 120 seconds with ids outstanding is <i>stalled</i>, and the host drops and redials the link.</p>
+
+    <h3 id="recs">recs</h3>
+    <p><code>{t: "recs", recs: [wire, …]}</code>, at most 500 accepted. Each wire is one signed record as it travels (<a href="/wiki/records/">Records &amp; encoding</a>). The batch is ingested together, dependencies first, settling the standing ladder before contributions so their authors' new standing applies, and every record passes the full <a href="/wiki/validation/">validation pipeline</a>. Peer score (<a href="/wiki/spam/">Spam &amp; rate limits</a>) follows what came:</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="What records cost or earn the sender">
+      <table>
+        <thead><tr><th>What came</th><th>Peer score</th></tr></thead>
+        <tbody>
+          <tr><td>a valid new record</td><td>+0.1, up to 10</td></tr>
+          <tr><td>a duplicate</td><td>nothing; it still shows the peer holds it</td></tr>
+          <tr><td>bytes that don't decode</td><td>−2 each</td></tr>
+          <tr><td>a record refused with a peer strike (it doesn't decode, is too big, or its signature is bad)</td><td>−2</td></tr>
+          <tr><td>forged identity work</td><td>−30: one is one too many, however many good records came before; the rest of the batch isn't looked at</td></tr>
+          <tr><td>at −20 or below</td><td><code>bye</code> "too many invalid records", link closed</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>A record made within the last ten minutes (<code>CLOCK_SKEW</code>, 600 seconds) counts as live gossip, an older one as catch-up: only a live record over its author's rate budget strikes the author. Valid records of a community delivered by a peer make it a remembered member and an "other holder" of a carried community; from your home node they prove it is the node you meant to pair with. After every batch the node offers what it has to every peer again (a genesis may just have arrived), settles standing, and asks for missing media.</p>
+
+    <h3 id="priority">Dependency order</h3>
+    <p>When many records arrive or go out at once, what others depend on comes first (<code>priority</code> in <code>node.rs</code>):</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Ingest order">
+      <table>
+        <thead><tr><th>#</th><th>Kinds</th></tr></thead>
+        <tbody>
+          <tr><td>0–4</td><td><span class="tag t-sun">community</span> <span class="tag t-sun">identity</span> <span class="tag t-sun">rotate</span> <span class="tag t-sun">delegation</span> <span class="tag t-sun">revoke</span></td></tr>
+          <tr><td>5–6</td><td><span class="tag t-mint">ledger</span> <span class="tag t-mint">vouch</span></td></tr>
+          <tr><td>7–14</td><td><span class="tag t-sky">post</span> <span class="tag t-sky">comment</span> <span class="tag t-sky">edit</span> <span class="tag t-sky">review</span> <span class="tag t-sky">vote</span> <span class="tag t-sky">label</span> <span class="tag t-sky">report</span> <span class="tag t-sky">delete</span></td></tr>
+          <tr><td>15–17</td><td><span class="tag t-lilac">profile</span> <span class="tag t-lilac">profile-color</span> <span class="tag t-lilac">pointer</span></td></tr>
+          <tr><td>18–23</td><td><span class="tag t-peach">roster</span> <span class="tag t-peach">share</span> <span class="tag t-peach">trust</span> <span class="tag t-peach">wiki</span> <span class="tag t-peach">tally</span> <span class="tag t-peach">blocklist</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Rosters come after the ladder settled, since only an established member's counts. The kinds themselves are on <a href="/wiki/kinds/">Record kinds</a>.</p>
+  </section>
+
+  <section class="wk-sec" id="range">
+    <h2>Range-based set reconciliation</h2>
+    <p>Two peers learn which records the other holds that they lack without either listing every id, after Aljoscha Meyer's range-based reconciliation and Negentropy. Records are ordered by <code>(created_at, id)</code>. A message partitions that whole order into consecutive ranges, each ending at an exclusive upper bound, each either settled (<code>Skip</code>), a fingerprint of the sender's records in it, or the sender's ids in it.</p>
+    <div class="wk-stage" data-demo="reconcile" data-title="Reconciling by ranges">
+      <p class="nojs">Two devices hold almost the same records. Each sends fingerprints of sixteen ranges; ranges whose fingerprints match are settled at once, and the ones that differ are split again, or listed as ids once they are small, until each side knows exactly the few records it lacks.</p>
+      <p class="wk-stage-cap">Matching ranges cost one fingerprint each; only the differences are looked at closely.</p>
+    </div>
+
+    <h3 id="range-fingerprint">The fingerprint</h3>
+    <p>The ids in a range are added up as 256-bit little-endian integers, modulo 2²⁵⁶, and the sum and the count are hashed with a key of their own; the first 16 bytes are the fingerprint. The same set gives the same fingerprint whatever order it was summed in, and it can be summed over any range.</p>
+    <div class="wk-code" data-lang="rust" data-title="core/crates/hoi-sync/src/range.rs"><pre><code>pub fn fingerprint(items: &amp;[Item]) -&gt; [u8; 16] {
+    let mut sum = [0u64; 4];
+    for (_, id) in items {
+        let mut carry = 0u128;
+        for (i, limb) in sum.iter_mut().enumerate() {
+            let v = u64::from_le_bytes(id.0[i * 8..i * 8 + 8].try_into().expect("8 bytes"));
+            let s = *limb as u128 + v as u128 + carry;
+            *limb = s as u64;
+            carry = s &gt;&gt; 64;
+        }
+    }
+    let mut h = blake3::Hasher::new_derive_key("hoi 2026 range fingerprint v1");
+    for limb in sum {
+        h.update(&amp;limb.to_le_bytes());
+    }
+    h.update(&amp;(items.len() as u64).to_le_bytes());
+    h.finalize().as_bytes()[..16].try_into().expect("16 bytes")
+}</code></pre></div>
+
+    <h3 id="range-bounds">Bounds</h3>
+    <p>A bound is <code>(at, id)</code>; <code>Bound::END</code>, past every record, is <code>(u64::MAX, ff × 32)</code>. Between two neighbouring records the sender picks the shortest bound above the first and at or below the second: no id at all when their times differ, else just enough of the second's id to tell them apart. On the wire a bound's id loses its trailing zero bytes, so most bounds are a time and an empty byte string.</p>
+
+    <h3 id="range-rules">The rules</h3>
+    <p>One side starts (<code>initiate</code>) and learns what the other holds; each side starts its own session for each shared community, so each learns what to ask for. A set of 64 ids or fewer (<code>IDS_THRESHOLD</code>) goes as one list in the first message; a larger one as 16 fingerprints (<code>BRANCHES</code>) of equal-sized chunks of the sender's records.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="How each side answers a range">
+      <table>
+        <thead><tr><th>A range that came as</th><th>The responder answers</th><th>The starter answers</th></tr></thead>
+        <tbody>
+          <tr><td><code>Skip</code></td><td><code>Skip</code></td><td><code>Skip</code></td></tr>
+          <tr><td>a fingerprint equal to its own for that range</td><td><code>Skip</code></td><td><code>Skip</code></td></tr>
+          <tr><td>a fingerprint that differs</td><td>its ids if 64 or fewer, else 16 fingerprints of its own chunks</td><td>the same</td></tr>
+          <tr><td>ids</td><td>notes the ones it lacks; <code>Skip</code> if its own ids there are the same, else its own ids</td><td>takes the ones it lacks; <code>Skip</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>The responder always replies, so the starter knows when it is done; the starter replies only while something is still open, and stops when nothing is. Neighbouring skips merge into one. A message carries at most 8,192 ranges (<code>MAX_RANGES</code>): a side that would need more to split answers the rest of the differing ranges with its ids, which always settles them. The ids a starter lacks become pending wants, asked for in <a href="#paging">pages</a> as above.</p>
+
+    <h3 id="range-wire">On the wire</h3>
+    <p><code>{t: "rng", c: community, n: how many records the sender holds there, s: true if the sender began this session, r: [entries]}</code>. Each entry is a CBOR array:</p>
+    <div class="wk-bytes" data-title="One range entry">
+upper.at | uint | sun | 2 | the bound's <code>created_at</code>
+upper.id | 0–32 B | coral | 3 | the bound's id, trailing zero bytes cut
+mode | 1 B | mute | 1 | 0 skip, 1 fingerprint, 2 ids
+fingerprint | 16 B | sky | 4 | mode 1 only
+ids | n × 32 B | lilac | 4 | mode 2 only
+</div>
+    <p>A receiver refuses an <code>rng</code> with no ranges or more than 8,192, a bound id longer than 32 bytes, bounds not strictly ascending, a last bound that isn't <code>END</code>, a fingerprint that isn't 16 bytes, an entry with extra parts, or more than 100,000 ids in all.</p>
+
+    <h3 id="live-window">The live window</h3>
+    <p>What a node reconciles, and lists in a <code>have</code>, is what it would offer the peer: the community's records that haven't expired and that it passes on (not held back, the author not blocked, not kept only in pieces, not waiting for an injector), profile kinds only to peers that take them, and of those the newest 100,000. Since every compliant node deletes records at <code>expires_at</code> and refuses them afterwards, the window is the community's retention window (<a href="/wiki/expiry/">Expiry &amp; removal</a>), and expired records can't sneak back in. Ids a starter finds lacking that it deleted, or keeps a removed record's skeleton of, are not asked for.</p>
+
+    <h3 id="range-numbers">What it costs</h3>
+    <p>In the crate's tests, two sides of 1,000 shared records with 7 and 5 extra each learn exactly what they lack while moving less than a quarter of two full id lists; the same set settles in one round; 20,000 records with every third missing on one side, ten records a second, settle within five rounds. In <code>hoi-core</code>, two nodes with about a thousand records in common, seven new on one and four on the other, reconcile in less than a sixth of the bytes two full <code>have</code> lists would take, about 5 KB when the test was written, and no <code>have</code> is sent at all.</p>
+  </section>
+
+  <section class="wk-sec" id="session">
+    <h2>A full catch-up session</h2>
+    <p>In <code>hoi-core</code> a session is per peer and per community. Sending <code>rng</code> as starter marks the community as <code>ranging</code> with that peer (when it last moved, whether the peer answered yet). The responder's first answer tells the starter the peer holds the community at all (it reconciles it, so it holds the genesis) and how many records (<code>n</code>), which warmth uses. A session the peer stopped answering ends after two minutes, at the next sweep, and what it found is asked for as usual. A peer that leaves and comes back on the same link gets a fresh session.</p>
+    <div class="wk-seq" data-title="Two devices catch up on one community">
+lanes: Device A | Device B
+-- Hellos --
+Device A -> Device B: <code>hello</code> {c / n, ch, fx: [range, …]}
+Device B --> Device A: <code>hello</code> {c / n, ch, fx: [range, …]}
+Device A: B shares the community: A starts a session
+-- A learns what B holds --
+Device A -> Device B: <code>rng</code> {c, n: 1,012, s: true, r: 16 fingerprints}
+Device B --> Device A: <code>rng</code> {s: false, r: skip, skip, 16 fingerprints, skip, …}
+Device A -> Device B: <code>rng</code> {s: true, r: ids where small, fingerprints where still large}
+Device B --> Device A: <code>rng</code> {s: false, r: B's ids in those ranges}
+Device A: nothing open: lacks = B's ids it doesn't hold
+-- B learns what A holds, the same way --
+Device B -> Device A: <code>rng</code> {s: true, …}
+Device A --> Device B: <code>rng</code> {s: false, …}
+-- Pages --
+Device A -> Device B: <code>want</code> {up to 200 ids}
+Device B => Device A @mint: <code>recs</code> {carriers first, then by kind and time}
+Device A: every record validated; when the page is complete, the next one
+Device A -> Device B: <code>want</code> {the next 200}
+Device B => Device A @mint: <code>recs</code>
+Device A: nothing pending, no session open: caught up
+-- From now on --
+Device B => Device A @sky: <code>recs</code> {each new record as it is accepted}
+</div>
+  </section>
+
+  <section class="wk-sec" id="gossip">
+    <h2>Live push</h2>
+    <p>Whenever a node accepts a record (made here, or arrived from a peer, but not while loading from storage, and never one decrypted from a private group or rebuilt from pieces), it queues the record with its carriers as one <code>recs</code> message to every linked peer that:</p>
+    <ul>
+      <li>said hello, and is not the peer the record came from;</li>
+      <li>lists the record's community on this link (in its hello, as a matched salted hash, or by reconciling it); a record without a community (an identity, a blessing, a revocation) goes to every such peer;</li>
+      <li>takes the kind (<code>profile</code>, <code>profile-color</code>);</li>
+      <li>is one of the person's own devices, for the person's own identity and blessings: everyone else gets those with the records they come with.</li>
+    </ul>
+    <p>There is no hop count and no time to live. Each receiver validates the record before anything else, and passes it on only if it accepted it; a record it already holds is a duplicate, accepted by nobody twice, so the flood stops by itself. A peer subscribed to the community now holds one more of this node's records, which warmth counts. Bytes passed along for others are added up for the person's own statistics.</p>
+    <div class="wk-stage" data-demo="gossip" data-title="A record spreads">
+      <p class="nojs">A new record starts on one device and goes to each linked peer that lists its community. Each peer checks it first and passes it on only if it accepted it, so the record reaches the whole mesh hop by hop and never goes around twice.</p>
+      <p class="wk-stage-cap">No topic, no hop count: acceptance is what spreads a record, and duplicates stop it.</p>
+    </div>
+    <div class="wk-seq" data-title="A post spreads from a browser">
+lanes: Author's browser | Home node | Member's node | Member's browser
+Author's browser: stamps, signs, validates its own post like any record
+Author's browser -> Home node: <code>recs</code> {identity, delegation, post}
+Home node: validates every record; accepts the post
+Home node => Member's node @sky: <code>recs</code> {carriers, post}: every peer listing the community
+Home node: not back to the author's browser
+Member's node: validates; accepts
+Member's node => Member's browser @sky: <code>recs</code> {carriers, post}
+Member's node: nothing back to the home node it came from; a copy from elsewhere would be a duplicate
+</div>
+    <p>A device's own new record in an open community may instead go sealed to an <i>injector</i> first, through a forwarder in another place, so the node it links through can't tell the record started there; the device then holds it back from its own links until it comes back from elsewhere, or for two minutes (<a href="/wiki/scatter/">Scattered delivery</a>). Directory listings spread by a gossip of their own: a sweep at least five minutes after the last sends each peer the next window of relayed <code>catalog</code> entries, and a browser or phone a window every 30 minutes (<a href="/wiki/discovery/">Discovery</a>).</p>
+  </section>
+
+  <section class="wk-sec" id="media">
+    <h2>Media: bwant and blob</h2>
+    <p>Records reference media by BLAKE3 hash, MIME type, size and, for pictures, width and height (<a href="/wiki/media/">Media</a>). The bytes travel separately, and only when someone asks.</p>
+    <ul>
+      <li><b>Asking.</b> With automatic media on (<code>auto_media</code>, the default), a node asks for the media of visible posts in its public communities that it lacks and doesn't refuse (its own or a followed blocklist, media that failed the checks before). It keeps one request outstanding at a time and asks for the same item again after 120 seconds (<code>MEDIA_RETRY</code>), least recently tried first, so one unavailable picture can't starve the rest. It stops asking once it holds 512 MiB of media (<code>MEDIA_CAP</code>). The ask goes over iroh-blobs to one peer that said <code>blobs</code> (<a href="/wiki/transports/">Transports</a>), else as <code>bwant {ids: [hash]}</code> to every peer that lists the community.</li>
+      <li><b>Answering.</b> Up to 32 hashes per <code>bwant</code>; only bytes of visible public posts in communities the two share; one <code>blob {id, data}</code> per item; at most 16 MiB in one answer, the rest left for the next ask. An item not here yet (a home node relaying a post that just came from its author's device) is <i>owed</i>, at most 256 per peer, and sent once it arrives.</li>
+      <li><b>Checking.</b> <code>BLAKE3(data)</code> must equal the id: otherwise the sender's fault, −5 peer score, and at −20 <code>bye</code> "media that doesn't match its hash". Then the bytes must be exactly what the post claims: sniffed type, size, and a picture's width and height. Bytes that hash right but fail are the author's fault: the post stays held and the author's key takes a strike. A picture is then fingerprinted against refused pictures before it is kept (<a href="/wiki/media/">Media</a>).</li>
+    </ul>
+    <div class="wk-seq" data-title="A picture reaches a reader through the home node">
+lanes: Reader's browser | Home node | Author's browser
+Author's browser -> Home node: <code>recs</code> {post: media [hash, mime, size, w, h]}
+Home node => Reader's browser @sky: <code>recs</code> {post}
+Home node -> Author's browser: <code>bwant</code> {ids: [hash]}
+Reader's browser: a visible post; its picture is missing
+Reader's browser -> Home node: <code>bwant</code> {ids: [hash]}
+Home node: not here yet: owed to the reader
+Author's browser => Home node @coral: <code>blob</code> {id: hash, data}
+Home node: BLAKE3 matches; type, size and dimensions as the post says; kept
+Home node => Reader's browser @coral: <code>blob</code> {id, data}: what it owed
+Reader's browser: the same checks, then shown
+</div>
+  </section>
+
+  <section class="wk-sec" id="bye">
+    <h2>bye, and every reason</h2>
+    <p><code>{t: "bye", reason}</code> ends a link. A <code>bye</code> from your home node becomes the network error the app shows; any <code>bye</code> makes the receiver drop the link. Silence is a reason too: a device without a valid credential, and a stranger whose notice waits for the person, hear nothing.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Bye reasons">
+      <table>
+        <thead><tr><th>Reason</th><th>When</th></tr></thead>
+        <tbody>
+          <tr><td>this node speaks sync version 2</td><td>a hello of another version</td></tr>
+          <tr><td>this node isn't relaying right now</td><td>someone else's device dialed in while the relay switch is off</td></tr>
+          <tr><td>this node is done relaying for today</td><td>the same, with today's cap used up</td></tr>
+          <tr><td>too many messages</td><td>over 3,000 messages in a minute until the peer's score reaches −20</td></tr>
+          <tr><td>too much pending catch-up</td><td>a <code>have</code> or range session would leave more than 100,000 ids pending from one peer</td></tr>
+          <tr><td>too many invalid records</td><td>records that drove the peer's score to −20</td></tr>
+          <tr><td>media that doesn't match its hash</td><td>blobs that drove the peer's score to −20</td></tr>
+          <tr><td>too many community directory updates</td><td>more than 60 <code>catalog</code> messages in a minute</td></tr>
+          <tr><td>declined</td><td>the person declined this node's operator notice</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="wk-sec" id="driving">
+    <h2>How the core drives it</h2>
+    <p>The node keeps a <code>PeerState</code> for every link the host announced with <code>net_connect</code>. It queues its hello at once, except to a device that dialed it (that one hears nothing before its credential) and, under the consent gate, to a stranger it dialed (that one's hello comes first). Everything else follows from <code>net_receive</code>, one whole message at a time:</p>
+    <div class="wk-code" data-lang="rust" data-title="core/crates/hoi-core/src/net.rs, net_receive_inner (trimmed)"><pre><code>self.count_in(peer, bytes.len(), now);
+// Someone else's device that dialed in: only while relaying is on and under today's cap.
+if self.peers.get(peer).is_some_and(|p| !p.client &amp;&amp; !p.home &amp;&amp; p.meta.incoming &amp;&amp; p.meta.direct.is_none()) &amp;&amp; !self.accepts_members() {
+    …
+    self.send_msg(peer, Msg::Bye { reason: reason.into() });
+    return false;
+}
+…
+st.msgs += 1;
+if st.msgs &gt; MSGS_PER_MINUTE &amp;&amp; self.peer_scores.penalize(peer, 1.0) {
+    self.send_msg(peer, Msg::Bye { reason: "too many messages".into() });
+    return false;
+}
+let msg = match Msg::decode(bytes) {
+    Ok(m) =&gt; m,
+    Err(_) =&gt; return !self.peer_scores.penalize(peer, 5.0),
+};
+if !said_hello &amp;&amp; !matches!(msg, Msg::Hello { .. } | Msg::Bye { .. }) {
+    // everything starts with a hello
+    return false;
+}</code></pre></div>
+    <p>Then one handler per message. Whatever the handlers want to say goes into the outbox, which the host drains with <code>take_outbox</code> after each call; on native builds <code>Shared::with</code> routes it into each link's bounded queue, and the web worker sends each entry on the matching WebSocket or data channel. The per-peer state the conversation lives in:</p>
+    <dl class="wk-defs">
+      <dt>communities<small>BTreeSet&lt;Id&gt;</small></dt><dd>What the peer subscribes to on this link: named in its hello, matched from its salted hashes, or reconciled. Live records go only to these.</dd>
+      <dt>sent_have<small>BTreeSet&lt;Id&gt;</small></dt><dd>Communities this node already started a session or sent a <code>have</code> for on this link; trimmed when the peer's next hello stops listing one, so a re-subscription starts afresh.</dd>
+      <dt>ranging<small>community → (moved at, answered)</small></dt><dd>Range sessions this node started and still open.</dd>
+      <dt>wants, pending_wants<small>community → ids</small></dt><dd>The page in flight (with when the catch-up began) and the ids still to ask for.</dd>
+      <dt>sync_progress<small>Option&lt;u64&gt;</small></dt><dd>When the active page last moved: the stall check reads it.</dd>
+      <dt>offers<small>community → Offer</small></dt><dd>What the peer is known to hold, for warmth: <code>listed</code>, <code>given</code>, <code>delivered</code>, <code>genesis</code>.</dd>
+      <dt>owed<small>BTreeSet&lt;Id&gt;</small></dt><dd>Media it asked for that isn't here yet.</dd>
+      <dt>salt, named, their_hashes<small></small></dt><dd>Our salt for this connection, what our last hello named in the clear, and the peer's salted hashes.</dd>
+      <dt>features, routes<small></small></dt><dd>From its hello.</dd>
+    </dl>
+    <p>Nothing in the conversation is a UI call. The app's own calls (<code>net</code> for the status, <code>pair</code>, <code>join</code>, <code>requestCarry</code> and the rest) go through one JSON entry point, <code>Node::call(method, args)</code> in <code>dispatch.rs</code>, used by the web worker and the Tauri shell; the network calls are separate functions the host calls directly. The full API is on <a href="/wiki/api/">Core API</a>.</p>
+  </section>
+
+  <section class="wk-sec" id="warmth">
+    <h2>Warmth</h2>
+    <p>Warmth reads who else holds a community's live records, the way a torrent client reads availability. A community is <b>cold</b> when no other durable node holds it (a lone desktop reads cold too: its own copy is the one at risk), <b>cool</b> when one other independent place holds a copy, <b>warm</b> with two, and <b>hot</b> with three or more that hold everything this device knows of and caught up recently. People see one word and one bar; the parts are in the details.</p>
+    <p>It is a pure function of what one node observed first hand on its own links: what connected peers handed over or took, what others listed that isn't here yet, when the last catch-up finished. Nothing is trusted from a peer's say-so except the one-hop hint a node may attach to its catalog entry (<code>w</code>), which is taken as a maximum and never added up. A warmth reading is not a delivery receipt: it says how many copies this device could see, not that any post reached anyone. Private communities have none: they sync through their encrypted relays.</p>
+
+    <h3 id="warmth-observe">What is observed</h3>
+    <p><code>hoi-core</code> gathers one <code>Observation</code> per community. Each peer that said hello and offered the community is one <code>Holder</code>, one per authenticated endpoint (a node reached twice is still one copy):</p>
+    <dl class="wk-defs">
+      <dt>coverage<small>0 to 1</small></dt><dd>(the genesis if it showed it + what it listed + records this node gave it + valid records it delivered) ÷ this node's live records. What a peer <i>listed</i> counts only for a peer this node dialed by a route it already trusted, and minus what is still missing from it: a stranger's inventory alone warms nothing. With nothing held here yet, any record counts as a full copy.</dd>
+      <dt>durable<small>bool</small></dt><dd>Its hello says <code>keeps</code>: a desktop or <code>hoi-node</code>, never a browser or phone. The peer's own word.</dd>
+      <dt>operator<small>Option&lt;u64&gt;</small></dt><dd>Who runs it, from its verified notice: the first 8 bytes of BLAKE3 over its operator and contact, case and spacing ignored. A claim, so it only ever merges places.</dd>
+      <dt>network<small>Option&lt;u64&gt;</small></dt><dd>The IPv4 /24 or IPv6 /48 its address is in, or "this machine" for loopback.</dd>
+      <dt>guarded<small>bool</small></dt><dd>The link is encrypted and its other end was checked: this device dialed a route it chose, or the transport authenticated the peer's endpoint.</dd>
+    </dl>
+    <p>Besides the holders: <code>records</code> (live, forwardable records here), <code>missing</code> (the most any one peer listed that hasn't arrived, ignoring stalled links), media referenced and present, <code>last_sync</code> (the last finished catch-up), whether a connected peer lists the community now (<code>live</code>), and the best <code>w</code> a durable peer's catalog gave (<code>hinted</code>). <code>own_durable</code> is whether this device is a desktop or node.</p>
+
+    <h3 id="warmth-places">Copies are counted by place</h3>
+    <p>Holders that share a declared operator or a network, directly or through a third, are one place, because one party or one outage takes them all: ten nodes in one rack are one copy's worth of safety. <code>places_of</code> groups them (a union-find over both keys); each place counts the most any holder in it showed, and <code>kept</code> is the sum over places of the durable holders. The same grouping places <a href="#places">scattered pieces</a>.</p>
+
+    <h3 id="warmth-levels">Levels and score</h3>
+    <div class="wk-code" data-lang="rust" data-title="core/crates/hoi-sync/src/warmth.rs (trimmed)"><pre><code>let mut level = if kept &lt; 1.0 {
+    Level::Cold
+} else if kept &lt; 2.0 {
+    Level::Cool
+} else if kept &lt; HOT_COPIES || complete &lt; 0.95 {
+    Level::Warm
+} else {
+    Level::Hot
+};
+if complete &lt; 0.5 || !fresh || (other_durable &gt; 0.0 &amp;&amp; guarded &lt; GUARDED_ENOUGH) {
+    level = level.down();
+}
+let score = (100.0 * (0.6 * (kept / FULL_BAR).min(1.0) + 0.1 * spread + 0.1 * guarded
+    + 0.12 * complete + if fresh { 0.08 } else { 0.0 })).round().clamp(0.0, 100.0) as u32;</code></pre></div>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Warmth values">
+      <table>
+        <thead><tr><th>Value</th><th>Means</th></tr></thead>
+        <tbody>
+          <tr><td><code>kept</code></td><td>copies on other durable nodes, once per place; what the level is read from (one decimal)</td></tr>
+          <tr><td><code>other_durable</code>, <code>spread</code></td><td>the durable copies summed per holder; <code>kept ÷ other_durable</code>: 1 when every copy is in a place of its own</td></tr>
+          <tr><td><code>guarded</code></td><td>the share of other durable copies reached over a guarded link; under <code>GUARDED_ENOUGH</code> (0.5) the level drops one step</td></tr>
+          <tr><td><code>complete</code></td><td><code>records ÷ (records + missing)</code>; hot needs 0.95, under 0.5 drops a step</td></tr>
+          <tr><td><code>fresh</code></td><td>a connected peer lists it, or a catch-up finished within 7 days (<code>FRESH_FOR</code>); not fresh drops a step</td></tr>
+          <tr><td><code>copies</code>, <code>durable_copies</code></td><td>every copy this device sees, its own included; durable ones, its own if it is one</td></tr>
+          <tr><td><code>network_copies</code></td><td>the larger of <code>other_durable</code> and the best hint: one hop, never summed; it never changes the level</td></tr>
+          <tr><td><code>media</code></td><td>the share of referenced media here (1 with none)</td></tr>
+          <tr><td><code>HOT_COPIES</code>, <code>FULL_BAR</code></td><td>3 copies make hot; 4 fill the 60% of the bar copies can give</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>A node's catalog hint for a community is <code>⌊kept⌋</code> capped at 3 (<code>hint</code>), read again at most once a minute so a busy node's catalog stays cheap to send.</p>
+
+    <h3 id="link-warmth">The warmth of your connections</h3>
+    <p>The same keys read the device's own links (every link that said hello, except devices it serves): <code>effective</code> places is the inverse Simpson index over links per place (3 for three links in three places, 1.6 for four links of which three share one place). Cold with no links; cool when every link goes through one place or fewer than half are guarded; hot with 3 effective places or more, none carrying over half the links and nine in ten guarded; warm in between. The score, <code>0.6 × min(1, effective ÷ 4) + 0.25 × guarded + 0.15 × (1 − largest)</code>, is kept inside the word's band (cool ≤ 49, warm 50–79, hot ≥ 80) so the bar never says more than the word.</p>
+
+    <h3 id="warmth-vector">The vector</h3>
+    <p><code>core/vectors/warmth.json</code> pins 16 observations and 7 link sets that every implementation must read the same way (all with 40 live records, <code>now</code> 1,790,000,000):</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Warmth vector cases">
+      <table>
+        <thead><tr><th>Case</th><th>Level</th><th>Score</th><th>kept</th><th>Hint</th></tr></thead>
+        <tbody>
+          <tr><td>a browser alone, nothing missing, never synced</td><td>cold</td><td>12</td><td>0.0</td><td>0</td></tr>
+          <tr><td>a browser with its home node</td><td>cool</td><td>55</td><td>1.0</td><td>1</td></tr>
+          <tr><td>a desktop with one member's browser connected</td><td>cold</td><td>20</td><td>0.0</td><td>0</td></tr>
+          <tr><td>two members' nodes, complete</td><td>warm</td><td>70</td><td>2.0</td><td>2</td></tr>
+          <tr><td>three members' nodes, complete and fresh</td><td>hot</td><td>85</td><td>3.0</td><td>3</td></tr>
+          <tr><td>three members' nodes, 7% still missing</td><td>warm</td><td>84</td><td>3.0</td><td>3</td></tr>
+          <tr><td>two nodes, less than half here</td><td>cool</td><td>63</td><td>2.0</td><td>2</td></tr>
+          <tr><td>two nodes, last catch-up eight days ago, nothing connected</td><td>cool</td><td>62</td><td>2.0</td><td>2</td></tr>
+          <tr><td>partial copies on two nodes (0.5 and 0.75)</td><td>cool</td><td>59</td><td>1.3</td><td>1</td></tr>
+          <tr><td>a public join still waiting, the carrier listed 12 records</td><td>cold</td><td>43</td><td>1.0</td><td>1</td></tr>
+          <tr><td>one node seen first hand, a connected node reports three</td><td>cool</td><td>55</td><td>1.0</td><td>1</td></tr>
+          <tr><td>media: one of four pictures here</td><td>cool</td><td>55</td><td>1.0</td><td>1</td></tr>
+          <tr><td>three nodes in one network: one place</td><td>cool</td><td>48</td><td>1.0</td><td>1</td></tr>
+          <tr><td>three nodes in three networks: three places</td><td>hot</td><td>85</td><td>3.0</td><td>3</td></tr>
+          <tr><td>one operator in two networks, and a node of its own</td><td>warm</td><td>67</td><td>2.0</td><td>2</td></tr>
+          <tr><td>two of three copies only over unchecked links</td><td>warm</td><td>78</td><td>3.0</td><td>3</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Two of them worked out: "three members' nodes, 7% still missing" has <code>complete</code> = 40 ÷ 43 = 0.93, below 0.95, so warm, and its score is 100 × (0.6 × 0.75 + 0.1 + 0.1 + 0.12 × 0.93 + 0.08) = 84. "Three nodes in one network" is one place, so <code>kept</code> 1 and <code>spread</code> ⅓: 100 × (0.15 + 0.033 + 0.1 + 0.12 + 0.08) = 48, and its <code>network_copies</code> still reads 3.</p>
+  </section>
+
+  <section class="wk-sec" id="places">
+    <h2>Places</h2>
+    <p><code>hoi_sync::place</code> uses the same idea to decide where a generation of scattered pieces goes (<a href="/wiki/scatter/">Scattered delivery</a>), pure, with the caller bringing the candidates and the randomness so the core and the simulator place pieces by the same rules. A <code>Candidate</code> has an <code>operator</code> (from its notice, a claim that only merges), a <code>network</code> (IPv4 /24, IPv6 /48, or this machine: one network is one place), a wider <code>block</code> (IPv4 /16, IPv6 /32) and an <code>introducer</code> (where this device first learned of it).</p>
+    <ul>
+      <li>One piece per independent place, never a place that held a sibling of the same generation, nor the places of this object's forwarders.</li>
+      <li>At most ⌈n/8⌉ pieces of a generation of <code>n</code> in one block, and ⌈n/4⌉ through one introducer, over the generation's whole life (earlier holders count).</li>
+      <li>Places are drawn uniformly, each weighing one however many nodes it has or how long they've been up; a place's node is drawn uniformly among its candidates within the caps. <code>None</code> when the caps or the places leave too few.</li>
+    </ul>
+    <p>The sizing that decides how many pieces assumes a party's share of the candidates is its share of real places; these rules are what keep it so.</p>
+  </section>
+
+  <section class="wk-sec" id="carry">
+    <h2>Carrying a community for others</h2>
+    <p>Public nodes keep communities available on request. Anyone who holds a community's signed genesis (a member, or anyone with its invite) may hand it to a node whose hello says <code>carry</code>; the node stores and serves the community like a pinner, without being a member: it has no standing, signs nothing and vouches nobody in. The request carries the genesis and nothing else: no routes, so an unpaired stranger never makes a public node dial an address of its choosing. A sender that adds routes anyway is ignored, not obeyed. The node learns where members are the way it learns everything else, from peers that prove they hold records.</p>
+    <ul>
+      <li><b>Policy.</b> <code>off</code> (only what the operator joined, or a paired device brought), <code>index</code> (also what a registry it mirrors lists) or <code>any</code> (also what peers ask for); <code>hoi-node</code> carries on request by default (<code>--carry any</code>; off with <code>--no-public-relay</code>), the desktop only while <i>Be a public node</i> is on, browsers and phones never.</li>
+      <li><b>Pace.</b> 4 requests a minute per peer, both ways (a requester paces itself too); more are ignored and cost score. 8 accepted a minute and 128 a day, whoever asks; the rest hear <code>busy</code>.</li>
+      <li><b>Budget.</b> 256 communities carried by default (<code>--carry-limit</code>), at most half of them on request, and 256 MiB of their records and media together (<code>--carry-mb</code>).</li>
+      <li><b>Letting go.</b> A community carried on request that nobody else delivered or fetched for 14 days, or whose records never came within an hour, or that doesn't fit the byte budget (the longest untouched first), is let go and its records deleted: they were taken on a stranger's word. An index listing is never let go for idleness. Nothing about who asked is kept: the origin is a word, <code>request</code> or <code>index</code>.</li>
+    </ul>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Carry answers">
+      <table>
+        <thead><tr><th><code>carried</code></th><th>When</th></tr></thead>
+        <tbody>
+          <tr><td><code>ok: true</code></td><td>taken on now, or already here by any path</td></tr>
+          <tr><td><code>not accepting</code></td><td>the node doesn't take requests (and the sender is charged a point: it wasn't advertised)</td></tr>
+          <tr><td><code>invalid</code></td><td>not a valid community genesis: stamp, signature, content and time checked as for a catalog listing; another genesis than the one held for that key</td></tr>
+          <tr><td><code>refused</code></td><td>the operator refuses it (<code>--refuse</code>, or suppressed for good)</td></tr>
+          <tr><td><code>not open</code></td><td>private, or not open admission by its genesis or its current rules</td></tr>
+          <tr><td><code>full</code></td><td>the community limit, or the half of it for requests, is reached</td></tr>
+          <tr><td><code>busy</code></td><td>this minute's or this day's acceptances are used up</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>A device asks, unasked, every public node that says hello for up to three of the open communities its person owns (or is sharing an invite to) that the node doesn't list yet. A public node shares the load the same way: it offers the open communities it holds to another public node that says hello, while it sees fewer than three durable copies of one, at most two such offers per community a day. The vector <code>carry.json</code> pins a <code>carry</code> of 706 bytes around a 692-byte genesis, a <code>carried</code> yes (51 bytes) and a <code>full</code> (63 bytes), and a catalog entry with <code>w</code> 2.</p>
+    <div class="wk-seq" data-title="A community made in a browser gets a home">
+lanes: Founder's browser | Public node | Newcomer
+Founder's browser -> Public node: <code>hello</code>
+Public node --> Founder's browser: <code>hello</code> {fx: [carry, keeps, …]}
+Founder's browser -> Public node: <code>carry</code> {g: the signed genesis}
+Public node: checks the genesis; open? refused? room? within 8 a minute, 128 a day?
+Public node: joins and pins it, with no key of its own
+Public node --> Founder's browser: <code>hello</code> naming it, then <code>rng</code>
+Public node --> Founder's browser: <code>carried</code> {c, ok: true}
+Founder's browser => Public node @mint: <code>recs</code>, as the sessions find them
+Newcomer -> Public node: <code>hello</code> (an invite named this node)
+Public node => Newcomer @mint: <code>recs</code>, with the founder away
+</div>
+  </section>
+
+  <section class="wk-sec" id="forward">
+    <h2>Forwarding pieces for others</h2>
+    <p>A public node with an endpoint key says <code>fw</code> and passes sealed <code>piece</code> requests on to the holder they name, and the holder's sealed answer back, so a holder never sees the address of the device that stores or fetches, and the forwarder never sees a piece. It reads nothing it passes: the envelope is sealed to the holder, the answer to the asker's one-time key. What it keeps is what routing an answer needs while it is on its way (which link asked, under which request id) and counters; nothing about which holder a device used outlives the answer.</p>
+    <div class="wk-seq" data-title="A piece request through a forwarder">
+lanes: Device | Forwarder | Holder
+Device -> Forwarder: <code>piece</code> {o: put / get / has / drop, r: a, to: holder, e: sealed to the holder}
+Forwarder: a link to that holder now? one it saw itself and can dial? else <code>gone</code>
+Forwarder -> Holder: <code>piece</code> {o, r: b, e}
+Holder --> Forwarder: <code>piece</code> {o: stored / got / had / dropped, r: b, e: sealed to the asker}
+Forwarder --> Device: <code>piece</code> {o, r: a, e}
+</div>
+    <ul>
+      <li>It passes requests only to holders it is linked to now, or to holders it saw itself and knows how to reach (nobody makes it dial an address of their choosing), queueing at most 128 requests and 32 MiB for up to 20 seconds while it dials.</li>
+      <li>A holder it can't reach gets the asker a <code>gone</code> at once (one unsealed byte of envelope), so the asker tries another way rather than waiting; so does a request whose holder link closes while an answer is due.</li>
+      <li>A holder it doesn't know may be reached one hop further, through a linked forwarder whose node list vouches for that holder with its key; a request that came from a forwarder goes no further.</li>
+      <li>At most 4,096 answers on their way back; a link that only forwards may send a holder 6,000 requests and 128 MiB of puts a minute, since many devices' requests arrive over it.</li>
+    </ul>
+    <p>What pieces are, and how a device stores and rebuilds an object, are on <a href="/wiki/scatter/">Scattered delivery</a> and <a href="/wiki/mailboxes/">Mailboxes &amp; encrypted relays</a>.</p>
+  </section>
+
+  <section class="wk-sec" id="transcript">
+    <h2>The sync transcript, step by step</h2>
+    <p><code>core/vectors/sync-transcript.json</code> pins the message flow of a catch-up with <code>have</code> lists. Two nodes share one community (<code>8a88e3dd…</code>). There are 30 ids, <code>BLAKE3([i])</code> for <i>i</i> from 0 to 29: <i>a</i> holds the first 20, <i>b</i> the last 20, so they share 10 and each lacks 10. <i>a</i>'s hello lists no features, so neither side reconciles by ranges; this is exactly what a current node does with a peer that doesn't say <code>range</code>.</p>
+    <div class="wk-seq" data-title="The transcript vector">
+lanes: a | b
+a -> b: <code>hello</code> {v: 2, node: 07 × 32, name: "lena's browser", token: "t0k3n", c: [8a88…], serves: false}: 128 B
+a -> b: <code>have</code> {c: 8a88…, ids: its 20}: 729 B
+b --> a: <code>want</code> {the 10 of those b lacks}: 353 B
+b -> a: <code>have</code> {c: 8a88…, ids: its 20}: 729 B
+a --> b: <code>want</code> {the 10 of those a lacks}: 353 B
+a .. b: each answers the other's <code>want</code> with <code>recs</code>; both hold all 30
+</div>
+    <ol class="wk-steps">
+      <li><b>hello</b><p>A browser's hello to its own home node: a name, a token, the community in the clear, no salt. Its seven keys in canonical order are <code>c</code>, <code>t</code>, <code>v</code>, <code>name</code>, <code>node</code>, <code>token</code>, <code>serves</code>: 128 bytes.</p></li>
+      <li><b>a's have</b><p>Every live id <i>a</i> holds of the community: <code>{c, t: "have", ids: [20 × 32 bytes]}</code>, 729 bytes.</p></li>
+      <li><b>b's want</b><p><i>b</i> runs <code>hoi_sync::missing</code> over <i>a</i>'s list: the ids it doesn't hold, in the order listed, without repeats, at most 5,000. They are <i>a</i>'s first ten. In the node, the want goes out first, then <i>b</i>'s own <code>have</code>, as here.</p></li>
+      <li><b>b's have</b><p><i>b</i>'s 20 ids, the last ten of which are the ones <i>a</i> lacks.</p></li>
+      <li><b>a's want</b><p>The last ten of <i>b</i>'s list. The vector's note: after both wants are answered with <code>recs</code>, both sides hold all 30 ids.</p></li>
+    </ol>
+    <div class="wk-bytes" data-title="b's want, all 353 bytes">
+map | 1 B | mute | 1 | <code>a2</code>: two entries
+key | 2 B | sun | 1 | <code>61 74</code>: "t"
+value | 5 B | sun | 2 | <code>64 77 61 6e 74</code>: "want"
+key | 4 B | sun | 2 | <code>63 69 64 73</code>: "ids"
+list | 1 B | mute | 1 | <code>8a</code>: ten items
+
+id 1 | 34 B | sky | 4 | <code>58 20</code> (32 bytes follow) <code>2d3adedf…</code>
+id 2 | 34 B | sky | 4 | <code>58 20 48fc721f…</code>
+… | 272 B | mute | 4 | eight more, 34 bytes each
+</div>
+    <p>1 + 2 + 5 + 4 + 1 + 10 × 34 = 353. The <code>have</code> is the same shape around a third key, <code>c</code>, and a 20-item list: 1 + 2 + 34 + 2 + 5 + 4 + 1 + 20 × 34 = 729.</p>
+  </section>
+
+  <section class="wk-sec" id="next">
+    <h2>Read next</h2>
+    <div class="wk-cards">
+      <a class="wk-card g-sky" href="/wiki/transports/"><i></i><b>Transports</b><span>The pipes these messages ride: iroh QUIC, WebSocket, WebRTC, relays and NAT.</span></a>
+      <a class="wk-card g-peach" href="/wiki/validation/"><i></i><b>Validation pipeline</b><span>What every record in a <code>recs</code> passes before it is kept or passed on.</span></a>
+      <a class="wk-card g-mint" href="/wiki/discovery/"><i></i><b>Discovery</b><span>Catalogs, node lists, <code>find</code> and the DHT.</span></a>
+      <a class="wk-card g-sun" href="/wiki/joining/"><i></i><b>Joining, step by step</b><span>The first hello, the first session and the first post, in order.</span></a>
+      <a class="wk-card g-lilac" href="/wiki/scatter/"><i></i><b>Scattered delivery</b><span>Pieces, holders, injectors and rebuilding.</span></a>
+      <a class="wk-card g-coral" href="/wiki/vectors/"><i></i><b>Test vectors</b><span>The transcript, warmth and hello vectors and the rest.</span></a>
+    </div>
+  </section>
+</article>
+<!-- @wiki-close -->
+<!-- @include footer.html -->
+<script type="module" src="/src/pages/wiki.ts"></script>
+</body>
+</html>

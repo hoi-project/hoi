@@ -1,0 +1,362 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <!-- @include head.html title="This website · hoi wiki" description="How apps/site is built and served: a multi-page Vite build with partials, CSP and SRI from the hardening plugin, _headers, release notices, the download and verify pages, the demos, the tests and the wiki itself." -->
+</head>
+<body class="wiki">
+<!-- @include header.html nav="wiki" -->
+<!-- @wiki-open -->
+<article class="wk-doc">
+  <!-- @wiki-crumbs -->
+  <h1>This <span class="acc">website</span></h1>
+  <p class="wk-lead">hoi.sh is a static site, and the only thing the project hosts. It is plain HTML pages with a few build-time includes, small scripts that every page works without, a strict Content-Security-Policy with Subresource Integrity, and no third-party request of any kind. The web app is copied in beside it at <code>/app/</code>. This page explains every part of the build, the pages that do something, the tests, and the wiki you are reading.</p>
+  <p class="wk-src-list">Source <a href="{{REPO_URL}}/tree/main/apps/site">apps/site</a> · <a href="{{REPO_URL}}/blob/main/apps/site/vite.config.ts">vite.config.ts</a> · <a href="{{REPO_URL}}/blob/main/apps/site/plugins/partials.ts">plugins/partials.ts</a> · <a href="{{REPO_URL}}/blob/main/apps/site/plugins/headers-file.ts">plugins/headers-file.ts</a> · <a href="{{REPO_URL}}/blob/main/packages/vite-plugin-hardening/index.js">packages/vite-plugin-hardening</a> · <a href="{{REPO_URL}}/blob/main/apps/site/src/pages/download.ts">src/pages/download.ts</a> · <a href="{{REPO_URL}}/blob/main/apps/site/scripts/e2e.mjs">scripts/e2e.mjs</a> · <a href="{{REPO_URL}}/blob/main/scripts/assemble-static.mjs">scripts/assemble-static.mjs</a> · <a href="{{REPO_URL}}/tree/main/design/tokens">design/tokens</a></p>
+  <div class="wk-head-rule"></div>
+
+  <section class="wk-sec" id="pages">
+    <h2>The pages</h2>
+    <p>The site is the package <code>@hoi/site</code> in <code>apps/site</code>. Its only runtime dependencies are <code>@hoi/tokens</code> (colors and self-hosted fonts) and <code>animejs</code> 4.5.0; it builds with Vite and the workspace's <code>@hoi/vite-plugin-hardening</code>. Each page is an HTML file with one module script:</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Site pages">
+      <table>
+        <thead><tr><th>Address</th><th>File</th><th>Script</th><th>What it is</th></tr></thead>
+        <tbody>
+          <tr><td><a href="/">/</a></td><td><code>index.html</code></td><td><code>home.ts</code></td><td>The landing page: every section a working demo of one promise.</td></tr>
+          <tr><td><a href="/download/">/download/</a></td><td><code>download/index.html</code></td><td><code>download.ts</code></td><td>Downloads by device from the signed release list, the one-command installers, the operator's responsibility.</td></tr>
+          <tr><td><a href="/verify/">/verify/</a></td><td><code>verify/index.html</code></td><td><code>page.ts</code></td><td>Checking a download: its SHA-256, the release list's minisign signature, building it yourself.</td></tr>
+          <tr><td><a href="/relay/">/relay/</a></td><td><code>relay/index.html</code></td><td><code>relay.ts</code></td><td>Run a relay: a demo of the desktop app's one switch.</td></tr>
+          <tr><td><a href="/communities/">/communities/</a></td><td><code>communities/index.html</code></td><td><code>page.ts</code></td><td>Running a community: owners, moderators, pinners, the ledger.</td></tr>
+          <tr><td><a href="/protocol/">/protocol/</a></td><td><code>protocol/index.html</code></td><td><code>page.ts</code></td><td>The protocol in plain words.</td></tr>
+          <tr><td><a href="/privacy/">/privacy/</a></td><td><code>privacy/index.html</code></td><td><code>page.ts</code></td><td>What the site processes and what the client shares.</td></tr>
+          <tr><td>any missing address</td><td><code>404.html</code></td><td><code>page.ts</code></td><td>"Poof.", with <code>robots="noindex"</code>.</td></tr>
+          <tr><td>/wiki/…</td><td><code>wiki/&lt;slug&gt;/index.html</code></td><td><code>wiki.ts</code></td><td>This wiki, one page per entry of <code>wiki/nav.json</code>.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p><code>page.ts</code> is one line, <code>import '../common'</code>: the shared chrome. <code>common.ts</code> imports the fonts, the tokens and <code>styles/site.css</code>, makes the logo's three dots bob, pops the stickers in (the first on load, the rest as they scroll into view), and wires every <code>button[data-copy]</code>. A copy button copies a code block without its <code>.c</code> comment spans and blank lines; without clipboard access it selects the text and says "Selected. Press Control C or Command C to copy." Both outcomes are announced in a polite live region. <code>public/.well-known/security.txt</code> names the repository's security advisories as the contact.</p>
+  </section>
+
+  <section class="wk-sec" id="build">
+    <h2>The multi-page build</h2>
+    <p><code>vite.config.ts</code> sets <code>appType: 'mpa'</code> and <code>base: '/'</code> and lists every page as a build input: the eight pages above, then every wiki page from <code>loadWiki(root)</code>, named <code>wiki</code> or <code>wiki-&lt;slug&gt;</code>.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Build options">
+      <table>
+        <thead><tr><th>Option</th><th>Value</th><th>Why</th></tr></thead>
+        <tbody>
+          <tr><td><code>build.target</code></td><td><code>es2022</code></td><td></td></tr>
+          <tr><td><code>assetsInlineLimit</code></td><td><code>0</code></td><td>Never inline fonts or images as <code>data:</code> URIs: the CSP only allows fonts from <code>'self'</code>.</td></tr>
+          <tr><td><code>modulePreload</code></td><td><code>false</code></td><td>With scripts disabled browsers cancel those fetches, and every page is just its own small entry plus one shared chunk.</td></tr>
+          <tr><td><code>codeSplitting.groups</code></td><td><code>common</code>: <code>node_modules/animejs</code>, <code>src/common.ts</code>, <code>src/platform.ts</code></td><td>Everything shared in one cached file.</td></tr>
+          <tr><td><code>define</code></td><td><code>__HOI_RELEASE__</code></td><td>The validated <code>release.json</code>.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 id="build-env">Build-time variables</h3>
+    <p>The config reads the environment without naming <code>process</code> (<code>@types/node</code> isn't a dependency). Addresses and names never live in the source: public copy carries no addresses.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Site environment variables">
+      <table>
+        <thead><tr><th>Variable</th><th>Default</th><th>Used for</th></tr></thead>
+        <tbody>
+          <tr><td><code>HOI_APP_URL</code></td><td><code>/app/</code></td><td>"Open hoi", "Open in your browser", "Find communities".</td></tr>
+          <tr><td><code>HOI_REPO_URL</code></td><td><code>https://github.com/hoi-project/hoi</code></td><td>Source links; trailing slashes removed.</td></tr>
+          <tr><td><code>HOI_SITE_URL</code></td><td><code>https://hoi.sh</code></td><td>Install commands, canonical links, link previews, <code>robots.txt</code>, the sitemap.</td></tr>
+          <tr><td><code>HOI_SITE_PUBLISHER</code> (else <code>HOI_PUBLISHER</code>)</td><td>the hoi project</td><td>The privacy policy's responsible party.</td></tr>
+          <tr><td><code>HOI_SITE_CONTACT</code> (else <code>HOI_CONTACT</code>)</td><td>through the source repository</td><td>How to reach them.</td></tr>
+          <tr><td><code>HOI_SITE_HOSTER</code>, <code>HOI_SITE_HOSTER_PRIVACY_URL</code></td><td>GitHub Pages (GitHub, Inc.) and its privacy statement</td><td>Who hosts the site.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>The plugins run in this order: <code>partials</code>, <code>wiki</code>, <code>sbomAssets</code>, <code>releaseMetadata</code>, <code>searchMetadata</code>, <code>hardening()</code>, <code>headersFile()</code>. The order matters twice: the wiki works on pages whose includes are already expanded, and <code>_headers</code> reads the policy back from the finished <code>index.html</code>.</p>
+  </section>
+
+  <section class="wk-sec" id="partials">
+    <h2>Partials</h2>
+    <p><code>plugins/partials.ts</code> resolves tiny includes in <code>transformIndexHtml</code> (order <code>pre</code>), in development and in the build:</p>
+    <div class="wk-code" data-lang="text" data-title="apps/site/partials/header.html"><pre><code>&lt;a class="skip" href=&quot;#main&quot;&gt;Skip to the good part&lt;/a&gt;
+&lt;!-- @include preview-&#123;&#123;PREVIEW&#125;&#125;.html --&gt;
+&lt;header class="site-header"&gt;
+  &lt;div class="wrap nav"&gt;
+    &lt;a href="/" class="logo" aria-label="hoi.sh, home"&gt;&lt;!-- @include logo.html --&gt;hoi&lt;span class="logo-sh"&gt;.sh&lt;/span&gt;&lt;/a&gt;
+    &lt;!-- @include nav-&#123;&#123;nav&#125;&#125;.html --&gt;
+    &lt;a href="/download/" class="pill pill-ink pill-sm nav-dl" data-nav&gt;Download&lt;/a&gt;
+  &lt;/div&gt;
+&lt;/header&gt;</code></pre></div>
+    <ul>
+      <li><code>&lt;!-- @include name.html a="b" --&gt;</code> inlines <code>partials/name.html</code>; its attributes become variables for that partial.</li>
+      <li><code>&#123;&#123;NAME&#125;&#125;</code> is replaced by a variable, global or from the include. Variables are expanded first, so an include's name can use one (<code>nav-&#123;&#123;nav&#125;&#125;.html</code>). Every value is HTML-escaped.</li>
+      <li>An unknown variable or a missing partial fails the build; includes nested deeper than 8 are taken for a cycle.</li>
+      <li>A link marked <code>data-nav</code> whose <code>href</code> equals the current page's address gets <code>aria-current="page"</code>. <code>PAGE</code> is that address.</li>
+      <li>In development a changed partial reloads every page.</li>
+    </ul>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Partials">
+      <table>
+        <thead><tr><th>Partial</th><th>Holds</th></tr></thead>
+        <tbody>
+          <tr><td><code>head.html</code></td><td>Charset, viewport, <code>title</code> and <code>description</code>, the robots partial, <code>color-scheme</code>, two <code>theme-color</code>s, <code>referrer</code> <code>no-referrer</code>, the Open Graph and Twitter card tags (<code>og.png</code>, 1200 × 630), the favicon.</td></tr>
+          <tr><td><code>robots-index.html</code> / <code>robots-noindex.html</code></td><td>A canonical link and <code>og:url</code> from <code>SITE_URL</code> + <code>PAGE</code>; or <code>robots</code> <code>noindex</code>.</td></tr>
+          <tr><td><code>header.html</code>, <code>logo.html</code></td><td>The skip link, the release bar, the logo (an SVG of three dots joined by lines), the page's nav, Download.</td></tr>
+          <tr><td><code>nav-home.html</code>, <code>nav-site.html</code>, <code>nav-wiki.html</code></td><td>The three navigations.</td></tr>
+          <tr><td><code>preview-on.html</code> / <code>preview-off.html</code></td><td>The release status bar, or nothing. The config passes <code>PREVIEW: 'on'</code>.</td></tr>
+          <tr><td><code>footer.html</code></td><td>"hoi.sh · AGPL-3.0 · no cookies · no analytics" and the footer links.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="wk-sec" id="hardening">
+    <h2>CSP and SRI: the hardening plugin</h2>
+    <p><code>packages/vite-plugin-hardening</code> is shared by the site and the web app. It runs at build only (development keeps hot reload), as the last <code>generateBundle</code> hook: Vite rewrites dynamic-import preload lists in its own <code>generateBundle</code>, so hashing earlier would give entry chunks a stale integrity value. For every emitted HTML file it does two things:</p>
+    <ol class="wk-steps">
+      <li><b>CSP</b><p>Unless the page already has one, a <code>&lt;meta http-equiv="Content-Security-Policy"&gt;</code> right after <code>&lt;head&gt;</code>, from <code>cspString(directives)</code>: each directive and its sources, joined by <code>; </code>.</p></li>
+      <li><b>SRI</b><p>Every <code>&lt;script src&gt;</code> and every <code>&lt;link rel="stylesheet"&gt;</code> or <code>rel="modulepreload"</code> that points at a bundled file gets <code>integrity="sha384-…"</code> of that file's final bytes, and <code>crossorigin</code> when it has none. References are resolved against the base or the HTML file's folder; remote and <code>data:</code> URLs are left alone.</p></li>
+    </ol>
+    <p>The site calls <code>hardening()</code> with no options, so it gets the default policy:</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="The site's CSP">
+      <table>
+        <thead><tr><th>Directive</th><th>Sources</th></tr></thead>
+        <tbody>
+          <tr><td><code>default-src</code>, <code>script-src</code>, <code>style-src</code>, <code>font-src</code>, <code>connect-src</code></td><td><code>'self'</code></td></tr>
+          <tr><td><code>img-src</code></td><td><code>'self' data:</code></td></tr>
+          <tr><td><code>object-src</code>, <code>base-uri</code>, <code>form-action</code></td><td><code>'none'</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>That is stricter than the app's (see <a href="/wiki/web-app/">Web app</a>): no <code>'wasm-unsafe-eval'</code>, no workers, no <code>blob:</code>, no network beyond the site itself. It is also why wiki pages may hold no <code>style</code> attributes, <code>&lt;style&gt;</code> elements or inline scripts.</p>
+  </section>
+
+  <section class="wk-sec" id="headers">
+    <h2>The _headers file</h2>
+    <p>A <code>&lt;meta&gt;</code> can't set every header. <code>plugins/headers-file.ts</code> emits <code>_headers</code>, the format Netlify and similar hosts read, carrying the exact policy the hardening plugin injected: it reads the <code>&lt;meta&gt;</code> back from the built <code>index.html</code> (and fails the build when there is none), so the two can't drift apart. <code>headers()</code> adds <code>frame-ancestors 'none'</code> and the headers a meta tag can't set:</p>
+    <div class="wk-code" data-lang="text" data-title="dist/_headers (the policy line shortened)"><pre><code>/*
+  Content-Security-Policy: default-src 'self'; script-src 'self'; … ; frame-ancestors 'none'
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: no-referrer
+  Strict-Transport-Security: max-age=31536000; includeSubDomains
+  Permissions-Policy: interest-cohort=(), browsing-topics=(), geolocation=(), microphone=(), payment=()
+  Cross-Origin-Opener-Policy: same-origin
+
+# Hashed build output never changes.
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
+
+# The release manifest is what the apps check for updates; always revalidate.
+/releases/*
+  Cache-Control: no-cache
+
+# Operator release notices can change independently of a software build.
+/release.json
+  Cache-Control: no-store
+
+# The installers are read by a shell or PowerShell, not rendered: plain text, always fresh.
+/install.sh
+  Content-Type: text/plain; charset=utf-8
+  Cache-Control: no-cache
+/install.ps1
+  Content-Type: text/plain; charset=utf-8
+  Cache-Control: no-cache</code></pre></div>
+    <p>GitHub Pages ignores <code>_headers</code>; the pages still carry their policy and referrer rule inside them.</p>
+  </section>
+
+  <section class="wk-sec" id="release">
+    <h2>Release metadata and notices</h2>
+    <p>One file at the repository root, <code>release.json</code>, says what channel this is and what every surface should say about it. <code>scripts/release-schema.mjs</code> validates it for the site, the app and the registry; <code>scripts/release-config.mjs</code> loads it, refusing a file over 16 KiB.</p>
+    <dl class="wk-defs">
+      <dt>schemaVersion<small>1</small></dt><dd>Must be exactly 1.</dd>
+      <dt>revision<small>positive integer</small></dt><dd>A newer notice has a higher revision.</dd>
+      <dt>channel<small>"preview" | "stable"</small></dt><dd>Today <code>preview</code>.</dd>
+      <dt>protocolVersion<small>string</small></dt><dd>Today <code>0.3</code>; 1 to 64 of letters, digits, <code>. _ -</code>, starting with a letter or digit.</dd>
+      <dt>indexVersion<small>integer</small></dt><dd>Positive, at most 2 147 483 647; today 1.</dd>
+      <dt>supportedProtocols<small>string[]</small></dt><dd>1 to 16, no duplicates, including <code>protocolVersion</code>.</dd>
+      <dt>notice<small>{title, message}</small></dt><dd>Title up to 100 characters, message up to 1 200, neither blank. Today "Preview — unstable" and "hoi is in development. Protocol changes may cause data loss. Do not rely on this preview to preserve data."</dd>
+    </dl>
+    <p>The site's <code>releaseMetadata</code> plugin serves <code>/release.json</code> in development (with <code>Cache-Control: no-store</code>, read fresh each time) and emits it in the build. The release bar is rendered into every page at build time from <code>RELEASE_TITLE</code>, <code>RELEASE_MESSAGE</code>, <code>RELEASE_BUILD</code> (<code>preview · protocol 0.3 · index 1</code>) and, for a preview, <code>RELEASE_WARNING</code> "Unstable preview; data may be lost.", so it shows with scripts off. The site does no background polling; the app's own banner checks for newer notices. Metadata is informational: it never changes what a build implements and never tells a device to delete data.</p>
+  </section>
+
+  <section class="wk-sec" id="search">
+    <h2>Search engines</h2>
+    <p><code>searchMetadata</code> writes two files naming every page but the 404 under <code>HOI_SITE_URL</code>:</p>
+    <div class="wk-code" data-lang="text" data-title="dist/robots.txt"><pre><code># hoi.sh is a static site with nothing to hide and nothing to track.
+User-agent: *
+Allow: /
+
+Sitemap: https://hoi.sh/sitemap.xml</code></pre></div>
+    <p><code>sitemap.xml</code> is one <code>&lt;url&gt;&lt;loc&gt;</code> per page, wiki pages included. The site is indexed whatever the channel, since every page carries the release notice; a preview app keeps itself out of search results with its own robots tag.</p>
+  </section>
+
+  <section class="wk-sec" id="download">
+    <h2>The download page</h2>
+    <p><code>download/index.html</code> works without scripts: three set-up steps (install the app on a computer that's often on, <i>Open hoi in my browser</i>, scan the code with your phone), the one-command installers, and a row per device whose files link to the release list and the repository's releases page. The rows are <code>macos</code>, <code>windows</code>, <code>linux</code>, <code>browser</code>, <code>ios</code>, <code>android</code>, <code>setup</code>, <code>operators</code> and <code>node</code>.</p>
+    <div class="wk-code" data-lang="sh" data-title="The installers the page offers"><pre><code>curl -fsSL https://hoi.sh/install.sh | bash      # macOS and Linux
+irm https://hoi.sh/install.ps1 | iex             # Windows (PowerShell)</code></pre></div>
+    <h3 id="download-gate">The operator's box</h3>
+    <p>"Before you run a public node" explains that whoever runs one usually becomes responsible for the personal data it processes. Its checkbox, <code>#operator-ack</code>, is a CSS gate that needs no script: while unchecked, <code>.operator-only</code> rows (the node setup app, the server kit, hoi-node) are hidden by <code>.operator-ack:not(:checked) ~ section .operator-only</code>; once checked, the <code>.operator-gated</code> row that asks for it disappears instead. The desktop app and a home node for your own devices need none of it.</p>
+    <h3 id="download-manifest">The release list</h3>
+    <p><code>download.ts</code> fetches <code>/releases/manifest.json</code> from the same origin (<code>cache: 'no-cache'</code>, <code>credentials: 'omit'</code>). The shipped file is empty:</p>
+    <div class="wk-code" data-lang="json" data-title="apps/site/public/releases/manifest.json"><pre><code>{
+  "schema": 1,
+  "latest": null,
+  "signature": "manifest.json.minisig",
+  "releases": []
+}</code></pre></div>
+    <p>A release is <code>{version, date, notes?, files}</code>, and each file is checked before it is shown:</p>
+    <dl class="wk-defs">
+      <dt>platform · arch · kind<small>string</small></dt><dd><code>macos</code>, <code>windows</code>, <code>linux</code>, …; <code>universal</code> (shown "Apple silicon + Intel"), <code>x86_64</code> ("x86-64"), <code>aarch64</code> ("ARM64"); the extension for "Download .kind".</dd>
+      <dt>product<small>"setup", optional</small></dt><dd>The node setup app's files, listed in the <code>setup</code> row only and never in a platform's.</dd>
+      <dt>name · url<small>string</small></dt><dd>The URL must be <code>https:</code> or the same origin.</dd>
+      <dt>size<small>number</small></dt><dd>Bytes, at least 0; shown as KB, MB or GB.</dd>
+      <dt>sha256<small>64 hex digits</small></dt><dd>Shown lower-case beside a copy button.</dd>
+    </dl>
+    <p>The manifest itself must have <code>schema: 1</code>, a <code>releases</code> array and <code>latest</code> null or a string. With a latest release, the status shows "hoi &lt;version&gt;", the date, release notes when given, and links to <code>manifest.json</code>, its signature and the verify page; rows for macOS, Windows and Linux that lack a build say so. With none, the <code>#tpl-empty</code> template shows "No signed release yet." and the page moves the build-it-yourself commands up to where they are needed. A failed fetch adds "Couldn't load the release list just now." The release list is signed with minisign; see <a href="/wiki/releases/">Releases &amp; verification</a>.</p>
+    <div class="wk-seq" data-title="Opening the download page">
+lanes: Browser | download.ts | Site
+Browser -> Site: <code>GET /download/</code>
+Site --> Browser: the page, rows linking to the list
+Browser -> download.ts: runs (scripts on)
+download.ts: <code>detectOS()</code>: mark the row, move it first unless the address has a <code>#</code>
+download.ts -> Site: <code>GET /releases/manifest.json</code>, no cache, no credentials
+Site --> download.ts: the manifest
+download.ts: validate; the latest release's files into their rows
+download.ts --> Browser: download buttons, sizes, SHA-256 and copy buttons
+    </div>
+  </section>
+
+  <section class="wk-sec" id="verify">
+    <h2>The verify page</h2>
+    <p><a href="/verify/">/verify/</a> walks through four checks. Compare the file's SHA-256 with the list's (<code>shasum -a 256</code> on macOS, <code>sha256sum</code> on Linux, <code>Get-FileHash … -Algorithm SHA256</code> in PowerShell). Check that the list is ours: download <code>manifest.json</code> and <code>manifest.json.minisig</code> into one folder and run <code>minisign -Vm manifest.json -P &lt;public key&gt;</code>; the page's key box reads "not published yet". Or build it yourself: check out the release tag, <code>pnpm install --frozen-lockfile</code>, <code>node scripts/reproduce.mjs</code>, which builds the browser app's WebAssembly, hoi-node and this website byte for byte the same with the pinned toolchains and prints their SHA-256. More on <a href="/wiki/releases/">Releases &amp; verification</a>.</p>
+  </section>
+
+  <section class="wk-sec" id="platform">
+    <h2>Platform detection</h2>
+    <p><code>src/platform.ts</code> guesses the visitor's system to highlight the matching download, nothing more. Nothing leaves the page; a wrong guess just highlights the wrong row. It checks, in order:</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="OS detection order">
+      <table>
+        <thead><tr><th>Test</th><th>Result</th></tr></thead>
+        <tbody>
+          <tr><td>User agent has <code>iphone</code>, <code>ipad</code> or <code>ipod</code>, or says <code>macintosh</code> with <code>maxTouchPoints &gt; 1</code> (iPadOS asks for desktop sites)</td><td><code>ios</code></td></tr>
+          <tr><td><code>userAgentData.platform</code> is <code>android</code>, or the user agent says so</td><td><code>android</code></td></tr>
+          <tr><td>Chrome OS (<code>chrome os</code> or <code>cros</code>)</td><td>none</td></tr>
+          <tr><td><code>macos</code>, or <code>mac os x</code> / <code>macintosh</code></td><td><code>macos</code></td></tr>
+          <tr><td><code>windows</code></td><td><code>windows</code></td></tr>
+          <tr><td><code>linux</code>, or <code>linux</code> / <code>x11</code></td><td><code>linux</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>The home page uses it too: on Windows or Linux the "Get it for &lt;system&gt;" button moves first and takes the coral color from macOS's.</p>
+  </section>
+
+  <section class="wk-sec" id="home">
+    <h2>The demos on the home page</h2>
+    <p><code>home.ts</code> makes every section of the landing page a working demo with Anime.js 4. Without scripts, or with reduced motion, each demo rests in its finished state; with reduced motion the buttons still work and land straight on the end state.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Home page demos">
+      <table>
+        <thead><tr><th>Demo</th><th>What it does</th></tr></thead>
+        <tbody>
+          <tr><td>Hero words</td><td>The headline split into words that rise in with a random tilt, 55 ms apart.</td></tr>
+          <tr><td>The network</td><td>9 people on a phone-width stage (3 columns), 16 otherwise (6); a post pulses from one to a neighbor every 2 200 ms while the tab is visible, at most 3 hops, each node checking it on arrival. Clicking sends one from you. It is rebuilt only when the width changes, since phones fire <code>resize</code> while the URL bar slides.</td></tr>
+          <tr><td>Sign and send</td><td>A 1 000 ms work bar while a <code>b3:</code> id scrambles, the stamp slamming in (<code>outElastic(1, .55)</code>), peers lighting up one by one, then a pulse into the network.</td></tr>
+          <tr><td>Flood it</td><td>12 spam lines fly at a shield, bounce off and the counter goes up.</td></tr>
+          <tr><td>Fade scrubber</td><td>Posts' life bars drain and the posts fade as you scroll past (<code>onScroll</code> with <code>sync</code>).</td></tr>
+          <tr><td>Draggable chips</td><td>Community chips you can drag around, sprung back with <code>createSpring({stiffness: 110, damping: 9})</code>.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>The relay page has one more: a switch that, off to on, goes through the notice first every time, as the desktop app does, its knob moving on a spring (<code>stiffness: 320, damping: 14</code>) and the count of friends helped ticking up. Every state change is announced.</p>
+    <h3 id="home-og">The link preview image</h3>
+    <p><code>scripts/og-image.mjs</code> renders <code>public/og.png</code>, the 1200 × 630 card link previews show for every page. It builds an HTML page from the generated <code>tokens.css</code>, the self-hosted Gabarito (inlined as a data URI) and the logo partial, with a small version of the hero's network, and screenshots it with Playwright's Chromium (<code>CHROMIUM_PATH</code> picks another). Rerun it after changing the tagline, the logo or the colors.</p>
+  </section>
+
+  <section class="wk-sec" id="e2e">
+    <h2>Browser tests</h2>
+    <p><code>scripts/e2e.mjs</code> runs against the built <code>dist/</code> through <code>vite preview</code> on port 4317 (<code>PORT</code> overrides) and fails on any console error, page error, failed request, HTTP status of 400 or more, request to another origin, or horizontal overflow.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="The e2e matrix">
+      <table>
+        <thead><tr><th>Dimension</th><th>Values</th></tr></thead>
+        <tbody>
+          <tr><td>Pages</td><td><code>/</code>, <code>/download/</code>, <code>/verify/</code>, <code>/relay/</code>, <code>/communities/</code>, <code>/protocol/</code>, <code>/privacy/</code>, <code>/404.html</code></td></tr>
+          <tr><td>Viewports</td><td>desktop 1280 × 900, mobile 390 × 844, small 320 × 640</td></tr>
+          <tr><td>Color scheme</td><td>light, dark</td></tr>
+          <tr><td>Scripts</td><td>on, off</td></tr>
+          <tr><td>Motion</td><td>no preference, reduced</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>The 320 px pass is a layout check only: light, with motion, scripts on and off. <code>--quick</code> keeps only light with motion. Each combination scrolls the whole page (driven from the test, since with scripts off the page's own timers never fire), checks overflow and that a visible <code>&lt;h1&gt;</code> exists, and, below desktop width, that every link, button and focusable element is at least 44 px tall; inline links inside <code>&lt;p&gt;</code>, <code>&lt;li&gt;</code> or <code>&lt;td&gt;</code> are exempt. That is why the wiki keeps links in running text inside those elements. Then come the home demos (the network builds and posts hop, sign and send, flood it, the fade, a drag, the relay switch through its notice, and the same buttons with reduced motion), the download page with the shipped empty manifest (the honest empty state) and with a filled one served by a route (files, sizes, hashes, copy buttons, the OS highlighted), and screenshots to look at (<code>--shots &lt;dir&gt;</code>, <code>--shots-only</code>).</p>
+  </section>
+
+  <section class="wk-sec" id="assembly">
+    <h2>Site and app, assembled</h2>
+    <p>The root <code>pnpm build</code> is <code>pnpm tokens</code>, <code>pnpm core:wasm</code>, the site's build, the app's build, then <code>node scripts/assemble-static.mjs</code>. It copies static files only, information at <code>/</code> and the browser client at <code>/app/</code>; no services are bundled.</p>
+    <ol class="wk-steps">
+      <li><b>Check the release</b><p>Both <code>apps/site/dist/release.json</code> and <code>apps/web/dist/release.json</code> must equal the repository's, or it stops: rebuild both before assembling.</p></li>
+      <li><b>Copy</b><p>The site's <code>dist/</code> becomes <code>dist/</code>, the app's becomes <code>dist/app/</code>, and <code>deploy/install/install.sh</code> and <code>install.ps1</code> go to the root, static files like the rest.</p></li>
+      <li><b>Merge the headers</b><p>The app's <code>_headers</code> is removed from <code>app/</code>. The site's catch-all rule is written out once per site path (<code>/</code>, <code>/404.html</code>, <code>/robots.txt</code>, <code>/sitemap.xml</code>, <code>/favicon.svg</code>, <code>/og.png</code>, <code>/release.json</code>, <code>/preview.json</code>, <code>/install.sh</code>, <code>/install.ps1</code>, <code>/.well-known/*</code> and each top-level folder as <code>/&lt;name&gt;/*</code>), so the site's stricter policy never applies to <code>/app/</code>; the app's rules follow under <code>/app/*</code>.</p></li>
+      <li><b>Write the metadata</b><p><code>release.json</code> again, and <code>preview.json</code>: <code>{preview, protocol, indexVersion, revision, note}</code>. robots.txt and the sitemap stay as the site built them.</p></li>
+    </ol>
+    <div class="wk-note tip"><b>A separate origin is better</b><p>The script's own comment says so: hosting the app on its own origin (a separate subdomain) means its keys share nothing with the site. Build each app's <code>dist/</code> separately for that.</p></div>
+    <p><code>scripts/serve-static.mjs</code> serves the assembled folder the way a plain static host does, for tests and a look: GET and HEAD only (anything else is 405), <code>dir/</code> serves <code>dir/index.html</code>, <code>dir</code> redirects to <code>dir/</code> with a 301, <code>page</code> falls back to <code>page.html</code>, and anything else is a 404 with <code>404.html</code>. Paths outside the folder are 404. It sends no custom headers, so whatever the pages need must travel inside them. It binds <code>127.0.0.1</code>, port 8787 by default (<code>--port</code>, <code>--dir</code>), and knows 15 content types, <code>.wasm</code> and <code>.webmanifest</code> among them. Hosting is covered on <a href="/wiki/deploy/">Deploying &amp; hosting</a>.</p>
+  </section>
+
+  <section class="wk-sec" id="wiki">
+    <h2>The wiki</h2>
+    <p>The wiki is part of the same build. <code>wiki/README.md</code> is its authoring guide; <code>wiki/nav.json</code> is the table of contents, and adding a page there adds it to the sidebar, the pager, the search index, the build inputs and the sitemap. Its file is <code>wiki/&lt;slug&gt;/index.html</code>. <code>loadWiki</code> refuses a group color outside <code>sun, coral, peach, mint, sky, lilac, cobalt</code>, a slug outside <code>[a-z0-9-]</code> and a slug listed twice.</p>
+    <h3 id="wiki-plugin">plugins/wiki.ts</h3>
+    <p>The chrome is resolved at build time, so every page reads the same without scripts. The plugin runs after <code>partials()</code>, on the expanded page:</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Wiki markers">
+      <table>
+        <thead><tr><th>Marker</th><th>Becomes</th></tr></thead>
+        <tbody>
+          <tr><td><code>&lt;!-- @wiki-open --&gt;</code></td><td>The layout, the sidebar with the current page marked (<code>aria-current</code>) and the phone's "Contents" menu. <code>@wiki-open full</code> drops the right-hand column.</td></tr>
+          <tr><td><code>&lt;!-- @wiki-crumbs --&gt;</code></td><td>"Wiki / &lt;group&gt; / &lt;page&gt;" above the title.</td></tr>
+          <tr><td><code>&lt;!-- @wiki-close --&gt;</code></td><td>Previous and next, the end of the layout, and "On this page" from every <code>&lt;section class="wk-sec"&gt;</code>'s <code>&lt;h2&gt;</code> and every <code>&lt;h3&gt;</code> with an id.</td></tr>
+          <tr><td><code>&lt;!-- @sbom --&gt;</code></td><td>The SBOM page's dependency tables.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>A page that uses the layout but isn't in <code>nav.json</code> fails the build. The module <code>virtual:wiki-index</code> is the search index, bundled into the wiki script so a search makes no request: per page its address, title, group, color, summary, the first 220 characters of the lead, and for each section its id, heading and first 220 characters.</p>
+    <h3 id="wiki-blocks">plugins/wiki-blocks.ts</h3>
+    <p>Sequence diagrams (<code>&lt;div class="wk-seq"&gt;</code> with <code>lanes:</code>, <code>-&gt;</code> requests, <code>--&gt;</code> replies, <code>=&gt;</code> bulk data, <code>@coral</code> and other colors, notes and phases) and byte layouts (<code>&lt;div class="wk-bytes"&gt;</code>, one box per line: name, size, color, width, description) are written as text and rendered into static HTML at build time, a numbered list on phones. The diagrams on this page are made that way.</p>
+    <h3 id="wiki-script">src/pages/wiki.ts</h3>
+    <p>All of it optional. The title letters animate in; code blocks are colored by <code>src/wiki/highlight.ts</code>, which rebuilds a block from its text as spans (<code>textContent</code> only, never <code>innerHTML</code>; unknown languages stay plain); search (<code>src/wiki/search.ts</code>) is a dialog that opens with the sidebar button, <code>/</code> or Ctrl/⌘+K; <code>src/wiki/demos.ts</code> mounts the live demos in <code>wk-stage</code> blocks. The network playground and the SBOM page (<code>plugins/sbom.ts</code>, which builds the dependency tables and a CycloneDX file from the lockfiles) are their own pages: <a href="/wiki/playground/">Network playground</a> and <a href="/wiki/sbom/">SBOM</a>.</p>
+    <h3 id="wiki-explanations">Section explanations</h3>
+    <p>On a secure page, <code>src/wiki/assistant.ts</code> checks the browser's <code>LanguageModel.availability()</code>. Only an available, downloadable or downloading model adds a small question-mark button beside section headings. The check does not create a session or download a model. Opening a button shows one inline card with topic-specific questions; the rest of the page stays ordinary documentation.</p>
+    <p>The card loads <code>virtual:wiki-passages</code> on demand. <code>plugins/wiki.ts</code> builds it from complete section text, including rendered blocks and SBOM tables, with headings, canonical section links and a content hash. Retrieval keeps the current section and ranks related passages locally. A question creates a browser-managed session, measures the context budget and asks for a structured answer. The card validates source numbers and renders plain text; links always come from the documentation, never from model-supplied URLs. The answer can be mistaken, so its sources remain available.</p>
+    <p>Following a suggested section continues the explanation there. A same-page link carries context in memory; a different page uses a single-use tab-storage handoff with a 15-minute limit and the corpus version. Questions never go into URLs. A changed corpus starts a fresh explanation. Closing the card or stopping an answer aborts inference and releases the session. There is no remote inference fallback. The <a href="/privacy/">privacy policy</a> describes the browser's model download and the temporary handoff.</p>
+    <h3 id="wiki-check">scripts/wiki-check.mjs</h3>
+    <p>Checks pages without building them: the head include with a title ending "· hoi wiki" and a description, the layout markers, one <code>&lt;h1&gt;</code> and a lead; no <code>style</code> attributes, <code>&lt;style&gt;</code>, inline scripts or event handlers; only the variables <code>REPO_URL</code>, <code>APP_URL</code> and <code>SITE_URL</code>; no email addresses; unique ids and a section id on every <code>wk-sec</code>; balanced tags; every table wrapped for scrolling; known demo names; every <code>/wiki/</code> link and anchor resolving; no unescaped <code>&lt;</code> in text.</p>
+  </section>
+
+  <section class="wk-sec" id="tokens">
+    <h2>Design tokens</h2>
+    <p>One file decides how every surface looks: <code>design/tokens/tokens.json</code> (<code>meta.name</code> "hoi.sh", version 0.1.0). <code>packages/tokens</code> turns it into what each platform reads.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Token groups">
+      <table>
+        <thead><tr><th>Group</th><th>Holds</th></tr></thead>
+        <tbody>
+          <tr><td><code>color.light</code></td><td>14 colors with their roles: <code>bg</code> #FBFAF5 (warm off-white), <code>card</code>, <code>ink</code> #1A1A1A, <code>mute</code>, <code>line</code>, <code>soft</code>, <code>onink</code>, <code>coral</code> #FF6B4A, <code>cobalt</code> #2F55E6, <code>sun</code> #FFE16A, <code>mint</code>, <code>sky</code>, <code>lilac</code>, <code>peach</code></td></tr>
+          <tr><td><code>color.dark</code></td><td>Overrides for <code>bg</code> #15151A, <code>card</code>, <code>ink</code>, <code>mute</code>, <code>line</code>, <code>soft</code>, <code>onink</code>, <code>cobalt</code> #8AA0FF; the pastels, sun and coral stay, and text on them is always #1A1A1A</td></tr>
+          <tr><td><code>color.community_palette</code>, <code>color.semantic</code></td><td><code>mint, sky, lilac, peach, sun, coral</code>; trusted is cobalt, yours sun, removed peach, hidden soft, relay on mint</td></tr>
+          <tr><td><code>font</code></td><td>Gabarito (400 to 900) for everything readable; Geist Mono (400, 500) for key fingerprints, record ids and hashes only</td></tr>
+          <tr><td><code>type</code></td><td><code>hero</code>, <code>h1</code>, <code>h2</code>, <code>title</code>, <code>lead</code>, <code>body</code>, <code>meta</code>, <code>tag</code>, <code>mono</code>: size (often a <code>clamp()</code>), weight, line height, tracking</td></tr>
+          <tr><td><code>space</code>, <code>radius</code>, <code>stroke</code></td><td>4 to 72 px; tag and pill 999px, card 20px, frame 24px, input 14px; 2 px ink outlines and dotted dividers</td></tr>
+          <tr><td><code>motion</code></td><td>Eases (<code>outExpo</code>, <code>outBack(2)</code>, <code>outElastic(1, .55)</code>, <code>inOutSine</code>), durations 300 / 420 / 520 / 900 ms, staggers 45 / 55 / 40 ms, and "respect prefers-reduced-motion"</td></tr>
+          <tr><td><code>layout</code></td><td>1120 px (site) and 1240 px (app) wide, 16 px gutters, a 44 px minimum touch target</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p><code>pnpm tokens</code> runs <code>packages/tokens/scripts/generate.mjs</code>, which writes <code>generated/tokens.css</code>, <code>HoiTokens.swift</code> and <code>HoiTokens.kt</code> (and copies into the mobile packages; see <a href="/wiki/mobile/">Mobile libraries</a>). The outputs are committed; <code>--check</code> fails when any is stale. The CSS sets every token as a custom property on <code>:root</code> (<code>--bg</code>, <code>--space-4</code>, <code>--radius-card</code>, <code>--type-h1-size</code>, <code>--dur-ui</code>, …) plus <code>--tagink</code>, then the dark set twice: under <code>@media (prefers-color-scheme: dark)</code> for <code>:root:not([data-theme="light"])</code>, and for <code>[data-theme="dark"]</code> on any element, so a subtree can be dark on its own. <code>fonts.css</code> self-hosts Gabarito (variable, 400 to 900) and Geist Mono (400 and 500) from the <code>@fontsource</code> packages (Gabarito in Latin and Latin Extended, Geist Mono in Latin), with <code>font-display: swap</code>: no request to Google.</p>
+  </section>
+
+  <section class="wk-sec" id="next">
+    <h2>Read next</h2>
+    <div class="wk-cards">
+      <a class="wk-card g-coral" href="/wiki/web-app/"><i></i><b>Web app</b><span>What lives at /app/.</span></a>
+      <a class="wk-card g-mint" href="/wiki/releases/"><i></i><b>Releases &amp; verification</b><span>Manifests, signatures and reproducible builds.</span></a>
+      <a class="wk-card g-mint" href="/wiki/supply-chain/"><i></i><b>Supply chain &amp; hardening</b><span>CSP, SRI and the rest of the defenses.</span></a>
+      <a class="wk-card g-sun" href="/wiki/deploy/"><i></i><b>Deploying &amp; hosting</b><span>Static hosting and the installers.</span></a>
+    </div>
+  </section>
+</article>
+<!-- @wiki-close -->
+<!-- @include footer.html -->
+<script type="module" src="/src/pages/wiki.ts"></script>
+</body>
+</html>

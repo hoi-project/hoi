@@ -1,0 +1,16 @@
+# Optional standalone registry API. No website, app assets or private relay.
+name = "hoi-registry"
+main = "worker.mjs"
+compatibility_date = "2026-10-01"
+compatibility_flags = ["nodejs_compat"]
+
+[observability]
+enabled = false
+
+[[durable_objects.bindings]]
+name = "REGISTRY"
+class_name = "CommunityRegistry"
+
+[[migrations]]
+tag = "registry-v1"
+new_sqlite_classes = ["CommunityRegistry"]

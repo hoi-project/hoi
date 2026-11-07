@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <!-- @include head.html title="Expiry &amp; removal · hoi wiki" description="Retention windows, tombstones, what stays and what can't be promised." -->
+</head>
+<body class="wiki">
+<!-- @include header.html nav="wiki" -->
+<!-- @wiki-open -->
+<article class="wk-doc">
+  <!-- @wiki-crumbs -->
+  <h1>Expiry <span class="acc">&amp; removal</span></h1>
+  <p class="wk-lead">Time does the deleting. Every record carries the moment it fades, no later than its community allows, and every compliant device deletes it then and leaves it out of reconciliation. Removals and deletions leave a small tombstone so the record can't come back. This page covers the rules for <code>expires_at</code>, what each kind is given, what is exempt, the sweep, tombstones, saved posts, sync, and what no protocol can promise.</p>
+  <p class="wk-src-list">Source <a href="{{REPO_URL}}/blob/main/core/crates/hoi-validate/src/lib.rs">hoi-validate/src/lib.rs</a> · <a href="{{REPO_URL}}/blob/main/core/crates/hoi-store/src/lib.rs">hoi-store/src/lib.rs</a> · <a href="{{REPO_URL}}/blob/main/core/crates/hoi-store/src/sqlite.rs">hoi-store/src/sqlite.rs</a> · <a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/node.rs">hoi-core/src/node.rs</a> · <a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/api.rs">hoi-core/src/api.rs</a> · <a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/state.rs">hoi-core/src/state.rs</a> · <a href="{{REPO_URL}}/blob/main/core/vectors/tombstone.json">vectors/tombstone.json</a></p>
+  <div class="wk-head-rule"></div>
+
+  <section class="wk-sec" id="expires-at">
+    <h2>Every record has an end</h2>
+    <p><code>expires_at</code> is a required field of every record's envelope, in Unix seconds, signed with the rest (<a href="/wiki/records/">records</a>). It can't be changed without changing the id and breaking the signature. The shape check refuses a record that expires before it is created (<code>expires before it is created</code>). Then the time stage of the pipeline checks it against this device's clock:</p>
+    <div class="wk-code" data-lang="rust" data-title="core/crates/hoi-validate/src/lib.rs"><pre><code>pub fn time(record: &amp;Record, now: u64, live: bool, max_retention: Option&lt;u64&gt;) -&gt; Result&lt;(), Reject&gt; {
+    if record.created_at &gt; now + CLOCK_SKEW {
+        return Err(Reject::FromTheFuture);
+    }
+    if live &amp;&amp; record.created_at + CLOCK_SKEW &lt; now {
+        return Err(Reject::TooOld);
+    }
+    if record.expires_at &lt;= now {
+        return Err(Reject::Expired);
+    }
+    let cap = max_retention.unwrap_or(KEEP);
+    if record.expires_at &gt; record.created_at.saturating_add(cap) {
+        return Err(Reject::ExpiryTooFar);
+    }
+    Ok(())
+}</code></pre></div>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Time checks">
+      <table>
+        <thead><tr><th>Rule</th><th>Refusal</th><th>Notes</th></tr></thead>
+        <tbody>
+          <tr><td><code>created_at</code> more than 600 s ahead of the clock (<code>CLOCK_SKEW</code>)</td><td><code>from the future</code></td><td>Always.</td></tr>
+          <tr><td><code>created_at</code> more than 600 s behind, on live gossip</td><td><code>too old to arrive live</code></td><td>Only for live gossip; catch-up sync and imports may be older. A peer's batch counts a record as live when <code>created_at + 600 ≥ now</code>.</td></tr>
+          <tr><td><code>expires_at</code> at or before now</td><td><code>already expired</code></td><td>Always: an expired record is never taken in, by any path.</td></tr>
+          <tr><td><code>expires_at</code> later than <code>created_at + cap</code></td><td><code>expires later than the community allows</code></td><td>The cap is the community's retention, or <code>KEEP</code> for exempt records.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>All four have the code <code>time</code> and blame nobody: the sending peer loses no score and the key gets no strike.</p>
+    <div class="wk-stage" data-demo="expiry" data-title="Records fading on a timeline">
+      <p class="nojs">Records sit on a timeline from their created_at to their expires_at. As the clock passes each expires_at, that record fades from every device. A removed post's body goes early, but its tombstone, the id, where it was and why, stays until the post would have expired.</p>
+      <p class="wk-stage-cap">Forgetting is the default: the end is written into each record when it is signed.</p>
+    </div>
+  </section>
+
+  <section class="wk-sec" id="retention">
+    <h2>The retention window</h2>
+    <p>A community's <code>limits.max_retention</code> is the longest a record in it may live: 15,552,000 seconds (180 days) by default, anywhere from an hour to ten years (3,600 to 315,360,000 seconds). It is changed by consent like every limit (<a href="/wiki/communities/#consent">changes by consent</a>). The web app offers 1, 7, 30, 90, 180 and 365 days, and says "Every device deletes posts older than this. No archive, on purpose."</p>
+    <p>The cap a record answers to is the more lenient of the window in effect when it says it was made and today's (<a href="/wiki/communities/#limits-for">which limits apply</a>). A device that joined after the community shortened its window still takes posts members took under the longer one. Records made since must fit today's.</p>
+    <div class="wk-note info"><b>Changing the window doesn't touch what exists</b><p>Each record keeps the <code>expires_at</code> it was signed with. Shortening the window deletes nothing sooner, and lengthening it keeps nothing longer. Only records made afterwards get the new window.</p></div>
+    <p>The window also sets other clocks: the deadline of a proposal is one window after it (<a href="/wiki/communities/#proposal-status">proposals</a>); the standing window for trusted is 90 days or the retention, whichever is shorter; ledger entries that aren't kept expire with it, so a ban lasts one window unless renewed.</p>
+  </section>
+
+  <section class="wk-sec" id="per-kind">
+    <h2>What each kind is given</h2>
+    <p>The protocol only caps <code>expires_at</code>. What the app writes, kind by kind:</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Expiry per kind">
+      <table>
+        <thead><tr><th>Kind</th><th><code>expires_at</code> the app writes</th><th>Cap</th></tr></thead>
+        <tbody>
+          <tr><td><code>post</code></td><td>now + retention</td><td>retention</td></tr>
+          <tr><td><code>comment</code></td><td>now + retention, but no later than its parent, and at least now + 60 s</td><td>retention</td></tr>
+          <tr><td><code>edit</code></td><td>the post's or comment's own expiry, at least now + 60 s</td><td>retention</td></tr>
+          <tr><td><code>delete</code></td><td>the target's expiry, at least now + 60 s</td><td>retention</td></tr>
+          <tr><td><code>vote</code></td><td>the target's expiry, at least now + 60 s</td><td>retention</td></tr>
+          <tr><td><code>review</code></td><td>the target's expiry or now + retention, whichever is sooner, at least now + 60 s</td><td>retention</td></tr>
+          <tr><td><code>review</code> answering a proposal</td><td>the proposal's expiry (100 years)</td><td>none: answers decide the proposal</td></tr>
+          <tr><td><code>label</code>, <code>trust</code>, <code>blocklist</code>, <code>profile</code>, <code>profile-color</code></td><td>now + retention</td><td>retention</td></tr>
+          <tr><td><code>report</code></td><td>now + retention or 30 days, whichever is sooner</td><td>retention</td></tr>
+          <tr><td><code>tally</code></td><td>now + retention or 7 days, whichever is sooner</td><td>retention</td></tr>
+          <tr><td><code>roster</code></td><td>now + 3 days</td><td>3 days (<code>MAX_ROSTER_LIFE</code>), checked as content</td></tr>
+          <tr><td><code>ledger</code>: <code>rules</code>, <code>limits</code>, <code>mod-add</code>, <code>mod-remove</code>, <code>retire</code>, <code>drop-key</code></td><td>now + 100 years</td><td>none</td></tr>
+          <tr><td><code>ledger</code>: everything else</td><td>now + retention</td><td>retention</td></tr>
+          <tr><td><code>vouch</code>, <code>wiki</code></td><td>now + 100 years</td><td>none</td></tr>
+          <tr><td><code>community</code>, <code>identity</code>, <code>revoke</code>, <code>rotate</code>, <code>share</code></td><td>now + 100 years</td><td>none</td></tr>
+          <tr><td><code>delegation</code></td><td>now + 180 days (<code>DELEGATION_LIFETIME</code>), renewed while the root key is on the device</td><td>400 days (<code>MAX_DELEGATION</code>); the record's and the blessing's expiry must match</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>So replies, votes, edits and reviews never outlive what they are about, and a thread fades together. A hand-made record may pick any expiry within its cap; validation checks the cap, not the app's choice.</p>
+  </section>
+
+  <section class="wk-sec" id="exempt">
+    <h2>What is exempt</h2>
+    <p>Some records must outlive the window because everything else is checked against them. <code>exempt_from_retention</code> lists them; for these, the time check uses <code>KEEP</code>, 100 years (<code>100 * 365 * 86_400</code> seconds), as the cap instead of the community's window.</p>
+    <div class="wk-code" data-lang="rust" data-title="core/crates/hoi-validate/src/lib.rs (trimmed)"><pre><code>pub fn exempt_from_retention(record: &amp;Record) -&gt; bool {
+    match &amp;record.body {
+        Body::Community(_)
+        | Body::Delegation { .. }
+        | Body::Revoke { .. }
+        | Body::Identity { .. }
+        | Body::Rotate { .. }
+        | Body::Vouch { .. }
+        | Body::Share { .. }
+        // a page is its whole history: each edit builds on the ones before
+        | Body::Wiki { .. } =&gt; true,
+        Body::Ledger(l) =&gt; l.action.kept_until_superseded(),
+        _ =&gt; false,
+    }
+}</code></pre></div>
+    <p>The node adds one more case: a review that answers a proposal is also taken with no retention cap, because the answers decide it and must last as long as it.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="What stays">
+      <table>
+        <thead><tr><th>What stays</th><th>Why</th></tr></thead>
+        <tbody>
+          <tr><td>The community's first record</td><td>Every other record of the community is checked against its owners and limits.</td></tr>
+          <tr><td>Rules, limits, moderator and retirement entries, drop keys</td><td>The replay needs them to know the rules, limits and moderators in effect. They are not deleted when a later entry replaces them; the replay simply applies the later one.</td></tr>
+          <tr><td>Identities, device blessings, revocations, rotations, recovery shares</td><td>They say who is speaking and whether a key was revoked or burned (<a href="/wiki/identity/">identity</a>). A blessing still ends at its own expiry, 400 days at most.</td></tr>
+          <tr><td>Vouches</td><td>Standing is built from them (<a href="/wiki/standing/">standing</a>).</td></tr>
+          <tr><td>Wiki edits</td><td>A page is its whole history: each edit builds on the ones before (<a href="/wiki/communities/#wiki">wiki</a>).</td></tr>
+          <tr><td>Answers to proposals</td><td>When people agreed decides the proposal.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Everything else in a community fades with its posts: removals, bans, unbans, labels, pins and admissions included. A genesis expires too, a hundred years on; when it does, the sweep drops the community.</p>
+  </section>
+
+  <section class="wk-sec" id="sweep">
+    <h2>The sweep</h2>
+    <p>Expiry is the real deletion mechanism. <code>Node::sweep</code> deletes everything past its expiry, lets contested removals take effect once their window passed, and frees unused media. Hosts call it every few minutes. The parts about expiry, in order:</p>
+    <ol class="wk-steps">
+      <li><b>Find what expired</b><p><code>Store::expired(now)</code> lists every record with <code>expires_at ≤ now</code>.</p></li>
+      <li><b>Delete it</b><p>Each one leaves the in-memory store and its indexes (by community, by author, by parent, the copy-paste fingerprints, search words, media references). A <code>Change::Delete</code> goes to storage. Its id leaves this person's saved list. If it was a genesis, the community goes; otherwise the community is marked to settle again.</p></li>
+      <li><b>Ripen removals</b><p>Communities with a removal whose contest window has passed are marked to settle, which deletes those bodies (<a href="#tombstones">tombstones</a>).</p></li>
+      <li><b>Settle</b><p>Contributions that left the standing window, ledger entries that expired, and removals that ripened change the ladder (<a href="/wiki/standing/#settle">settling</a>).</p></li>
+      <li><b>Forget what has run out, free media</b><p>Tombstones whose record would have expired anyway, notes of what was read older than 30 days, and late markers for records no longer held go first. Then media bytes no stored record refers to any more are deleted (<code>orphan_blobs</code>), with a storage change for each. Last, deleted ids past their date, quiet strike scores, and bounces lifted more than 30 days ago are forgotten.</p></li>
+    </ol>
+    <h3 id="on-disk">On disk</h3>
+    <p>Deletes reach storage through the <code>Persist</code> interface (<a href="/wiki/storage/">storage</a>). On desktop, mobile and hoi-node, SQLite runs <code>DELETE FROM records WHERE id = ?</code> inside one transaction per batch of changes, with <code>PRAGMA secure_delete = ON</code>, so freed pages are zeroed rather than left with old bytes, and <code>synchronous = FULL</code>. The <code>records</code> table keeps each record's <code>expires_at</code> beside its wire bytes. In the browser, the core hands its changes to a journal the host drains into IndexedDB.</p>
+  </section>
+
+  <section class="wk-sec" id="tombstones">
+    <h2>Tombstones</h2>
+    <p>A removal by a moderator or a delete by the author ends a record before its time. Two things stay behind, so the record can't come back and the thread keeps its shape.</p>
+    <h3 id="skeleton">The skeleton</h3>
+    <p><code>skeletonize</code> removes the body from the store and from disk and keeps a <code>Skeleton</code> in this device's local state:</p>
+    <div class="wk-code" data-lang="rust" data-title="core/crates/hoi-core/src/state.rs (trimmed)"><pre><code>/// What stays of a removed or deleted record: no body, just where it was and why it went.
+pub struct Skeleton {
+    pub community: Id,
+    pub parent: Option&lt;Id&gt;,
+    pub author: Id,
+    pub kind: String,
+    pub created_at: u64,
+    pub expires_at: u64,
+    /// Root that removed it; `None` when the author deleted it.
+    pub by: Option&lt;Id&gt;,
+    pub reason: String,
+    pub at: u64,
+    pub ledger: Option&lt;Id&gt;,
+}</code></pre></div>
+    <p>Opening a removed post gives "Poof. Removed by mira: rule 4." A removed or deleted comment keeps its place in the thread as a Poof box with who removed it and why, and replies under it stay. The skeleton is kept until the record's own <code>expires_at</code>, then the sweep drops it: by then the record would have faded anyway.</p>
+    <h3 id="deleted-ids">The deleted set</h3>
+    <p>The store also remembers the id in its deleted set, until the record's <code>expires_at</code>. Ingest refuses a deleted id however it arrives (<code>removed</code>), and sync never asks for one (<a href="#sync">sync</a>). If the record does arrive after its removal took effect, the node refuses it and marks it deleted again. Suppressed records are marked deleted with no end date (<a href="/wiki/trust/#suppress">suppression</a>). If the community overturns a removal, the skeleton and the deleted mark go, and the record can return with the next sync from someone who still has it.</p>
+    <div class="wk-note info"><b>The vector</b><p><a href="{{REPO_URL}}/blob/main/core/vectors/tombstone.json">vectors/tombstone.json</a> gives a comment and an owner's <code>remove</code> entry for it ("rule 4, undisclosed vendor"), both as signed wire bytes. After the removal, compliant nodes delete the comment's body, keep its id and the entry, and refuse to ingest it again.</p></div>
+  </section>
+
+  <section class="wk-sec" id="removal">
+    <h2>Removal: napping first</h2>
+    <p>A moderator's <code>remove</code> doesn't skeletonize at once. The record naps for the contest window (72 hours by default, at most 14 days): it stays stored, shown as <code>removal pending: &lt;reason&gt;</code>, and established members can veto the removal. When the window passes without enough vetoes, the next settle skeletonizes it. Removals whose reason starts with <code>illegal</code> or <code>privacy</code> skip the wait, and for <code>illegal</code> ones the post's media is deleted and refused from then on. The full sequence, with the veto window, is on <a href="/wiki/communities/#removals">communities</a>.</p>
+    <p>A record the community hid by review is different again: it naps for everyone but is never deleted early, and fades at its own <code>expires_at</code> (<a href="/wiki/standing/#hides">hides</a>). The exception is media in a post hidden as <code>illegal</code>: every device deletes those bytes and never fetches them again.</p>
+  </section>
+
+  <section class="wk-sec" id="deletes">
+    <h2>Deletes by the author</h2>
+    <p>An author can end their own post or comment early with a record of kind <code>delete</code>: an empty body whose <code>parent</code> is the target.</p>
+    <ul>
+      <li><b>Only the author.</b> Nodes take a delete only for a post or comment they hold, in the same community, by the same root (<code>only the author can edit or delete</code>). Any of the author's devices can sign it.</li>
+      <li><b>At once.</b> There is nothing to contest: as soon as a node takes the delete it skeletonizes the target with the reason <code>deleted by the author</code> and no remover.</li>
+      <li><b>Small and cheap.</b> 512 bytes at most, stamped at <code>pow_bits − 8</code>, sharing a rate budget with edits: 30 an hour, 100 a day.</li>
+      <li><b>As long as the target.</b> The delete record expires when the target would have, so it travels to devices that still hold the target for as long as that matters.</li>
+    </ul>
+    <h3 id="dropped">Records dropped without a tombstone</h3>
+    <p>Some records are replaced, not removed, and go without a trace (<code>drop_record</code>): an older vouch or review by the same person for the same target (answers to a proposal aside, which are all kept), an older trust statement, tally or blocklist by the same person in the same community, and a device's older roster. Their ids are marked deleted until they would have expired, so they aren't fetched again. A root that burns itself takes everything it signed with it, on every device.</p>
+  </section>
+
+  <section class="wk-sec" id="leaving">
+    <h2>Leaving, bundles and media</h2>
+    <h3 id="leave">Leaving a community</h3>
+    <p><code>leave</code> takes the community off this device's joined list, forgets its routes and catch-up state, and stops carrying it; a private group's keys are forgotten. It doesn't delete the records already held: from then on the node refuses new records for a community it isn't subscribed to, and what it holds fades at each record's own <code>expires_at</code>. The app says so: "Your copy fades on its own schedule."</p>
+    <h3 id="bundles">Bundles</h3>
+    <p>An exported <code>.hoibundle</code> is a CBOR map (<code>t: "hoi-bundle"</code>, <code>v: 1</code>, the community key, and the records) holding exactly what this device would pass on: unexpired records that aren't held, with the identities and blessings their authors need. Removed bodies aren't in it, because they are no longer stored. Importing one runs every record through the full pipeline as an import: genesis records first, then the rest in dependency order. Records that expired since the export are refused, and vouches, reviews and ledger entries that claim a time more than an hour before this device's last catch-up count from when they were imported (<a href="/wiki/standing/#late">late records</a>). The file itself, once saved, is outside the app and never expires.</p>
+    <h3 id="media-expiry">Media</h3>
+    <p>Media bytes have no <code>expires_at</code> of their own; they live as long as some stored post refers to them. When the last post using a blob expires or is removed, the next sweep deletes the bytes. A device keeps at most 512 MiB of media (<code>MEDIA_CAP</code>): beyond it, new media isn't stored and can be fetched again later.</p>
+  </section>
+
+  <section class="wk-sec" id="saved">
+    <h2>Saved posts</h2>
+    <p>Saving a post puts its id on a list in this device's local state (<code>state.saved</code>). The list never syncs and is never shared; the Saved screen notes that it is kept on this device only and never passed along.</p>
+    <p>A saved post is not a copy. It lives as long as the record does: when the sweep deletes an expired record, when a removal or a delete skeletonizes it, or when an operator suppresses it, its id leaves the saved list too. Saving keeps a post easy to find while it lasts; it doesn't keep it past its <code>expires_at</code>.</p>
+  </section>
+
+  <section class="wk-sec" id="sync">
+    <h2>Expiry and sync</h2>
+    <p>Reconciliation compares sets (<a href="/wiki/sync/">sync</a>). Expired and removed records must not count as differences, or two devices would keep handing each other what both should forget. Three filters keep them out:</p>
+    <ol class="wk-steps">
+      <li><b>What a device offers</b><p>A device's set for a community, for range fingerprints and for <code>have</code> lists alike, is only its records with <code>expires_at</code> still ahead and that it may pass on (not held, author not blocked).</p></li>
+      <li><b>What a device asks for</b><p>Of the ids a peer has and this device lacks, it asks only for those it doesn't hold, hasn't marked deleted and holds no tombstone for. Removed, deleted, superseded and suppressed ids are never requested.</p></li>
+      <li><b>What a device takes</b><p>Whatever arrives anyway passes the time check: an expired record is refused, and a removed one is refused by the deleted set.</p></li>
+    </ol>
+    <div class="wk-seq" data-title="A peer whose clock is behind still holds an expired post">
+lanes: Your device | Peer
+-- At expires_at --
+Your device: sweep: the post is deleted here, with its media if nothing else uses it
+Peer: its clock is behind: the post is still in its set
+-- Next sync --
+Peer -> Your device: <code>rng</code> range fingerprints: they differ by that post
+Your device -> Peer: <code>want</code> its id (it isn't in the deleted set)
+Peer => Your device: <code>recs</code> [the post]
+Your device: refused: <code>already expired</code>, code <code>time</code>; nobody is blamed, nothing is stored
+-- A removed post --
+Peer -> Your device: <code>have</code> lists a removed post's id
+Your device: never asked for: the id is in the deleted set until it would have expired
+</div>
+  </section>
+
+  <section class="wk-sec" id="honest-limits">
+    <h2>The honest limits</h2>
+    <p>Expiry makes forgetting the default everywhere the software runs as written. It can't force a stranger's disk.</p>
+    <ul>
+      <li><b>A modified app can ignore expiry</b> and keep everything it ever saw. Signed records stay verifiable wherever they are kept.</li>
+      <li><b>Copies outside the app outlast it.</b> Exported bundles, backups, screenshots and copied text don't expire. Anyone who could read a public community could keep what they read.</li>
+      <li><b>Deleted isn't always gone from the disk.</b> SQLite's <code>secure_delete</code> zeroes freed pages, but the code's own note says it cannot erase filesystem snapshots or earlier backups. Turning off a node doesn't erase its database.</li>
+      <li><b>Each device judges by its own clock.</b> A device whose clock runs behind deletes later, and keeps offering what others already dropped; they refuse it.</li>
+      <li><b>Removal reaches who listens.</b> A removal, a delete or an operator's suppression is acted on by each device that receives it and runs compliant software.</li>
+      <li><b>Private communities fade on their own schedule.</b> Their encrypted objects on relays have their own expiry, 30 days by the app's default (<a href="/wiki/mailboxes/">mailboxes</a>). Members can keep their own copies; removing a member changes future keys, not what they already received (<a href="/wiki/private/">private communities</a>).</li>
+    </ul>
+    <div class="wk-cards">
+      <a class="wk-card g-mint" href="/wiki/communities/"><i></i><b>Communities &amp; the ledger</b><span>Removals, the contest window, retention as a limit.</span></a>
+      <a class="wk-card g-sky" href="/wiki/sync/"><i></i><b>Sync &amp; gossip</b><span>Range reconciliation and what is offered.</span></a>
+      <a class="wk-card g-sun" href="/wiki/storage/"><i></i><b>Storage</b><span>SQLite, the IndexedDB journal and the vault.</span></a>
+      <a class="wk-card g-peach" href="/wiki/validation/"><i></i><b>Validation pipeline</b><span>Where the time check sits.</span></a>
+    </div>
+  </section>
+</article>
+<!-- @wiki-close -->
+<!-- @include footer.html -->
+<script type="module" src="/src/pages/wiki.ts"></script>
+</body>
+</html>

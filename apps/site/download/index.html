@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <!-- @include head.html title="Download hoi · hoi.sh" description="hoi for macOS, Windows and Linux, in your browser, and soon on phones and as a headless home node. Signed releases with published SHA-256 checksums." -->
+</head>
+<body>
+<!-- @include header.html nav="site" -->
+
+<main id="main">
+<input type="checkbox" id="operator-ack" class="operator-ack sr-only" aria-describedby="operator-title">
+<section class="wrap page-hero">
+  <span class="eyebrow">downloads · signed, checked, yours</span>
+  <h1>Get hoi. <span class="blue">Then check it.</span></h1>
+  <p class="lead">Pick your device. Every file comes with a SHA-256 checksum from the signed release list, so you can make sure it's the one we built. <a href="/verify/">How to check a download</a>.</p>
+</section>
+
+<section class="wrap" aria-labelledby="setup-title">
+  <h2 id="setup-title" class="sr-only">Setting up, in three steps</h2>
+  <div class="rows setup">
+    <div class="row"><div class="row-k"><span class="num">1</span>Install the app on a computer that's often on.</div><div class="row-v"><p>It keeps your communities reachable while the computer runs, so people can join and catch up even when you're not looking. It opens as a small companion in the corner of the screen that needs no key of its own; the full app is one click away.</p></div></div>
+    <div class="row"><div class="row-k"><span class="num">2</span>Click <em>Open hoi in my browser</em>.</div><div class="row-v"><p>Your browser opens hoi and connects to the app on the same computer. Nothing to copy. Chrome may ask to let the page reach apps on this device: allow it.</p></div></div>
+    <div class="row"><div class="row-k"><span class="num">3</span>Scan the code with your phone.</div><div class="row-v"><p>The phone's camera opens hoi, connects to your computer over your Wi-Fi, encrypted, with nobody in between, and takes your key after you compare four digits on both screens.</p></div></div>
+  </div>
+</section>
+
+<section class="wrap operator" id="operator" aria-labelledby="operator-title">
+  <div class="frame prose operator-box">
+    <span class="eyebrow">before you run a public node</span>
+    <h2 id="operator-title">You become responsible.</h2>
+    <p>When you run a public node and invite others, you process their personal data, at least their IP addresses and connection metadata. Under the data protection rules that apply where you, your server and those people are, whoever runs such a node is usually the one responsible for that data (often called the data controller). That is you. We, the developers, are not.</p>
+    <p><strong>Private use has narrow limits.</strong> Many data protection rules exempt purely personal or household use, such as a node only your family and close friends use. A community open to people you do not know personally, even without any commercial purpose, generally does not count as personal use.</p>
+    <p><strong>What you must do as an operator:</strong></p>
+    <ul>
+      <li>Write a join notice. The installer lets you define it, and every user must accept it before your node serves them.</li>
+      <li>Explain in it what your node stores and for how long, including what your server or your hosting provider logs.</li>
+      <li>Keep your server secure and up to date.</li>
+      <li>Respond to requests from users about their data.</li>
+    </ul>
+    <p><strong>Who you are: optional, but you should say.</strong> The join notice asks for your name or a pseudonym, a way to reach you, the country your server is in and who hosts it. You can leave any of them empty; the notice then tells people plainly that you did, and that they cannot reach you about their data through it. You should give them: they tell people who answers for their data and how to ask, and many data protection rules expect an operator to be identifiable and reachable. Whatever you fill in is shown to everyone who connects to your node, and travels in its node link, so anyone who has the link can read it.</p>
+    <p><strong>What the software does for you.</strong> The client always shows the standard network and VPN warning. Your join notice is added on top and cannot be skipped by users.</p>
+    <p><strong>This is not legal advice.</strong> Which rules apply depends on where you, your server and the people who connect are, and more than one set may apply at once. If you run a large or organised community, check your obligations with a qualified professional.</p>
+    <label class="ack-label" for="operator-ack"><span class="ack-box" aria-hidden="true"></span><span>I understand that I am responsible for the data processed on my node.</span></label>
+    <p class="muted operator-hint">Tick it to see the node setup app, the server kit and the hoi-node files below. The desktop app and a home node for your own devices need none of this.</p>
+  </div>
+</section>
+
+<section class="wrap install" id="install" aria-labelledby="install-title">
+  <div class="section-head">
+    <span class="eyebrow">one installer · everything</span>
+    <h2 id="install-title">Or let one command set it up.</h2>
+    <p class="lead">The installer asks what this computer should run, picks the file for it from the release list, checks its SHA-256 and installs it. Run it again to update or to change your mind; your data stays.</p>
+  </div>
+  <div class="codes">
+    <div class="code">
+      <div class="code-h"><span>macOS and Linux</span><button type="button" class="copy-btn js-only" data-copy aria-label="Copy the macOS and Linux install command">Copy</button></div>
+      <pre><code>curl -fsSL {{SITE_URL}}/install.sh | bash</code></pre>
+    </div>
+    <div class="code">
+      <div class="code-h"><span>Windows (PowerShell)</span><button type="button" class="copy-btn js-only" data-copy aria-label="Copy the Windows install command">Copy</button></div>
+      <pre><code>irm {{SITE_URL}}/install.ps1 | iex</code></pre>
+    </div>
+  </div>
+  <div class="rows">
+    <div class="row"><div class="row-k">The app</div><div class="row-v"><p><strong>desktop</strong> installs hoi: it opens as the companion in the tray, with the full app a click away. <strong>companion</strong> installs the same app and starts it in the tray whenever you log in, so your communities stay reachable while the computer is on.</p></div></div>
+    <div class="row"><div class="row-k">A home node</div><div class="row-v"><p><strong>home</strong> turns a Raspberry Pi, a Mac mini or any computer that stays on into a home node for your phone and browser, and, like every home node, a public relay: it asks your router to forward its ports, carries open communities for anyone who asks, tells whoever connects about the other public nodes it reached, and has a link you can share. No registry needed. <strong>private</strong> is the same without the public part. Both run in the background, no window.</p></div></div>
+    <div class="row operator-only"><div class="row-k">A public node</div><div class="row-v"><p><strong>public</strong> runs a light node with no key of its own that carries open communities and passes on the public nodes it reached. <strong>registry</strong> adds the public-name API to it, for a community that runs its own names in its own copy of the app; <code>--tls caddy</code> serves its https:// address with a certificate of its own.</p></div></div>
+    <div class="row operator-only"><div class="row-k">For a server</div><div class="row-v"><p><strong>The node setup app</strong> (below, with the downloads) installs and manages a public node on a rented server over SSH with a wizard: it checks the server first, asks for your join notice with a live preview, installs the node as a service and hands you its link as text and QR code. <strong>Or the app makes the kit:</strong> open hoi, then <em>You → A node on a server</em> (<a href="{{APP_URL}}#/server">straight there</a>). Pick a public node or a registry, keep the random name or roll another, write the join notice, and download one file with the configuration, the notice, the installer and a README; copy it over and run one command, or paste its cloud-init into the server's <em>user data</em> when you order it. Nothing of yours goes in it.</p></div></div>
+    <div class="row operator-gated"><div class="row-k">For a server</div><div class="row-v"><p>Running a public node or a registry means answering for other people's data. Read <a href="#operator">before you run a public node</a> above and tick the box: the server options show up here.</p></div></div>
+    <div class="row"><div class="row-k">Checks first</div><div class="row-v"><p>Before a node is installed, the installer looks at the computer: system, systemd, rights, the release files, disk, memory, clock, ports, firewall, addresses and DNS. It says ok, warn or BLOCK for each, and stops before changing anything on a BLOCK. <code>install.sh check</code> does only that.</p></div></div>
+  </div>
+  <p class="muted">Want to read it first? <a href="{{SITE_URL}}/install.sh">install.sh</a> and <a href="{{SITE_URL}}/install.ps1">install.ps1</a> are plain text, and every option is in <code>--help</code>. Prefer clicking? The files are right below.</p>
+</section>
+
+<section class="wrap" aria-labelledby="dl-title">
+  <h2 id="dl-title" class="sr-only">Downloads by device</h2>
+
+  <div class="frame status" id="release" aria-live="polite">
+    <p class="release-static">The files and their checksums come straight from the release list, <a href="/releases/manifest.json">manifest.json</a>, which is signed with minisign. Every release is also on <a href="{{REPO_URL}}/releases">the repository's releases page</a>. No release yet? <a href="#build">Build it yourself</a>.</p>
+  </div>
+
+  <div class="dl-list">
+    <article class="dl-row" id="macos" data-platform="macos" aria-labelledby="h-macos">
+      <div class="dl-head">
+        <h3 class="dl-name" id="h-macos"><span class="dot fill-lilac"></span>macOS</h3>
+        <span class="tag dl-you" hidden>looks like you're here</span>
+      </div>
+      <div class="dl-body">
+        <p>One universal <strong>.dmg</strong> for Apple silicon and Intel Macs. A small companion in the menu bar, with the full app a click away: it keeps your communities reachable, lets your browser and phone in with one scan, and shows what passes through it, never what it says.</p>
+        <div class="files-slot"><p class="files-wait">Files and checksums: <a href="/releases/manifest.json">manifest.json</a> · <a href="{{REPO_URL}}/releases">releases page</a></p></div>
+      </div>
+    </article>
+
+    <article class="dl-row" id="windows" data-platform="windows" aria-labelledby="h-windows">
+      <div class="dl-head">
+        <h3 class="dl-name" id="h-windows"><span class="dot fill-sky"></span>Windows</h3>
+        <span class="tag dl-you" hidden>looks like you're here</span>
+      </div>
+      <div class="dl-body">
+        <p>An <strong>.msi</strong> installer, or a setup <strong>.exe</strong> if you'd rather. Same app, same switches, the companion in the tray.</p>
+        <div class="files-slot"><p class="files-wait">Files and checksums: <a href="/releases/manifest.json">manifest.json</a> · <a href="{{REPO_URL}}/releases">releases page</a></p></div>
+      </div>
+    </article>
+
+    <article class="dl-row" id="linux" data-platform="linux" aria-labelledby="h-linux">
+      <div class="dl-head">
+        <h3 class="dl-name" id="h-linux"><span class="dot fill-mint"></span>Linux</h3>
+        <span class="tag dl-you" hidden>looks like you're here</span>
+      </div>
+      <div class="dl-body">
+        <p>An <strong>AppImage</strong> that runs almost anywhere, plus <strong>.deb</strong> and <strong>.rpm</strong> packages for Debian, Ubuntu, Fedora and friends.</p>
+        <div class="files-slot"><p class="files-wait">Files and checksums: <a href="/releases/manifest.json">manifest.json</a> · <a href="{{REPO_URL}}/releases">releases page</a></p></div>
+      </div>
+    </article>
+
+    <article class="dl-row" id="browser" data-platform="browser" aria-labelledby="h-browser">
+      <div class="dl-head">
+        <h3 class="dl-name" id="h-browser"><span class="dot fill-sun"></span>Browser</h3>
+        <span class="tag t-sky">nothing to install</span>
+      </div>
+      <div class="dl-body">
+        <p>hoi runs in a browser tab as a <strong>light client</strong>. To be honest about it: a browser can only reach others, nobody can reach it, and only while the tab is open. So it syncs through a computer running hoi, yours (paired with one click or one scan) or a member's from your invite, and tells you which ("via lena-laptop"). Your keys and posts still stay in the tab, on your device.</p>
+        <div class="dl-actions"><a class="pill pill-ink" href="{{APP_URL}}">Open in your browser</a></div>
+      </div>
+    </article>
+
+    <article class="dl-row" id="ios" data-platform="ios" aria-labelledby="h-ios">
+      <div class="dl-head">
+        <h3 class="dl-name" id="h-ios"><span class="dot fill-peach"></span>iPhone &amp; iPad</h3>
+        <span class="tag t-peach">in preparation · M2</span>
+        <span class="tag dl-you" hidden>looks like you're here</span>
+      </div>
+      <div class="dl-body">
+        <p>A native app is in preparation. Phones can't keep connections open in the background, so the app syncs in short bursts and pairs with a home node, your own desktop, to stay fresh.</p>
+        <p>Until then, scan the code in the hoi app on your computer with your phone's camera: hoi opens in the phone's browser, connected and with your key. Or <a class="plain" href="{{APP_URL}}">open hoi in your phone's browser</a> on its own.</p>
+        <div class="files-slot" data-optional></div>
+      </div>
+    </article>
+
+    <article class="dl-row" id="android" data-platform="android" aria-labelledby="h-android">
+      <div class="dl-head">
+        <h3 class="dl-name" id="h-android"><span class="dot fill-coral"></span>Android</h3>
+        <span class="tag t-peach">in preparation · M2</span>
+        <span class="tag dl-you" hidden>looks like you're here</span>
+      </div>
+      <div class="dl-body">
+        <p>Same story as iPhone: a native app is in preparation for M2, with burst sync and home-node pairing. When a signed <strong>.apk</strong> exists, it shows up right here.</p>
+        <p>Until then, scan the code in the hoi app on your computer with your phone's camera, or <a class="plain" href="{{APP_URL}}">open hoi in your phone's browser</a>.</p>
+        <div class="files-slot" data-optional></div>
+      </div>
+    </article>
+
+    <article class="dl-row operator-only" id="setup" data-platform="setup" aria-labelledby="h-setup">
+      <div class="dl-head">
+        <h3 class="dl-name" id="h-setup"><span class="dot fill-sun"></span>Node setup app</h3>
+        <span class="tag t-mint">for operators</span>
+      </div>
+      <div class="dl-body">
+        <p>A small app for your own computer that installs and manages a public node on a server over SSH, step by step: your responsibility, the server and its host key, a check before anything changes, the node's settings, your privacy settings, the join notice exactly as people will read it, the install, and the node's link as text and QR code. Keys, an agent or a password typed for one session; it stores no passwords. For macOS, Windows and Linux (x86-64 and ARM64, a Raspberry Pi included).</p>
+        <div class="files-slot" data-optional><p class="files-wait">Files and checksums: <a href="/releases/manifest.json">manifest.json</a> · <a href="{{REPO_URL}}/releases">releases page</a></p></div>
+      </div>
+    </article>
+
+    <article class="dl-row operator-gated" id="operators" aria-labelledby="h-operators">
+      <div class="dl-head">
+        <h3 class="dl-name" id="h-operators"><span class="dot fill-sun"></span>For operators</h3>
+        <span class="tag t-soft">read first</span>
+      </div>
+      <div class="dl-body">
+        <p>The node setup app and the hoi-node files are for running a public node. Read <a href="#operator">before you run a public node</a> and tick the box there to see them.</p>
+      </div>
+    </article>
+
+    <article class="dl-row operator-only" id="node" data-platform="node" aria-labelledby="h-node">
+      <div class="dl-head">
+        <h3 class="dl-name" id="h-node"><span class="dot fill-card"></span>hoi-node</h3>
+        <span class="tag t-mint">installer or archive</span>
+      </div>
+      <div class="dl-body">
+        <p>The same core with no window, for a small VPS or a Raspberry Pi in the cupboard. It keeps your communities warm as a <strong>home node</strong> for your phone and browser and <strong>pins</strong> their history so newcomers can catch up, and members' browsers can catch up from it over WebRTC with no domain or certificate needed. It is a <strong>public relay</strong> too: it carries open communities for anyone, passes on the other public nodes it reached, and prints a link anyone can open to find what it carries. <a href="#install">The installer</a> sets any of these up as a service; the archives are for doing it by hand. <a class="plain" href="/relay/#node">More on running one</a>.</p>
+        <div class="files-slot" data-optional></div>
+      </div>
+    </article>
+  </div>
+</section>
+
+<section class="section" id="build" aria-labelledby="build-title">
+  <div class="wrap">
+    <div class="section-head">
+      <span class="eyebrow">build it yourself</span>
+      <h2 id="build-title">Or skip us entirely.</h2>
+      <p class="lead">Everything is AGPL-3.0 and builds from the repository. You need Node 22 or newer, pnpm 10 and stable Rust. The desktop app also needs <a href="https://v2.tauri.app/start/prerequisites/">Tauri's prerequisites</a> for your system.</p>
+    </div>
+    <div class="codes">
+      <div class="code">
+        <div class="code-h"><span>Website and web app</span><button type="button" class="copy-btn js-only" data-copy aria-label="Copy the build commands">Copy</button></div>
+        <pre><code>git clone {{REPO_URL}}.git
+cd hoi
+pnpm install &amp;&amp; pnpm build</code></pre>
+      </div>
+      <div class="code">
+        <div class="code-h"><span>Desktop app</span><button type="button" class="copy-btn js-only" data-copy aria-label="Copy the desktop build command">Copy</button></div>
+        <pre><code>pnpm --filter @hoi/desktop tauri build</code></pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<template id="tpl-empty">
+  <span class="eyebrow">pre-release</span>
+  <h2>No signed release yet.</h2>
+  <p class="muted">hoi is still being built, in the open. The first signed release lands here with its files and SHA-256 checksums. Until then, build it yourself:</p>
+</template>
+</main>
+
+<!-- @include footer.html -->
+<script type="module" src="/src/pages/download.ts"></script>
+</body>
+</html>

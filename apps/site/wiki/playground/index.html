@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <!-- @include head.html title="Network playground · hoi wiki" description="Join a simulated hoi network from a browser, a phone, a desktop or a node, and watch every connection and every frame your device sends, step by step." -->
+</head>
+<body class="wiki">
+<!-- @include header.html nav="wiki" -->
+<!-- @wiki-open full -->
+<article class="wk-doc wide">
+  <div class="pg-intro">
+    <!-- @wiki-crumbs -->
+    <h1>Network <span class="acc">playground</span></h1>
+    <p class="wk-lead">Pick what you are and how you come in, press Join, and watch your device find its way into a network of thousands: which pipe opens to whom, which frame crosses it, what each side keeps. The network is simulated in this tab; the frames, fields, limits and timings are the real protocol's, each linked to the code that defines it.</p>
+    <p class="wk-src-list">Source <a href="{{REPO_URL}}/blob/main/apps/site/src/playground/scenarios.ts">playground/scenarios.ts</a> <a href="{{REPO_URL}}/blob/main/apps/site/src/playground/world.ts">playground/world.ts</a> <a href="{{REPO_URL}}/blob/main/apps/site/src/pages/playground.ts">pages/playground.ts</a></p>
+  </div>
+
+  <div class="pg-shell js-only" id="pg" data-repo="{{REPO_URL}}">
+    <div class="pg-toolbar">
+      <a class="wk-btn pg-back" href="/wiki/" aria-label="Back to the wiki">← Wiki</a>
+      <div class="pg-title" data-pg-title></div>
+      <div class="pg-run" role="group" aria-label="Playback">
+        <button type="button" class="wk-btn on" data-pg-play>▶ Join</button>
+        <button type="button" class="wk-btn" data-pg-step>Step</button>
+        <button type="button" class="wk-btn" data-pg-reset>Reset</button>
+      </div>
+    </div>
+    <div class="pg">
+      <div class="pg-stage" id="pg-network" data-pg-view="network" role="region" aria-label="Network">
+        <canvas class="pg-canvas" id="pg-canvas" role="img" aria-label="A simulated hoi network drawn as pipes between devices."></canvas>
+        <div class="pg-hud" aria-label="Simulated network" role="group"></div>
+        <div class="pg-legend" aria-label="What the dots carry" role="group"></div>
+        <div class="pg-zoom"><button type="button" class="wk-btn" data-pg-zout aria-label="Zoom out">−</button><button type="button" class="wk-btn" data-pg-fit>Fit</button><button type="button" class="wk-btn" data-pg-zin aria-label="Zoom in">+</button></div>
+        <div class="pg-tip" aria-hidden="true"></div>
+        <button type="button" class="pg-current" data-pg-current aria-controls="pg-details">Choose a device in Setup, then press Join.</button>
+      </div>
+      <div class="pg-side" id="pg-setup" data-pg-view="setup" role="region" aria-label="Setup and steps">
+        <div class="pg-sec">
+          <p class="pg-k" id="pg-dev-k">You are</p>
+          <div class="pg-opts" data-pg-devices role="group" aria-labelledby="pg-dev-k"></div>
+        </div>
+        <div class="pg-sec">
+          <p class="pg-k" id="pg-scen-k">And you</p>
+          <div class="pg-opts" data-pg-scenarios role="group" aria-labelledby="pg-scen-k"></div>
+        </div>
+        <div class="pg-sec">
+          <label class="pg-speed">speed <input type="range" min="0.25" max="3" step="0.25" value="1" data-pg-speed aria-label="Speed"> <span data-pg-speed-v>1×</span></label>
+        </div>
+        <ol class="pg-steps" data-pg-steps aria-label="Steps"></ol>
+      </div>
+      <div class="pg-insp" id="pg-details" data-pg-view="details" data-pg-insp role="region" aria-label="Details" aria-live="polite"></div>
+
+      <div class="pg-below" id="pg-activity" data-pg-view="activity" role="region" aria-label="Activity">
+        <div class="pg-panel">
+          <p class="pg-k">Your device keeps</p>
+          <div class="wk-stats pg-counters">
+            <div class="wk-stat c-coral"><b data-pg-c="links">0</b><span>open links</span></div>
+            <div class="wk-stat c-sun"><b data-pg-c="known">0</b><span>known public nodes</span></div>
+            <div class="wk-stat c-sky"><b data-pg-c="candidates">0</b><span>routes to try</span></div>
+            <div class="wk-stat c-mint"><b data-pg-c="listings">0</b><span>listings</span></div>
+            <div class="wk-stat c-lilac"><b data-pg-c="records">0</b><span>records</span></div>
+            <div class="wk-stat c-peach"><b data-pg-c="communities">0</b><span>communities</span></div>
+          </div>
+        </div>
+        <div class="pg-panel">
+          <p class="pg-k">Frames, newest first</p>
+          <ol class="pg-log" data-pg-log aria-label="Frames sent and received"></ol>
+        </div>
+      </div>
+    </div>
+    <nav class="pg-tabs" aria-label="Playground views">
+      <button type="button" data-pg-panel="network" aria-controls="pg-network">Network</button>
+      <button type="button" data-pg-panel="setup" aria-controls="pg-setup">Setup</button>
+      <button type="button" data-pg-panel="details" aria-controls="pg-details">Details</button>
+      <button type="button" data-pg-panel="activity" aria-controls="pg-activity">Activity</button>
+      <button type="button" data-pg-panel="guide" aria-controls="pg-guide">Guide</button>
+    </nav>
+  </div>
+  <div class="wk-note info nojs-only"><b>Needs JavaScript</b><p>The playground draws and runs in your browser. Every path it plays is written out, frame by frame, on <a href="/wiki/joining/">Joining, step by step</a>.</p></div>
+
+  <div class="pg-guide" id="pg-guide" data-pg-view="guide" role="region" aria-label="Playground guide">
+    <p class="pg-help js-only">Drag to pan, pinch or use + and − to zoom, and Fit to see the whole network. Tap a device or a step to read its details. Use the views to switch between the network, setup, details and activity.</p>
+    <section class="wk-sec" id="reading">
+      <h2>Reading the picture</h2>
+      <p>The picture is a floor plan. Each room is a part of the network; each pipe is a connection; the dots flowing through the pipes are messages, colored by what they carry. A handful of devices stand for each kind, and the round tanks hold the rest: their numbers drift as a live network's would.</p>
+      <div class="wk-table" tabindex="0" role="region" aria-label="Rooms of the playground">
+        <table>
+          <thead><tr><th>Room</th><th>Who is in it</th><th>How they connect</th></tr></thead>
+          <tbody>
+            <tr><td>Public nodes</td><td><code>hoi-node --public</code> and home nodes whose people made them public. The one marked N is the node from the node link.</td><td>iroh QUIC with ALPN <code>hoi/sync/1</code> between nodes, WebRTC (UDP 7844) for browsers and phones, and a Mainline DHT among themselves on UDP 7846/7847.</td></tr>
+            <tr><td>Members' nodes</td><td>Home nodes and desktops of people in <code>c/privacy</code>, keeping its live window.</td><td>The same as public nodes; a browser keeps up to two member links.</td></tr>
+            <tr><td>Browsers and phones</td><td>The web app. They can't accept connections and never publish an address.</td><td>WebRTC to nodes; with Direct links on, WebRTC to each other once a node introduces them.</td></tr>
+            <tr><td>Your home network</td><td>Your home node, the device holding your root key, a laptop on the same Wi-Fi.</td><td>WebSocket on <code>127.0.0.1:7842</code> or WebRTC to the home node; LAN beacons on <code>239.255.70.74:7848</code>.</td></tr>
+            <tr><td>Optional services</td><td>A registry and an encrypted relay. Builds name neither: they only appear when a community or a person configures one.</td><td>HTTPS.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="wk-sec" id="real">
+      <h2>What's real here</h2>
+      <dl class="wk-defs">
+        <dt>real<small>from the code</small></dt><dd><p>The order of the steps, every message name and field, the link formats, the transports, ports, ALPNs, caps, timeouts and retry intervals. Each step cites the files and lines that define it.</p></dd>
+        <dt>illustrative<small>shaped like the real thing</small></dt><dd><p>Example values: keys, addresses (from the documentation ranges 203.0.113.0/24 and 198.51.100.0/24), counts of records and listings.</p></dd>
+        <dt>simulated<small>made up</small></dt><dd><p>The size of the network, the traffic in the background, and the timing on screen (sped up so a step takes a second, not a 15-second timeout).</p></dd>
+      </dl>
+      <div class="wk-cards">
+        <a class="wk-card g-sky" href="/wiki/joining/"><i></i><b>Joining, step by step</b><span>The same paths, written out with every stored field.</span></a>
+        <a class="wk-card g-sky" href="/wiki/transports/"><i></i><b>Transports</b><span>QUIC, WebRTC, the WebSocket link and relays.</span></a>
+        <a class="wk-card g-sky" href="/wiki/sync/"><i></i><b>Sync &amp; gossip</b><span>hello, rng, want, recs and the rest.</span></a>
+        <a class="wk-card g-sky" href="/wiki/discovery/"><i></i><b>Discovery</b><span>Node lists, catalogs, the DHT and LAN beacons.</span></a>
+      </div>
+    </section>
+  </div>
+</article>
+<!-- @wiki-close -->
+<!-- @include footer.html -->
+<script type="module" src="/src/pages/playground.ts"></script>
+</body>
+</html>

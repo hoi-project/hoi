@@ -1,0 +1,303 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <!-- @include head.html title="The protocol · hoi.sh" description="The hoi protocol in plain words: signed records, stamps, devices checking everything, a public moderation ledger, expiry, and discovery with no project servers." -->
+</head>
+<body>
+<!-- @include header.html nav="site" -->
+
+<main id="main">
+<section class="wrap page-hero">
+  <span class="eyebrow">the protocol, in plain words</span>
+  <h1>Signed notes, passed hand to hand. <span class="blue">That's the whole trick.</span></h1>
+  <p class="lead">Everything in hoi is a signed record. Communities are keys. Standing is earned from what the community itself signed. Sync is two devices comparing lists. Moderation is a public ledger the members can overturn. Deletion is a calendar. Here's how it fits together. The <a href="{{REPO_URL}}/tree/main/core">source and tests</a> describe the current preview implementation; <a href="/wiki/">the wiki</a> goes through all of it in detail.</p>
+  <nav class="toc" aria-label="On this page">
+    <a href="#records"><span>1</span>Records</a><a href="#identity"><span>2</span>Keys</a><a href="#stamps"><span>3</span>Stamps</a><a href="#checks"><span>4</span>Checks</a><a href="#sync"><span>5</span>Sync</a><a href="#ledger"><span>6</span>Ledger</a><a href="#standing"><span>7</span>Standing</a><a href="#expiry"><span>8</span>Expiry</a><a href="#discovery"><span>9</span>Discovery</a><a href="#relays"><span>10</span>Relays</a><a href="#versions"><span>11</span>Versions</a>
+  </nav>
+</section>
+
+<section class="wrap" aria-labelledby="prims">
+  <h2 id="prims" class="sr-only">Building blocks</h2>
+  <div class="tbl compact" tabindex="0" role="region" aria-label="Building blocks">
+    <table>
+      <thead><tr><th class="w-200">Building block</th><th>Choice</th><th>Why</th></tr></thead>
+      <tbody>
+        <tr><td><b>Signatures</b></td><td>Ed25519</td><td class="muted">Fast, tiny, and what the network layer already uses.</td></tr>
+        <tr><td><b>Ids and hashes</b></td><td>BLAKE3-256</td><td class="muted">Fast, and it doubles as the stamp's work function.</td></tr>
+        <tr><td><b>Identity work</b></td><td>Argon2id, 8 MiB</td><td class="muted">Done once per key. Memory-hard, so a server farm gains little over a phone.</td></tr>
+        <tr><td><b>Encoding</b></td><td>DAG-CBOR, canonical</td><td class="muted">The same record always has the same bytes, so the same id and signature.</td></tr>
+        <tr><td><b>Identity</b></td><td><code>did:key:z6Mk…</code></td><td class="muted">An Ed25519 public key with a name tag. No sign-up, no server. Weak keys are refused.</td></tr>
+        <tr><td><b>Transport</b></td><td>iroh (QUIC), WebRTC</td><td class="muted">QUIC with hole punching between nodes (<span class="mono">hoi/sync/1</span>); WebRTC data channels for browsers and phones. <a href="/wiki/transports/">Details</a>.</td></tr>
+        <tr><td><b>Time</b></td><td>Unix seconds, UTC</td><td class="muted">Every record knows when it was made and when it fades.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="section" id="records" aria-labelledby="records-title">
+  <div class="wrap two">
+    <div class="section-head">
+      <span class="eyebrow">1 · records</span>
+      <h2 id="records-title">Everything is a record.</h2>
+      <p class="lead">A post, a comment, a vote, a moderator's action: all one shape. The record is encoded as canonical DAG-CBOR, its id is the BLAKE3 hash of those bytes, and the author signs the id. Change one byte and the id changes, so the signature stops matching. <code>parent</code> says what a comment or vote is about, and <code>expires_at</code> can't be later than the community allows.</p>
+    </div>
+    <div class="stack">
+      <div class="code">
+        <div class="code-h"><span>The envelope</span><span class="tag t-sky">wire format v1</span></div>
+        <pre><code>Record = {
+  v:          1,
+  kind:       "post" | "comment" | …,
+  community:  &lt;community key&gt;,
+  author:     &lt;signing key&gt;,
+  parent:     &lt;record id&gt;?,
+  created_at: &lt;unix seconds&gt;,
+  expires_at: &lt;unix seconds&gt;,
+  body:       { title, text, link?, name?, media? },
+  nonce:      &lt;stamp nonce&gt;,
+}
+id  = BLAKE3(canonical bytes)
+sig = Ed25519(author, id)</code></pre>
+      </div>
+      <p class="muted fs-15">Kinds: <span class="tag t-mint">post</span> <span class="tag t-mint">comment</span> <span class="tag t-mint">vote</span> <span class="tag t-mint">edit</span> <span class="tag t-mint">delete</span> <span class="tag t-lilac">identity</span> <span class="tag t-lilac">delegation</span> <span class="tag t-lilac">revoke</span> <span class="tag t-sun">community</span> <span class="tag t-sun">ledger</span> <span class="tag t-sky">vouch</span> <span class="tag t-sky">review</span> <span class="tag t-sky">label</span> <span class="tag t-peach">report</span>. Records never change: an edit is a new record that points at the old one. Size caps: 64 KiB for posts, 16 KiB for comments, 1 KiB for reviews, 512 bytes for votes, labels, vouches and identities. Anything that doesn't decode exactly is refused.</p>
+    </div>
+  </div>
+</section>
+
+<section class="section soft" id="identity" aria-labelledby="identity-title">
+  <div class="wrap two">
+    <div class="section-head">
+      <span class="eyebrow">2 · keys</span>
+      <h2 id="identity-title">You are a key. Your devices are its helpers.</h2>
+      <p class="lead">No email, no phone number, no password reset. Identity is a key pair on your device that did a few seconds of work, once. What you earn belongs to that key and can't be moved, sold or taken over.</p>
+    </div>
+    <div class="rows">
+      <div class="row"><div class="row-k plain"><span>Root key</span></div><div class="row-v"><p>An Ed25519 key, written as <code>did:key</code>, kept in an encrypted keystore (Argon2id + XChaCha20-Poly1305) or behind a passkey.</p></div></div>
+      <div class="row"><div class="row-k plain"><span>Identity work</span></div><div class="row-v"><p>An <code>identity</code> record proves Argon2id work over the key itself (10 bits by default). It can't be reused for another key, and each community says how much it asks for. Making a thousand keys costs a thousand times the work.</p></div></div>
+      <div class="row"><div class="row-k plain"><span>Device keys</span></div><div class="row-v"><p>Each device signs with its own key. The device signs the <code>delegation</code> (its consent) and the root blesses it, with a scope and an expiry (six months by default, never more than 400 days). A device belongs to the first root that blessed it, so nobody can claim your phone's posts. A signed <code>revoke</code> kicks a lost phone out.</p></div></div>
+      <div class="row"><div class="row-k plain"><span>No transfer</span></div><div class="row-v"><p>A new key starts from nothing in every community. A root can burn itself (revoking its own key), and then everything it signed is dropped everywhere. Losing a key costs its standing; that's the price of nobody being able to steal it.</p></div></div>
+      <div class="row"><div class="row-k plain"><span>Recovery</span></div><div class="row-v"><p>The root key split 3 of 5 (Shamir), each piece encrypted to a friend. Three friends bring you back; no server involved.</p></div></div>
+      <div class="row"><div class="row-k plain"><span>Names</span></div><div class="row-v"><p>Local nicknames by default, or a handle you prove with a DNS record (<code>_hoi.example.org</code>). The network key is separate from the posting key, so peers can't tie your address to your posts.</p></div></div>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="stamps" aria-labelledby="stamps-title">
+  <div class="wrap two">
+    <div class="section-head">
+      <span class="eyebrow">3 · stamps</span>
+      <h2 id="stamps-title">About a second of work per post.</h2>
+      <p class="lead">Before a record goes out, your device searches for a <code>nonce</code> so that <code>BLAKE3(id ‖ nonce)</code> starts with enough zero bits. Nothing for one post, a lot for a million. Every receiver re-checks it in microseconds.</p>
+    </div>
+    <div class="frame">
+      <div class="kv-title"><span>Bits of work required</span><span class="tag t-sun">default 22</span></div>
+      <div class="kv">
+        <div class="kv-row"><span class="kv-k">Posts and comments</span><span class="kv-v">community's <code>pow_bits</code></span><span class="kv-h">22 by default, about a second on a laptop.</span></div>
+        <div class="kv-row"><span class="kv-k">Votes, vouches, reviews, labels</span><span class="kv-v">− 8 bits</span><span class="kv-h">256 times cheaper. Ledger entries, reports and deletes too.</span></div>
+        <div class="kv-row"><span class="kv-k">Key younger than 30 days</span><span class="kv-v">− 0</span></div>
+        <div class="kv-row"><span class="kv-k">Younger than 90 days</span><span class="kv-v">− 2</span></div>
+        <div class="kv-row"><span class="kv-k">Younger than a year</span><span class="kv-v">− 4</span></div>
+        <div class="kv-row"><span class="kv-k">Older</span><span class="kv-v">− 6</span><span class="kv-h">Age counts from the first record the receiver saw from that key, so stamp for the full difficulty.</span></div>
+        <div class="kv-row"><span class="kv-k">Keys, delegations, communities</span><span class="kv-v">16 bits</span><span class="kv-h">Outside any community. Receivers check the cheapest possible stamp before any signature, so junk costs one hash.</span></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section soft" id="checks" aria-labelledby="checks-title">
+  <div class="wrap">
+    <div class="section-head">
+      <span class="eyebrow">4 · checks</span>
+      <h2 id="checks-title">Every device checks everything, in this order.</h2>
+      <p class="lead">Whether a record arrives live, during catch-up or from your own keyboard, it passes the same stages before anything is shown, stored or passed on. The cheapest checks come first, so junk is turned away for the price of one hash. Fail one and it stops there.</p>
+    </div>
+    <div class="tbl compact" tabindex="0" role="region" aria-label="The checks">
+      <table>
+        <thead><tr><th class="w-44">#</th><th class="w-130">Stage</th><th>Check</th><th class="w-220">If it fails</th></tr></thead>
+        <tbody>
+          <tr><td class="muted">1</td><td><b>Decode</b></td><td>Exactly canonical bytes; the id matches the hash; within the size cap for its kind</td><td>dropped, the sending peer gets a strike</td></tr>
+          <tr><td class="muted">2</td><td><b>Stamp floor</b></td><td>At least the least work any record of this kind could need: one hash, before any signature</td><td>dropped quietly</td></tr>
+          <tr><td class="muted">3</td><td><b>Signature</b></td><td>Signed by the author, or by a device that consented and was blessed by an unrevoked, unburned root</td><td>dropped, the sending peer gets a strike</td></tr>
+          <tr><td class="muted">4</td><td><b>Stamp</b></td><td>Enough work for this community and this key's age</td><td>dropped quietly</td></tr>
+          <tr><td class="muted">5</td><td><b>Identity</b></td><td>The author's key did enough identity work for this community</td><td>waits for the identity, or dropped</td></tr>
+          <tr><td class="muted">6</td><td><b>Time</b></td><td>Made within ten minutes of your clock; fades within the community's window</td><td>dropped</td></tr>
+          <tr><td class="muted">7</td><td><b>Moderation</b></td><td>Author not banned, record not removed</td><td>dropped</td></tr>
+          <tr><td class="muted">8</td><td><b>Rate</b></td><td>Within the key's budget for this community, counted by when records were made so every device agrees (stricter for newcomers)</td><td>dropped, the key gets a strike</td></tr>
+          <tr><td class="muted">9</td><td><b>Rules</b></td><td>A small markdown subset; no raw HTML, direction tricks, invisible or smuggled characters; links only to public <code>http(s)</code> sites, no look-alike hosts or link text naming another site; media only in allowed formats; no copy-paste floods</td><td>dropped, the key gets a strike</td></tr>
+          <tr><td class="muted">10</td><td><b>Standing</b></td><td>The author may do this here: links need a vouch, media needs trusted standing, reviews and vetoes need established standing</td><td>held back: stored, shown to nobody else, never passed on</td></tr>
+          <tr><td class="muted">11</td><td><b>Accept</b></td><td>Stored, indexed for local search, passed along</td><td class="muted">—</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="rows mt-rows">
+      <div class="row"><div class="row-k plain"><span>Strikes</span></div><div class="row-v"><p>Each device keeps a fading score per key. Past the line, the key is blocked locally and the device may publish a signed <code>report</code>, with record ids as evidence and never the posts themselves.</p></div></div>
+      <div class="row"><div class="row-k plain"><span>Weighted reports</span></div><div class="row-v"><p>Reports count by the reporter's weight in <em>your</em> trust view (friends 1.0, friends of friends 0.5, long-time members 0.25, newcomers 0.05) or their standing in the community (trusted 1.0, established 0.5), whichever is larger. When the weighted sum reaches the community's limit, your device bans the key.</p></div></div>
+      <div class="row"><div class="row-k plain"><span>Peer scores</span></div><div class="row-v"><p>Peers that forward junk lose score and get disconnected. Spam relays end up talking to themselves.</p></div></div>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="sync" aria-labelledby="sync-title">
+  <div class="wrap two">
+    <div class="section-head">
+      <span class="eyebrow">5 · sync</span>
+      <h2 id="sync-title">Catching up is comparing lists.</h2>
+      <p class="lead">New records spread live by gossip. Devices that were away catch up by comparing what they have with a peer, cheaply, and fetching only what's missing.</p>
+    </div>
+    <div class="rows">
+      <div class="row"><div class="row-k plain"><span>Live</span></div><div class="row-v"><p>A device passes each record it accepts, in a <code>recs</code> message, to every linked peer that shares the community, except the one it came from. Records it has seen before go no further. <a href="/wiki/sync/">How sync works, message by message</a>.</p></div></div>
+      <div class="row"><div class="row-k plain"><span>Catch-up</span></div><div class="row-v"><p>Range-based set reconciliation (Negentropy-style) over <code>(created_at, id)</code>, limited to the community's live window. Two devices compare fingerprints of time ranges, split the ones that differ, then fetch the missing records by id over <code>hoi/sync/1</code>.</p></div></div>
+      <div class="row"><div class="row-k plain"><span>Who keeps what</span></div><div class="row-v"><p>Everyone keeps what they read. <a href="/communities/">Pinners</a> keep a community's whole live window and say so in gossip, so newcomers know whom to ask.</p></div></div>
+      <div class="row"><div class="row-k plain"><span>Ranking</span></div><div class="row-v"><p>"Hot" is computed on your device from votes weighted by your trust. Nobody ships tallies around, so two people can see different orders, and that's fine.</p></div></div>
+    </div>
+  </div>
+</section>
+
+<section class="section soft" id="ledger" aria-labelledby="ledger-title">
+  <div class="wrap two">
+    <div class="section-head">
+      <span class="eyebrow">6 · ledger</span>
+      <h2 id="ledger-title">Moderation is a public, signed list.</h2>
+      <p class="lead">A community is an Ed25519 key pair. Its first record names the owners, a signature threshold and the limits. From then on, every moderation action is a <code>ledger</code> record with a sequence number, a reason and, for big changes, enough owner co-signatures. <a href="/communities/#ledger">What that looks like</a>.</p>
+    </div>
+    <div class="stack">
+      <p class="muted">Actions: <span class="tag t-mint">rules</span> <span class="tag t-mint">limits</span> <span class="tag t-lilac">mod-add</span> <span class="tag t-lilac">mod-remove</span> <span class="tag t-peach">remove</span> <span class="tag t-peach">ban</span> <span class="tag t-mint">unban</span> <span class="tag t-sky">label</span> <span class="tag t-sun">pin</span> <span class="tag t-sun">unpin</span> <span class="tag t-mint">admit</span></p>
+      <div class="rows">
+        <div class="row"><div class="row-k plain"><span>remove</span></div><div class="row-v"><p>The record naps for 72 hours, so members can veto the removal. Then every device deletes its body, keeps its id and the reason ("Poof."), and refuses it if it comes back. Removals for illegal content or privacy take effect at once.</p></div></div>
+        <div class="row"><div class="row-k plain"><span>ban</span></div><div class="row-v"><p>Everything the key signs in this community is dropped from then on.</p></div></div>
+        <div class="row"><div class="row-k plain"><span>rules, limits, mods</span></div><div class="row-v"><p>Need co-signatures reaching the owners' threshold, and stay until replaced. Anyone with the first record can verify the whole list. The first record is the only one a community key ever gets to sign.</p></div></div>
+        <div class="row"><div class="row-k plain"><span>Changes by consent</span></div><div class="row-v"><p>New rules and limits are proposals. The people established when one is proposed answer with signed reviews: agree, or object with a reason. It applies once everyone agreed; while the only ones missing are away (nothing of theirs left), it's in effect; after one fade window, silence counts as yes and objections weighing half a voice stop it. People vouched in after the proposal don't decide it.</p></div></div>
+        <div class="row"><div class="row-k plain"><span>vetoes</span></div><div class="row-v"><p>Established members can veto removals, bans, unbans, labels, pins, admissions and new moderators. Enough vetoes overturn the entry on every device; a moderator overturned three times is suspended. Bans don't silence vetoers: the count ignores them.</p></div></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="standing" aria-labelledby="standing-title">
+  <div class="wrap">
+    <div class="section-head">
+      <span class="eyebrow">7 · standing</span>
+      <h2 id="standing-title">Earn it, keep it by contributing.</h2>
+      <p class="lead">What you may share in a community follows from records the community itself signed: who vouched for you, how long ago, how people responded to what you wrote. Every device computes the same answer from the same records. No moderator hands it out, and nobody can take it away alone.</p>
+    </div>
+    <div class="tbl compact" tabindex="0" role="region" aria-label="The ladder">
+      <table>
+        <thead><tr><th class="w-150">Rung</th><th>How you get there</th><th class="w-260">What it adds</th></tr></thead>
+        <tbody>
+          <tr><td><b>Newcomer</b></td><td>A key with enough identity work. Marked "new here".</td><td>Text, a few posts a day</td></tr>
+          <tr><td><b>Member</b></td><td>Established members vouch for you (two by default), or a moderator admits you</td><td>Links; your votes count</td></tr>
+          <tr><td><b>Established</b></td><td>Two weeks after you became a member (the community sets it)</td><td>Your vouches, reviews and vetoes count</td></tr>
+          <tr><td><b>Trusted</b></td><td>Recent posts and comments the community responded to well</td><td>Images, audio and video. Stop contributing and it fades.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="rows mt-rows">
+      <div class="row"><div class="row-k plain"><span>Reading is vouching</span></div><div class="row-v"><p>When an established member has read a couple of a newcomer's posts and didn't hide them, their app vouches for the newcomer. Validation happens by people simply reading. Objections are signed too, and need a reason.</p></div></div>
+      <div class="row"><div class="row-k plain"><span>Hiding</span></div><div class="row-v"><p>Established members can hide a post for spam, abuse, illegal content, being off-topic or breaking a numbered rule. Disagreeing isn't a reason. A post naps for everyone when enough of them hide it and they outnumber those who said "looks good" two to one. Hidden posts stay peekable.</p></div></div>
+      <div class="row"><div class="row-k plain"><span>Blocking</span></div><div class="row-v"><p>Someone whose posts enough members hid is blocked from the community: nothing they write is passed on. It lifts by itself as the reasons expire or others speak up for them.</p></div></div>
+      <div class="row"><div class="row-k plain"><span>Voices, not heads</span></div><div class="row-v"><p>Hides, blocks, vetoes and objections weigh voices. Each established member gives away at most one voice a quarter, split among everyone they vouched for, and nobody holds more than their strongest voucher. Inviting all your friends at once brings them in, but not as a voting bloc.</p></div></div>
+        <div class="row"><div class="row-k plain"><span>Keeping it fair</span></div><div class="row-v"><p>Quorums never exceed a third of the established voice, and every decision needs two people. People who hide posts the community defends lose their say; people who vouch in spammers lose theirs. Fresh keys count for nothing, so an army of them can't hide or block anyone. Vouches that turn up claiming to be older than a device's last sync count from when they turned up.</p></div></div>
+      <div class="row"><div class="row-k plain"><span>Media</span></div><div class="row-v"><p>PNG, JPEG, GIF, WebP, Ogg Opus, MP4 and WebM, nothing scriptable. The sender's app strips location, device names and every other hidden part; every receiver checks the file is exactly what it claims and nothing more. Devices fetch media only from trusted members.</p></div></div>
+    </div>
+  </div>
+</section>
+
+<section class="section soft" id="expiry" aria-labelledby="expiry-title">
+  <div class="wrap two">
+    <div class="section-head">
+      <span class="eyebrow">8 · expiry</span>
+      <h2 id="expiry-title">Time does the deleting.</h2>
+      <p class="lead">Every record carries <code>expires_at</code>, no later than the community's maximum retention (180 days by default). Past it, every compliant device deletes the record and leaves it out of reconciliation, so it can't sneak back in.</p>
+    </div>
+    <div class="rows">
+      <div class="row"><div class="row-k plain"><span>Saved posts</span></div><div class="row-v"><p>You can keep a post you saved, on your device only. It's never shared again after it expires.</p></div></div>
+      <div class="row"><div class="row-k plain"><span>What stays</span></div><div class="row-v"><p>The community's first record, the current rules, limits and moderator list until replaced, and the keys, identities and vouches standing is built from.</p></div></div>
+      <div class="row"><div class="row-k plain"><span>The honest limit</span></div><div class="row-v"><p>A modified app could ignore expiry and keep things. Expiry makes forgetting the default everywhere; it can't force a stranger's disk.</p></div></div>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="discovery" aria-labelledby="discovery-title">
+  <div class="wrap two">
+    <div class="section-head">
+      <span class="eyebrow">9 · discovery</span>
+      <h2 id="discovery-title">Finding each other with zero project servers.</h2>
+      <p class="lead">There's no bootstrap server, no directory and no default relay list. The app ships with an empty relay list and an empty labeler list; the defaults arrive with the invite that brought you in.</p>
+    </div>
+    <div class="stack">
+      <div class="code">
+        <div class="code-h"><span>An invite link</span><span class="tag t-mint">all you need to join</span></div>
+        <pre><code>hoi://join?code=&lt;checksummed, masked CBOR:
+  community key, relays, peers,
+  the community's genesis&gt;</code></pre>
+      </div>
+      <div class="rows">
+        <div class="row"><div class="row-k plain"><span>Invite links &amp; QR</span></div><div class="row-v"><p>Carry the community key plus a few relays and peers to start from, masked so no address is readable in the link itself. <a href="/wiki/links/">Every link format</a>.</p></div></div>
+        <div class="row"><div class="row-k plain"><span>Local network</span></div><div class="row-v"><p>Native devices send a UDP multicast beacon (<code>239.255.70.74:7848</code>) every 30 seconds for each public community they joined, sealed so only its members can read where to connect.</p></div></div>
+        <div class="row"><div class="row-k plain"><span>Mainline DHT</span></div><div class="row-v"><p>Public nodes run the BitTorrent DHT among themselves, with no outside bootstrap, and announce the open communities they carry. A lookup gets signed, short-lived routes.</p></div></div>
+        <div class="row"><div class="row-k plain"><span>Node lists</span></div><div class="row-v"><p>Public nodes pass on the public nodes they reached themselves, never ones they were only told about, with the uptime they saw. Devices keep up to 32 and forget those that stopped answering for 30 days. <a href="/wiki/discovery/">How discovery works</a>.</p></div></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section soft" id="relays" aria-labelledby="relays-title">
+  <div class="wrap two">
+    <div class="section-head">
+      <span class="eyebrow">10 · relays</span>
+      <h2 id="relays-title">Relays are dumb on purpose.</h2>
+      <p class="lead">A packet relay is a plain iroh relay, which <code>hoi-node --packet-relay</code> runs beside a node. It forwards encrypted QUIC packets by destination node id from an in-memory table, and that's it. The protocol assumes relays are untrusted: they see node ids, timing and sizes, never what's inside.</p>
+    </div>
+    <div class="rows">
+      <div class="row"><div class="row-k plain"><span>Members only</span></div><div class="row-v"><p>With <code>--packet-relay-members</code>, a node's relay serves only endpoints it knows as members of the communities it carries; its operator can also block endpoints. <a href="/wiki/hoi-node/#packet-relay">Packet relay</a>.</p></div></div>
+      <div class="row"><div class="row-k plain"><span>Browsers</span></div><div class="row-v"><p>Browsers can't accept connections, so they reach nodes over WebRTC and never through a packet relay. The app says which node it is talking to. <a href="/wiki/transports/">Transports</a>.</p></div></div>
+      <div class="row"><div class="row-k plain"><span>Run one</span></div><div class="row-v"><p>Keeping communities reachable is a switch in the desktop app; a packet relay is a flag on <code>hoi-node</code>. <a href="/relay/">What the switch does and what you agree to</a>.</p></div></div>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="versions" aria-labelledby="versions-title">
+  <div class="wrap two">
+    <div class="section-head">
+      <span class="eyebrow">11 · versions</span>
+      <h2 id="versions-title">Growing up without breaking.</h2>
+      <p class="lead">Every record says which protocol version it speaks (<code>v</code>), and devices announce what they support when they connect. Records from an unknown version are refused, and an app more than one major version behind what it sees on the network asks to be updated.</p>
+    </div>
+    <div class="note-sun">
+      <b>Read the real thing</b>
+      <p><a href="{{REPO_URL}}/tree/main/core/vectors">Test vectors</a>: examples checked by the implementation.</p>
+      <p><a href="/wiki/">The wiki</a>: every record, message and program in detail, with a <a href="/wiki/playground/">network playground</a> and the <a href="/wiki/sbom/">SBOM</a>.</p>
+      <p><a href="{{REPO_URL}}/blob/main/docs/README.md">Documentation</a>: development, hosting and releases.
+      <p><a href="{{REPO_URL}}/blob/main/SECURITY.md">Security policy</a>: limitations and private vulnerability reports.</p>
+    </div>
+  </div>
+</section>
+
+<section class="section soft" id="data" aria-labelledby="data-title">
+  <div class="wrap">
+    <div class="section-head"><span class="eyebrow">12 · where your data lives</span><h2 id="data-title">What runs where, and what it handles.</h2></div>
+    <div class="rows">
+      <div class="row"><div class="row-k plain"><span>This website</span></div><div class="row-v"><p><strong>No accounts, collection forms, analytics, tracking cookies or fingerprinting.</strong> The examples and animations run locally in your browser; demo text is not submitted anywhere. Fonts, scripts and images are served with the site. Visiting it does not connect you to the community network.</p></div></div>
+      <div class="row"><div class="row-k plain"><span>The browser app</span></div><div class="row-v"><p>The app is a frontend: its JavaScript, WebAssembly and application logic run in your browser on your machine. The files are static and name no node, registry or relay; whatever serves them does not run the community application, receive your posts, or act as a registry, public node or private relay. Your browser contacts directly the nodes it learns of: its home node, the routes in invites and node links you open, and the public nodes those pass on. Nobody can reach a browser, so what you post from one is readable by others only once a home node carrying the community has it.</p></div></div>
+      <div class="row"><div class="row-k plain"><span>On your device</span></div><div class="row-v"><p>Your device stores your identity, private keys, settings and community data. The browser vault encrypts saved identity and community data using your local passphrase. The app also caches its static files and remembers verified public name/key bindings locally. Clearing browser storage can remove your keys, saved data and name bindings; losing the passphrase can prevent recovery.</p></div></div>
+      <div class="row"><div class="row-k plain"><span>Registry nodes</span></div><div class="row-v"><p>Optional, and not used by the published app. Anyone can run a registry, as a role of the node program (<code>hoi-node --registry</code>) or as a separate service; a registry can mirror another registry’s signed listings, and when none is reachable two communities may carry the same name under different keys. A registry serves public name-to-community-key mappings, signed proofs, protocol versions and public peer routes. It has no website, account system, posts, attachments, profiles or private membership lists. Name reservations persist; node announcements stop being listed after 30 minutes and expired announcements are pruned when new announcements arrive. Each registry has its own namespace; a name is not a global identity.</p></div></div>
+      <div class="row"><div class="row-k plain"><span>Public nodes</span></div><div class="row-v"><p>Every home node is a public node unless its person turns that off, and anyone can run one with no key of its own (<code>hoi-node --public</code>). It tells whoever connects about the other public nodes it reached itself, never about what it was told. It accepts peer connections and stores and serves signed public community records, including posts and media, according to the communities it carries and their retention rules. It carries open communities that connected members hand it, and those a registry lists if it is given one (the community’s signed definition only, never routes or anything about the member); it keeps nothing about who asked, lets go of a community nobody else held for two weeks or whose records never arrived, and deletes what it let go. Whoever runs it can refuse a community for good. It has no person’s key and signs nothing. Public content is readable by anyone, including the nodes carrying it.</p></div></div>
+      <div class="row"><div class="row-k plain"><span>Private communities</span></div><div class="row-v"><p>Invited devices encrypt private messages and attachments before sending them to an encrypted relay. The relay stores padded ciphertext and delivery metadata: a room key that changes whenever membership changes, rounded sizes, signatures, upload and read times, and expiry times. It does not receive member keys or community identifiers. App defaults expire these objects within 30 days; the relay protocol permits at most 31 days. Invited members can read and retain their own copies. Removing a member changes future keys, not copies already received.</p></div></div>
+      <div class="row"><div class="row-k plain"><span>Connections</span></div><div class="row-v"><p>Every server you connect to, whether it serves files or is a registry, public node or relay, sees your IP address and when you connect. The hoi software adds no access logs of its own.</p></div></div>
+      <div class="row"><div class="row-k plain"><span>What you share</span></div><div class="row-v"><p>Public posts, profile details and signed actions are shared with the public communities you use. Reports are signed community records, not confidential messages to moderators. Don’t put private contact information in public names, posts or reports. The client checks signatures locally; signatures establish control of a key, not a person’s identity.</p></div></div>
+      <div class="row"><div class="row-k plain"><span>Retention and removal</span></div><div class="row-v"><p>Participating devices apply community expiry and removal rules. Peers, recipients, exports or backups can retain copies. Turning off a node does not erase its database.</p></div></div>
+    </div>
+  </div>
+</section>
+
+<section class="wrap pad-block">
+  <div class="cta">
+    <h2>Rather read the code? It's all there, AGPL-3.0.</h2>
+    <div class="btnrow"><a href="{{REPO_URL}}" class="pill pill-sun">Browse the source</a><a href="/download/" class="pill pill-ghost">Get the app</a></div>
+  </div>
+</section>
+</main>
+
+<!-- @include footer.html -->
+<script type="module" src="/src/pages/page.ts"></script>
+</body>
+</html>

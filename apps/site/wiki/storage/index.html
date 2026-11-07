@@ -1,0 +1,450 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <!-- @include head.html title="Storage · hoi wiki" description="How a device keeps records: the in-memory index in hoi-store, the change journal, SQLite and its schema, the encrypted vault, IndexedDB and OPFS in the browser, replay at startup, and where every program keeps its files." -->
+</head>
+<body class="wiki">
+<!-- @include header.html nav="wiki" -->
+<!-- @wiki-open -->
+<article class="wk-doc">
+  <!-- @wiki-crumbs -->
+  <h1>Storage</h1>
+  <p class="wk-lead">A hoi device keeps two kinds of thing: signed records exactly as they arrived, and a few JSON blobs of local state and keys. Records live in memory with the indexes the node needs; every change goes into an ordered journal that a backend makes durable: SQLite natively, an IndexedDB database or an OPFS log in the browser. On every person's device the backend is sealed by a local vault. At startup the node replays and re-checks everything it stored.</p>
+  <p class="wk-src-list">Source <a href="{{REPO_URL}}/blob/main/core/crates/hoi-store/src/lib.rs">hoi-store/src/lib.rs</a> · <a href="{{REPO_URL}}/blob/main/core/crates/hoi-store/src/sqlite.rs">sqlite.rs</a> · <a href="{{REPO_URL}}/blob/main/core/crates/hoi-store/src/vault.rs">vault.rs</a> · <a href="{{REPO_URL}}/blob/main/core/crates/hoi-store/src/pieces.rs">pieces.rs</a> · <a href="{{REPO_URL}}/blob/main/core/crates/hoi-crypto/src/vault.rs">hoi-crypto/src/vault.rs</a> · <a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/state.rs">hoi-core/src/state.rs</a> · <a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/node.rs">node.rs</a> · <a href="{{REPO_URL}}/blob/main/apps/web/src/lib/core/idb.ts">idb.ts</a> · <a href="{{REPO_URL}}/blob/main/apps/web/src/lib/core/opfs.ts">opfs.ts</a> · <a href="{{REPO_URL}}/blob/main/apps/web/src/lib/core/durable-settle.ts">durable-settle.ts</a></p>
+  <div class="wk-head-rule"></div>
+
+  <section class="wk-sec" id="layers">
+    <h2>The layers</h2>
+    <figure class="wk-fig">
+      <svg viewBox="0 0 760 300" role="img" aria-label="Storage layers: the Store in memory, the change journal, and the backends per program">
+        <rect class="d-box acc c-sun" x="20" y="20" width="720" height="56" rx="12"/>
+        <text class="d-text" x="40" y="45">Node</text>
+        <text class="d-sub" x="40" y="63">Store (records + indexes, in memory) · LocalState · Secrets · MLS state · media blobs</text>
+        <rect class="d-box acc c-mint" x="20" y="110" width="720" height="56" rx="12"/>
+        <text class="d-text" x="40" y="135">Persist::apply(&amp;[Change])</text>
+        <text class="d-sub" x="40" y="153">Put{id, community, expires_at, wire} · Delete{id} · Blob{key, value?} · Wipe — in order, one batch per commit</text>
+        <rect class="d-box" x="20" y="200" width="168" height="80" rx="12"/>
+        <text class="d-text" x="34" y="226">EncryptedSqlite</text>
+        <text class="d-sub" x="34" y="246">desktop, phones</text>
+        <text class="d-sub" x="34" y="264">hoi.db, sealed cells</text>
+        <rect class="d-box" x="204" y="200" width="168" height="80" rx="12"/>
+        <text class="d-text" x="218" y="226">Sqlite</text>
+        <text class="d-sub" x="218" y="246">hoi-node, hoi-sim</text>
+        <text class="d-sub" x="218" y="264">hoi.db, plain</text>
+        <rect class="d-box" x="388" y="200" width="168" height="80" rx="12"/>
+        <text class="d-text" x="402" y="226">Worker journal</text>
+        <text class="d-sub" x="402" y="246">the browser</text>
+        <text class="d-sub" x="402" y="264">OPFS log or IndexedDB</text>
+        <rect class="d-box" x="572" y="200" width="168" height="80" rx="12"/>
+        <text class="d-text" x="586" y="226">Ephemeral</text>
+        <text class="d-sub" x="586" y="246">tests, the battle</text>
+        <text class="d-sub" x="586" y="264">nothing kept</text>
+        <line class="d-line" x1="380" y1="76" x2="380" y2="106"/>
+        <polygon class="d-head" points="380,110 376,102 384,102"/>
+        <line class="d-line" x1="104" y1="166" x2="104" y2="196"/>
+        <line class="d-line" x1="288" y1="166" x2="288" y2="196"/>
+        <line class="d-line" x1="472" y1="166" x2="472" y2="196"/>
+        <line class="d-line" x1="656" y1="166" x2="656" y2="196"/>
+        <polygon class="d-head" points="104,200 100,192 108,192"/>
+        <polygon class="d-head" points="288,200 284,192 292,192"/>
+        <polygon class="d-head" points="472,200 468,192 476,192"/>
+        <polygon class="d-head" points="656,200 652,192 660,192"/>
+      </svg>
+      <figcaption>One journal format, four backends. The node never reads from storage after startup: everything it needs is in memory.</figcaption>
+    </figure>
+    <p>The working set lives in <code>hoi_store::Store</code>. Durability goes through one trait, <code>Persist</code>, with exactly two methods: <code>apply</code> a batch of changes, and <code>load</code> everything at startup. The node collects changes as it works and hands them over in <code>commit()</code>, which every host runs after every call. Pieces kept for other people are the exception: a holder's budget runs to gigabytes, so they sit in a separate store that is read on demand (<a href="#pieces">below</a>).</p>
+  </section>
+
+  <section class="wk-sec" id="index">
+    <h2>The in-memory index</h2>
+    <p>Every record the node accepted is a <code>Stored</code>:</p>
+    <dl class="wk-defs">
+      <dt>id<small>Id</small></dt><dd>BLAKE3 of the canonical bytes.</dd>
+      <dt>record, sig, wire<small>Record, Sig, Vec&lt;u8&gt;</small></dt><dd>The decoded record, its signature, and the exact wire bytes, which are what gets stored and served.</dd>
+      <dt>author_root<small>Id</small></dt><dd>The root key behind <code>record.author</code> (the author may be a device key).</dd>
+      <dt>received_at<small>u64</small></dt><dd>When this device took it in.</dd>
+      <dt>from_peers<small>u32</small></dt><dd>Peers that handed it over; 0 when it was made on this device.</dd>
+      <dt>stamp_bits<small>u32</small></dt><dd>The work its stamp carries.</dd>
+      <dt>work_bits<small>u32</small></dt><dd>Identity work, for <code>identity</code> records; 0 otherwise.</dd>
+    </dl>
+    <h3 id="index-maps">What Store indexes</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Store fields">
+      <table>
+        <thead><tr><th>Field</th><th>Key → value</th><th>Used for</th></tr></thead>
+        <tbody>
+          <tr><td><code>records</code></td><td>id → <code>Stored</code></td><td>Everything.</td></tr>
+          <tr><td><code>by_community</code></td><td>community → set of <code>(created_at, id)</code></td><td><code>in_community</code>, <code>of_kind</code>: a community's records oldest first.</td></tr>
+          <tr><td><code>children</code></td><td>parent → set of <code>(created_at, id)</code></td><td>Comment trees, votes and reviews of a record.</td></tr>
+          <tr><td><code>by_author</code></td><td>(community, author root) → set of <code>(created_at, id)</code></td><td>Rate windows, counted by the records' own times (<code>author_times</code>).</td></tr>
+          <tr><td><code>texts</code></td><td>(community, 16-byte text fingerprint) → list of (root, created_at, id)</td><td>Copy-paste floods (<code>same_text</code>).</td></tr>
+          <tr><td><code>media_refs</code></td><td>media hash → record ids</td><td>Who uses a blob; <code>orphan_blobs</code>.</td></tr>
+          <tr><td><code>words</code></td><td>word → record ids</td><td>Search, prefix matching (<code>word_hits("rel")</code> finds "relay"). Built in memory only; nothing about it is written to disk.</td></tr>
+          <tr><td><code>delegations</code></td><td>device → <code>Delegation {record, info}</code></td><td>Which root a device signs for, its scope, expiry and revocation.</td></tr>
+          <tr><td><code>revocations</code></td><td>device → (root → earliest time)</td><td>Revocations that arrived before their delegation. Keyed by root too, so a stranger's revoke for a device it never blessed can't hide the real root's.</td></tr>
+          <tr><td><code>identities</code></td><td>root → <code>IdentityInfo {record, bits, created_at, rc, of}</code></td><td>The best identity record a root published.</td></tr>
+          <tr><td><code>burned</code></td><td>root → when</td><td>Roots their owners burned, the persons they spoke for, and roots that committed to two different recovery keys.</td></tr>
+          <tr><td><code>rotations</code>, <code>persons</code></td><td>root → <code>Rotation</code>; later root → person</td><td>Recovery: a person's chain of roots (<code>chain</code>, at most 64 long), <code>current_root</code>, <code>best_identity</code>.</td></tr>
+          <tr><td><code>genesis</code></td><td>community key → genesis id</td><td><code>genesis_of</code>, <code>communities</code>.</td></tr>
+          <tr><td><code>deleted</code></td><td>id → until</td><td>Bodies removed or deleted by their authors: never taken in again before <code>until</code>.</td></tr>
+          <tr><td><code>blobs</code>, <code>blob_bytes</code>, <code>bytes</code></td><td>BLAKE3 hash → bytes; totals</td><td>Checked media, and the size counters for stats.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 id="index-insert">What inserting a record does</h3>
+    <ul>
+      <li><b>Community.</b> The first genesis for a key stays; the node refuses others.</li>
+      <li><b>Delegation.</b> The device is the record's author. An existing delegation stays if it names a different root or expires no earlier; otherwise the new one replaces it, keeping any revocation time, including one that arrived early from the same root.</li>
+      <li><b>Revoke.</b> A root revoking its own key burns it, and the person it speaks for. Revoking a device sets its <code>revoked_at</code> to the earliest time, but only when the revoker is the device's root; a revoke for an unknown device waits in <code>revocations</code>.</li>
+      <li><b>Identity.</b> One with more work replaces the root's current one. One that commits to a different recovery key or person than the first burns the root: it was taken.</li>
+      <li><b>Rotate.</b> Accepted when the signing recovery key is the one a root in the person's chain committed to; the earliest valid rotation away from a root wins, and the chain is relinked.</li>
+      <li><b>Post, comment, edit.</b> Their words go into the search index (lowercase letters and digits, at least two characters, at most 64 each, at most 2,000 per record); a post's media hashes into <code>media_refs</code>.</li>
+    </ul>
+    <p><code>remove</code> undoes every one of these. <code>root_of_at(key, at)</code> answers what a cosignature made at <code>at</code> is worth: <code>None</code> for a device whose blessing had expired or been revoked by then, or a root already replaced.</p>
+  </section>
+
+  <section class="wk-sec" id="persist">
+    <h2>The journal and the Persist trait</h2>
+    <div class="wk-code" data-lang="rust" data-title="hoi-store/src/lib.rs (trimmed)"><pre><code>pub enum Change {
+    Put { id: Id, community: Option&lt;Id&gt;, expires_at: u64, wire: Vec&lt;u8&gt; },
+    Delete { id: Id },
+    /// `None` deletes the blob.
+    Blob { key: String, value: Option&lt;Vec&lt;u8&gt;&gt; },
+    Wipe,
+}
+
+pub struct Loaded {
+    pub records: Vec&lt;Vec&lt;u8&gt;&gt;,
+    pub blobs: Vec&lt;(String, Vec&lt;u8&gt;)&gt;,
+}
+
+pub trait Persist: Send {
+    fn apply(&amp;mut self, changes: &amp;[Change]) -&gt; Result&lt;(), String&gt;;
+    fn load(&amp;mut self) -&gt; Result&lt;Loaded, String&gt;;
+}</code></pre></div>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Persist implementations">
+      <table>
+        <thead><tr><th>Implementation</th><th>Crate</th><th>Who uses it</th></tr></thead>
+        <tbody>
+          <tr><td><code>Sqlite</code></td><td>hoi-store (<code>sqlite</code>)</td><td><code>hoi-node</code>, <code>hoi-sim agent</code> and <code>referee</code></td></tr>
+          <tr><td><code>EncryptedSqlite</code></td><td>hoi-store (<code>sqlite</code>)</td><td>The desktop (passphrase vault) and, wrapped in <code>Split</code>, phones (platform-key vault)</td></tr>
+          <tr><td><code>Pending</code></td><td>hoi-wasm</td><td>The browser: keeps changes for the worker to drain with <code>take_changes()</code>; <code>load</code> returns the records and blobs the worker decrypted</td></tr>
+          <tr><td><code>Journal</code></td><td>hoi-store</td><td>Keeps changes for a host to drain; <code>Journal::with_initial(loaded)</code> lets the desktop and phones open a legacy database in memory to check it before migrating</td></tr>
+          <tr><td><code>Ephemeral</code></td><td>hoi-store</td><td>Tests and the in-process battle: nothing survives</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 id="persist-commit">What commit writes</h3>
+    <p><code>Node::commit()</code> first settles communities whose state changed, writes autobans due on a moderator's device, then appends the blobs that are dirty, in this order: <code>profile-colors</code> and <code>profiles</code>, <code>mls</code>, <code>directory</code>, <code>scatter</code>, <code>state</code>, <code>keys</code>. Record puts and deletes were queued as they happened. Then the whole batch goes to <code>persist.apply</code> in one call.</p>
+    <div class="wk-note warn"><b>A failed save keeps the journal</b><p>If <code>apply</code> fails, the batch is not cleared. The next <code>commit()</code> sends the same changes again with any newer ones after them, so records, keys and state are retried together and newer state never lands before older records. <code>core/crates/hoi-core/tests/persistence.rs</code> fails two commits, renames the person, then lets storage work: the reopened node has the new name, every record, and a root key that still signs.</p></div>
+    <p>Hosts add a policy on top. <code>hoi_net::Shared::with</code> stops the network while saving fails: it drops the outbox, closes every link, sends one notice, and refuses incoming messages and new sync sessions until a commit succeeds, so remote traffic can't keep growing the unsaved journal (<code>hoi-net/src/storage_tests.rs</code>). The web worker's settler keeps the drained changes in a pending array until IndexedDB or OPFS accepted them, and only then sends queued messages and emits events.</p>
+    <div class="wk-code" data-lang="ts" data-title="apps/web/src/lib/core/durable-settle.ts (trimmed)"><pre><code>export function createDurableSettler(node, persist, flushOutbox, emit) {
+  let pending: Change[] = [];
+  return async () =&gt; {
+    pending = pending.concat(node.take_changes());
+    await persist(pending);
+    pending = [];
+    // Events and outgoing records remain in the core until storage has succeeded.
+    flushOutbox();
+    for (const event of JSON.parse(node.take_events()) as unknown[]) emit(event);
+  };
+}</code></pre></div>
+  </section>
+
+  <section class="wk-sec" id="blobs">
+    <h2>Blob keys</h2>
+    <p>Besides records, a store holds named blobs. These are every name the core writes:</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Blob keys">
+      <table>
+        <thead><tr><th>Key</th><th>Contents</th><th>If unreadable at startup</th></tr></thead>
+        <tbody>
+          <tr><td><code>format</code></td><td><code>{"version": 3}</code> (<code>STORAGE_FORMAT_VERSION</code>), strict JSON</td><td><code>storage-incompatible</code>; missing means version 1</td></tr>
+          <tr><td><code>state</code></td><td><code>LocalState</code> as JSON</td><td><code>storage-incompatible</code></td></tr>
+          <tr><td><code>keys</code></td><td><code>Secrets</code> as JSON (hex secret keys)</td><td><code>storage-incompatible</code></td></tr>
+          <tr><td><code>mls</code></td><td>Private communities: the OpenMLS key-value storage, groups, pending requests and invitations, as JSON</td><td><code>storage-incompatible</code></td></tr>
+          <tr><td><code>profiles</code>, <code>profile-colors</code></td><td>The newest profile picture and color revision per person</td><td><code>storage-incompatible</code></td></tr>
+          <tr><td><code>directory</code></td><td>Open communities heard of from other nodes</td><td>starts over: it is only a cache</td></tr>
+          <tr><td><code>scatter</code></td><td>Scattered delivery: holder sightings, objects kept in pieces, mailbox progress, injections</td><td>starts over: holders answer <code>taken</code>, so nothing is overwritten</td></tr>
+          <tr><td><code>m:&lt;hash&gt;</code></td><td>One media blob, checked bytes</td><td>dropped if its BLAKE3 doesn't match the key, or if the operator suppressed it</td></tr>
+          <tr><td><code>previews</code>, <code>pv:&lt;hash&gt;</code></td><td>Link previews kept here and their pictures</td><td>loaded best-effort</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>An encrypted store adds <code>vault</code> (the header), <code>vault-manifest</code> (the sealed inventory), a guard under <code>format</code>, and stores every blob above under <code>v:&lt;key&gt;</code>; see <a href="#vault">the vault</a>. Blob names the core doesn't know are ignored, so newer software can add its own without breaking older software's open.</p>
+  </section>
+
+  <section class="wk-sec" id="state">
+    <h2>Local state and secrets</h2>
+    <p><code>state.rs</code> holds what a device remembers besides records: who you are, whom you trust, what you joined, settings. It is persisted as JSON and never sent anywhere. Both structs use <code>deny_unknown_fields</code>, so a field this build doesn't know makes the blob unreadable rather than silently dropped; and many fields are left out of the JSON while empty (<code>skip_serializing_if</code>), so a store that never used a feature still opens in older software, while one that did refuses to open there.</p>
+    <h3 id="state-local">LocalState</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="LocalState fields">
+      <table>
+        <thead><tr><th>Field</th><th>What it keeps</th></tr></thead>
+        <tbody>
+          <tr><td><code>me</code></td><td><code>Identity</code>: root and device keys (public), name, avatar and color with their revisions, <code>created_at</code>, <code>has_root</code>, the identity work nonce, <code>burned</code>, the root <code>generation</code>, <code>restoring</code>, <code>rc</code>, <code>of</code>, <code>remote</code>.</td></tr>
+          <tr><td><code>joined</code>, <code>public_joins</code>, <code>carried</code></td><td>Communities joined (when, pinning), explicit public joins waiting for details, and communities a native node carries (since when, origin <code>index</code> or <code>request</code>, last other holder seen).</td></tr>
+          <tr><td><code>private_communities</code>, <code>private_carriers</code>, <code>private_blobs</code></td><td>Privacy that survives unavailable MLS state: a private group is never downgraded to raw sync, records and media first learned inside a group stay off public paths.</td></tr>
+          <tr><td><code>bootstrap</code>, <code>learned</code>, <code>nodes</code>, <code>notices</code></td><td>Invite routes per community, members' routes met on authenticated links, public nodes reached before, and operators' notices with the person's answer.</td></tr>
+          <tr><td><code>home</code>, <code>paired</code>, <code>serve_token</code>, <code>link_key</code>, <code>node_id</code></td><td>The paired home node (<code>PairInfo</code>: URL, credential, WebRTC routes, link key, <code>proven</code>), devices this node serves (by a hash of their credential), the current pairing token.</td></tr>
+          <tr><td><code>friends</code>, <code>muted</code>, <code>petnames</code>, <code>names</code>, <code>saved</code>, <code>first_seen</code>, <code>device_labels</code></td><td>Local judgements and labels.</td></tr>
+          <tr><td><code>labelers</code>, <code>trust_shared</code>, <code>blocklists</code>, <code>aggregators</code>, <code>aggregating</code>, <code>handles</code></td><td>Whom the person follows and shares with, and domains checked as handles.</td></tr>
+          <tr><td><code>bounced</code>, <code>bounced_records</code>, <code>reads</code>, <code>vote_seq</code></td><td>Keys bounced here (<code>until</code>, <code>times</code>), newcomers' records read for auto-vouching, vote sequence.</td></tr>
+          <tr><td><code>skeletons</code></td><td>What stays of a removed or deleted record: community, parent, author, kind, times, who removed it and why, the ledger entry.</td></tr>
+          <tr><td><code>media_blocklist</code>, <code>bad_media</code>, <code>similar_blocklist</code>, <code>video_blocklist</code></td><td>Media refused by exact hash, media whose bytes failed the checks, and PDQ fingerprints of refused pictures and video frames (saved as hex).</td></tr>
+          <tr><td><code>identity_work</code></td><td>Identity work already verified (root → nonce, bits): saves an Argon2id run per identity at every start.</td></tr>
+          <tr><td><code>synced</code>, <code>sync_completed</code>, <code>late</code></td><td>When catching up last finished per community (records claiming to be older afterwards were not out there then), diagnostics, and late vouches, reviews and ledger entries counted from first sight.</td></tr>
+          <tr><td><code>suppressed</code></td><td>What the operator suppressed with <code>hoi-node admin</code>: communities, records and media, each with a time and the operator's note.</td></tr>
+          <tr><td><code>settings</code>, <code>relay_day</code>, <code>relay_defaulted</code>, <code>companion_defaulted</code>, <code>passed_along</code></td><td>Settings, the bytes relayed today (UTC day, bytes) for the daily cap, one-time defaults, totals.</td></tr>
+          <tr><td><code>registration_proofs</code>, <code>publication_proofs</code></td><td>Public proofs for name registries; the community's signing key is still discarded after creation.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 id="state-secrets">Secrets</h3>
+    <p><code>Secrets</code> is the <code>keys</code> blob, kept apart so a host can treat it separately. All values are hex unless noted: <code>transport</code> (the network key), <code>root</code>, <code>device</code>, <code>pending_device</code>, <code>communities</code> (community key → secret), <code>rtc_cert</code> (the WebRTC DTLS certificate and key, DER in base64url, because its fingerprint is in pairing links and invites), <code>master</code> (the recovery line's secret, until the person says it is saved) and <code>remote</code> (device keys this computer keeps and signs with for browsers, with labels). After loading, <code>Secrets::wipe()</code> zeroizes every string; the node keeps the parsed keypairs.</p>
+  </section>
+
+  <section class="wk-sec" id="replay">
+    <h2>Replay: rebuilding state from records</h2>
+    <p>Nothing derived is stored. Community states, standing, ladders and indexes are rebuilt from the records on every start by running each record through the same pipeline as a record from a peer. <code>Node::open(persist, platform, web_base, clock)</code>:</p>
+    <ol class="wk-steps">
+      <li><b>Load</b><p><code>persist.load()</code> returns every record's wire bytes and every blob.</p></li>
+      <li><b>Check the format</b><p>The <code>format</code> blob must parse as <code>{version}</code> with nothing else and a version from 1 to 3. A missing one means 1. Anything else fails with <code>storage-incompatible</code>: “Saved storage metadata is damaged or uses an unsupported format. No stored data was changed.”</p></li>
+      <li><b>Read the blobs</b><p><code>mls</code>, <code>state</code>, <code>profiles</code>, <code>profile-colors</code> and <code>keys</code> must parse, and every secret key in <code>keys</code> must be a valid key (a remote device's secret must match its public key); <code>directory</code> and <code>scatter</code> start over if they don't; media and previews are collected.</p></li>
+      <li><b>Record the format</b><p>A store with no format, or an older one, gets <code>{"version": 3}</code> written. A missing <code>node_id</code> gets a random one.</p></li>
+      <li><b>Sort the records</b><p>Each wire is decoded. One this build can't decode stays on disk untouched and is counted in <code>Boot.preservedRecords</code>; it is neither indexed nor served. The rest are sorted by <code>(priority(kind), created_at)</code>: communities, identities, rotations, delegations, revokes, ledger entries, vouches, then posts, comments, edits, reviews, votes, labels, reports, deletes, profiles, profile colors, pointers, rosters, shares, trust, wiki, tallies and blocklists.</p></li>
+      <li><b>Ingest</b><p>Each goes through <code>ingest</code> with <code>Source::Load</code>. A record the current rules refuse (other than a duplicate) gets a <code>Delete</code> queued. Identity work already in <code>state.identity_work</code> is not recomputed.</p></li>
+      <li><b>Check the media</b><p>A blob is kept only if its bytes hash to its name and the operator didn't suppress it; otherwise it is deleted.</p></li>
+      <li><b>Migrate</b><p>A store older than format 3 marks every private community's attachments as private blobs, because earlier stores didn't record where a blob was learned.</p></li>
+      <li><b>Rebuild and tidy</b><p><code>rebuild(&amp;c)</code> for every community, then <code>sweep()</code>, <code>ensure_identity()</code>, <code>renew_delegation()</code>, and a first <code>commit()</code>. Events from the replay are cleared.</p></li>
+    </ol>
+    <p><code>Node::rebuild(c)</code> is the community replay: it collects the community's ledger entries with their effective times, gathers the ladder's inputs, and calls <code>hoi_moderation::Community::settle</code>. Then it applies the outcome: removals whose contest window passed lose their bodies (a skeleton stays), overturned removals let records back in, and media the community hid or removed as illegal is deleted and its fingerprint remembered so altered copies are refused too. It runs at startup and whenever a community is marked dirty.</p>
+    <div class="wk-note info"><b>Two files with storage-sounding names</b><p><code>hoi-core/src/rebuild.rs</code> is not about storage: it is a home node rebuilding objects kept in pieces for its own phones and browsers (<code>rb</code> in its hello, at most 16 rebuilds at a time for one device; a device waits 120 seconds for it before fetching itself). <code>inject.rs</code> is the injector, which sends a device's own new records through another link first. Both keep their bookkeeping in the <code>scatter</code> blob. See <a href="/wiki/scatter/">Scattered delivery</a>.</p></div>
+  </section>
+
+  <section class="wk-sec" id="expiry">
+    <h2>Expiry and the sweep</h2>
+    <p>Expiry is the real deletion mechanism. <code>Store::expired(now)</code> lists every record whose <code>expires_at ≤ now</code>, and <code>Node::sweep()</code> deletes them. Hosts run the sweep on a timer: <code>hoi_net::spawn_sweeper</code> ticks every 5 seconds and sweeps every 36th tick, and the web worker does the same (5-second rounds, a sweep every 36th), so about every three minutes. Each sweep also:</p>
+    <ul>
+      <li>removes a community whose genesis expired, and marks the others dirty so their state is settled again;</li>
+      <li>lets removals take effect once their contest window passed;</li>
+      <li>drops skeletons past their own expiry, reading notes older than 30 days, late markers for records that are gone;</li>
+      <li>deletes media blobs no stored record references (<code>orphan_blobs</code>), each as a <code>Blob { key: "m:…", value: None }</code>;</li>
+      <li>forgets deleted-id markers past their <code>until</code>, quiet strikes, bounces 30 days after they lifted, unfinished drafts after an hour and wanted media after an hour.</li>
+    </ul>
+    <p>The <a href="/wiki/expiry/">Expiry &amp; removal</a> page covers what retention windows mean for people.</p>
+  </section>
+
+  <section class="wk-sec" id="sqlite">
+    <h2>SQLite</h2>
+    <p>Native programs keep one SQLite file per node (rusqlite, SQLite bundled). The schema is created on open:</p>
+    <div class="wk-code" data-lang="text" data-title="hoi-store/src/sqlite.rs"><pre><code>PRAGMA journal_mode = WAL;
+PRAGMA synchronous = FULL;
+PRAGMA secure_delete = ON;
+CREATE TABLE IF NOT EXISTS records(
+  id BLOB PRIMARY KEY, community BLOB, expires_at INTEGER NOT NULL, wire BLOB NOT NULL);
+CREATE INDEX IF NOT EXISTS records_expiry ON records(expires_at);
+CREATE TABLE IF NOT EXISTS blobs(key TEXT PRIMARY KEY, value BLOB NOT NULL);</code></pre></div>
+    <div class="wk-table" tabindex="0" role="region" aria-label="SQLite columns">
+      <table>
+        <thead><tr><th>Table</th><th>Column</th><th>Type</th><th>Holds</th></tr></thead>
+        <tbody>
+          <tr><td rowspan="4"><code>records</code></td><td><code>id</code></td><td>BLOB, primary key</td><td>The 32-byte record id.</td></tr>
+          <tr><td><code>community</code></td><td>BLOB, nullable</td><td>The 32-byte community key; <code>NULL</code> for global records (identities, delegations).</td></tr>
+          <tr><td><code>expires_at</code></td><td>INTEGER, not null</td><td>Unix seconds; indexed by <code>records_expiry</code>.</td></tr>
+          <tr><td><code>wire</code></td><td>BLOB, not null</td><td>The canonical wire bytes, or their sealed form in an encrypted store.</td></tr>
+          <tr><td rowspan="2"><code>blobs</code></td><td><code>key</code></td><td>TEXT, primary key</td><td>A blob name from <a href="#blobs">the list above</a>.</td></tr>
+          <tr><td><code>value</code></td><td>BLOB, not null</td><td>Its bytes.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <ul>
+      <li><code>apply</code> runs every change of a batch in one transaction: <code>INSERT OR REPLACE</code> for puts and blobs, <code>DELETE</code> for deletes, both tables emptied for <code>Wipe</code>. Either all of a commit lands or none of it.</li>
+      <li><code>load</code> reads <code>SELECT wire FROM records</code> and every blob; the node indexes in memory.</li>
+      <li><code>snapshot</code> returns the rows as <code>Change::Put</code> and <code>Change::Blob</code> with their ids, so the encrypted adapter can check each storage address.</li>
+      <li><code>checkpoint</code> runs <code>PRAGMA wal_checkpoint(TRUNCATE)</code> and fails if another process keeps it busy (“Close other processes using this storage and retry.”). Together with <code>secure_delete</code> it removes old plaintext from the database and its WAL after a migration; it can't reach filesystem snapshots or earlier backups.</li>
+    </ul>
+    <p>Records keep their canonical wire bytes, so the file stays readable by any later schema. <code>hoi-node</code>'s registry role uses a separate <code>registry.db</code> with its own schema; see <a href="/wiki/registry/">Registry</a>.</p>
+  </section>
+
+  <section class="wk-sec" id="vault">
+    <h2>The vault: encryption at rest</h2>
+    <p>On a person's device the database holds only ciphertext and a little metadata. <code>hoi_crypto::vault::LocalVault</code> is a random 32-byte data key, wrapped once per way in; <code>hoi_store::vault::EncryptedSqlite</code> and <code>idb.ts</code> seal every record and blob with it and keep a sealed inventory of what should be there. It protects a locked database: not an unlocked process, and not a rollback to a complete older copy of the database.</p>
+    <h3 id="vault-header">The header</h3>
+    <p>A passphrase vault (desktop and browser) starts with <code>HOIV\x03</code> and a list of slots, each <code>kind u8 ‖ len u16le ‖ body</code>. There is exactly one passphrase slot and up to four passkey slots:</p>
+    <div class="wk-bytes" data-title="A passphrase vault header">
+magic | 5 B | sun | 2 | HOIV 0x03
+kind | 1 B | coral | 1 | 1: passphrase
+len | 2 B | mute | 1 | 102, little-endian
+wrapped key | 102 B | mint | 6 | a HOIK keystore blob of the 32-byte data key: Argon2id 64 MiB, 3 passes
+
+kind | 1 B | coral | 1 | 2: passkey (up to four)
+len | 2 B | mute | 1 | body length
+cred len | 2 B | mute | 1 | WebAuthn credential id length, at most 1023
+credential | n B | lilac | 3 | the credential id, in the clear
+salt | 32 B | sky | 3 | PRF salt to ask the authenticator for
+wrapped key | 72 B | mint | 4 | sealed under BLAKE3-derived key of PRF ‖ salt
+</div>
+    <p>The credential ids and salts are readable so the page can ask the authenticator before anything is unlocked. A passphrase must be at least 15 characters and at most 1024 bytes. <code>unlock</code> refuses any passphrase slot whose Argon2id parameters are not the one supported cost, so a tampered header can't make the device run an attacker-chosen expensive derivation.</p>
+    <div class="wk-bytes" data-title="A platform vault header (phones)">
+magic | 5 B | sun | 2 | HOIV 0x02
+check | 68 B | mint | 6 | "hoi local vault key verified", sealed under the key: proves it is the right key
+</div>
+    <p>On phones the data key itself lives in the platform keystore under <code>vault-key-v1</code>: an iOS Keychain item with <code>kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly</code>, or on Android a blob encrypted with an AES-GCM key held by the Android Keystore. A missing or locked key fails closed.</p>
+    <h3 id="vault-cells">Cells and the inventory</h3>
+    <div class="wk-bytes" data-title="One sealed cell (hoi_crypto::sealed)">
+nonce | 24 B | coral | 3 | random, per seal
+ciphertext | n B | mint | 6 | XChaCha20-Poly1305 of the record's wire or the blob's bytes
+tag | 16 B | sun | 2 | Poly1305; the context string is the associated data
+</div>
+    <p>The key for a cell is BLAKE3 <code>derive_key("hoi local vault cell v1:&lt;address&gt;", data key)</code>, with the address <code>record:&lt;id hex&gt;</code> or <code>blob:&lt;name&gt;</code>. A cell copied to another address doesn't open there. The inventory (<code>vault-manifest</code>, sealed at the address <code>manifest</code>) maps every address to the BLAKE3 hex of its current ciphertext: canonical CBOR <code>{version: 1, cells: {…}}</code> natively, the same shape as JSON in the browser. Every write seals the changed cells and a new inventory together; every open checks that the cells on disk are exactly the inventory's. So deleting a cell, injecting a valid cell from elsewhere, or putting back an older ciphertext or an older inventory all fail with “Saved data is damaged or cannot be unlocked. No data was replaced.”</p>
+    <h3 id="vault-layout">What an encrypted store holds</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Encrypted store layout">
+      <table>
+        <thead><tr><th>Where</th><th>Readable without the key</th><th>Sealed</th></tr></thead>
+        <tbody>
+          <tr><td><code>records</code> rows</td><td><code>id</code>, <code>community</code>, <code>expires_at</code>, the ciphertext's length</td><td><code>wire</code></td></tr>
+          <tr><td><code>blobs</code> named <code>v:&lt;name&gt;</code></td><td>the name (so a media blob's BLAKE3 hash, <code>v:m:&lt;hash&gt;</code>) and length</td><td>the value: state, keys, MLS state, media…</td></tr>
+          <tr><td><code>vault</code></td><td>the whole header</td><td>the data key inside its slots</td></tr>
+          <tr><td><code>vault-manifest</code></td><td>its length</td><td>the inventory</td></tr>
+          <tr><td><code>format</code></td><td>the guard <code>{"version":4294967295}</code></td><td>(the real format blob is <code>v:format</code>)</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="wk-note tip"><b>Why the guard</b><p>An older build that knows nothing of vaults reads <code>format</code>, finds version 4294967295, which is outside 1 to 3, and refuses with <code>storage-incompatible</code>. It never mistakes an encrypted store for an empty one and starts writing plaintext into it. The storage compatibility tests check exactly that case.</p></div>
+    <h3 id="vault-open">Opening and migrating</h3>
+    <ol class="wk-steps">
+      <li><b>Find the header</b><p><code>EncryptedSqlite::header</code> looks for the <code>vault</code> blob. Encrypted markers (<code>v:</code> blobs, a manifest, the guard) without a header, or a header without a manifest, are damage, not a reason to start over.</p></li>
+      <li><b>Unlock</b><p>The passphrase, a passkey's PRF answer or the platform key opens the vault; a header that doesn't match fails closed.</p></li>
+      <li><b>Open an encrypted store</b><p>Decrypt every cell, check the inventory, and run a WAL checkpoint again in case an earlier migration committed just before a crash.</p></li>
+      <li><b>Or migrate a plaintext one</b><p>The host first opens the old data in memory (<code>Journal::with_initial</code>) to check that this build can read it, so damaged data is never rewritten because someone tried to unlock it. Then one transaction writes <code>Wipe</code>, every row sealed, the header, the guard and the inventory, and a <code>TRUNCATE</code> checkpoint flushes the old plaintext frames from the WAL.</p></li>
+    </ol>
+    <p>Phones add a step in <code>hoi-ffi</code>'s <code>Split</code>: older versions kept the <code>keys</code> blob in the platform keystore, so a migration moves it into the encrypted database atomically, writes the new vault key, reads it back to verify, and only then deletes the old entry; a crash in between retries the cleanup on the next open.</p>
+  </section>
+
+  <section class="wk-sec" id="browser">
+    <h2>In the browser: IndexedDB and OPFS</h2>
+    <p>The browser node runs in <code>core.worker.ts</code>, which owns storage. It picks one of two backends with <code>openStore(name)</code>: the origin-private file system when the worker can open sync access handles and the store doesn't already live in IndexedDB, IndexedDB otherwise (a private window, an older browser, or a store made there before). The name is <code>hoi</code>.</p>
+    <h3 id="browser-lock">One tab at a time</h3>
+    <p>Before anything is opened, the worker takes a Web Lock named <code>hoi-core</code> with <code>ifAvailable</code> and holds it for its lifetime. A second tab gets <code>blocked</code>; taking over requests the lock with <code>steal: true</code>, and the tab that lost it releases its node, vault and store, then reloads. A browser without <code>navigator.locks</code> is refused: “This browser cannot safely open your saved data.” While locked or blocked, nothing holds the store open, so OPFS files stay free for another tab or a reset.</p>
+    <h3 id="browser-idb">IndexedDB</h3>
+    <p>Database <code>hoi</code>, version 1, two object stores with out-of-line string keys:</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="IndexedDB object stores">
+      <table>
+        <thead><tr><th>Object store</th><th>Key</th><th>Value</th></tr></thead>
+        <tbody>
+          <tr><td><code>records</code></td><td>record id, hex</td><td><code>{wire: Uint8Array, community: string | null, expiresAt: number}</code>; <code>wire</code> sealed</td></tr>
+          <tr><td><code>blobs</code></td><td>blob name (<code>vault</code>, <code>format</code>, <code>vault-manifest</code>, <code>v:…</code>)</td><td><code>Uint8Array</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Each <code>apply</code> is one <code>readwrite</code> transaction over both stores that ends by writing the header, the guard and the new inventory, so a wipe keeps encryption on and a new identity can't fall back to plaintext.</p>
+    <h3 id="browser-opfs">The OPFS log</h3>
+    <p>With sync access handles, a write is one append and one flush instead of an IndexedDB transaction. A store is the directory <code>store-hoi</code> with two files, <code>log-a</code> and <code>log-b</code>. Each file is a run of frames:</p>
+    <div class="wk-bytes" data-title="One OPFS frame">
+magic | 4 B | sun | 2 | HOIF (0x464f4948, little-endian)
+generation | 4 B | coral | 2 | u32le, the same in every frame of a file
+length | 4 B | mute | 2 | u32le, the body's length
+body | n B | mint | 8 | a batch of changes, already sealed by the vault
+crc | 4 B | sky | 2 | CRC-32 of the body
+</div>
+    <div class="wk-bytes" data-title="The body: changes one after another">
+op | 1 B | coral | 1 | 1 put, 2 delete, 3 blob, 4 wipe
+id or key | 2 B + n | lilac | 4 | u16le length then UTF-8; 0xffff for null
+community | 2 B + n | lilac | 3 | put only; null for global records
+expiresAt | 8 B | sun | 2 | put only, f64le
+wire or value | 4 B + n | mint | 4 | u32le length then bytes; 0xffffffff for a deleted blob
+</div>
+    <ul>
+      <li><b>Writing.</b> One frame per <code>apply</code>: all of a commit or, after a crash, none. A first write into an empty file starts with a <code>wipe</code>. A short write is truncated back and fails: “Saving to this browser failed: it may be out of space.”</li>
+      <li><b>Opening.</b> A file's log is its frames from the start up to the first one that is cut short, fails its CRC, changes generation or doesn't decode; its first frame must begin with <code>wipe</code>. The file with a valid log and the higher generation is the store, and a torn tail is truncated. If neither file holds a valid log and either holds more than an unfinished first write, the store is damaged and left as it is for the person to decide.</li>
+      <li><b>Compacting.</b> Once the log passes 4 MiB and three times the live data (records count their wire plus 64 bytes), everything live is written as one frame into the other file under the next generation, then the old file is emptied. A crash in between leaves one of them whole; out of space, it keeps appending to the old one.</li>
+      <li><b>Taking over.</b> A tab that just took the lock retries <code>createSyncAccessHandle</code> up to 20 times, 100 ms apart, while the old tab lets go.</li>
+    </ul>
+    <h3 id="browser-unlock">Unlocking, migrating, resetting</h3>
+    <div class="wk-seq" data-title="Unlocking the browser vault">
+lanes: Page | Core worker | Store | WasmNode
+Page -> Core worker: <code>__vaultStatus</code>
+Core worker -> Store: <code>snapshot()</code>
+Core worker --> Page: <code>create</code>, <code>migrate</code>, <code>locked</code>, <code>ready</code> or <code>blocked</code>
+Page -> Core worker: <code>__unlock(passphrase)</code> or <code>__unlockPasskey(credential, prf)</code>
+Core worker: <code>WasmVault.unlock(header, …)</code>, or <code>new WasmVault(passphrase)</code> for a new vault
+Core worker: <code>decodeSnapshot</code>: check the header, guard and inventory, unseal every cell
+Core worker -> WasmNode: <code>new WasmNode("web", base, records, blobs)</code>: replay and check
+Core worker => Store: no header yet: <code>migrate()</code>, one atomic rewrite, sealed
+Core worker -> WasmNode: first settle; start links and the 5-second timer
+Core worker --> Page: unlocked
+</div>
+    <p>A failed unlock never creates a new identity, changes the passphrase or rewrites ciphertext. If the passphrase opened the vault but the data inside couldn't be loaded, the error is <code>saved-data</code>. <code>__addPasskey</code> and <code>__removePasskeys</code> rewrite only the <code>vault</code> blob. <code>__resetVault("RESET")</code>, allowed only while locked, deletes the IndexedDB database without opening it and removes the OPFS directory; the page then clears the preferences it keeps in <code>localStorage</code> (<code>hoi:theme</code>, <code>hoi:motion</code>, <code>hoi:sync-hidden</code>, <code>hoi:consent:network</code>) and <code>sessionStorage</code> (<code>hoi:sort</code>). If saving fails while unlocked, the worker shows one notice (“This browser could not save changes. Sync is paused…”), keeps the changes, and runs no new call until they are saved.</p>
+  </section>
+
+  <section class="wk-sec" id="pieces">
+    <h2>Pieces kept for others</h2>
+    <p>A node that holds pieces for scattered delivery (<code>hoi-node --hold-pieces GB</code>, or the desktop's switch while it is a public node) keeps them in a <code>PieceStore</code>: opaque bytes under a 32-byte locator, the last UTC day they are kept, the creator's drop hash and the community drop key's id, and nothing about who sent them. They are read on demand, never loaded at startup.</p>
+    <div class="wk-code" data-lang="text" data-title="hoi-store/src/pieces.rs (SqlitePieces)"><pre><code>PRAGMA journal_mode = WAL;
+PRAGMA synchronous = NORMAL;
+CREATE TABLE IF NOT EXISTS pieces(
+  loc BLOB PRIMARY KEY, expiry_day INTEGER NOT NULL, touched_day INTEGER NOT NULL,
+  drop_hash BLOB NOT NULL, drop_key_id BLOB NOT NULL, bytes BLOB NOT NULL);
+CREATE INDEX IF NOT EXISTS pieces_expiry ON pieces(expiry_day);
+CREATE INDEX IF NOT EXISTS pieces_touched ON pieces(touched_day);</code></pre></div>
+    <dl class="wk-defs">
+      <dt>put<small>Stored, Exists, Full</small></dt><dd>A piece is never overwritten: a second put under the same locator answers <code>Exists</code>. When the budget is reached the store first sweeps expired pieces, then evicts pieces nobody fetched or probed for <code>IDLE_DAYS = 30</code> days, oldest first, and only then answers <code>Full</code>.</dd>
+      <dt>get, has<small>bytes, length</small></dt><dd>Only while not expired; both count as touched today.</dd>
+      <dt>sweep<small>count</small></dt><dd>Deletes every piece whose expiry day has passed.</dd>
+    </dl>
+    <p>The file is <code>pieces.db</code> next to <code>hoi.db</code>, deliberately outside the vault: the pieces are ciphertext the node can't read and the metadata names nobody. On the desktop it exists only while the setting is on; turning it off deletes the file and its <code>-wal</code>, <code>-shm</code> and <code>-journal</code> sidecars. <code>MemPieces</code> is the in-memory version for tests and small holders.</p>
+  </section>
+
+  <section class="wk-sec" id="programs">
+    <h2>Where each program keeps its data</h2>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Data locations per program">
+      <table>
+        <thead><tr><th>Program</th><th>Location</th><th>Files</th><th>At rest</th></tr></thead>
+        <tbody>
+          <tr><td>Web app</td><td>the site's origin storage</td><td>OPFS <code>store-hoi/log-a</code>, <code>log-b</code>, or IndexedDB database <code>hoi</code></td><td>passphrase vault (with up to four passkeys)</td></tr>
+          <tr><td>Desktop</td><td>Tauri's app data directory</td><td><code>hoi.db</code> (+ <code>-wal</code>, <code>-shm</code>); <code>pieces.db</code> while keeping pieces for others</td><td>passphrase vault; the app's recovery reset deletes only <code>hoi.db</code> and its sidecars</td></tr>
+          <tr><td>Android</td><td><code>filesDir/hoi</code></td><td><code>hoi.db</code>, <code>last-sync</code></td><td>platform-key vault; key in the Android Keystore</td></tr>
+          <tr><td>iOS</td><td>Application Support <code>/hoi</code>, excluded from backups</td><td><code>hoi.db</code>, <code>last-sync</code></td><td>platform-key vault; key in the Keychain, this device only</td></tr>
+          <tr><td><code>hoi-node</code></td><td><code>--data DIR</code> (default <code>./hoi-node-data</code>)</td><td><code>hoi.db</code>, <code>pieces.db</code> (<code>--hold-pieces</code>), <code>registry.db</code> (<code>--registry</code>), <code>hoi-node.lock</code>, <code>node-link</code>, <code>pairing-link</code>, <code>notice-hash</code>, <code>packet-relay-blocked.txt</code></td><td>not encrypted: plain <code>Sqlite</code></td></tr>
+          <tr><td><code>hoi-sim agent</code>, <code>referee</code></td><td><code>--data DIR</code></td><td><code>hoi.db</code></td><td>not encrypted</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="wk-note warn"><b>hoi-node's database is plaintext</b><p><code>hoi-node</code> opens <code>DIR/hoi.db</code> with <code>Sqlite::open</code>, without a vault. A home node that holds a device key keeps it in the <code>keys</code> blob of that file, so the data directory must be protected by the machine: its permissions, its disk encryption. A node started with <code>--public</code> or <code>--peer-only</code> has no person and makes no signing key (one already in its data directory is kept). The <code>pairing-link</code> file holds a pairing credential and is written readable only by the node's user. See <a href="/wiki/hoi-node/">hoi-node</a> and <a href="/wiki/deploy/">Deploying &amp; hosting</a>.</p></div>
+    <p>Two other things a person may keep: a <code>.hoikey</code> file from <code>exportIdentity</code> (a <code>HOIK</code> keystore blob under its own passphrase of at least 15 characters, Argon2id 64 MiB and 3 passes, holding the root and device keys, community keys and the records needed to restore them), and the recovery line, which is never stored once the person said it is saved.</p>
+  </section>
+
+  <section class="wk-sec" id="tests">
+    <h2>The tests that hold storage to this</h2>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Storage tests">
+      <table>
+        <thead><tr><th>Test</th><th>What it proves</th></tr></thead>
+        <tbody>
+          <tr><td><code>hoi-core/src/tests/storage_compatibility.rs</code>: <code>malformed_or_future_local_metadata_never_overwrites_existing_storage</code></td><td>Eleven damaged or future <code>state</code>, <code>keys</code> and <code>format</code> blobs (truncated JSON, <code>null</code>, unknown fields, a bad key, a bad certificate, versions 4294967295, 0, <code>"1"</code>, an extra field): every open fails with <code>storage-incompatible</code>, the message says no data changed, and every record and blob is byte for byte the same afterwards.</td></tr>
+          <tr><td><code>…unversioned_legacy_storage_is_read_without_replacing_keys_and_gains_a_guard</code></td><td>A store with no <code>format</code> opens with the same root key, leaves <code>keys</code> unchanged and gains <code>{"version": 3}</code>.</td></tr>
+          <tr><td><code>…version_one_public_storage_upgrades_without_replacing_identity_or_history</code></td><td>A format-1 store written before the private-state fields existed upgrades with its identity and posts intact; the format version must be at least 2 so format-1 software refuses private-capable storage.</td></tr>
+          <tr><td><code>hoi-core/tests/persistence.rs</code></td><td>Failed commits are retried with records, keys and the latest state, in order.</td></tr>
+          <tr><td><code>hoi-net/src/storage_tests.rs</code></td><td>A storage failure cancels links, sends one notice, queues no stale messages; while it lasts, incoming traffic is refused and the journal does not grow; a fresh link after recovery starts with a <code>hello</code>.</td></tr>
+          <tr><td><code>hoi-store/src/vault.rs</code> (7 tests)</td><td>Deleted, swapped, replayed and injected cells and an old inventory all fail closed; a failed transaction keeps the last committed inventory; migration leaves no plaintext in the database or its WAL, also after an interrupted checkpoint.</td></tr>
+          <tr><td><code>hoi-store/src/pieces.rs</code>, <code>sqlite.rs</code></td><td>Budget, eviction order, expiry and restarts; put, load and delete.</td></tr>
+          <tr><td><code>hoi-crypto/src/vault.rs</code></td><td>Passkeys open the same vault and only with their own answer, four at most; damaged slot lists and expensive parameters are refused.</td></tr>
+          <tr><td><code>hoi-ffi/src/keys.rs</code></td><td>Legacy identity and MLS state migrate together; a missing legacy key creates no replacement; a keystore that can't save opens no node; a crash before cleanup is retried.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="wk-sec" id="next">
+    <h2>Where to go next</h2>
+    <div class="wk-cards">
+      <a class="wk-card g-sky" href="/wiki/api/"><i></i><b>Core API</b><span>The calls whose results commit() saves.</span></a>
+      <a class="wk-card g-coral" href="/wiki/web-app/"><i></i><b>Web app</b><span>The vault screens, passkeys and recovery in the app.</span></a>
+      <a class="wk-card g-mint" href="/wiki/expiry/"><i></i><b>Expiry &amp; removal</b><span>What fading means, and what can't be promised.</span></a>
+      <a class="wk-card g-sun" href="/wiki/crates/"><i></i><b>Crates</b><span>hoi-store and the crates around it.</span></a>
+    </div>
+  </section>
+</article>
+<!-- @wiki-close -->
+<!-- @include footer.html -->
+<script type="module" src="/src/pages/wiki.ts"></script>
+</body>
+</html>

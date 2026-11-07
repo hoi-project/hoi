@@ -1,0 +1,388 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <!-- @include head.html title="Releases &amp; verification · hoi wiki" description="Product and protocol versions, release.json, the release scripts and workflows, the signed release list, code signing, reproducible builds, checking a download and release notices." -->
+</head>
+<body class="wiki">
+<!-- @include header.html nav="wiki" -->
+<!-- @wiki-open -->
+<article class="wk-doc">
+  <!-- @wiki-crumbs -->
+  <h1>Releases <span class="acc">&amp; verification</span></h1>
+  <p class="wk-lead">How a version is prepared, tested, built, signed and uploaded as a draft, what the release list says about every file, which parts anyone can rebuild byte for byte, how you check a download yourself, and how the apps learn about a new notice without ever being told to wipe anything.</p>
+  <p class="wk-src-list">Source <a href="{{REPO_URL}}/blob/main/release.json">release.json</a> <a href="{{REPO_URL}}/blob/main/docs/RELEASES.md">docs/RELEASES.md</a> <a href="{{REPO_URL}}/blob/main/scripts/release-version.mjs">release-version.mjs</a> <a href="{{REPO_URL}}/blob/main/scripts/release-manifest.mjs">release-manifest.mjs</a> <a href="{{REPO_URL}}/blob/main/scripts/reproduce.mjs">reproduce.mjs</a> <a href="{{REPO_URL}}/blob/main/.github/workflows/release.yml">release.yml</a> <a href="{{REPO_URL}}/blob/main/.github/workflows/release-version.yml">release-version.yml</a> <a href="{{REPO_URL}}/blob/main/apps/site/verify/index.html">verify/</a></p>
+  <div class="wk-head-rule"></div>
+
+  <section class="wk-sec" id="versions">
+    <h2>Versions</h2>
+    <p>Three numbers travel separately. The <b>product version</b> (now <code>1.0.0-preview.1</code>) names a build of every program. The <b>protocol version</b> (now <code>"0.3"</code>) names the family of formats a build speaks. The <b>index version</b> (now <code>1</code>) names the registry index edition. A release changes the product version every time; it changes the other two only when someone asks for it explicitly.</p>
+    <h3 id="product-version">The product version</h3>
+    <p>A release's tag is <code>v</code> plus the product version, and every first-party manifest must carry exactly that version. <code>versionFiles()</code> in <code>scripts/release-version.mjs</code> lists them:</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Files that carry the product version">
+      <table>
+        <thead><tr><th>File</th><th>Where the version is</th></tr></thead>
+        <tbody>
+          <tr><td><code>core/Cargo.toml</code></td><td><code>[workspace.package] version</code>: the one read first, and the one whose change starts an automatic release</td></tr>
+          <tr><td><code>apps/desktop/src-tauri/Cargo.toml</code>, <code>apps/setup/src-tauri/Cargo.toml</code></td><td><code>[package] version</code></td></tr>
+          <tr><td><code>apps/desktop/src-tauri/tauri.conf.json</code>, <code>apps/setup/src-tauri/tauri.conf.json</code></td><td>top-level <code>"version"</code></td></tr>
+          <tr><td><code>apps/*/package.json</code>, <code>packages/*/package.json</code></td><td>top-level <code>"version"</code>, for every one that has a version (the root <code>package.json</code> has none)</td></tr>
+          <tr><td><code>core/Cargo.lock</code>, <code>apps/desktop/src-tauri/Cargo.lock</code>, <code>apps/setup/src-tauri/Cargo.lock</code></td><td>the <code>version</code> of every local <code>hoi-*</code> package (those without a <code>source</code>); external and vendored crates keep theirs</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>The pnpm lockfile uses workspace links and needs no edit. The mobile wrappers use the Rust workspace version and have no version of their own. Versions are SemVer; prereleases and <code>0.x</code> versions default to the <code>preview</code> channel, everything else to <code>stable</code>, and a prerelease can never be <code>stable</code>. The intended sequence is <code>1.0.0-preview.1</code>, <code>1.0.0-preview.2</code>, …, optionally <code>1.0.0-rc.1</code>, then <code>1.0.0</code>, with a new version for every published release.</p>
+  </section>
+
+  <section class="wk-sec" id="release-json">
+    <h2>release.json</h2>
+    <p>The root <code>release.json</code> is the one manifest every surface reads: the channel, the notice everyone sees, and the compatibility it declares. It is compiled into the site, the app and the Rust core, so a build always knows what it is even offline.</p>
+    <div class="wk-code" data-lang="json" data-title="release.json"><pre><code>{
+  "schemaVersion": 1,
+  "revision": 1,
+  "channel": "preview",
+  "protocolVersion": "0.3",
+  "indexVersion": 1,
+  "supportedProtocols": ["0.3"],
+  "notice": {
+    "title": "Preview — unstable",
+    "message": "hoi is in development. Protocol changes may cause data loss. Do not rely on this preview to preserve data."
+  }
+}</code></pre></div>
+    <dl class="wk-defs">
+      <dt>schemaVersion<small>1</small></dt><dd>Must be exactly <code>1</code>. Anything else fails closed.</dd>
+      <dt>revision<small>positive safe integer</small></dt><dd>Goes up by one whenever any release metadata changes. A newer notice wins only with a revision at least as high as the one already shown.</dd>
+      <dt>channel<small>"preview" | "stable"</small></dt><dd>Preview builds show the warning banner, set GitHub's pre-release flag, and keep the app out of search results.</dd>
+      <dt>protocolVersion<small>string</small></dt><dd>1–64 characters of <code>[A-Za-z0-9._-]</code>, starting with a letter or digit. Bound into every community publication proof this build signs.</dd>
+      <dt>indexVersion<small>integer 1 – 2,147,483,647</small></dt><dd>The registry index edition, independent of the product version. Also bound into publication proofs.</dd>
+      <dt>supportedProtocols<small>1–16 strings</small></dt><dd>Distinct versions, each in the same format, and it must include <code>protocolVersion</code>. The app joins a public listing only if its protocol is in this list and its index version equals this build's.</dd>
+      <dt>notice.title<small>1–100 characters</small></dt><dd>Not blank after trimming.</dd>
+      <dt>notice.message<small>1–1200 characters</small></dt><dd>Not blank after trimming.</dd>
+    </dl>
+    <p><code>validateRelease()</code> in <code>scripts/release-schema.mjs</code> enforces all of this and returns a copy with exactly these fields, dropping anything else; <code>release-schema.d.mts</code> declares it as the <code>ReleaseConfig</code> interface. <code>loadRelease()</code> in <code>release-config.mjs</code> refuses a file over 16 KiB, and the Rust copy in <code>hoi-node/src/registry/release.rs</code> applies the same rules with the same message.</p>
+    <h3 id="release-json-readers">Who reads it</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Readers of release.json">
+      <table>
+        <thead><tr><th>Reader</th><th>How</th></tr></thead>
+        <tbody>
+          <tr><td>The website build</td><td><code>loadBuildRelease()</code>; every page's banner shows the title, message and "This build: preview · protocol 0.3 · index 1", and the build emits <code>release.json</code></td></tr>
+          <tr><td>The app build</td><td>compiled in as <code>__HOI_RELEASE__</code> (browser and desktop); the build emits <code>release.json</code> beside the app</td></tr>
+          <tr><td><code>assemble-static.mjs</code></td><td>refuses to assemble when either build's copy differs; writes <code>dist/release.json</code> and <code>dist/preview.json</code></td></tr>
+          <tr><td>The Rust core</td><td><code>include_str!("../../../../release.json")</code> in <code>hoi-core/src/registration.rs</code>: the protocol and index a publication proof binds, and what a carrier mirrors</td></tr>
+          <tr><td>The Node registry</td><td><code>loadRelease()</code> on every metadata and directory request, from the replacement file an operator names or the repository's; validated at startup, and a malformed replacement answers 503</td></tr>
+          <tr><td><code>hoi-node --registry</code></td><td>the compiled manifest, or <code>--registry-release PATH</code>, read on each request (<a href="/wiki/registry/">Registry</a>)</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="wk-note warn"><b>Metadata never wipes</b><p>Changing a notice does not reset device data, migrate storage or re-sign existing community proofs. Release metadata is informational: no notice, channel, index or protocol label deletes IndexedDB or keys. The Rust storage format guard is a separate mechanism. Rebuild native, WASM and UI artifacts together when compatibility fields change, and never list a protocol you have not tested.</p></div>
+  </section>
+
+  <section class="wk-sec" id="release-version">
+    <h2>Preparing a version</h2>
+    <p><code>pnpm release:version</code> (<code>scripts/release-version.mjs</code>) edits files and nothing else: no build, commit, tag, push, deployment or network access.</p>
+    <div class="wk-code" data-lang="sh" data-title="docs/RELEASES.md"><pre><code>pnpm release:version                              # show and check the current version
+pnpm release:version 1.0.0-preview.1 --dry-run    # preview the edits
+pnpm release:version 1.0.0-preview.1              # prepare it
+pnpm release:version --check 1.0.0-preview.1      # verify all manifests and lockfiles
+pnpm release:version 1.0.0-preview.2 --protocol 0.4 --index 2
+pnpm release:version 1.0.0-preview.2 --protocol 0.4 --supported-protocols 0.3,0.4</code></pre></div>
+    <div class="wk-table" tabindex="0" role="region" aria-label="release:version options">
+      <table>
+        <thead><tr><th>Option</th><th>Effect</th></tr></thead>
+        <tbody>
+          <tr><td><code>VERSION</code></td><td>SemVer, optional <code>v</code> prefix; validated by <code>releaseTier()</code></td></tr>
+          <tr><td>(nothing)</td><td>the same as <code>--check</code> on the current version</td></tr>
+          <tr><td><code>--dry-run</code></td><td>prints the plan, writes nothing</td></tr>
+          <tr><td><code>--check</code></td><td>every manifest and lockfile has the version, <code>release.json</code> is valid, a prerelease is on preview; prints <code>vX: channel, tier checks</code>. Can't be combined with editing options</td></tr>
+          <tr><td><code>--channel preview|stable</code></td><td>overrides the default (preview for <code>0.x</code> and prereleases); a channel change replaces the notice with that channel's default</td></tr>
+          <tr><td><code>--protocol VERSION</code></td><td>sets <code>protocolVersion</code>; a changed protocol resets <code>supportedProtocols</code> to just itself</td></tr>
+          <tr><td><code>--supported-protocols LIST</code></td><td>an explicit comma-separated list, only for formats this build really supports</td></tr>
+          <tr><td><code>--index NUMBER</code></td><td>a positive integer for <code>indexVersion</code></td></tr>
+          <tr><td><code>--notice-title TEXT</code>, <code>--notice-message TEXT</code></td><td>custom notice words</td></tr>
+          <tr><td><code>--github-output</code></td><td>with <code>--check</code>: appends <code>version</code>, <code>tag</code>, <code>tier</code>, <code>channel</code> and <code>prerelease</code> to <code>GITHUB_OUTPUT</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p><code>planVersion()</code> reads and validates every file before it writes any of them, so a malformed manifest late in the list prevents every earlier write. Any change to the release metadata raises <code>revision</code> by exactly one; repeating an identical command changes nothing. Line endings are preserved (a Windows checkout's CRLF stays CRLF). The default notices are <code>"Preview — unstable"</code> (the text above) and <code>"Stable release"</code> / <code>"This build is on the stable release channel."</code></p>
+    <p>Then review the edits, run <code>pnpm check:quick</code>, and commit only the intended changes, for example as <code>chore(release): v1.0.0-preview.1</code>, and push to <code>main</code>. With automatic releases on, that push starts the pipeline; there is no separate local tagging step.</p>
+  </section>
+
+  <section class="wk-sec" id="scripts">
+    <h2>The release scripts</h2>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Release scripts">
+      <table>
+        <thead><tr><th>Script</th><th>Role</th></tr></thead>
+        <tbody>
+          <tr><td><code>release-version.mjs</code></td><td>prepare and check versions (above); also exports <code>checkVersion</code>, <code>mismatches</code>, <code>readVersion</code> for the others</td></tr>
+          <tr><td><code>release-tier.mjs</code></td><td><code>patch</code>, <code>minor</code> or <code>major</code> from the numbers (<a href="/wiki/development/">Building &amp; testing</a>); prints it and appends <code>tier=…</code> to <code>GITHUB_OUTPUT</code></td></tr>
+          <tr><td><code>release-plan.mjs</code></td><td>read-only planning for the Release: version workflow (below)</td></tr>
+          <tr><td><code>release-config.mjs</code> / <code>.d.mts</code></td><td><code>loadBuildRelease()</code> (the repository's file) and <code>loadRelease(filename)</code> (read every time, 16 KiB cap)</td></tr>
+          <tr><td><code>release-schema.mjs</code> / <code>.d.mts</code></td><td><code>validateRelease()</code> and <code>noticeForBuild()</code>, shared by builds, the app and the registry</td></tr>
+          <tr><td><code>release-manifest.mjs</code></td><td>writes the release list from a folder of release files</td></tr>
+          <tr><td><code>release-local.mjs</code></td><td>the whole release on your own computer</td></tr>
+          <tr><td><code>reproduce.mjs</code></td><td>reproducible builds and their digests</td></tr>
+          <tr><td><code>tauri-bundles.mjs</code></td><td>which Windows bundles a version gets, finding and naming bundles</td></tr>
+          <tr><td><code>installer-art.mjs</code></td><td>draws the installers' artwork</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 id="release-plan">release-plan.mjs</h3>
+    <p>For an automatic run (a push), it releases only when all of these hold; otherwise it prints why and sets <code>release=false</code>:</p>
+    <ul>
+      <li>the ref is <code>refs/heads/main</code>;</li>
+      <li>there is a previous commit (an initial branch push, all zeros, never releases: use a manual run for the first release of an imported repository);</li>
+      <li>the previous commit's <code>core/Cargo.toml</code> has a workspace version, and it differs from the current one.</li>
+    </ul>
+    <p>Then, for manual runs too, <code>checkVersion()</code> must pass, the tag <code>vX</code> must not exist on any other commit ("existing tags are never moved"), and it outputs <code>release</code>, <code>version</code>, <code>tag</code>, <code>tier</code>, <code>channel</code>, <code>prerelease</code>, <code>sha</code> and <code>create_tag</code> (false when the tag already points at this commit, so a retry reuses it). A malformed previous SHA or missing history fails the job rather than silently releasing.</p>
+  </section>
+
+  <section class="wk-sec" id="pipeline">
+    <h2>The GitHub release pipeline</h2>
+    <p>Two workflows. <b>Release: version</b> turns a committed version into a tag; <b>Release</b> turns a tag into a signed draft. A tag made with the built-in token doesn't trigger push workflows, so the first explicitly dispatches the second.</p>
+    <div class="wk-seq" data-title="From a version commit to a draft release">
+lanes: Maintainer | Version | Release | GitHub release
+-- Version --
+Maintainer -> Version: push to <code>main</code> with a new version in <code>core/Cargo.toml</code>, or Run workflow
+Version: <code>plan</code>: <code>release-plan.mjs</code> decides
+Version -> GitHub release: create <code>refs/tags/vX</code> on the validated commit (if new)
+Version: check that <code>vX</code> still names that commit
+Version -> Release: <code>gh workflow run release.yml --ref vX -f tag=vX -f desktop=…</code>
+-- Validate --
+Release: <code>plan</code>: tag format, <code>release-version.mjs --check</code>, tier, pin the commit
+Release: <code>checks</code>; for a major tier also <code>long</code>, <code>security</code>, <code>npm-audit</code>
+Release: <code>signing</code>: every needed secret present?
+-- Build --
+Release -> GitHub release: create the draft (pre-release flag from the channel)
+Release => GitHub release @sky: desktop and setup bundles, hoi-node archives and digests, side by side
+Release => GitHub release @coral: <code>manifest.json</code>, <code>manifest.json.minisig</code>, <code>install.sh</code>, <code>install.ps1</code>; a provenance attestation
+-- Publish --
+Maintainer -> GitHub release: publish the draft by hand
+    </div>
+    <h3 id="release-version-workflow">Release: version (release-version.yml)</h3>
+    <p>Triggers: a push to <code>main</code> touching <code>core/Cargo.toml</code> (with <code>HOI_RELEASES_ENABLED</code>, in <code>hoi-project/hoi</code>), or a manual run on a selected branch with a <code>desktop</code> boolean (default true); the version is read from that commit, no tag input. <code>plan</code> checks out <code>github.sha</code> with full history and runs <code>release-plan.mjs</code>. <code>start</code> (with <code>contents: write</code> and <code>actions: write</code>) creates the tag through the GitHub API when needed, refuses if the tag no longer matches the validated commit, and dispatches Release. Its success only means the build was started; follow the Release run.</p>
+    <h3 id="draft-release">Release (release.yml)</h3>
+    <p>Triggers: a pushed <code>v*</code> tag (the switch), or a manual run naming an existing tag, with <code>desktop</code> (default true; off releases hoi-node only, without the setup app either). Runs for one tag never cancel each other.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Release jobs">
+      <table>
+        <thead><tr><th>Job</th><th>Needs</th><th>Does</th></tr></thead>
+        <tbody>
+          <tr><td><code>plan</code></td><td>—</td><td>the tag matches <code>^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$</code>; checks out the tag; <code>release-version.mjs --check "$TAG" --github-output</code>; outputs the tier, the prerelease flag and the commit SHA that every later job checks out</td></tr>
+          <tr><td><code>checks</code></td><td>plan</td><td><code>release-checks.yml</code> on that commit</td></tr>
+          <tr><td><code>long</code></td><td>plan; major only</td><td><code>release-major.yml</code></td></tr>
+          <tr><td><code>security</code></td><td>plan; major only</td><td>for each of the three Cargo manifests: the dependency gate, cargo-deny with <code>--all-features</code>, <code>cargo audit</code> of the lockfile</td></tr>
+          <tr><td><code>npm-audit</code></td><td>plan; major only</td><td><code>pnpm audit --audit-level low</code></td></tr>
+          <tr><td><code>signing</code></td><td>all of the above</td><td>runs only if plan and checks succeeded and, for a major, long, security and npm-audit succeeded (for others they must be skipped). Checks the tree carries the tag's version and that the signing secrets exist</td></tr>
+          <tr><td><code>draft</code></td><td>plan, signing</td><td>creates the draft with <code>gh release create "$TAG" --draft --verify-tag --prerelease=… --title "hoi $TAG"</code>, or reuses a draft already there (one uploaded by <code>release-local.mjs --upload</code>); a published release with that tag stops it: "use a new version"</td></tr>
+          <tr><td><code>desktop</code>, <code>setup</code></td><td>plan, draft; <code>desktop</code> on</td><td><code>tauri-apps/tauri-action</code> for <code>apps/desktop</code> and <code>apps/setup</code> on macOS (<code>--target universal-apple-darwin</code>), Ubuntu 22.04, Ubuntu 22.04 ARM and Windows, uploading into the draft</td></tr>
+          <tr><td><code>node</code></td><td>plan, draft</td><td>hoi-node for <code>x86_64-unknown-linux-gnu</code>, <code>aarch64-unknown-linux-gnu</code>, <code>aarch64-apple-darwin</code> and <code>x86_64-apple-darwin</code> (one macOS runner), <code>x86_64-pc-windows-msvc</code>: each built by <code>reproduce.mjs --only node --target</code>, packed as <code>hoi-node_&lt;v&gt;_&lt;target&gt;.tar.gz</code>, uploaded with its <code>.digests.json</code></td></tr>
+          <tr><td><code>manifest</code></td><td>plan, desktop, setup, node</td><td>runs only if node succeeded and desktop and setup succeeded or were skipped on purpose, never after a failed build: downloads every asset, adds the installers, writes and signs the release list, attests, uploads</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>The draft's notes say which case it is: "hoi-node only." when the desktop builds were off; "Verify downloads against the signed manifest.json (minisign)." when the installers are code-signed; and otherwise "These installers are NOT code-signed for Windows and macOS. Verify downloads against the signed manifest.json (minisign) before running them." (signed means both the Windows and the Apple certificate secrets are set). The preview channel sets GitHub's pre-release flag, numeric <code>0.x</code> previews included. Publishing the draft and deploying the site are separate manual actions.</p>
+  </section>
+
+  <section class="wk-sec" id="manifest">
+    <h2>The release list: manifest.json</h2>
+    <p><code>node scripts/release-manifest.mjs &lt;dir&gt; &lt;tag&gt; &gt; manifest.json</code> lists every downloadable file in a folder with its platform, size and SHA-256. The website's download page reads it, and so do <code>install.sh</code> and <code>install.ps1</code>.</p>
+    <div class="wk-code" data-lang="js" data-title="scripts/release-manifest.mjs (trimmed)"><pre><code>return { ...c, name, url: fileUrl(name), size: bytes.length,
+         sha256: createHash('sha256').update(bytes).digest('hex') };
+// …sorted by platform + kind
+const manifest = {
+  schema: 1,
+  latest: version,
+  signature: 'manifest.json.minisig',
+  releases: [{ version, date: new Date().toISOString().slice(0, 10),
+               notes: `https://github.com/${repo}/releases/tag/${tag}`, files }],
+};</code></pre></div>
+    <dl class="wk-defs">
+      <dt>schema<small>1</small></dt><dd>The download page refuses any other value ("unexpected manifest format").</dd>
+      <dt>latest<small>string | null</small></dt><dd>The version (tag without <code>v</code>) the page and installers pick; <code>null</code> means no release yet.</dd>
+      <dt>signature<small>"manifest.json.minisig"</small></dt><dd>The detached minisign signature beside the list.</dd>
+      <dt>releases[].version, date, notes<small>strings</small></dt><dd><code>date</code> is <code>YYYY-MM-DD</code>; <code>notes</code> the GitHub release page.</dd>
+      <dt>files[]<small>objects</small></dt><dd><code>platform</code>, <code>kind</code>, <code>arch</code>, optional <code>product</code>, <code>name</code>, <code>url</code>, <code>size</code> (bytes), <code>sha256</code> (64 hex).</dd>
+    </dl>
+    <div class="wk-table" tabindex="0" role="region" aria-label="How files are classified">
+      <table>
+        <thead><tr><th>File name</th><th>platform</th><th>kind</th></tr></thead>
+        <tbody>
+          <tr><td><code>*.dmg</code></td><td><code>macos</code></td><td><code>dmg</code></td></tr>
+          <tr><td><code>*.msi</code></td><td><code>windows</code></td><td><code>msi</code></td></tr>
+          <tr><td><code>*-setup.exe</code>, <code>*.exe</code></td><td><code>windows</code></td><td><code>exe</code></td></tr>
+          <tr><td><code>*.AppImage</code>, <code>*.deb</code>, <code>*.rpm</code></td><td><code>linux</code></td><td><code>AppImage</code>, <code>deb</code>, <code>rpm</code></td></tr>
+          <tr><td><code>*.apk</code></td><td><code>android</code></td><td><code>apk</code></td></tr>
+          <tr><td><code>hoi-node_*.tar.gz</code></td><td><code>node</code></td><td><code>tar.gz</code></td></tr>
+          <tr><td>anything else (digests, installers, the list itself)</td><td colspan="2">left out</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p><code>arch</code> is <code>aarch64</code> for names with <code>aarch64</code> or <code>arm64</code>, <code>universal</code> for <code>universal</code>, else <code>x86_64</code>. Files of the node setup app (names starting <code>hoi Node Setup_</code>, <code>hoi.Node.Setup_</code> as a GitHub release spells it, or <code>hoi-node-setup_</code>) get <code>product: "setup"</code>, which keeps them off the app's rows and out of the installers' app choice. Each <code>url</code> is the GitHub release download address, or, when the repository variable <code>HOI_RELEASE_BASE_URL</code> names one (an <code>https://</code> address ending in <code>/</code>), that address plus the URL-encoded file name.</p>
+    <p>The site ships <code>apps/site/public/releases/manifest.json</code>, served from <code>/releases/</code> with <code>Cache-Control: no-cache</code>. The committed file lists nothing yet:</p>
+    <div class="wk-code" data-lang="json" data-title="apps/site/public/releases/manifest.json"><pre><code>{
+  "schema": 1,
+  "latest": null,
+  "signature": "manifest.json.minisig",
+  "releases": []
+}</code></pre></div>
+    <p>The download page fetches it with <code>cache: 'no-cache'</code> and <code>credentials: 'omit'</code>, accepts a file only with every field present, a 64-hex <code>sha256</code> and a URL that is <code>https:</code> or same-origin, shows each checksum with a copy button, and says "Waiting for the first signed release." while <code>latest</code> is <code>null</code>.</p>
+  </section>
+
+  <section class="wk-sec" id="signing">
+    <h2>What is signed, and with what</h2>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Signatures in a release">
+      <table>
+        <thead><tr><th>What</th><th>How</th><th>Key or secret</th></tr></thead>
+        <tbody>
+          <tr><td><code>manifest.json</code></td><td><code>minisign -S -s minisign.key -m manifest.json -t "hoi vX"</code>: a detached <code>manifest.json.minisig</code> whose trusted comment names the tag</td><td><code>MINISIGN_SECRET_KEY</code> (the secret-key file, base64) and <code>MINISIGN_PASSWORD</code>; the decoded key file is deleted right after</td></tr>
+          <tr><td>macOS bundles</td><td>signed and notarized by <code>tauri-action</code> when the Apple secrets are set</td><td><code>APPLE_CERTIFICATE</code>, <code>APPLE_CERTIFICATE_PASSWORD</code>, <code>APPLE_SIGNING_IDENTITY</code>, <code>APPLE_ID</code>, <code>APPLE_PASSWORD</code>, <code>APPLE_TEAM_ID</code></td></tr>
+          <tr><td>Windows bundles</td><td>the PFX is imported into <code>Cert:\CurrentUser\My</code> and deleted; Tauri signs with its thumbprint, <code>digestAlgorithm: sha256</code>, timestamped by DigiCert's server</td><td><code>WINDOWS_CERTIFICATE</code> (base64 PFX), <code>WINDOWS_CERTIFICATE_PASSWORD</code></td></tr>
+          <tr><td>Every release file</td><td><code>actions/attest-build-provenance</code> over <code>out/*</code>: the downloaded assets and both installers</td><td>the workflow's OIDC identity (<code>id-token: write</code>, <code>attestations: write</code>)</td></tr>
+          <tr><td>hoi-node archives</td><td>not signed on their own: their SHA-256 is in the signed list, they are covered by the attestation, and the binary's reproducible digest is published beside each</td><td>—</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>The <code>signing</code> job refuses to start a build that would ship unsigned. Without both minisign secrets: "The signed manifest needs: …", always. With the desktop builds on and any installer secret missing, it fails unless the repository variable <code>HOI_ALLOW_UNSIGNED_INSTALLERS</code> is <code>true</code>, in which case it warns and the draft notes say so. The minisign manifest stays mandatory either way.</p>
+    <div class="wk-code" data-lang="sh" data-title=".github/workflows/release.yml (signing job, trimmed)"><pre><code>manifest="$(missing MINISIGN_SECRET_KEY MINISIGN_PASSWORD)"
+if [ -n "$manifest" ]; then
+  echo "The signed manifest needs: $manifest" &gt;&amp;2
+  exit 1
+fi
+[ "$DESKTOP" = "true" ] || exit 0
+installers="$(missing APPLE_CERTIFICATE … WINDOWS_CERTIFICATE WINDOWS_CERTIFICATE_PASSWORD)"
+if [ -n "$installers" ]; then
+  if [ "$ALLOW_UNSIGNED" != "true" ]; then … exit 1; fi
+  echo "::warning::Releasing unsigned installers (HOI_ALLOW_UNSIGNED_INSTALLERS=true). …"
+fi</code></pre></div>
+    <div class="wk-note limit"><b>The public key</b><p>The release signing key is not published yet. The verify page shows a placeholder, and both installers ship with an empty default key (<code>RELEASE_PUBKEY=""</code>, <code>-PubKey ''</code>): until one is given with <code>--pubkey</code>/<code>-PubKey</code>, they check every file against the list's SHA-256 only and say so. With a key, a missing <code>.minisig</code> or a signature that doesn't verify stops the install; without <code>minisign</code> installed, they note that the signature went unchecked.</p></div>
+  </section>
+
+  <section class="wk-sec" id="reproducible">
+    <h2>Reproducible builds</h2>
+    <p><code>scripts/reproduce.mjs</code> builds the parts of a release that come out byte for byte the same on any machine with the same toolchains, and prints their SHA-256. What makes the bytes the same: the toolchain in <code>core/rust-toolchain.toml</code>, <code>--locked</code> Cargo and the pnpm lockfile, every build path remapped, and a fixed environment.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Reproducible parts">
+      <table>
+        <thead><tr><th>Part</th><th>Built with</th><th>Digest of</th></tr></thead>
+        <tbody>
+          <tr><td><code>wasm</code></td><td><code>node scripts/build-wasm.mjs</code> (wasm-bindgen and wasm-opt included)</td><td><code>apps/web/src/lib/core/wasm/pkg/hoi_wasm_bg.wasm</code></td></tr>
+          <tr><td><code>node</code></td><td><code>cargo build --release --locked -p hoi-node [--target T]</code></td><td>the <code>hoi-node</code> (or <code>hoi-node.exe</code>) binary</td></tr>
+          <tr><td><code>static</code></td><td><code>pnpm tokens</code>, <code>build:site</code>, <code>build:web</code>, <code>assemble-static.mjs</code>; selecting it builds <code>wasm</code> first</td><td>every file of <code>dist/</code> as one tree digest</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>The environment is the caller's plus <code>SOURCE_DATE_EPOCH</code> set to the commit's time (<code>git log -1 --format=%ct</code>, or <code>0</code> without Git), <code>TZ=UTC</code>, <code>LC_ALL=C</code>, <code>CARGO_INCREMENTAL=0</code>, and the build-path remapping. The tree digest hashes each file, sorts the lines <code>path sha256</code> (forward slashes), and hashes the joined text with a final newline, so it depends on paths and bytes, never on order or times:</p>
+    <div class="wk-code" data-lang="js" data-title="scripts/reproduce.mjs (trimmed)"><pre><code>const lines = files.map((p) =&gt; `${relative(dir, p).split('\\').join('/')} ${sha256(readFileSync(p))}`).sort();
+return { digest: sha256(lines.join('\n') + '\n'), files: lines.length };</code></pre></div>
+    <div class="wk-table" tabindex="0" role="region" aria-label="reproduce.mjs modes">
+      <table>
+        <thead><tr><th>Command</th><th>Does</th></tr></thead>
+        <tbody>
+          <tr><td><code>node scripts/reproduce.mjs [--only wasm,node,static] [--target T]</code></td><td>builds once and prints <code>{ commit, epoch, target, parts: { name: { sha256 } } }</code> (<code>static</code> also has <code>files</code>)</td></tr>
+          <tr><td><code>… --twice</code></td><td>builds everything twice with <code>CARGO_TARGET_DIR</code> at fresh <code>core/target/reproduce-a</code> and <code>reproduce-b</code>, prints both and <code>same</code>, exits 1 with "not reproducible: …" on any difference</td></tr>
+          <tr><td><code>… --compare DIGESTS.json</code></td><td>builds once and compares the selected parts with digests written earlier, a release's for instance; exits 1 with "differs from the digests given: …"</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Where it runs: the major suites' <code>reproducible</code> job (<code>--twice</code>); every hoi-node in a release (<code>--only node --target</code>, its output uploaded as <code>hoi-node_&lt;v&gt;_&lt;target&gt;.digests.json</code>); and the Pages workflow (<code>--only static</code>, whose printed digests are the deployment's). The digest in a <code>.digests.json</code> file is of the binary inside the archive; the archive's own SHA-256 is in <code>manifest.json</code>.</p>
+    <div class="wk-note info"><b>Not byte for byte</b><p>The desktop and setup installers are signed per platform and carry their own timestamps and certificates. Their programs are built the same way from the same sources; their packaging is not reproducible.</p></div>
+  </section>
+
+  <section class="wk-sec" id="verify">
+    <h2>Checking a download</h2>
+    <p>The <a href="/verify/">verify page</a> walks through it. The app you run is the trust boundary: it checks every record it receives, but it can't check itself.</p>
+    <ol class="wk-steps">
+      <li><b>Find the checksum</b><p>Every file has its SHA-256 in <code>manifest.json</code>; the download page shows it next to the file with a copy button.</p></li>
+      <li><b>Hash your file</b><p><code>shasum -a 256 FILE</code> on macOS, <code>sha256sum FILE</code> on Linux, <code>certutil -hashfile FILE SHA256</code> or <code>Get-FileHash FILE -Algorithm SHA256</code> on Windows. It must match character for character (case doesn't matter). If it doesn't, delete the file: a broken download and a swapped one look the same.</p></li>
+      <li><b>Check the list is the project's</b><p>Put <code>manifest.json</code> and <code>manifest.json.minisig</code> in one folder and run <code>minisign -Vm manifest.json -P &lt;public key&gt;</code>. It should say "Signature and comment signature verified". Compare the key on the verify page with the one in the repository next to the release notes; if they ever disagree, trust neither.</p></li>
+      <li><b>Or build it yourself</b><p>Check out the release tag, <code>pnpm install --frozen-lockfile</code>, <code>node scripts/reproduce.mjs</code>, and compare: the WASM, hoi-node and the website come out byte for byte the same. For one hoi-node: <code>node scripts/reproduce.mjs --only node --target &lt;triple&gt; --compare hoi-node_&lt;v&gt;_&lt;triple&gt;.digests.json</code>. The desktop app needs Tauri's prerequisites and <code>pnpm --filter @hoi/desktop tauri build</code>.</p></li>
+    </ol>
+    <p>The installers do the SHA-256 part on their own: <code>install.ps1</code> refuses a file whose hash differs from the list (the major suites test exactly that on Windows PowerShell 5.1), and <code>install.sh</code> the same (<code>scripts/install.test.mjs</code>). A folder of release files installs as it is, offline too: <code>install.sh</code> uses the <code>manifest.json</code> beside it.</p>
+  </section>
+
+  <section class="wk-sec" id="tauri-bundles">
+    <h2>Desktop bundles and installer art</h2>
+    <h3 id="windows-bundles">Which Windows bundles a version gets</h3>
+    <p>Windows Installer (<code>.msi</code>, made with WiX) takes numeric versions only, and Tauri refuses any other only after the whole build has run. <code>msiTakesVersion()</code> in <code>scripts/tauri-bundles.mjs</code> checks a version the way Tauri's bundler does: major and minor at most 255, patch at most 65535, and a prerelease (or build metadata, which Tauri reads first) that is a number up to 65535. When it says no, <code>windowsBundles()</code> adds <code>--bundles nsis</code> to a Windows <code>tauri build</code>, unless bundles were chosen on the command line. Both apps' <code>scripts/tauri.mjs</code> call it, so a preview such as <code>1.0.0-preview.1</code> builds only the NSIS setup (<code>*-setup.exe</code>, the one <code>install.ps1</code> prefers) and <code>1.0.0</code> gets both.</p>
+    <p><code>findBundles()</code> walks a Tauri target folder for <code>.dmg</code>, <code>.msi</code>, <code>.exe</code>, <code>.AppImage</code>, <code>.deb</code> and <code>.rpm</code> files, skipping <code>.app</code> folders; <code>release-local.mjs</code> and <code>build-all.mjs</code> both use it. <code>releaseBundleName()</code> turns the setup app's <code>hoi Node Setup_…</code> (with spaces, from its product name) into <code>hoi-node-setup_…</code>.</p>
+    <h3 id="installer-art">Installer artwork</h3>
+    <p><code>node scripts/installer-art.mjs</code> draws each app's artwork in a headless Chromium (Playwright; <code>CHROMIUM_PATH</code> picks one) in the site's colors and type, and writes it under <code>apps/&lt;app&gt;/src-tauri/installer/</code>. The files are committed, like the icons, so building an installer needs no browser.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Installer artwork files">
+      <table>
+        <thead><tr><th>File</th><th>Size</th><th>Shown by</th></tr></thead>
+        <tbody>
+          <tr><td><code>header.bmp</code></td><td>150×57</td><td>NSIS, the top of the inner pages, the uninstaller's too</td></tr>
+          <tr><td><code>sidebar.bmp</code></td><td>164×314</td><td>NSIS, the welcome and finish pages</td></tr>
+          <tr><td><code>dmg-background.png</code></td><td>660×400</td><td>the macOS disk image window; the app icon sits at (180, 170) and the Applications link at (480, 170)</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>The bitmaps are 24-bit, bottom-up, with rows padded to four bytes. The desktop app's art reads "Communities on your devices."; the setup app's is dark and reads "Your node, your server." Both apps' NSIS installers install for the current user (<code>installMode: currentUser</code>), in English with no language selector, and both disk images need macOS 11.0 or newer.</p>
+  </section>
+
+  <section class="wk-sec" id="local">
+    <h2>Releasing from your own computer</h2>
+    <p><code>scripts/release-local.mjs</code> makes the same release without GitHub Actions: the same tiers of checks, hoi-node archives, the desktop and setup bundles for this system, the installers and the minisign-signed list, flat in <code>dist/release/v&lt;version&gt;/</code>, the folder <code>install.sh --from</code> and a GitHub release take.</p>
+    <div class="wk-code" data-lang="sh" data-title="docs/RELEASES.md"><pre><code>node scripts/release-local.mjs --check-version 0.1.0
+node scripts/release-local.mjs 0.1.0 --no-desktop --no-setup</code></pre></div>
+    <div class="wk-table" tabindex="0" role="region" aria-label="release-local options">
+      <table>
+        <thead><tr><th>Option</th><th>Effect</th></tr></thead>
+        <tbody>
+          <tr><td><code>--check-version V</code></td><td>exit 1 unless every package says <code>V</code></td></tr>
+          <tr><td><code>--quick</code></td><td>only <code>check-quick.mjs</code>, whatever the tier</td></tr>
+          <tr><td><code>--no-audit</code></td><td>skip cargo deny, cargo audit, cargo vet and pnpm audit, which need the network</td></tr>
+          <tr><td><code>--long</code></td><td>accepted only for majors, where the browser suites run anyway; not with <code>--quick</code></td></tr>
+          <tr><td><code>--no-desktop</code>, <code>--no-setup</code></td><td>leave out the desktop or setup bundle</td></tr>
+          <tr><td><code>--targets LIST</code></td><td>hoi-node targets (default: this computer's); another target needs its Rust target and a linker</td></tr>
+          <tr><td><code>--docker</code></td><td>Linux targets in Docker Buildx with <code>core/crates/hoi-node/Dockerfile</code>; the binaries need glibc 2.36 or newer</td></tr>
+          <tr><td><code>--minisign-key PATH</code></td><td>the signing key; else <code>$MINISIGN_KEY</code>, else <code>~/.minisign/minisign.key</code>; without one the list stays unsigned, with a warning</td></tr>
+          <tr><td><code>--bump</code></td><td>mutating: writes the version, refreshes lockfiles and commits from a clean tree</td></tr>
+          <tr><td><code>--tag</code>, <code>--push</code></td><td>mutating: an annotated tag at <code>HEAD</code>; pushing it starts the release workflow when both switches are on</td></tr>
+          <tr><td><code>--upload</code></td><td>mutating: uploads to the draft release with <code>gh</code>, made if missing; files other computers put in the draft are downloaded first so the list covers them; refuses an unsigned list without <code>--allow-unsigned</code></td></tr>
+          <tr><td><code>--allow-dirty</code></td><td>a trial build from uncommitted changes; never with <code>--tag</code> or <code>--upload</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>A major local release runs <code>cargo fmt</code>, clippy with <code>-D warnings</code> and the workspace tests, the tokens check, <code>core:wasm</code>, <code>pnpm check</code>, <code>pnpm test</code>, <code>pnpm test:sandbox</code>, the audits, and the local browser suites (vault, site, discovery, browser registration, deployment, the private relay against <code>wrangler dev</code> on port 8788, peer-only, registry as a node, network, RTC, public network). Platform-specific checks still need their platforms, and none of this replaces the CI validation of a major release. To build everything into a folder per tool without checks or signing, use <code>pnpm build:all</code> (<a href="/wiki/development/">Building &amp; testing</a>).</p>
+  </section>
+
+  <section class="wk-sec" id="notices">
+    <h2>How the apps learn about releases</h2>
+    <p>No app downloads or installs a new version on its own: neither Tauri app includes an updater plugin. What updates by itself is the browser app's code, through its service worker, and every app's notice, through <code>release.json</code>.</p>
+    <h3 id="web-updates">The browser app's code</h3>
+    <p>Production web builds register <code>sw.js</code> (never in development, inside Tauri or in sandbox builds) and call <code>reg.update()</code> every hour while the app is open. A new worker precaches every file of its build and checks each against the SHA-256 the build recorded; when it is installed and waiting, the app offers "A new version is ready · Reload", and only that click sends <code>skip-waiting</code>. The worker never serves <code>release.json</code> from its cache, so an installed worker can't freeze a notice (<a href="/wiki/supply-chain/">Supply chain</a>).</p>
+    <h3 id="notice-refresh">Notices</h3>
+    <div class="wk-seq" data-title="Refreshing the release notice">
+lanes: App | Same origin or registry
+App: shows the notice compiled into this build, at once and offline
+App -> Same origin or registry: GET <code>release.json</code>: no credentials, no referrer, <code>no-store</code>, redirects refused, 5 s timeout
+Same origin or registry --> App: <code>release.json</code>
+App: <code>validateRelease()</code>; kept only if its <code>revision</code> is at least the current one
+App: <code>noticeForBuild()</code> picks the words to show
+App .. Same origin or registry: again every 60 s and whenever the page becomes visible
+    </div>
+    <p>The app asks the registry it was built with (<code>/release.json</code> there), else the <code>release.json</code> beside the app. A registry is someone else's server, so with one configured the app doesn't ask until the person has accepted the Network &amp; Safety notice. An invalid or unreachable answer keeps the bundled warning. The website itself fetches nothing: every page carries the notice it was built with.</p>
+    <div class="wk-code" data-lang="js" data-title="scripts/release-schema.mjs (trimmed)"><pre><code>export function noticeForBuild(build, remote) {
+  const current = remote &amp;&amp; remote.revision &gt;= build.revision ? remote : build;
+  const sameBuildFamily = current.protocolVersion === build.protocolVersion
+    &amp;&amp; current.indexVersion === build.indexVersion &amp;&amp; current.channel === build.channel;
+  const notice = sameBuildFamily ? current.notice : build.notice;
+  return {
+    title: notice.title, message: notice.message,
+    build: `${build.channel} · protocol ${build.protocolVersion} · index ${build.indexVersion}`,
+    preview: build.channel === 'preview',
+    update: sameBuildFamily ? '' : `Operator update: ${current.notice.title}. ${current.notice.message} …`,
+  };
+}</code></pre></div>
+    <p>So a newer notice can change the words for the same build family, but never relabel what this build is: if the remote file names another protocol, index or channel, the banner keeps this build's own notice and adds one line, "Operator update: … Current protocol P, index I. This installed build remains preview." The compiled protocol snapshot that signs publication proofs is not affected by any runtime file.</p>
+    <div class="wk-cards">
+      <a class="wk-card g-mint" href="/wiki/development/"><i></i><b>Building &amp; testing</b><span>Toolchains, tiers and every suite a release runs.</span></a>
+      <a class="wk-card g-coral" href="/wiki/supply-chain/"><i></i><b>Supply chain</b><span>Audits, pinned actions, CSP, SRI and the service worker's hashes.</span></a>
+      <a class="wk-card g-sun" href="/wiki/deploy/"><i></i><b>Deploying &amp; hosting</b><span>The installers that read the release list.</span></a>
+      <a class="wk-card g-sky" href="/wiki/sbom/"><i></i><b>SBOM</b><span>What each shipped program is built from.</span></a>
+    </div>
+  </section>
+</article>
+<!-- @wiki-close -->
+<!-- @include footer.html -->
+<script type="module" src="/src/pages/wiki.ts"></script>
+</body>
+</html>

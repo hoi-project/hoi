@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <!-- @include head.html title="hoi.sh · a forum where communities hold their own keys" description="hoi is an open-source forum of small communities living on members' devices. Public conversations for everyone; private ones encrypted for invited members." -->
+  <script type="application/ld+json">{"@context": "https://schema.org", "@type": "WebSite", "name": "hoi.sh", "alternateName": "hoi", "url": "{{SITE_URL}}/"}</script>
+</head>
+<body>
+<!-- @include header.html nav="home" -->
+
+<main id="main">
+<!-- HERO + NETWORK -->
+<section class="wrap hero">
+  <span class="eyebrow">hoi.shhh · say hi quietly</span>
+  <h1 id="h1">Say hoi. Find your people. <span class="blue">Your community holds the keys.</span></h1>
+  <div class="hero-row">
+    <p class="lead">Small communities around shared interests, living on their members' devices. Public conversations are open to everyone. Private conversations are encrypted for invited members, with shared storage keeping them available between visits. Your community sets its rules. hoi is an informal hi; the .sh is you keeping your voice down.</p>
+    <div class="dl" id="get"><a href="/download/#macos" class="pill pill-coral" data-os="macos">Get it for macOS</a><a href="/download/#windows" class="pill" data-os="windows">Windows</a><a href="/download/#linux" class="pill" data-os="linux">Linux</a><a href="{{APP_URL}}" class="pill">Browser</a></div>
+  </div>
+</section>
+<section class="wrap" aria-label="Local network demonstration">
+  <div class="net" id="net" aria-hidden="true">
+    <svg id="netlines"><line x1="9%" y1="24%" x2="27%" y2="62%"/><line x1="9%" y1="24%" x2="31%" y2="18%"/><line x1="31%" y1="18%" x2="27%" y2="62%"/><line x1="31%" y1="18%" x2="52%" y2="38%"/><line x1="27%" y1="62%" x2="52%" y2="38%"/><line x1="27%" y1="62%" x2="44%" y2="80%"/><line x1="52%" y1="38%" x2="44%" y2="80%"/><line x1="52%" y1="38%" x2="71%" y2="22%"/><line x1="44%" y1="80%" x2="68%" y2="70%"/><line x1="71%" y1="22%" x2="68%" y2="70%"/><line x1="71%" y1="22%" x2="91%" y2="34%"/><line x1="68%" y1="70%" x2="90%" y2="78%"/><line x1="91%" y1="34%" x2="90%" y2="78%"/><line x1="9%" y1="24%" x2="12%" y2="76%"/><line x1="12%" y1="76%" x2="27%" y2="62%"/></svg>
+    <div class="net-static">
+      <span class="node at-9-24">mi</span><span class="node at-31-18">jw</span><span class="node at-27-62">sk</span><span class="node at-12-76">ra</span><span class="node me at-52-38">you</span><span class="node at-44-80">pt</span><span class="node at-71-22">lh</span><span class="node at-68-70">tk</span><span class="node at-91-34">an</span><span class="node at-90-78">mo</span>
+    </div>
+  </div>
+  <div class="netcap"><span class="js-only">↑ Local demo: posts hopping from device to device. The dots are people. The coral one is a post.</span><span class="nojs-only">↑ The dots are people. Posts hop from device to device, with nothing in the middle.</span><span id="netstat" class="js-only">0 posts delivered since you opened this page</span></div>
+</section>
+
+<!-- SIGNED NOTE -->
+<section id="signed" class="band">
+  <div class="wrap split">
+    <div class="copy">
+      <span class="eyebrow">1 · a post is a signed note</span>
+      <h2>Your device signs it. Everyone's device checks it.</h2>
+      <p class="lead">Every device checks the records it receives. A post is a tiny note your key signs, stamped with about a second of work, then handed to the people subscribed to the community. Each of them verifies it before showing it. <span class="js-only">Try it.</span></p>
+    </div>
+    <div class="frame note" id="note">
+      <span class="stamp" id="stamp">signed · pow 22</span>
+      <label for="draft">New post in <span class="tag fill-mint">c/privacy</span></label>
+      <textarea id="draft">Which messengers actually survived the 2026 metadata audit? A field summary.</textarea>
+      <div class="work" aria-hidden="true"><i id="workbar"></i></div>
+      <div class="note-foot">
+        <span class="mono">id <span id="hash" class="js-only">— waiting —</span><span class="nojs-only">b3:7e1c…94af</span></span>
+        <div class="btnrow js-only"><button type="button" class="pill pill-ink pill-sm" id="signBtn">Sign &amp; send</button><button type="button" class="pill pill-sm" id="resetBtn" hidden>Again</button></div>
+      </div>
+      <div class="peers" aria-live="polite">
+        <div class="peer"><span>mira's laptop</span><span class="ok">✓ checked</span></div>
+        <div class="peer"><span>tobi's relay</span><span class="ok">✓ checked</span></div>
+        <div class="peer"><span>lea's phone</span><span class="ok">✓ checked</span></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- SPAM -->
+<section id="spam" class="band soft">
+  <div class="wrap split">
+    <div class="frame arena" id="arena">
+      <span class="hint">Everyone's device is the bouncer.</span>
+      <div class="shield" id="shield"><span>bounced</span><b id="count">23</b><span>this week</span></div>
+      <div class="badge" id="badge">f30a·c812 auto-blocked after 14 tries · 19 members signed the evidence</div>
+    </div>
+    <div class="copy">
+      <span class="eyebrow">2 · spam bounces off</span>
+      <h2>Nobody is on spam duty. Everybody is.</h2>
+      <p class="lead">Every device checks the signature, the stamp and the rate limit before a post is even shown. Flood the network and the network drops you, automatically and with signed evidence from the people who saw it. These checks limit automated abuse; members and moderators still handle harmful content that passes them.</p>
+      <div class="btnrow js-only"><button type="button" class="pill pill-coral" id="floodBtn">Flood it</button><span class="aside">(go on)</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- FADE -->
+<section id="fade" class="band">
+  <div class="wrap fadewrap">
+    <div class="copy sticky">
+      <span class="eyebrow">3 · communities set retention</span>
+      <h2>Posts have a lifetime.</h2>
+      <p class="lead">Each community sets how long posts live. Participating devices apply that expiry window and signed moderation decisions. Members can choose which labels they trust. Recipients, exports and backups can retain copies, so expiry is not a promise that every copy disappears.</p>
+      <p class="aside js-only motion-only">Scroll to watch a week pass. ↓</p>
+    </div>
+    <div class="posts" id="posts">
+      <div class="fp"><span class="v"><i aria-hidden="true">▲</i>312<span class="sr-only"> upvotes</span></span><div><div class="t">Which messengers survived the 2026 metadata audit?</div><div class="m"><span class="tag fill-mint">c/privacy</span>mira · fades in 2 d</div><div class="life"><i></i></div></div></div>
+      <div class="fp"><span class="v"><i aria-hidden="true">▲</i>97<span class="sr-only"> upvotes</span></span><div><div class="t">My public peer kept our community reachable this month.</div><div class="m"><span class="tag fill-sky">c/selfhosting</span>tobi_k · fades in 9 d</div><div class="life"><i></i></div></div></div>
+      <div class="fp"><span class="v"><i aria-hidden="true">▲</i>64<span class="sr-only"> upvotes</span></span><div><div class="t">ELI5: what can public peers and private relays read?</div><div class="m"><span class="tag fill-lilac">c/cryptography</span>anon_4c9 · fades in 15 d</div><div class="life"><i></i></div></div></div>
+      <div class="fp"><span class="v"><i aria-hidden="true">▲</i>41<span class="sr-only"> upvotes</span></span><div><div class="t">Meetup Thursday: bring a laptop, we'll set up relays (back room, 7pm)</div><div class="m"><span class="tag fill-peach">c/hackspace</span>lea.h · fades in 18 d</div><div class="life"><i></i></div></div></div>
+      <div class="fp"><span class="v"><i aria-hidden="true">▲</i>128<span class="sr-only"> upvotes</span></span><div><div class="t">Data-retention bill, second draft: what it means for people running relays</div><div class="m"><span class="tag fill-mint">c/privacy</span>jonas.w · fades in 30 d</div><div class="life"><i></i></div></div></div>
+      <div class="fp"><span class="v"><i aria-hidden="true">▲</i>76<span class="sr-only"> upvotes</span></span><div><div class="t">Audit of an age-verification app: what it proves and leaks</div><div class="m"><span class="tag fill-sun">c/opsec</span>p.tran · fades in 44 d</div><div class="life"><i></i></div></div></div>
+    </div>
+  </div>
+</section>
+
+<!-- COMMUNITIES -->
+<section id="communities" class="band soft">
+  <div class="wrap split">
+    <div class="copy">
+      <span class="eyebrow">4 · small, nerdy, yours</span>
+      <h2>Communities the size of a dinner table.</h2>
+      <p class="lead">A community is a key and a handful of rules. Its moderators are picked by its members, its history is pinned by its members, its relays are run by its members. Start one with a friend, share an invite link, and that is the whole sign-up.</p>
+      <div class="btnrow"><a href="{{APP_URL}}#/new" class="pill pill-ink">Start a community</a><a href="{{APP_URL}}#/join" class="pill">Open an invite</a></div>
+    </div>
+    <div class="frame zone" id="zone" aria-label="Some communities" role="group">
+      <span class="chip at-6-14 fill-mint">c/privacy</span>
+      <span class="chip at-48-10 fill-sky">c/selfhosting</span>
+      <span class="chip at-22-44 fill-lilac">c/cryptography</span>
+      <span class="chip at-62-46 fill-peach">c/hackspace</span>
+      <span class="chip at-10-66 fill-sun">c/opsec</span>
+      <span class="chip at-46-68 fill-coral">c/boardgames</span>
+      <span class="chip yours at-76-20">+ yours</span>
+      <span class="hint js-only">drag them around, they bounce back with a spring</span>
+    </div>
+  </div>
+</section>
+
+<!-- WHO RUNS WHAT -->
+<section id="who" class="band">
+  <div class="wrap who-wrap">
+    <div class="copy">
+      <span class="eyebrow">who runs what</span>
+      <h2>Static website. Local app. Independent nodes.</h2>
+      <p class="lead">This page is informational: its demos run locally and submit nothing. The browser app runs its code on your machine. The static host serves application files, with no node, registry or relay named in them; your client finds communities through the nodes people share with you and connects directly. To post, get the home node. If you choose to make it a public node, one you keep running is a place others find communities; otherwise it publishes no address of its own. <a href="/protocol/#data">Read what each part handles</a>.</p>
+    </div>
+    <div class="tbl" tabindex="0" role="region" aria-label="Who runs what">
+      <table>
+        <thead><tr><th><span class="sr-only">What</span></th><th>You</th><th>Your community</th><th>Static site host</th></tr></thead>
+        <tbody>
+          <tr><td class="k">Keys</td><td>On your device</td><td class="muted">—</td><td class="n">never</td></tr>
+          <tr><td class="k">Posts &amp; comments</td><td>What you've read</td><td>Members and carrying peers</td><td class="n">never</td></tr>
+          <tr><td class="k">Moderation</td><td>Your blocks &amp; labelers</td><td>Elected mod keys</td><td class="n">no say</td></tr>
+          <tr><td class="k">Spam</td><td>Your device checks it</td><td>Signed flags, auto-blocks</td><td class="n">no community processing</td></tr>
+          <tr><td class="k">Relays</td><td>Optional, one switch</td><td>Volunteers</td><td class="n">none</td></tr>
+          <tr><td class="k">Software</td><td>Build it yourself if you like</td><td class="muted">—</td><td>static files and downloads</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="cta">
+      <h2>Start a community, or open a friend's invite link. That's the whole sign-up.</h2>
+      <div class="btnrow"><a href="/download/" class="pill pill-sun">Get the app</a><a href="/protocol/" class="pill pill-ghost">Read the protocol</a><a href="/wiki/" class="pill pill-ghost">Open the wiki</a></div>
+    </div>
+  </div>
+</section>
+</main>
+
+<!-- @include footer.html -->
+<script type="module" src="/src/pages/home.ts"></script>
+</body>
+</html>

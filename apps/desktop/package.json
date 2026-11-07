@@ -1,0 +1,16 @@
+{
+  "name": "@hoi/desktop",
+  "version": "1.0.0-preview.1",
+  "private": true,
+  "type": "module",
+  "description": "hoi desktop companion: the web UI in a Tauri 2 shell with the native core. Full peer and home node for your phone and browser.",
+  "scripts": {
+    "tauri": "node scripts/tauri.mjs",
+    "dev": "node scripts/tauri.mjs dev",
+    "build": "node scripts/tauri.mjs build",
+    "icons": "node scripts/icon-png.mjs && tauri icon src-tauri/icons/source.png"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.12.4"
+  }
+}

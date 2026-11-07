@@ -1,0 +1,9 @@
+<!-- Release metadata has a server-rendered fallback even when scripts are disabled. -->
+<div class="preview-bar" aria-label="Release status" role="status">
+  <span class="preview-dot" aria-hidden="true"></span>
+  <div class="preview-body"><strong data-release-title>{{RELEASE_TITLE}}</strong>
+    <span class="preview-text" data-release-message>{{RELEASE_MESSAGE}}</span>
+    <span class="preview-build">This build: {{RELEASE_BUILD}}. {{RELEASE_WARNING}}</span>
+    <span class="preview-build" data-release-update hidden></span>
+  </div>
+</div>

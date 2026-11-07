@@ -1,0 +1,444 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <!-- @include head.html title="Keys &amp; identity · hoi wiki" description="Root keys, devices, delegations, revocation, burning, recovery and names." -->
+</head>
+<body class="wiki">
+<!-- @include header.html nav="wiki" -->
+<!-- @wiki-open -->
+<article class="wk-doc">
+  <!-- @wiki-crumbs -->
+  <h1>Keys <span class="acc">&amp; identity</span></h1>
+  <p class="wk-lead">A person on hoi is a key: an Ed25519 root key that did some memory-hard work once, written as a <code>did:key</code>. Each device signs with a key of its own, blessed by the root. This page covers how keys are made and kept, how devices are added, linked, revoked and burned, how a person comes back from a recovery line or from three friends without losing their standing, how names work, and how an age credential is checked.</p>
+  <p class="wk-src-list">Source <a href="{{REPO_URL}}/blob/main/core/crates/hoi-crypto/src/lib.rs">hoi-crypto/src/lib.rs</a> · <a href="{{REPO_URL}}/blob/main/core/crates/hoi-crypto/src/identity.rs">identity.rs</a> · <a href="{{REPO_URL}}/blob/main/core/crates/hoi-crypto/src/keystore.rs">keystore.rs</a> · <a href="{{REPO_URL}}/blob/main/core/crates/hoi-crypto/src/vault.rs">vault.rs</a> · <a href="{{REPO_URL}}/blob/main/core/crates/hoi-crypto/src/recovery.rs">recovery.rs</a> · <a href="{{REPO_URL}}/blob/main/core/crates/hoi-crypto/src/shamir.rs">shamir.rs</a> · <a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/api.rs">hoi-core/src/api.rs</a> · <a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/link.rs">link.rs</a> · <a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/recover.rs">recover.rs</a> · <a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/handle.rs">handle.rs</a> · <a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/age.rs">age.rs</a> · <a href="{{REPO_URL}}/blob/main/core/crates/hoi-store/src/lib.rs">hoi-store/src/lib.rs</a></p>
+  <div class="wk-head-rule"></div>
+
+  <section class="wk-sec" id="keys">
+    <h2>Root keys</h2>
+    <p>Every key in hoi is Ed25519 (<code>ed25519-dalek</code>): a 32-byte secret seed and a 32-byte public key. A person's <b>root key</b> is their identity: its public key is their id for good, in every community. There is no account, no email, no server that knows it.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Ways of writing a key">
+      <table>
+        <thead><tr><th>Form</th><th>Example</th><th>How</th></tr></thead>
+        <tbody>
+          <tr><td>hex</td><td><code>2e6fcce3…0970e6</code> (64 digits)</td><td>the 32 bytes</td></tr>
+          <tr><td><code>did:key</code></td><td><code>did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK</code></td><td><code>z</code> + base58btc of the multicodec prefix <code>ed 01</code> and the 32 bytes</td></tr>
+          <tr><td>short key</td><td><code>a7f2·91c0</code></td><td>the first eight hex digits, split by a middle dot</td></tr>
+          <tr><td>fingerprint</td><td><code>e04c · 2a9f · 7b31 · 0cd8</code></td><td>the first 8 bytes of <code>BLAKE3-derive-key("hoi 2026 key fingerprint v1", key)</code>: what two people compare in person</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>People can paste a key as hex or as a <code>did:key</code> (<code>parse_key</code>). The example is the <code>did:key</code> specification's own Ed25519 example, which a unit test in <a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/handle.rs">handle.rs</a> pins.</p>
+    <h3 id="strong-keys">Weak keys</h3>
+    <p>A public key must be a valid curve point outside the small-order subgroup (<code>key_is_strong</code>). Weak keys can make signatures that verify for many messages, so no identity, no root of a delegation, no device, no recovery key and no community drop key may be one. Signatures are checked with <code>verify_strict</code>.</p>
+    <h3 id="making-keys">Making a key</h3>
+    <p>A new key comes from the system's randomness. The web app's first run also lets the person stir: pointer moves, taps and key presses are folded with their timing through SHA-256 (<a href="{{REPO_URL}}/blob/main/apps/web/src/lib/sayhoi/stir.ts">stir.ts</a>), and the core mixes that digest, at most <code>MAX_STIR</code> (64) bytes, into fresh randomness of its own:</p>
+    <div class="wk-code" data-lang="text" data-title="hoi-crypto/src/lib.rs, Keypair::generate_stirred"><pre><code>seed = BLAKE3-derive-key("hoi 2026 key seed v1", csprng[32] ‖ stir)</code></pre></div>
+    <p>The system's 32 bytes alone make the key safe; the stir can only add to them, and the same gestures never make the same key. What is generated this way is not the root itself but the person's <b>master secret</b>: the root and every later root are derived from it (<a href="#recovery-line">the recovery line</a>). The device gets a key of its own, generated the same way.</p>
+    <h3 id="identity-record">The identity record</h3>
+    <p>A root key becomes an identity by publishing an <code>identity</code> record: no community, no parent, signed by the root, expiring after <code>KEEP</code> (a hundred years).</p>
+    <dl class="wk-defs">
+      <dt>work<small>u64</small></dt><dd>The nonce of the root's memory-hard identity work: <code>Argon2id(root ‖ u64be(work), salt "hoi/identity/v1\0", 8 MiB, 1 pass)</code>, counted in leading zero bits (<a href="/wiki/stamps/">Stamps &amp; work</a>).</dd>
+      <dt>rc<small>bytes32, optional</small></dt><dd>A commitment to the recovery key that may replace this root.</dd>
+      <dt>of<small>bytes32, optional</small></dt><dd>For a root that replaces an earlier one: the person it continues.</dd>
+    </dl>
+    <p>Identities carry at least <code>MIN_BITS</code> (4); new ones are mined to <code>DEFAULT_BITS</code> (10), well above the communities' default ask of 8; a community may ask for up to <code>MAX_BITS</code> (20). More work can be added later from the device that holds the root (You → Key work in the web app, two bits a step): the stronger identity record replaces the weaker one, and must repeat the same <code>rc</code> and <code>of</code>, since a root that commits to two different things is <a href="#burning">burned</a>. A device's network address is a separate key again (its iroh endpoint), so peers can't tie where a device is to what its person posts.</p>
+  </section>
+
+  <section class="wk-sec" id="devices">
+    <h2>Device keys and delegations</h2>
+    <p>The root key doesn't sign posts. Each device signs with its own <b>device key</b>, and a <code>delegation</code> record says which root it speaks for. Losing a phone then costs one device, not the identity.</p>
+    <dl class="wk-defs">
+      <dt>author<small>the device key</small></dt><dd>A delegation is signed by the device it blesses: that signature is the device's consent, so nobody can claim someone else's device.</dd>
+      <dt>root<small>bytes32</small></dt><dd>The root key that blesses the device. Never the device itself.</dd>
+      <dt>scope<small>[text]</small></dt><dd>1–16 entries, each <code>*</code>, <code>post</code>, <code>comment</code>, <code>vote</code> or <code>moderate:&lt;community hex&gt;</code>. The apps always bless with <code>["*"]</code>. Which kind needs which scope is on <a href="/wiki/validation/">Validation pipeline</a>.</dd>
+      <dt>expires_at<small>u64</small></dt><dd>When the blessing ends; must equal the record's own <code>expires_at</code>, and lie at most 400 days (<code>MAX_DELEGATION</code>) after its <code>created_at</code>. The apps use <code>DELEGATION_LIFETIME</code>, 180 days.</dd>
+      <dt>root_sig<small>bytes64</small></dt><dd>The root's blessing: an Ed25519 signature over <code>delegation_statement(root, device, scope, expires_at)</code>.</dd>
+      <dt>seal<small>bytes32, optional</small></dt><dd>The device's seal key: X25519, derived from the device key (<code>BLAKE3-derive-key("hoi drop key seal v1", device secret)</code>, then HPKE's DeriveKeyPair) and used only for taking things sealed to this device: community drop keys and friends' recovery shares. Signed by the device, not the root.</dd>
+    </dl>
+    <div class="wk-code" data-lang="rust" data-title="hoi-types/src/record.rs"><pre><code>/// What a root signs to bless a device: the BLAKE3 of
+/// `canonical_cbor({t: "hoi/delegation/1", root, device, scope, expires_at})`.
+pub fn delegation_statement(root: &amp;Id, device: &amp;Id, scope: &amp;[String], expires_at: u64) -&gt; Id {
+    let v = Value::map([
+        ("t", t("hoi/delegation/1")),
+        ("root", b32(root)),
+        ("device", b32(device)),
+        ("scope", Value::A(scope.iter().map(|s| t(s)).collect())),
+        ("expires_at", Value::U(expires_at)),
+    ]);
+    Id::hash(&amp;v.encode())
+}</code></pre></div>
+    <h3 id="device-rules">The rules that keep identities apart</h3>
+    <ul>
+      <li><b>Two signatures.</b> The record's signature by the device and <code>root_sig</code> by the root must both check, and both keys must be strong.</li>
+      <li><b>First root wins.</b> A device belongs to the first root that blessed it. A delegation naming another root for a known device is refused ("that device already belongs to another identity"); the store keeps the existing blessing unless the same root renews it with a later expiry.</li>
+      <li><b>Devices aren't identities.</b> A key with an identity record can't be blessed as a device, and a device key can't publish an identity. A key can't be its own device.</li>
+      <li><b>Sixteen at once.</b> A root may have at most 16 live (unexpired, unrevoked) devices; a seventeenth needs a revocation first.</li>
+      <li><b>Strangers' keys.</b> Delegations, like identities and revocations, travel with the records they make valid, and a device takes them from strangers only for people it has heard of (<a href="/wiki/validation/">Validation pipeline</a>).</li>
+      <li><b>Time.</b> A device's record counts only if it was made no later than the blessing's <code>expires_at</code> and before any revocation.</li>
+    </ul>
+    <h3 id="renewal">Renewal</h3>
+    <p>While a device holds the root key, it renews its own blessing when the node opens and fewer than 30 days are left, or when the blessing carries no seal key: a new delegation for the same device and root with a later expiry, which replaces the old one everywhere.</p>
+    <div class="wk-seq" data-title="Blessing a device with codes (no home node)">
+lanes: New device | Root device | Peers
+-- Request --
+New device: a fresh device key, kept as pending
+New device -> Root device: <code>hoi:link:</code> {t: <code>link-req</code>, device, label}
+-- Blessing --
+Root device: device isn't the root, isn't an identity
+Root device: root_sig = sign(root, delegation_statement(root, device, ["*"], now + 180 days))
+Root device --> New device: <code>hoi:link:</code> {t: <code>link-ok</code>, root, person, chain, device, scope, created, expires, root_sig, identity, name, genesis}
+-- Consent --
+New device: takes the identity and the person's chain in; the root must be the person's current root
+New device: delegation {root, scope, expires_at, root_sig, seal}, 16-bit stamp, signed with the device key
+New device => Peers @coral: <code>recs</code> [identity, delegation, …] with its records
+Peers: both signatures, strong keys, at most 400 days, first root wins, at most 16 live devices
+</div>
+    <p>Each record carries its <b>carriers</b>: when a device gossips one of its person's records, the author's identity and device blessing (and a replaced person's chain) go along, so a receiver can check it on its own. A person's own identity and blessings go first hand only to their own devices; everyone else gets them with the next record they come with.</p>
+    <p>The vector <a href="{{REPO_URL}}/blob/main/core/vectors/delegation-chain.json">core/vectors/delegation-chain.json</a> holds exactly this chain: the root's identity record (with its Argon2id work), the delegation signed by the device with <code>root_sig</code> over <code>delegation_statement</code> (the vector gives the statement's hash), and a post signed by the device key. A receiver must hold both of the first two to accept the third.</p>
+  </section>
+
+  <section class="wk-sec" id="linking">
+    <h2>Linking a device</h2>
+    <p>Two ways to bless a new device, both ending in the same approval: by hand with codes (above), or in one scan through the home node both devices pair with (<a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/link.rs">link.rs</a>). The web app's <code>LinkDevice</code> screen offers both: a QR code that pairs a phone with the same home node and asks to be linked, and the three codes (<code>linkRequest</code>, <code>linkApprove</code>, <code>linkComplete</code>) for when there's no home node or no camera.</p>
+    <h3 id="codes">The codes</h3>
+    <p>Both codes are <code>hoi:link:</code> followed by base64url of a canonical CBOR map. The request names the new device's public key and a label (cleaned like a name). The approval carries everything the new device needs to start: the root and the person (different after a recovery), the person's chain of later roots and rotations, the blessing's scope, times and <code>root_sig</code>, the identity record, the person's name, and the geneses of their public communities, up to 8 of them in 64 KiB for codes typed or scanned by hand, up to 64 in 256 KiB through the home node. Private community geneses and MLS keys never go this way.</p>
+    <p><code>link_complete</code> refuses an approval for another device, an identity record that isn't the person's, or a root that no longer speaks for the person ("That approval comes from a root that no longer speaks for this person."). Then the new device signs its own delegation, publishes it, and joins the communities the approval carried.</p>
+    <h3 id="home-link">Through the home node</h3>
+    <p>Every device paired with a home node gets the home node's <b>link key</b> in its hello (<code>link_key</code>, 32 bytes). <code>link</code> messages are <code>{mailbox, sealed}</code>: <code>mailbox</code> is the first 16 bytes of <code>BLAKE3-derive-key("hoi 2026 link mailbox v1", link key)</code>, and <code>sealed</code> is XChaCha20-Poly1305 under <code>BLAKE3-derive-key("hoi 2026 link box v1", link key)</code>. A home node passes a <code>link</code> message from one of its devices on to its other devices, unread. The home node holds the key too, so this hides nothing about linking from it; what gives the approval its authority is the device's signed consent and the root's blessing, as with codes.</p>
+    <p>To stop another device paired with the same home from passing its own request off as yours, the four digits both screens show are a commit-then-reveal comparison, like Bluetooth's numeric comparison: neither side can steer them.</p>
+    <div class="wk-seq" data-title="Linking through the home node">
+lanes: New device | Home node | Root device
+-- Ask --
+New device: device key, request code, nonce N (32 bytes)
+New device -> Home node: <code>link</code> req {code, c = BLAKE3-derive-key("hoi 2026 link commit v1", N)}
+Home node -> Root device: passes it on, unread
+Root device: holds the root, not burned, not hoi-node, device not blessed yet
+-- Challenge --
+Root device -> Home node: <code>link</code> chk {device, n} with its own nonce n (16 bytes)
+Home node -> New device: passes it on
+New device: digits = check_code(device, N, n); shows them
+-- Reveal --
+New device -> Home node: <code>link</code> rev {device, n: N, to: n}
+Home node -> Root device: passes it on
+Root device: the commitment matches N; shows the same four digits
+New device .. Root device: the person compares the digits and says yes
+-- Approval --
+Root device -> Home node: <code>link</code> ok {code: the approval}
+Home node -> New device: passes it on
+New device: <code>link_complete</code>: signs its consent, publishes, says Linked
+</div>
+    <div class="wk-code" data-lang="rust" data-title="hoi-core/src/link.rs"><pre><code>/// Four digits from the device key and both sides' nonces.
+pub(crate) fn check_code(device: &amp;Id, theirs: &amp;[u8; 32], ours: &amp;[u8; 16]) -&gt; String {
+    let mut input = Vec::with_capacity(80);
+    input.extend_from_slice(&amp;device.0);
+    input.extend_from_slice(theirs);
+    input.extend_from_slice(ours);
+    let h = blake3::derive_key(CHECK_CONTEXT, &amp;input);
+    format!("{:04}", u32::from_le_bytes(h[..4].try_into().expect("4 bytes")) % 10_000)
+}</code></pre></div>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Linking limits">
+      <table>
+        <thead><tr><th>Constant</th><th>Value</th><th>Meaning</th></tr></thead>
+        <tbody>
+          <tr><td><code>ASK_TTL</code></td><td>600 s</td><td>an ask nobody answered within this is dropped</td></tr>
+          <tr><td><code>MAX_ASKS</code></td><td>4</td><td>asks a root device keeps at once; digits on screen are never pushed out</td></tr>
+          <tr><td><code>MAX_CHALLENGES</code></td><td>3</td><td>challenges a new device answers, one per root device; more would mean someone's guessing</td></tr>
+          <tr><td><code>LINKS_PER_MINUTE</code></td><td>12</td><td><code>link</code> messages a device may send a minute before they are ignored (the home node's own aren't counted)</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>One device holds one ask: a new ask replaces the last one from the same device key or connection, but an ask whose digits are already on the person's screen is never replaced from elsewhere, since that could be someone replaying it. A device that says no ends the request on the new device ("Your other device said no. Nothing was linked.").</p>
+    <h3 id="keyless">Browsers that keep no key</h3>
+    <p>A browser can link with the <code>remote</code> flag. Then the device with the root makes the browser's device key itself, blesses it, signs its consent and keeps it; the browser holds only the public key and the delegation. It builds and stamps its records as before and asks over the home link for each signature (<code>sign {device, rec}</code>, answered <code>signed {device, id, sig}</code> or <code>unsigned {device, id, reason}</code>). Posts, comments, votes and the like are signed without asking; ledger entries wait for a yes on the computer. Turning the computer off turns its browsers' signing off; revoking the device there ends it for good.</p>
+  </section>
+
+  <section class="wk-sec" id="revocation">
+    <h2>Revoking a device</h2>
+    <p>From the device that holds the root (You → Your devices, <code>revoke_device</code>), a <code>revoke</code> record <code>{ device }</code> signed by the root, with no community, kept a hundred years. Only a root signs one, and the app won't revoke the device it is running on ("You can't revoke the device you're using.").</p>
+    <ul>
+      <li>Records the device made <b>at or after</b> the revocation's <code>created_at</code> are refused everywhere (<code>Revoked</code>). What it signed before stays valid.</li>
+      <li>Only a root revokes, and only the root that blessed the device. A revocation that arrives before the delegation it revokes is remembered by (device, root) and applies when that root's blessing turns up, so a stranger's revoke for a device it never blessed can't hide the real root's.</li>
+      <li>Of several revocations, the earliest counts.</li>
+      <li>A keyless browser this computer signed for loses its key here at once.</li>
+    </ul>
+  </section>
+
+  <section class="wk-sec" id="burning">
+    <h2>Burning an identity</h2>
+    <p>For a root key that leaked: a <code>revoke</code> whose <code>device</code> is the root itself (<code>burn_identity</code>, from the device holding the root, confirmed by typing the key's short form). Every device that takes it in drops everything the person ever signed, and refuses anything they sign later (<code>Burned</code>); the burn record itself stays, so the burn keeps spreading. There is no undo, and no way to carry standing over to a new key.</p>
+    <div class="wk-code" data-lang="rust" data-title="hoi-core/src/node.rs"><pre><code>/// A burned identity takes everything it signed with it, on every device.
+fn purge_burned(&amp;mut self, root: Id) {
+    let ids: Vec&lt;Id&gt; =
+        self.store.all().filter(|s| s.author_root == root &amp;&amp; !matches!(&amp;s.record.body, Body::Revoke { device } if *device == root)).map(|s| s.id).collect();
+    for id in ids {
+        self.drop_record(&amp;id);
+    }
+    …
+}</code></pre></div>
+    <p>A root is also burned when it signs two identity records that commit to different things (a different <code>rc</code> or <code>of</code>): someone who took the root and tries to commit it to their own recovery key burns it instead, and then nobody can replace it. Burning a root that speaks for a person burns the person.</p>
+    <div class="wk-note warn"><b>Burning versus recovery</b><p>Burning ends a person. Recovery, below, keeps the person and replaces the root under them: use it when the recovery line is still yours.</p></div>
+  </section>
+
+  <section class="wk-sec" id="recovery-line">
+    <h2>The recovery line</h2>
+    <p>The person's master secret, written as one line for a password manager or a piece of paper:</p>
+    <div class="wk-code" data-lang="text" data-title="hoi-crypto/src/recovery.rs"><pre><code>hoi-key-1-xxxxxxxx-xxxxxxxx-xxxxxxxx-xxxxxxxx-xxxxxxxx-xxxxxxxx-xxxxxxxx</code></pre></div>
+    <div class="wk-bytes" data-title="What the 56 characters encode (35 bytes, z-base-32)">
+secret | 32 B | coral | 8 | the master secret
+check | 3 B | sun | 2 | first 3 bytes of BLAKE3-derive-key("hoi 2026 recovery key v1", secret)
+</div>
+    <p>The groups are z-base-32, which has no <code>0</code>, <code>l</code>, <code>v</code> or <code>2</code>, so the line survives being read aloud or written down. Decoding forgives what people and password managers do to it: any letter case, missing or extra hyphens, spaces and line breaks, <code>0</code> for <code>o</code> and <code>l</code> for <code>1</code>. The check catches a typo and refuses a stranger's string, and says nothing about the key, being a keyed hash of the secret itself. A line that doesn't start with the prefix is "That isn't a hoi recovery key. It starts with hoi-key-1-."; a damaged one asks to check it against the password manager.</p>
+    <div class="wk-note warn"><b>The line is the key</b><p>It isn't an encrypted copy: whoever reads it can be you. It belongs in a password manager, which is encrypted, or in a drawer. The web app's backup screen offers to save it with the browser's password manager (login "hoi key · name · short key") and never shows it unless asked.</p></div>
+    <h3 id="generations">Generations</h3>
+    <p>Every root the person will ever sign with, and every recovery key that can replace one, is derived from the master secret:</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Derived keys">
+      <table>
+        <thead><tr><th>Key</th><th>Derivation</th><th>Role</th></tr></thead>
+        <tbody>
+          <tr><td><code>root_at(master, g)</code></td><td><code>BLAKE3-derive-key("hoi 2026 root key v1", master ‖ u32le(g))</code> as an Ed25519 seed</td><td>generation 0 is the person, for good; later ones replace it</td></tr>
+          <tr><td><code>recovery_at(master, g)</code></td><td><code>BLAKE3-derive-key("hoi 2026 recovery key v1 by generation", master ‖ u32le(g))</code></td><td>may replace the root of generation g − 1 with the root of g</td></tr>
+          <tr><td><code>commitment(key)</code></td><td><code>BLAKE3-derive-key("hoi 2026 recovery commitment v1", key)</code></td><td>what an identity record carries as <code>rc</code>, so the recovery key is shown only when used</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>The identity record of the root of generation g commits to <code>recovery_at(master, g + 1)</code> and, for g &gt; 0, names the person in <code>of</code>. A chain has at most 64 generations.</p>
+    <h3 id="forgetting">Forgetting the line</h3>
+    <p>A device keeps the master secret only until the person says they saved the line ("I saved it. Forget it here", <code>forget_recovery_key</code>), or while it restores. From then on a stolen device gives a thief the root of the day but never the power to replace it. A device that no longer keeps the line says so, and can't give shares to friends.</p>
+  </section>
+
+  <section class="wk-sec" id="rotation">
+    <h2>Replacing a root, keeping the standing</h2>
+    <p>Restoring from the line always replaces the root (<code>restore_identity</code>). The new device:</p>
+    <ol class="wk-steps">
+      <li><b>Starts as the person</b><p>Decodes the line, derives the person (<code>root_at(master, 0)</code>), makes a fresh device key, and marks itself <code>restoring</code>. If it has never seen the person's first identity record it makes it again, with the minimum work and the same commitment, so it agrees with the original wherever both are.</p></li>
+      <li><b>Finds the current root</b><p>The last root of the person's chain, as far as it knows, and its generation g (searching up to 64).</p></li>
+      <li><b>Makes the next root</b><p>The root of g + 1 publishes its identity (minimum work, committing to <code>recovery_at(g + 2)</code>, naming the person in <code>of</code>).</p></li>
+      <li><b>Rotates</b><p>A <code>rotate { person, to }</code> record signed by <code>recovery_at(g + 1)</code>: the recovery key the current root committed to.</p></li>
+      <li><b>Blesses itself</b><p>The new root blesses this device.</p></li>
+      <li><b>Catches up</b><p>If it later learns the chain had gone further, it rotates again from there; every root and key is derived, so nothing else is needed. It stops restoring once a peer has told it about the person (their identity or a record of theirs came from the network).</p></li>
+    </ol>
+    <div class="wk-seq" data-title="Restoring from the recovery line">
+lanes: New device | Peers | Old device
+-- Restore --
+New device: line → master; person = root_at(master, 0); fresh device key
+New device: current root = root g; derives root g + 1 and recovery key g + 1
+New device => Peers @coral: identity of root g + 1 {work, rc, of: person}
+New device => Peers @coral: <code>rotate</code> {person, to: root g + 1}, signed by recovery key g + 1
+New device => Peers @coral: delegation of the new device by root g + 1
+-- Everywhere --
+Peers: the rotation's checks; the person now signs with root g + 1
+Peers: records of root g and its devices made from the rotation's time on are refused
+Peers -> Old device: the rotation
+Old device: <code>replaced</code>: nothing it signs counts any more
+Peers --> New device: the person's records; restoring ends
+</div>
+    <h3 id="rotation-rules">What a rotation must satisfy</h3>
+    <ol class="wk-steps">
+      <li><b>A strong recovery key</b><p>The <code>rotate</code> record's author is a valid, strong key.</p></li>
+      <li><b>A first identity</b><p>The person has an identity record, and it continues no one.</p></li>
+      <li><b>The committed key</b><p>The author's commitment equals the <code>rc</code> of one of the person's roots ("not the recovery key this identity committed to" otherwise).</p></li>
+      <li><b>A root that says whom it continues</b><p><code>to</code> has an identity record whose <code>of</code> names the person.</p></li>
+      <li><b>A root nobody else has</b><p><code>to</code> isn't a device, isn't already in the chain, and doesn't speak for someone else.</p></li>
+      <li><b>In order</b><p>The root being replaced took over before this rotation was made, and wasn't already replaced by then.</p></li>
+    </ol>
+    <p>The earliest valid rotation away from each root counts, by <code>(created_at, id)</code>. The store then maps every later root to the person (<code>person_of</code>), so records signed by the new root and its devices count for the person: their ladder standing, vouches, work (the best identity along the chain) and history. The replaced root and its devices sign nothing that counts from the rotation's time on; what they signed before stays. A new root that continues someone is no one until its rotation arrives, and its records come again with it. Records that travel for a replaced person carry the chain (each later root's identity and each rotation) so others can follow it; the <code>.hoikey</code> file and device link approvals carry it too.</p>
+    <p><a href="{{REPO_URL}}/blob/main/core/vectors/records.json">core/vectors/records.json</a> includes a rotation: <code>identity-committed</code> (a first root whose <code>rc</code> is the commitment to the recovery key), <code>identity-continues</code> (the new root, naming the person in <code>of</code>) and <code>rotate</code> (signed by that recovery key, from the person to the new root).</p>
+  </section>
+
+  <section class="wk-sec" id="friends">
+    <h2>Recovery through friends</h2>
+    <p>The master secret can also be split among friends, any three of whom bring it back, none of whom can read it alone. Nothing passes through a server.</p>
+    <div class="wk-stage" data-demo="shamir" data-title="Three of five pieces">
+      <p class="nojs">A key split into five pieces, one per friend. Pick any three and the key comes back; with two, the result is noise.</p>
+      <p class="wk-stage-cap">Shamir's secret sharing: any three of five pieces rebuild the secret; two say nothing about it.</p>
+    </div>
+    <h3 id="shamir">The split</h3>
+    <p><a href="{{REPO_URL}}/blob/main/core/crates/hoi-crypto/src/shamir.rs">shamir.rs</a> is Shamir's secret sharing over GF(2⁸), byte by byte, in the AES field (x⁸ + x⁴ + x³ + x + 1). Each byte of the 32-byte secret is the constant term of a random polynomial of degree k − 1; share x (1–255) holds the polynomials' values at x. Since it runs on secrets, multiplication and inversion (a²⁵⁴) take the same steps whatever the bytes: no tables, no branches on secret values. <code>combine</code> interpolates at 0 and refuses repeated points, unequal lengths and fewer than two shares; with fewer shares than the threshold the answer is noise, which the person check below catches.</p>
+    <div class="wk-bytes" data-title="One share">
+x | 1 B | sun | 1 | the share's point, 1–255
+y | 32 B | lilac | 8 | the 32 polynomials at x
+</div>
+    <p>The vector <a href="{{REPO_URL}}/blob/main/core/vectors/shamir.json">core/vectors/shamir.json</a> pins a fixed secret (bytes 0x10–0x2f), n = 5, k = 3, the 64 coefficient bytes (c₁ first, for each byte in turn), the five shares as <code>x ‖ y</code>, and the secret again from shares 2–4. The web app's first-run game rehearses the same 3-of-5 split on the person's <em>public</em> key, real arithmetic with nothing secret in it.</p>
+    <h3 id="giving-shares">Giving shares</h3>
+    <p>From a device that still keeps the line, in a community the person is in that isn't private (<code>give_shares</code>; the web app's Recovery friends screen): pick three to seven people other than yourself. Each must have at least one device whose blessing carries a seal key ("… has no device that can keep a share yet. Ask them to open hoi once."); up to 16 devices each are used.</p>
+    <ol class="wk-steps">
+      <li><b>Split</b><p><code>shamir::split(master, n, 3)</code>, n the number of friends.</p></li>
+      <li><b>Seal</b><p>Each friend's 33-byte share is sealed to each of their devices' seal keys with HPKE (base mode, DHKEM(X25519, HKDF-SHA256), HKDF-SHA256, ChaCha20-Poly1305), info <code>hoi recovery share v1</code>, bound to <code>"hoi/recovery-share/1" ‖ person ‖ friend ‖ device</code>: 32 bytes of encapsulated key, 33 of share, 16 of tag, 81 bytes in all.</p></li>
+      <li><b>Publish</b><p>One <code>share</code> record per friend in that community: <code>parent</code> is the friend, <code>sealed</code> a list of <code>{d: device, s: 81 bytes}</code>, one per device, and <code>seq</code> the time; kept a hundred years. The latest <code>seq</code> per (person, friend) counts. Friends no longer named get an empty <code>sealed</code>: theirs is taken back.</p></li>
+    </ol>
+    <div class="wk-seq" data-title="Giving shares">
+lanes: Your device | Community | Friend's devices
+Your device: needs the line here; 3 to 7 friends with seal keys
+Your device: split the master 3 of n; seal share i to each device of friend i (81 bytes each)
+Your device => Community @lilac: <code>share</code> {sealed: [{d, s}…], seq}, parent = friend, one per friend
+Community => Friend's devices @lilac: synced like any record of the community
+Friend's devices: list you among the people whose share they keep
+</div>
+    <h3 id="asking-friends">Asking for them back</h3>
+    <p>On a new device without a key, <code>ask_friends</code> makes a one-time X25519 key and shows a code, <code>hoi-ask-1-</code> and base64url of its public half, and six digits, <code>BLAKE3-derive-key("hoi recovery request digits v1", key)</code> read as a little-endian u32 mod 1,000,000 (<code>123 456</code>). The person sends the code to friends however they like.</p>
+    <div class="wk-seq" data-title="Bringing the line back with three friends">
+lanes: New device | Friend | Friend's device
+New device: <code>ask_friends</code>: one-time key, code <code>hoi-ask-1-…</code>, six digits
+New device -> Friend: the code, by any channel
+Friend -> Friend's device: pastes the code
+Friend's device --> Friend: the same six digits
+New device .. Friend: the person reads the digits out; the friend compares
+Friend's device: opens the share sealed to it; seals (person ‖ share) to the request's key
+Friend's device --> Friend: answer <code>hoi-share-1-…</code>
+Friend -> New device: the answer, by any channel
+New device: three answers for one person: combine; root_at(master, 0) must be the person
+New device: restores as from the line, a rotation included
+</div>
+    <p>The answer is <code>person (32) ‖ share (33)</code>, sealed with the same HPKE suite to the request's key, info <code>hoi recovery answer v1</code>, bound to the request key, so it opens for no other request. <code>take_answer</code> keeps one answer per (person, point); at three it combines them and checks that generation 0 of the result is the person ("Those answers don't fit together: one of them is from another request, or a share is wrong."). Then the device restores exactly as from the line: a new root, a rotation, the standing kept.</p>
+  </section>
+
+  <section class="wk-sec" id="backups">
+    <h2>The key file</h2>
+    <p>The <code>.hoikey</code> file is the passphrase-protected backup, for a disk or a cloud (<code>export_identity</code>). Its passphrase must be at least 15 characters (at most 1,024 bytes). It is sealed with <a href="{{REPO_URL}}/blob/main/core/crates/hoi-crypto/src/keystore.rs">keystore.rs</a>:</p>
+    <div class="wk-bytes" data-title="A sealed key file (keystore)">
+HOIK | 4 B | sun | 2 | magic
+1 | 1 B | sun | 1 | version
+m_cost | 4 B | sky | 2 | Argon2id memory in KiB, u32 LE
+t_cost | 4 B | sky | 2 | passes, u32 LE
+p_cost | 1 B | sky | 1 | lanes
+
+salt | 16 B | lilac | 4 | random
+nonce | 24 B | lilac | 6 | random, XChaCha20
+
+ciphertext | n B | coral | 10 | the plaintext, XChaCha20-Poly1305
+tag | 16 B | mute | 2 | Poly1305
+</div>
+    <p>The key is <code>Argon2id(passphrase, salt, m_cost, t_cost, p_cost)</code>, 32 bytes. The 54-byte header is the AEAD's associated data, so nobody can swap the parameters. Files are written at 64 MiB and 3 passes, one lane (about a second on a laptop, a few in a browser). A file sets its own cost, so <code>open</code> caps it before any work: 8 to 256 MiB, 1 to 16 passes, 1 to 8 lanes, or it is refused as an unsupported format. A wrong passphrase and a damaged file look the same: "wrong passphrase or damaged file".</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="What a key file holds">
+      <table>
+        <thead><tr><th>Field</th><th>Holds</th></tr></thead>
+        <tbody>
+          <tr><td><code>rootKey</code>, <code>root</code></td><td>the person's id; the secret of the root this device signs with, if it holds one</td></tr>
+          <tr><td><code>device</code>, <code>delegation</code></td><td>this device's secret and its blessing (what a device without the root can back up)</td></tr>
+          <tr><td><code>identity</code>, <code>chain</code>, <code>generation</code>, <code>rc</code>, <code>of</code>, <code>work</code></td><td>the identity record, a replaced person's chain, and what the root commits to</td></tr>
+          <tr><td><code>name</code>, <code>avatar</code>, <code>avatarRevision</code>, <code>avatarColor</code>, <code>avatarColorRevision</code>, <code>createdAt</code></td><td>name and picture</td></tr>
+          <tr><td><code>joined</code>, <code>communities</code></td><td>the geneses of the public communities the person is in; any community key this device still holds</td></tr>
+          <tr><td><code>friends</code>, <code>petnames</code></td><td>who they marked as friends, and the names they gave people</td></tr>
+          <tr><td><code>registrations</code>, <code>publications</code></td><td>proofs for public names they made</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>JSON, version 2. Private communities are not inside. Importing a file with a root makes a fresh device key, since two devices never share one, takes the chain in (the root must be the person's current root, else "The key file is inconsistent.") and blesses the new device. A file without a root uses the device key and blessing it holds.</p>
+  </section>
+
+  <section class="wk-sec" id="vault">
+    <h2>The local vault and passkeys</h2>
+    <p>On a device, keys and community data live in the local vault (<a href="{{REPO_URL}}/blob/main/core/crates/hoi-crypto/src/vault.rs">vault.rs</a>): one random 32-byte data key, wrapped once per way in, and storage cells sealed with it. Encryption protects a locked database, not an unlocked process, nor rollback to a complete older copy of the database. The storage layers are on <a href="/wiki/storage/">Storage</a>.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Vault kinds">
+      <table>
+        <thead><tr><th>Header</th><th>Used by</th><th>Opens with</th></tr></thead>
+        <tbody>
+          <tr><td><code>HOIV\x03</code></td><td>the browser</td><td>exactly one passphrase slot, and up to four passkey slots</td></tr>
+          <tr><td><code>HOIV\x02</code></td><td>desktop and phones</td><td>a key the operating system's keystore holds; the header is a sealed check value (<code>hoi local vault key verified</code>) that proves the key is the right one</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="wk-bytes" data-title="A passphrase vault's header">
+HOIV 03 | 5 B | sun | 2 | magic and kind
+
+kind 1 | 1 B | sky | 1 | passphrase slot
+length | 2 B | sky | 1 | u16 LE
+body | 102 B | coral | 8 | the data key sealed by keystore (54 + 32 + 16)
+
+kind 2 | 1 B | lilac | 1 | passkey slot
+length | 2 B | lilac | 1 | u16 LE
+id length | 2 B | lilac | 1 | u16 LE
+credential | ≤ 1023 B | lilac | 4 | WebAuthn credential id
+salt | 32 B | peach | 3 | the PRF salt
+wrapped | 72 B | coral | 4 | nonce, data key, tag
+</div>
+    <p>A new vault's passphrase must be at least 15 characters (at most 1,024 bytes). Unlocking accepts only a passphrase slot of exactly 102 bytes at the one supported cost (64 MiB, 3 passes, 1 lane), so a planted header can't make the device run an expensive key derivation. A cell is sealed with <code>BLAKE3-derive-key("hoi local vault cell v1:" + address, data key)</code> and XChaCha20-Poly1305, the context doubling as associated data: a cell moved to another address doesn't open.</p>
+    <h3 id="passkeys">Passkeys in the web app</h3>
+    <p>A passkey can open the browser's vault as the passphrase does (You → Unlock with a passkey; not offered in the desktop shell). It uses WebAuthn's <code>prf</code> extension: the authenticator answers 32 bytes for a salt the vault keeps in the clear, so the page can ask before anything is unlocked.</p>
+    <ol class="wk-steps">
+      <li><b>Make</b><p><code>makePasskey</code> (<a href="{{REPO_URL}}/blob/main/apps/web/src/lib/passkey.ts">passkey.ts</a>) creates a credential for relying party <code>hoi</code> with a random user id, named <code>hoi · name · platform</code>, algorithms ES256 (−7) and RS256 (−257), resident key preferred, user verification required, and asks it to evaluate the PRF on a fresh 32-byte salt. Authenticators that don't answer at creation are asked once more right away.</p></li>
+      <li><b>Wrap</b><p>The worker wraps the vault's data key with <code>BLAKE3-derive-key("hoi local vault passkey wrap v1", prf ‖ salt)</code>, sealed under the context <code>hoi local vault passkey slot v1</code>, in a new slot. The same credential replaces its own slot; a fifth passkey is refused.</p></li>
+      <li><b>Unlock</b><p>The unlock page lists the slots' credential ids and salts, asks the authenticator (user verification required) with each credential's own salt, and hands the worker only the credential id and the 32-byte answer.</p></li>
+    </ol>
+    <p>A passkey only opens this browser's vault. The passphrase stays, and the recovery line stays the way back to the person. The passkey itself never signs anything on hoi.</p>
+  </section>
+
+  <section class="wk-sec" id="names">
+    <h2>Names</h2>
+    <p>Keys are the identity; names are what people read. Three kinds, and none of them is unique or global:</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Kinds of names">
+      <table>
+        <thead><tr><th>Name</th><th>Who sets it</th><th>Where it lives</th></tr></thead>
+        <tbody>
+          <tr><td>Display name</td><td>the person, for themselves</td><td>the <code>name</code> field of their posts and comments; each device keeps the newest it saw per person</td></tr>
+          <tr><td>Petname</td><td>you, for someone else (<code>set_petname</code>)</td><td>this device only, and your key file; never sent</td></tr>
+          <tr><td>Device label</td><td>you, for one of your devices</td><td>this device only; never sent</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>A device shows a person by the petname you gave them, else their newest display name, else their short key. Every name passes the name rules (at most 32 characters, no leading, trailing or doubled spaces, nothing that looks like a key, no direction marks or invisible characters: <a href="/wiki/content-rules/">Text, links &amp; names</a>). Anyone can claim any display name, so the app shows the key alongside.</p>
+    <h3 id="handles">Names that are domains</h3>
+    <p>A person whose display name is a domain they control (<code>mira.example.org</code>) can prove it, and devices that see the name check for themselves:</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Handle proofs">
+      <table>
+        <thead><tr><th>Proof</th><th>Says</th><th>Checked by</th></tr></thead>
+        <tbody>
+          <tr><td>a DNS TXT record on <code>_hoi.&lt;domain&gt;</code></td><td><code>did=did:key:z…</code></td><td>native hosts: the system's own resolvers (up to three from <code>/etc/resolv.conf</code>, no fixed provider), UDP port 53, 3 seconds each, up to 16 TXT strings</td></tr>
+          <tr><td>a file at <code>https://&lt;domain&gt;/.well-known/hoi</code></td><td>a line <code>did:key:z…</code></td><td>native hosts by the rules of link previews; browsers with <code>fetch</code> (no credentials, no referrer, no cache, 5 seconds), which only works when the domain sends <code>Access-Control-Allow-Origin: *</code>; the first 4,096 bytes, 8 lines</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>A name counts as a domain by <code>as_domain</code> (two labels or more, a letter top-level label or punycode; <a href="/wiki/content-rules/">Text, links &amp; names</a>). The core asks its host for a check when a post or comment brings such a name and on each sweep, but a domain is checked again only after a day (<code>FRESH</code>), a failed one after an hour (<code>RETRY</code>), at most 60 checks an hour whatever arrives, a check that never came back given up after 60 seconds, and at most 512 domains remembered. With "Only through my VPN", the DNS question leaves from the VPN's address, and nothing leaves while the VPN is down.</p>
+    <p>The answer: <b>✓ verified</b> when the domain's answers name this person's key exactly, "not verified" when they don't or nothing answered, and "checking" until then. A name that merely looks like a domain gets no badge. Nothing about the check is published: each device decides for itself.</p>
+    <p>Community names in registries are a different thing: names for community keys, kept by registries (<a href="/wiki/registry/">Registry</a>).</p>
+  </section>
+
+  <section class="wk-sec" id="profiles">
+    <h2>Profile pictures and colors</h2>
+    <p>A person's picture is a JPEG of at most 4,096 bytes, square, at most 128 pixels a side, signed into a <code>profile</code> record per community; an empty one restores the identicon drawn from the key. A <code>profile-color</code> record picks the identicon's palette: <code>mint</code>, <code>sky</code>, <code>lilac</code>, <code>peach</code>, <code>sun</code>, or empty for the key's own. Both are kept on the device with a revision and published into a community after the person's next post or comment there; pictures only once the person is trusted there (or an owner or moderator), colors always. The newest per person and community counts. The details, from the web app's encoder to how devices decide whose pictures to show, are on <a href="/wiki/media/">Media</a>.</p>
+  </section>
+
+  <section class="wk-sec" id="age">
+    <h2>Age credentials</h2>
+    <p>A community whose admission is <code>age-proof</code> lets a newcomer in once a moderator saw a proof that they are over 18 and nothing else (<a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/age.rs">age.rs</a>; the web app's <code>AgeProof</code>). The proof is an SD-JWT VC presentation from an identity wallet. The community's limits name the issuer keys it trusts (<code>age_issuers</code>; an age-proof community must name at least one).</p>
+    <ol class="wk-steps">
+      <li><b>The challenge</b><p><code>age_challenge</code> shows what the wallet binds its presentation to: <code>aud</code> = <code>hoi:&lt;community hex&gt;</code>, <code>nonce</code> = base64url of the first 16 bytes of <code>BLAKE3-derive-key("hoi age proof nonce v1", person ‖ community)</code>, and the trusted issuers.</p></li>
+      <li><b>The newcomer's device checks</b><p><code>age_proof_code</code> runs the checks below and makes a code: <code>hoi-age-1-</code> and base64url of <code>person ‖ community ‖ presentation</code>. The newcomer sends it to a moderator however they like.</p></li>
+      <li><b>The moderator's device checks again</b><p><code>admit_by_age</code>: the community must ask for age proofs and the person not be in yet; the same checks; then an <code>admit</code> ledger entry whose reason is just "age proof". The presentation is never published.</p></li>
+    </ol>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Age proof checks">
+      <table>
+        <thead><tr><th>#</th><th>Check</th><th>Refused with</th></tr></thead>
+        <tbody>
+          <tr><td>1</td><td>At most 16 KiB; <code>issuer-JWT~disclosure~…~KB-JWT</code> with a key binding at the end</td><td>the presentation has no key binding: it could be anyone's</td></tr>
+          <tr><td>2</td><td>The issuer JWT is signed by one of the trusted keys: ES256 with a P-256 key (SEC1, 33 or 65 bytes) or EdDSA with an Ed25519 key (32 bytes)</td><td>not signed by an issuer this community trusts</td></tr>
+          <tr><td>3</td><td><code>exp</code> not passed; <code>_sd_alg</code>, if present, is <code>sha-256</code></td><td>the credential has expired · a digest other than SHA-256</td></tr>
+          <tr><td>4</td><td>Every disclosure's SHA-256 (base64url) is listed in <code>_sd</code>, and every disclosure is <code>[salt, "age_over_18", value]</code></td><td>a disclosure the issuer didn't sign · only age_over_18 may be disclosed</td></tr>
+          <tr><td>5</td><td><code>age_over_18</code> is <code>true</code>, disclosed or plain</td><td>the credential doesn't say over 18</td></tr>
+          <tr><td>6</td><td>The KB-JWT is signed by the holder key in <code>cnf.jwk</code> (EC P-256 or OKP Ed25519), with <code>typ</code> <code>kb+jwt</code></td><td>the key binding isn't one</td></tr>
+          <tr><td>7</td><td>Its <code>aud</code> and <code>nonce</code> are this community's and this person's</td><td>the proof was made for someone else, or another community</td></tr>
+          <tr><td>8</td><td>Its <code>iat</code> is within the last 15 minutes and at most 60 seconds ahead</td><td>the proof is too old; make a new one</td></tr>
+          <tr><td>9</td><td>Its <code>sd_hash</code> is the SHA-256 of the presentation up to its last <code>~</code></td><td>the key binding is for another presentation</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Until a moderator admits them, the newcomer's posts in an age-proof community are stored and held: "this community lets people in once a moderator saw a proof of their age" (<a href="/wiki/validation/">Validation pipeline</a>). How labelers and trust interact with age proofs is on <a href="/wiki/trust/">Trust &amp; ranking</a>.</p>
+  </section>
+
+  <section class="wk-sec" id="next">
+    <h2>Read next</h2>
+    <div class="wk-cards">
+      <a class="wk-card g-coral" href="/wiki/stamps/"><i></i><b>Stamps &amp; work</b><span>Identity work and the stamp on every record.</span></a>
+      <a class="wk-card g-peach" href="/wiki/validation/"><i></i><b>Validation pipeline</b><span>Where delegations, revocations, rotations and burns are enforced.</span></a>
+      <a class="wk-card g-mint" href="/wiki/standing/"><i></i><b>Standing &amp; review</b><span>What a person keeps when their root is replaced.</span></a>
+      <a class="wk-card g-coral" href="/wiki/web-app/"><i></i><b>Web app</b><span>The screens for keys, devices, backups and friends.</span></a>
+      <a class="wk-card g-sky" href="/wiki/storage/"><i></i><b>Storage</b><span>Where the vault's cells live in each app.</span></a>
+      <a class="wk-card g-sun" href="/wiki/vectors/"><i></i><b>Test vectors</b><span><code>shamir.json</code> and <code>delegation-chain.json</code>.</span></a>
+    </div>
+  </section>
+</article>
+<!-- @wiki-close -->
+<!-- @include footer.html -->
+<script type="module" src="/src/pages/wiki.ts"></script>
+</body>
+</html>

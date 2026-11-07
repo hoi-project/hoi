@@ -1,0 +1,576 @@
+#!/usr/bin/env bash
+# hoi-sandbox — spin up isolated hoi sessions in Docker and let agents pentest the protocol.
+#
+#   ./sandbox/hoi-sandbox dashboard               build and start the complete dashboard stack
+#   ./sandbox/hoi-sandbox stop                    stop that stack and keep its data
+# A *session* is a private, internet-isolated Docker network with one hub (hoi-node) and any number
+# of members. Start as many sessions as you like; each is independent. Members are driven by the
+# hoi-sim agent — honest or adversarial — and a referee shows whether the protocol held.
+#
+#   ./sandbox/hoi-sandbox up [session]            start a session (hub + a founded community)
+#   ./sandbox/hoi-sandbox watch [session]         start a session whose hub your browser can reach,
+#                                                 so you create your own community in the app and
+#                                                 watch agents join it
+#   ./sandbox/hoi-sandbox app                     run the real web app on your machine (Node+pnpm)
+#   ./sandbox/hoi-sandbox agents <session> <invite> [good=M bad=N]  send a swarm into YOUR community
+#   ./sandbox/hoi-sandbox spawn <session> <name>  add a member (its own identity, joined)
+#   ./sandbox/hoi-sandbox agent <session> <name> <verb> [args]   run one agent action (syncs, acts)
+#   ./sandbox/hoi-sandbox referee <session> [--watch]            the health scoreboard
+#   ./sandbox/hoi-sandbox bots <session> [good=M] [bad=N]        a scripted swarm (no LLM needed)
+#   ./sandbox/hoi-sandbox pentest <session> [red=N blue=M model=NAME rounds=R budget=USD]
+#                                                 autonomous Claude agents attack and defend, then a
+#                                                 referee shows whether the protocol held
+#   ./sandbox/hoi-sandbox battle [args]           the in-process siege (no hub; quick verdict)
+#   ./sandbox/hoi-sandbox brief <red|blue>        the briefing to paste into an LLM agent
+#   ./sandbox/hoi-sandbox info <session>          invite, community id, member list
+#   ./sandbox/hoi-sandbox shell <session> <name>  a shell in a member container (for a human)
+#   ./sandbox/hoi-sandbox logs <session>          the hub's log
+#   ./sandbox/hoi-sandbox ls                      list sessions
+#   ./sandbox/hoi-sandbox down [session]          stop and remove a session (and its data)
+#   ./sandbox/hoi-sandbox build                   (re)build the image
+#
+# The container is the real boundary: every member runs non-root, with all Linux capabilities
+# dropped, no new privileges, a read-only root filesystem, and on a network with no route to the
+# internet. Nothing a pentest agent does can reach outside its session.
+set -euo pipefail
+
+IMAGE=hoi-sandbox:latest
+HERE="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "$HERE/.." && pwd)"
+STATE="$HERE/.state"
+HUB_PORT=7842
+HUB_WS="ws://hub:${HUB_PORT}"
+# How an agent, running from the repo root, names this very script. The pentest guard pins agents to
+# exactly this command, so it must match what they type (not $0, which varies by how you invoked us).
+SELF="./sandbox/hoi-sandbox"
+
+c_red=$'\033[31m'; c_grn=$'\033[32m'; c_dim=$'\033[2m'; c_bold=$'\033[1m'; c_off=$'\033[0m'
+say() { printf '%s\n' "$*"; }
+die() { printf '%serror:%s %s\n' "$c_red" "$c_off" "$*" >&2; exit 1; }
+need_docker() { command -v docker >/dev/null 2>&1 || die "docker is not installed or not on PATH"; docker info >/dev/null 2>&1 || die "the Docker daemon isn't running"; }
+
+net()     { echo "hoi-sbx-$1"; }
+pubnet()  { echo "hoi-sbx-$1-pub"; }
+hubname() { echo "hoi-sbx-$1-hub"; }
+hubvol()  { echo "hoi-sbx-$1-hub"; }
+memvol()  { echo "hoi-sbx-$1-mem-$2"; }
+sdir()    { echo "$STATE/$1"; }
+
+# Pull a JSON string field (value has no embedded quotes) from pretty-printed stdin.
+json_field() { sed -nE "s/.*\"$1\": *\"([^\"]*)\".*/\1/p" | head -1; }
+
+ensure_image() {
+  if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
+    say "${c_dim}building $IMAGE (first run; a few minutes)…${c_off}"
+    build_image
+  fi
+}
+
+build_image() {
+  need_docker
+  docker build -f "$HERE/Dockerfile" -t "$IMAGE" "$ROOT/core"
+  say "${c_grn}✓${c_off} built $IMAGE"
+}
+
+# A hardened, internet-less one-shot member container running `hoi-sim agent`.
+# $1 session, $2 member, rest = agent verb and args (the `agent --data /data` prefix is added).
+# Memory is 512m (not 256m): minting an identity is Argon2id work (memory-hard, plus a 64 MiB
+# keystore seal), and a 256m cap OOM-kills `init` intermittently — a silent SIGKILL that left
+# members half-created. 512m matches the hub and makes spawn/agent/bots/referee reliable.
+run_member() {
+  local s="$1" name="$2"; shift 2
+  docker run --rm \
+    --network "$(net "$s")" \
+    -v "$(memvol "$s" "$name"):/data" \
+    --cap-drop ALL --security-opt no-new-privileges \
+    --read-only --tmpfs /tmp:rw,size=16m \
+    --memory 512m --pids-limit 256 \
+    "$IMAGE" hoi-sim agent --data /data "$@"
+}
+
+# ---------------------------------------------------------------------------- up
+
+cmd_up() {
+  need_docker; ensure_image
+  local s="${1:-default}"
+  local sd; sd="$(sdir "$s")"
+  if docker ps -a --format '{{.Names}}' | grep -qx "$(hubname "$s")"; then
+    die "session '$s' already exists (use 'down $s' first, or 'info $s')"
+  fi
+  mkdir -p "$sd/members"
+
+  # An internal network: containers see each other and nothing else — no internet, no other session.
+  docker network inspect "$(net "$s")" >/dev/null 2>&1 || docker network create --internal "$(net "$s")" >/dev/null
+
+  say "${c_bold}starting session '$s'${c_off}"
+  docker run -d \
+    --name "$(hubname "$s")" \
+    --network "$(net "$s")" --network-alias hub \
+    -v "$(hubvol "$s"):/data" \
+    --cap-drop ALL --security-opt no-new-privileges \
+    --memory 512m --pids-limit 512 \
+    --restart unless-stopped \
+    "$IMAGE" hoi-node --data /data --listen "0.0.0.0:${HUB_PORT}" --name hub >/dev/null
+
+  # Wait for the hub to print its pairing link, then take the token from it.
+  local token=""
+  for _ in $(seq 1 40); do
+    token="$(docker logs "$(hubname "$s")" 2>&1 | grep -oE 't=[^&]+' | head -1 | cut -d= -f2 || true)"
+    [ -n "$token" ] && break
+    sleep 0.3
+  done
+  [ -n "$token" ] || die "the hub didn't come up; see: $0 logs $s"
+  # The pairing link members use: dial the hub by its network name, with the hub's token.
+  local pairing="hoi://pair?u=${HUB_WS}&t=${token}&n=hub"
+  printf '%s' "$pairing" > "$sd/pairing"
+
+  # Found the community as 'founder'.
+  run_member "$s" founder init --name founder >/dev/null
+  run_member "$s" founder pair "$pairing" >/dev/null
+  local created; created="$(run_member "$s" founder --hub "$HUB_WS" create "$s")"
+  local cid inv
+  cid="$(printf '%s' "$created" | json_field community)"
+  inv="$(printf '%s' "$created" | json_field invite)"
+  [ -n "$cid" ] || die "couldn't found the community:\n$created"
+  printf '%s' "$cid" > "$sd/community"
+  printf '%s' "$inv" > "$sd/invite"
+  : > "$sd/members/founder"
+
+  say "${c_grn}✓${c_off} session '$s' is up."
+  say "   community: ${c_bold}${cid}${c_off}"
+  say "   members join through the hub automatically; try:"
+  say "     ${c_dim}$0 spawn $s mallory${c_off}"
+  say "     ${c_dim}$0 agent $s mallory post $cid \"hello\" \"a first post\"${c_off}"
+  say "     ${c_dim}$0 agent $s mallory forge bad-sig $cid${c_off}"
+  say "     ${c_dim}$0 referee $s${c_off}"
+}
+
+# ---------------------------------------------------------------------------- watch
+
+# A session whose hub is reachable from YOUR machine, so you can create your own community in the
+# real web app and watch Docker agents join it. The hub sits on a normal bridge (published to
+# 127.0.0.1) and is also attached to the internal, internet-less network where the agents live —
+# so your browser can reach it while the agents stay contained.
+cmd_watch() {
+  need_docker; ensure_image
+  local s="${1:-watch}"; shift || true
+  local port="${HOI_PORT:-7842}"
+  for a in "$@"; do case "$a" in --port) shift; port="${1:-7842}";; --port=*) port="${a#--port=}";; esac; done
+  local sd; sd="$(sdir "$s")"
+  if docker ps -a --format '{{.Names}}' | grep -qx "$(hubname "$s")"; then
+    die "session '$s' already exists (use 'down $s' first, or 'info $s')"
+  fi
+  mkdir -p "$sd/members"
+
+  docker network inspect "$(pubnet "$s")" >/dev/null 2>&1 || docker network create "$(pubnet "$s")" >/dev/null
+  docker network inspect "$(net "$s")"    >/dev/null 2>&1 || docker network create --internal "$(net "$s")" >/dev/null
+
+  say "${c_bold}starting a watchable session '$s'${c_off}"
+  # Hub on the bridge (so the port can be published to your machine), then also on the internal net.
+  docker run -d \
+    --name "$(hubname "$s")" \
+    --network "$(pubnet "$s")" \
+    -p "127.0.0.1:${port}:${HUB_PORT}" \
+    -v "$(hubvol "$s"):/data" \
+    --cap-drop ALL --security-opt no-new-privileges \
+    --memory 512m --pids-limit 512 \
+    --restart unless-stopped \
+    "$IMAGE" hoi-node --data /data --listen "0.0.0.0:${HUB_PORT}" --name hub >/dev/null
+  docker network connect --alias hub "$(net "$s")" "$(hubname "$s")"
+
+  local token=""
+  for _ in $(seq 1 40); do
+    token="$(docker logs "$(hubname "$s")" 2>&1 | grep -oE 't=[^&]+' | head -1 | cut -d= -f2 || true)"
+    [ -n "$token" ] && break
+    sleep 0.3
+  done
+  [ -n "$token" ] || die "the hub didn't come up; see: $0 logs $s"
+
+  # Two pairing links, same hub and token: one your browser dials (127.0.0.1), one the agents dial.
+  local host_pairing="hoi://pair?u=ws://127.0.0.1:${port}&t=${token}&n=hub"
+  local agent_pairing="hoi://pair?u=${HUB_WS}&t=${token}&n=hub"
+  printf '%s' "$host_pairing" > "$sd/host-pairing"
+  printf '%s' "$agent_pairing" > "$sd/pairing"
+  printf '%s' "$port" > "$sd/port"
+
+  cat <<EOF
+
+${c_grn}✓${c_off} session '$s' is up, hub reachable at ${c_bold}ws://127.0.0.1:${port}${c_off}
+
+${c_bold}Watch it in the real app:${c_off}
+  1. Start the app (in another terminal, from the repo root):
+       ${c_dim}$0 app${c_off}        ${c_dim}# or: pnpm core:wasm && pnpm dev:web${c_off}
+     then open the URL it prints (usually ${c_dim}http://localhost:5173${c_off}).
+  2. In the app: ${c_bold}You → Home node${c_off}, and paste this pairing link:
+       ${c_bold}${host_pairing}${c_off}
+  3. Create your community (${c_bold}+ New community${c_off}), open it, hit ${c_bold}Invite${c_off}, and copy the invite link.
+  4. Send agents into ${c_bold}your${c_off} community and watch them appear:
+       ${c_dim}$0 agents $s '<paste-your-invite>' good=3 bad=3${c_off}
+
+Agents are isolated: no internet, and they only reach your hub. Stop everything with:
+  ${c_dim}$0 down $s${c_off}
+EOF
+}
+
+# Send a swarm of honest + adversarial agents into an existing community (the one you made in the
+# app). Records the invite so single agents, spawn and the referee can use it afterwards.
+cmd_agents() {
+  need_docker
+  local s="${1:?usage: agents <session> <invite> [good=M bad=N every=S]}"; shift
+  local invite="${1:?usage: agents <session> <invite> [good=M bad=N every=S]}"; shift || true
+  local sd; sd="$(sdir "$s")"
+  [ -f "$sd/pairing" ] || die "no session '$s' (run: $0 watch $s)"
+  case "$invite" in hoi://join*) : ;; *) die "that doesn't look like an invite (expected hoi://join?...)";; esac
+  printf '%s' "$invite" > "$sd/invite"
+
+  # Learn the community id by joining once with a probe member.
+  local probe; probe="$(run_member "$s" _probe init --name probe >/dev/null 2>&1; run_member "$s" _probe pair "$(cat "$sd/pairing")" >/dev/null 2>&1; run_member "$s" _probe --hub "$HUB_WS" join "$invite")"
+  local cid; cid="$(printf '%s' "$probe" | json_field joined)"
+  [ -n "$cid" ] || die "couldn't join that invite:\n$probe"
+  printf '%s' "$cid" > "$sd/community"
+  : > "$sd/members/_probe"
+
+  local good=3 bad=3 every=4
+  for a in "$@"; do case "$a" in good=*) good="${a#good=}";; bad=*) bad="${a#bad=}";; every=*) every="${a#every=}";; esac; done
+  launch_swarm "$s" "$good" "$bad" "$every" "$cid"
+  say "${c_grn}✓${c_off} agents are joining your community. Watch them appear in the app."
+  say "  stop them with:  $0 down $s"
+}
+
+# ---------------------------------------------------------------------------- member bootstrap
+
+# Make sure member <name> has an identity, is paired to the hub, and has joined the community.
+# In a 'watch' session there is no community until you make one in the app and run `agents <invite>`;
+# until then members are only created and paired (no join).
+ensure_member() {
+  local s="$1" name="$2"
+  local sd; sd="$(sdir "$s")"
+  [ -f "$sd/pairing" ] || die "no session '$s' (run: $0 up $s  — or: $0 watch $s)"
+  if [ -f "$sd/members/$name" ]; then return 0; fi
+  run_member "$s" "$name" init --name "$name" >/dev/null
+  run_member "$s" "$name" pair "$(cat "$sd/pairing")" >/dev/null
+  if [ -f "$sd/invite" ]; then
+    run_member "$s" "$name" --hub "$HUB_WS" join "$(cat "$sd/invite")" >/dev/null
+  fi
+  : > "$sd/members/$name"
+}
+
+cmd_spawn() {
+  need_docker
+  local s="${1:?usage: spawn <session> <name>}" name="${2:?usage: spawn <session> <name>}"
+  ensure_member "$s" "$name"
+  say "${c_grn}✓${c_off} '$name' joined session '$s'."
+}
+
+cmd_agent() {
+  need_docker
+  local s="${1:?usage: agent <session> <name> <verb> [args]}" name="${2:?usage: agent <session> <name> <verb> [args]}"; shift 2
+  [ $# -ge 1 ] || die "usage: agent <session> <name> <verb> [args]"
+  ensure_member "$s" "$name"
+  run_member "$s" "$name" --hub "$HUB_WS" "$@"
+}
+
+cmd_referee() {
+  need_docker
+  local s="${1:?usage: referee <session> [--watch]}"; shift || true
+  ensure_member "$s" referee
+  local tty=""; [ "${1:-}" = "--watch" ] && tty="-it"
+  docker run --rm $tty \
+    --network "$(net "$s")" -v "$(memvol "$s" referee):/data" \
+    --cap-drop ALL --security-opt no-new-privileges --read-only --tmpfs /tmp:rw,size=16m \
+    --memory 512m --pids-limit 256 \
+    "$IMAGE" hoi-sim referee --data /data --hub "$HUB_WS" ${1:+--watch}
+}
+
+# ---------------------------------------------------------------------------- bots (scripted swarm)
+
+cmd_bots() {
+  need_docker
+  local s="${1:?usage: bots <session> [good=M] [bad=N] [every=S]}"; shift || true
+  local good=3 bad=3 every=4
+  for a in "$@"; do case "$a" in good=*) good="${a#good=}";; bad=*) bad="${a#bad=}";; every=*) every="${a#every=}";; esac; done
+  local sd; sd="$(sdir "$s")"; [ -f "$sd/community" ] || die "no founded community in '$s' (run: $0 up $s, or use: $0 agents $s <invite>)"
+  launch_swarm "$s" "$good" "$bad" "$every" "$(cat "$sd/community")"
+  say "${c_grn}✓${c_off} bots running. Watch them with:  $0 referee $s --watch"
+  say "  stop them with:  $0 down $s   (or docker stop \$(docker ps -q --filter name=hoi-sbx-$s-bot-))"
+}
+
+# Launch $2 honest + $3 adversarial looping bots in session $1, every $4 seconds, posting in $5.
+launch_swarm() {
+  local s="$1" good="$2" bad="$3" every="$4" cid="$5" i
+  say "launching ${c_grn}$good honest${c_off} and ${c_red}$bad adversarial${c_off} bots in '$s' (loop every ${every}s)…"
+  for i in $(seq 1 "$good"); do bootstrap_and_loop "$s" "good-$i" good "$cid" "$every"; done
+  for i in $(seq 1 "$bad");  do bootstrap_and_loop "$s" "evil-$i" bad  "$cid" "$every"; done
+}
+
+# A detached bot container that bootstraps then loops honest or hostile actions.
+bootstrap_and_loop() {
+  local s="$1" name="$2" kind="$3" cid="$4" every="$5"
+  local pairing invite; pairing="$(cat "$(sdir "$s")/pairing")"; invite="$(cat "$(sdir "$s")/invite")"
+  local body
+  if [ "$kind" = good ]; then
+    body='n=0; while true; do n=$((n+1));
+      hoi-sim agent --data /data --hub '"$HUB_WS"' post '"$cid"' "hello $n" "a friendly on-topic note from '"$name"'" >/dev/null 2>&1 || true;
+      hoi-sim agent --data /data --hub '"$HUB_WS"' feed '"$cid"' >/dev/null 2>&1 || true;
+      sleep '"$every"'; done'
+  else
+    body='n=0; atks="bad-sig future unstamped oversize noncanonical dup-flood no-identity"; set -- $atks;
+      while true; do n=$((n+1));
+      hoi-sim agent --data /data --hub '"$HUB_WS"' post '"$cid"' "CHEAP PILLS $n" "best price msg me now limited offer" >/dev/null 2>&1 || true;
+      a=$(echo $atks | tr " " "\n" | sed -n "$(( (n % 7) + 1 ))p");
+      hoi-sim agent --data /data --hub '"$HUB_WS"' forge $a '"$cid"' >/dev/null 2>&1 || true;
+      sleep '"$every"'; done'
+  fi
+  # Bootstrap identity/pair/join once, then loop.
+  docker run -d \
+    --name "hoi-sbx-$s-bot-$name" \
+    --network "$(net "$s")" -v "$(memvol "$s" "$name"):/data" \
+    --cap-drop ALL --security-opt no-new-privileges --read-only --tmpfs /tmp:rw,size=16m \
+    --memory 512m --pids-limit 256 --restart unless-stopped \
+    -e PAIRING="$pairing" -e INVITE="$invite" \
+    "$IMAGE" sh -c '
+      hoi-sim agent --data /data init --name '"$name"' >/dev/null 2>&1 || true;
+      hoi-sim agent --data /data pair "$PAIRING" >/dev/null 2>&1 || true;
+      hoi-sim agent --data /data --hub '"$HUB_WS"' join "$INVITE" >/dev/null 2>&1 || true;
+      '"$body" >/dev/null
+  : > "$(sdir "$s")/members/$name"
+}
+
+# ---------------------------------------------------------------------------- battle / info / misc
+
+cmd_battle() {
+  need_docker; ensure_image
+  docker run --rm --cap-drop ALL --security-opt no-new-privileges --memory 512m "$IMAGE" hoi-sim battle "$@"
+}
+
+cmd_info() {
+  local s="${1:?usage: info <session>}"; local sd; sd="$(sdir "$s")"
+  [ -f "$sd/pairing" ] || die "no session '$s'"
+  say "session:   $s"
+  [ -f "$sd/community" ] && say "community: $(cat "$sd/community")" || say "community: (none yet — create one in the app, then: $0 agents $s <invite>)"
+  [ -f "$sd/invite" ]    && say "invite:    $(cat "$sd/invite")"
+  [ -f "$sd/host-pairing" ] && say "app pairing (paste in You → Home node): $(cat "$sd/host-pairing")"
+  say "hub (agents): $HUB_WS   hub (your machine): ws://127.0.0.1:$(cat "$sd/port" 2>/dev/null || echo 7842)"
+  say "members:   $(ls "$sd/members" 2>/dev/null | tr '\n' ' ')"
+}
+
+cmd_shell() {
+  need_docker
+  local s="${1:?usage: shell <session> <name>}" name="${2:?usage: shell <session> <name>}"
+  ensure_member "$s" "$name"
+  docker run --rm -it --network "$(net "$s")" -v "$(memvol "$s" "$name"):/data" \
+    --cap-drop ALL --security-opt no-new-privileges --memory 512m --pids-limit 256 \
+    -e HUB="$HUB_WS" "$IMAGE" sh -lc 'echo "member '"$name"' in session '"$s"'. The hub is $HUB."; echo "e.g.: hoi-sim agent --data /data --hub $HUB feed $(cat /dev/null)"; exec sh'
+}
+
+cmd_logs() { need_docker; docker logs "${2:+}" "$(hubname "${1:?usage: logs <session>}")"; }
+
+cmd_ls() {
+  need_docker
+  say "${c_bold}sessions${c_off}"
+  local found=0
+  if [ -d "$STATE" ]; then
+    for d in "$STATE"/*/; do
+      [ -d "$d" ] || continue
+      local s; s="$(basename "$d")"
+      local up="stopped"
+      docker ps --format '{{.Names}}' | grep -qx "$(hubname "$s")" && up="${c_grn}running${c_off}"
+      local nbots; nbots="$(docker ps -q --filter "name=hoi-sbx-$s-bot-" | wc -l | tr -d ' ')"
+      printf '  %-16s %b  members=%s bots=%s  community=%s\n' "$s" "$up" "$(ls "$d/members" 2>/dev/null | wc -l | tr -d ' ')" "$nbots" "$(cat "$d/community" 2>/dev/null | cut -c1-12)"
+      found=1
+    done
+  fi
+  [ "$found" = 1 ] || say "  ${c_dim}(none — start one with: $0 up)${c_off}"
+}
+
+cmd_down() {
+  need_docker
+  local s="${1:-default}"
+  say "tearing down session '$s'…"
+  docker ps -aq --filter "name=hoi-sbx-$s-bot-" | xargs -r docker rm -f >/dev/null 2>&1 || true
+  docker rm -f "$(hubname "$s")" >/dev/null 2>&1 || true
+  # member + hub volumes
+  docker volume ls -q --filter "name=hoi-sbx-$s-" | xargs -r docker volume rm >/dev/null 2>&1 || true
+  docker network rm "$(net "$s")" >/dev/null 2>&1 || true
+  docker network rm "$(pubnet "$s")" >/dev/null 2>&1 || true
+  rm -rf "$(sdir "$s")"
+  say "${c_grn}✓${c_off} '$s' is gone."
+}
+
+# Run the real web app on your machine (host-native; needs Node, pnpm and the Rust/wasm toolchain).
+cmd_app() {
+  command -v pnpm >/dev/null 2>&1 || die "pnpm isn't installed; the app needs Node 22 + pnpm 10 (see the root README 'Run it')"
+  say "building the core for the browser, then starting the app…"
+  ( cd "$ROOT" && pnpm core:wasm && pnpm dev:web )
+}
+
+cmd_brief() {
+  local which="${1:-}"
+  case "$which" in
+    red|red-team)  cat "$HERE/briefings/red-team.md" ;;
+    blue|blue-team) cat "$HERE/briefings/blue-team.md" ;;
+    *) die "usage: brief <red|blue>" ;;
+  esac
+}
+
+# ---------------------------------------------------------------------------- pentest (autonomous Claude agents)
+
+need_claude() {
+  command -v claude >/dev/null 2>&1 || die "the 'claude' CLI isn't on PATH. Install Claude Code (https://claude.com/claude-code) to run autonomous agents — or use 'bots' for a scripted (no-LLM) swarm."
+  command -v node   >/dev/null 2>&1 || die "'node' isn't on PATH (it ships with Claude Code); the agent guard ($HERE/pentest-guard.mjs) needs it."
+}
+
+# Launch one autonomous Claude agent in the background, following a team briefing. The agent is given
+# ONE tool (Bash) and a PreToolUse guard (pentest-guard.mjs) that lets it run nothing on your machine
+# but this session's own `agent` (and, for blue, `referee`) command — so it can only drive its own
+# members. Prints the background PID.
+#   $1 role(red|blue)  $2 session  $3 member-prefix  $4 community-hex
+#   $5 model  $6 budget-usd  $7 rounds  $8 logfile  $9 settings-file
+run_claude_agent() {
+  local role="$1" s="$2" prefix="$3" cid="$4" model="$5" budget="$6" rounds="$7" logf="$8" settings="$9"
+  local brief; brief="$(cat "$HERE/briefings/$role-team.md")"
+  # One allowed command, for both roles: act as a member of this session. Blue observes with the
+  # one-shot feed/standing/community verbs (not `referee --watch`, which would never return).
+  local allow_agent="$SELF agent $s"
+  local goal
+  if [ "$role" = red ]; then
+    goal="Attack autonomously and relentlessly. Invent many different member names (ALL starting \"$prefix\") so you can try the Sybil and brigade moves, flood with spam, and walk the ENTIRE forge catalogue (bad-sig future expired unstamped oversize noncanonical dup-flood no-identity wrong-root-delegation). Try propose-limits if you can get owner power. Never ask for confirmation — just attack."
+  else
+    goal="Behave like honest, established neighbours (use member names starting \"$prefix\"; keep reusing the SAME names so your standing builds). Post on-topic, read the feed regularly, vouch in members who are clearly genuine (never strangers who only spam), hide or veto spam/abuse with the correct reason, and answer any pending proposals. Use the 'standing' and 'community' verbs to watch who is rising and what is napping. Never ask for confirmation."
+  fi
+  local task="$brief
+=====================================================================
+# THIS RUN — a live, isolated sandbox session
+- session: $s
+- community id: $cid
+- Your ONLY tool is this single shell command, run one plain invocation at a time:
+      $allow_agent <member-name> <verb> [args...]
+  A guard blocks everything else — other programs, file reads, and any chained or redirected command
+  (no  ;  |  &  \`  \$  <  >  ). Keep post titles and text to plain words (avoid punctuation that is
+  also a shell metacharacter). A member name you have not used before is created and joined
+  automatically — that is how you mint identities. Verbs: whoami sync feed post comment vote vouch
+  review standing community propose-limits forge.
+- $goal
+- Do about $rounds rounds of actions, then stop.
+- FINISH with a short FINDINGS report: list what you tried and, for each, whether the protocol
+  REFUSED it, HELD or NAPPED it, or let it through to a real member's feed. Anything that reached a
+  real feed, any real member you got blocked, or any rule you changed without consent, is a finding —
+  state the exact steps. If nothing slipped through, say the protocol held and give the numbers."
+
+  (
+    cd "$ROOT" || exit 1
+    HOI_ALLOWED_PREFIXES="$allow_agent" \
+      claude -p "$task" \
+        --model "$model" \
+        --settings "$settings" \
+        --tools Bash \
+        --strict-mcp-config \
+        --allowedTools "Bash($SELF:*)" \
+        --permission-prompts none \
+        --no-session-persistence \
+        --max-budget-usd "$budget" \
+        --output-format text
+  ) >"$logf" 2>&1 &
+  # Hand the PID back in a variable, NOT via stdout/$(...): a background job launched inside a
+  # command substitution is a child of that throwaway subshell, so the caller's `wait` would refuse
+  # it ("not a child") and the agent would be torn down before it did anything. Launched here, in
+  # the caller's own shell, the job is a real child the caller can wait on.
+  AGENT_PID=$!
+}
+
+cmd_pentest() {
+  need_docker; ensure_image; need_claude
+  local s="${1:-pentest}"; shift || true
+  local red=1 blue=1 model="sonnet" budget="2" rounds=8
+  for a in "$@"; do case "$a" in
+    --red=*|red=*)       red="${a#*=}" ;;
+    --blue=*|blue=*)     blue="${a#*=}" ;;
+    --model=*|model=*)   model="${a#*=}" ;;
+    --budget=*|budget=*) budget="${a#*=}" ;;
+    --rounds=*|rounds=*) rounds="${a#*=}" ;;
+    *) die "unknown pentest option '$a' (try: red=N blue=M model=NAME budget=USD rounds=R)" ;;
+  esac; done
+
+  local sd; sd="$(sdir "$s")"
+  # Autonomous pentest needs a sealed, founded community (use 'up', not 'watch').
+  if ! docker ps -a --format '{{.Names}}' | grep -qx "$(hubname "$s")"; then
+    say "${c_dim}no session '$s' yet — starting a sealed one (hub + a founded community)…${c_off}"
+    cmd_up "$s"
+    say ""
+  fi
+  [ -f "$sd/community" ] || die "session '$s' has no founded community. For an autonomous pentest use 'up' (sealed), not 'watch'. Try: $0 down $s && $0 pentest $s"
+  local cid; cid="$(cat "$sd/community")"
+
+  mkdir -p "$sd/pentest"
+  # Per-session hook settings: register the guard for this run (absolute path, spaces-safe).
+  local settings="$sd/pentest/settings.json"
+  printf '{ "hooks": { "PreToolUse": [ { "matcher": "Bash", "hooks": [ { "type": "command", "command": "node \\"%s/pentest-guard.mjs\\"" } ] } ] } }\n' "$HERE" > "$settings"
+
+  say "${c_bold}autonomous Claude pentest — session '$s'${c_off}  (community ${cid:0:12}…)"
+  say "  ${c_red}$red red${c_off} + ${c_grn}$blue blue${c_off} agent(s) · model ${c_bold}$model${c_off} · ~$rounds rounds each · budget \$$budget/agent"
+  say "  ${c_dim}each agent is pinned by sandbox/pentest-guard.mjs to only:  $SELF agent $s …${c_off}"
+  say ""
+
+  local pids=() i
+  for i in $(seq 1 "$red"); do
+    local lf="$sd/pentest/red-$i.log"
+    run_claude_agent red "$s" "red${i}-" "$cid" "$model" "$budget" "$rounds" "$lf" "$settings"
+    pids+=("$AGENT_PID"); say "  ${c_red}▶ red-$i${c_off}  (pid $AGENT_PID)  log: $lf"
+  done
+  for i in $(seq 1 "$blue"); do
+    local lf="$sd/pentest/blue-$i.log"
+    run_claude_agent blue "$s" "blue${i}-" "$cid" "$model" "$budget" "$rounds" "$lf" "$settings"
+    pids+=("$AGENT_PID"); say "  ${c_grn}▶ blue-$i${c_off} (pid $AGENT_PID)  log: $lf"
+  done
+
+  say ""
+  say "  ${c_dim}agents are attacking/defending autonomously. Watch the live scoreboard in another terminal:${c_off}"
+  say "     ${c_dim}$0 referee $s --watch${c_off}"
+  say "  ${c_dim}waiting for agents to finish…${c_off}"
+  local p; for p in "${pids[@]}"; do wait "$p" 2>/dev/null || true; done
+
+  say ""
+  say "${c_bold}── agent findings ─────────────────────────────────────────────${c_off}"
+  for i in $(seq 1 "$red");  do say "${c_red}• red-$i${c_off}";  tail -n 45 "$sd/pentest/red-$i.log"  2>/dev/null || true; say ""; done
+  for i in $(seq 1 "$blue"); do say "${c_grn}• blue-$i${c_off}"; tail -n 45 "$sd/pentest/blue-$i.log" 2>/dev/null || true; say ""; done
+
+  say "${c_bold}── referee: the live community after the siege ────────────────${c_off}"
+  cmd_referee "$s" || true
+  say ""
+  say "That scoreboard is the evidence: forged records never appear, spam shows as napping, no real"
+  say "member is blocked, and a Sybil ring's combined voice stays small. For a scored PASS/FAIL on the"
+  say "same invariants (in-process, no hub):  ${c_dim}$0 battle --honest ${blue} --attackers ${red}${c_off}"
+  say "Tear the session down when you're done:  ${c_dim}$0 down $s${c_off}"
+}
+
+usage() {
+  sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+main() {
+  local cmd="${1:-}"; shift || true
+  case "$cmd" in
+    dashboard|start|stop|status) node "$HERE/launch.mjs" "$cmd" "$@" ;;
+    up)       if [ "$#" = 0 ]; then node "$HERE/launch.mjs" up; else cmd_up "$@"; fi ;;
+    watch)    cmd_watch "$@" ;;
+    app)      cmd_app "$@" ;;
+    agents)   cmd_agents "$@" ;;
+    spawn)    cmd_spawn "$@" ;;
+    agent)    cmd_agent "$@" ;;
+    referee)  cmd_referee "$@" ;;
+    bots)     cmd_bots "$@" ;;
+    pentest)  cmd_pentest "$@" ;;
+    battle)   cmd_battle "$@" ;;
+    info)     cmd_info "$@" ;;
+    shell)    cmd_shell "$@" ;;
+    logs)     cmd_logs "$@" ;;
+    ls)       cmd_ls "$@" ;;
+    down)     cmd_down "$@" ;;
+    build)    build_image ;;
+    brief)    cmd_brief "$@" ;;
+    "") node "$HERE/launch.mjs" ;;
+    -h|--help|help) usage ;;
+    *) die "unknown command '$cmd' (try: $0 --help)" ;;
+  esac
+}
+main "$@"

@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <!-- @include head.html title="Glossary · hoi wiki" description="Every term the hoi protocol and apps use, from admission to warmth, each defined in a sentence or two and linked to the page that explains it in full." -->
+</head>
+<body class="wiki">
+<!-- @include header.html nav="wiki" -->
+<!-- @wiki-open -->
+<article class="wk-doc">
+  <!-- @wiki-crumbs -->
+  <h1>Glossary</h1>
+  <p class="wk-lead">The words hoi uses, each in a sentence or two, with a link to where it is explained in full. Names in <code>code</code> are the code's own.</p>
+  <div class="wk-head-rule"></div>
+
+  <section class="wk-sec" id="a-c">
+    <h2>A – C</h2>
+    <dl class="wk-defs">
+      <dt>admission</dt><dd><p>How a newcomer becomes a member of a community: by enough vouches from established members, a moderator's <code>admit</code> ledger entry, or (where a community requires it) an anonymous age proof. <a href="/wiki/communities/#admission">Communities</a>.</p></dd>
+      <dt>aggregator</dt><dd><p>A device that counts a community's votes and publishes the counts as a signed <code>tally</code> record. People follow aggregators as they follow labelers; their counts never feed ranking on their own. <a href="/wiki/trust/#aggregators">Trust &amp; ranking</a>.</p></dd>
+      <dt>all-or-nothing transform<small>AONT</small></dt><dd><p>A step in scattered delivery that makes a sealed object unreadable unless every one of its bytes is present, so fewer pieces than needed reveal nothing. <a href="/wiki/scatter/#aont">Scattered delivery</a>.</p></dd>
+      <dt>Argon2id</dt><dd><p>The memory-hard function behind identity work and the keystore. <a href="/wiki/stamps/#identity-work">Stamps &amp; work</a>.</p></dd>
+      <dt>autoban</dt><dd><p>A device banning a key in a community once weighted reports about it reach the community's <code>autoban_threshold</code> (12 by default). <a href="/wiki/spam/#autoban">Spam &amp; rate limits</a>.</p></dd>
+      <dt>bind</dt><dd><p>The message a node sends first on a WebRTC channel a browser dialed: a signature over both certificate fingerprints, the ICE username and the node's endpoint, proving the channel reaches the key the route named. <a href="/wiki/transports/#webrtc">Transports</a>.</p></dd>
+      <dt>BLAKE3</dt><dd><p>The hash behind record ids, stamps, key derivation and most labels. <a href="/wiki/records/#id">Records &amp; encoding</a>.</p></dd>
+      <dt>blob</dt><dd><p>The bytes of a media item, which travel separately from the record that names them by hash: <code>bwant</code> and <code>blob</code> messages, or iroh-blobs between native nodes. <a href="/wiki/media/#transfer">Media</a>.</p></dd>
+      <dt>blocklist</dt><dd><p>A signed list of keys a person publishes so others can follow it. <a href="/wiki/trust/#blocklists">Trust &amp; ranking</a>.</p></dd>
+      <dt>bounce</dt><dd><p>One device's own verdict on a key: it stops accepting the key's records for a while. The first bounce lasts a day, repeats double, up to 30 days. <a href="/wiki/spam/#bounces">Spam &amp; rate limits</a>.</p></dd>
+      <dt>burn</dt><dd><p>A revoke whose device is the root itself: every device that takes it in drops everything the person signed and refuses what they sign later. No undo. <a href="/wiki/identity/#burning">Keys &amp; identity</a>.</p></dd>
+      <dt>bye</dt><dd><p>The message that ends a link, with a reason. <a href="/wiki/sync/#bye">Sync &amp; gossip</a>.</p></dd>
+      <dt>canonical DAG-CBOR</dt><dd><p>The one byte encoding every record has, so the same record always has the same id and signature. The decoder refuses anything not encoded exactly that way. <a href="/wiki/records/#cbor">Records &amp; encoding</a>.</p></dd>
+      <dt>carry, carrier</dt><dd><p>A public node keeping an open community for others while its members are away, after someone sends it the signed genesis (<code>carry</code>) and it agrees (<code>carried</code>). <a href="/wiki/discovery/#carry-warmth">Discovery</a>.</p></dd>
+      <dt>catalog</dt><dd><p>The message in which a node lists the open communities it carries and the listings it heard of. <a href="/wiki/discovery/#directory">Discovery</a>.</p></dd>
+      <dt>changes by consent</dt><dd><p>New rules and limits are proposals that the people established at the time decide on, with signed reviews; silence counts as yes after a fade window. <a href="/wiki/communities/#consent">Communities</a>.</p></dd>
+      <dt>community</dt><dd><p>A key and the records it governs. Its first record, the genesis, names its owners, their signature threshold and its limits. <a href="/wiki/communities/#community-record">Communities</a>.</p></dd>
+      <dt>consent gate</dt><dd><p>In browsers, desktops and phones, the rule that a device says nothing to a public node until its person has read and accepted that node's operator notice. Headless nodes have none. <a href="/wiki/discovery/#notices">Discovery</a>.</p></dd>
+      <dt>contest window</dt><dd><p>How long a removed record naps, readable and vetoable, before its body is deleted: 72 hours by default, at most 14 days. <a href="/wiki/communities/#removals">Communities</a>.</p></dd>
+    </dl>
+  </section>
+
+  <section class="wk-sec" id="d-h">
+    <h2>D – H</h2>
+    <dl class="wk-defs">
+      <dt>delegation</dt><dd><p>The record that makes a device key speak for a root: signed by the device (its consent) and blessed by the root, with a scope and an expiry. <a href="/wiki/identity/#devices">Keys &amp; identity</a>.</p></dd>
+      <dt>DHT</dt><dd><p>The Mainline DHT that public nodes run among themselves with no outside bootstrap, announcing the open communities they carry. <a href="/wiki/discovery/#dht">Discovery</a>.</p></dd>
+      <dt>did:key</dt><dd><p>How a public key is written as an identifier. <a href="/wiki/records/#didkey">Records &amp; encoding</a>.</p></dd>
+      <dt>direct link</dt><dd><p>A WebRTC channel between two browsers, introduced by a node that relays their offer and answer (<code>here</code>, <code>sig</code>). Opt-in, public communities only. <a href="/wiki/joining/#direct">Joining</a>.</p></dd>
+      <dt>directory</dt><dd><p>A device's list of open communities it has heard of, with their signed definitions and join routes, spread by catalog gossip. <a href="/wiki/discovery/#directory">Discovery</a>.</p></dd>
+      <dt>dispatch</dt><dd><p><code>Node::call</code>: the core's single entry point for interfaces, a method name and JSON arguments in, JSON out. <a href="/wiki/api/#call">Core API</a>.</p></dd>
+      <dt>encrypted relay</dt><dd><p>An optional HTTPS service holding padded ciphertext for private communities, by room, for at most 31 days. It never sees member keys or community ids. <a href="/wiki/mailboxes/#relay-protocol">Mailboxes &amp; relays</a>.</p></dd>
+      <dt>endpoint</dt><dd><p>A native node's iroh key, which names it on the network. Separate from any person's posting key. <a href="/wiki/transports/#iroh">Transports</a>.</p></dd>
+      <dt>epoch</dt><dd><p>One state of a private community's MLS group. Every commit starts a new one, and the rooms and keys a carrier can see are derived from it. <a href="/wiki/private/#epochs">Private communities</a>.</p></dd>
+      <dt>established</dt><dd><p>The third rung: a member for long enough (14 days by default). Their vouches, reviews and vetoes count. <a href="/wiki/standing/#rungs">Standing &amp; review</a>.</p></dd>
+      <dt>expires_at</dt><dd><p>When a record fades, no later than the community's retention allows. Past it, devices delete it and leave it out of sync. <a href="/wiki/expiry/#expires-at">Expiry &amp; removal</a>.</p></dd>
+      <dt>features<small>fx</small></dt><dd><p>The list in a hello saying what a device offers: <code>range</code>, <code>carry</code>, <code>find</code>, <code>dht</code>, <code>signal</code>, <code>unlisted</code> and more. <a href="/wiki/sync/#hello">Sync &amp; gossip</a>.</p></dd>
+      <dt>find, found</dt><dd><p>Asking public nodes for routes to a community no connected peer serves, and their answer. <a href="/wiki/discovery/#find">Discovery</a>.</p></dd>
+      <dt>genesis</dt><dd><p>A community's first record, the only one its community key signs. <a href="/wiki/communities/#community-record">Communities</a>.</p></dd>
+      <dt>gossip</dt><dd><p>New records pushed in <code>recs</code> to connected peers as they arrive. <a href="/wiki/sync/#gossip">Sync &amp; gossip</a>.</p></dd>
+      <dt>hello</dt><dd><p>The first message on every link: version, node key, communities (named or salted), routes and features. <a href="/wiki/sync/#hello">Sync &amp; gossip</a>.</p></dd>
+      <dt>hide</dt><dd><p>An established member's signed judgment that a post breaks a rule; enough voice puts the post to sleep for everyone. <a href="/wiki/standing/#hides">Standing &amp; review</a>.</p></dd>
+      <dt>hold</dt><dd><p>What a device does with a record beyond its author's standing: store it, show it only to its author, pass it to nobody. <a href="/wiki/standing/#holds">Standing &amp; review</a>.</p></dd>
+      <dt>holder</dt><dd><p>A node that keeps pieces for others and answers sealed requests; mailboxes and pickups use them. <a href="/wiki/scatter/#holders">Scattered delivery</a>.</p></dd>
+      <dt>home node</dt><dd><p>Your own desktop or hoi-node, serving your other devices over a local WebSocket or WebRTC. <a href="/wiki/hoi-node/#roles">hoi-node</a>.</p></dd>
+    </dl>
+  </section>
+
+  <section class="wk-sec" id="i-m">
+    <h2>I – M</h2>
+    <dl class="wk-defs">
+      <dt>identity work</dt><dd><p>A one-time Argon2id proof over a key, so making many keys costs many times the work. Each community says how much it asks for. <a href="/wiki/stamps/#identity-work">Stamps &amp; work</a>.</p></dd>
+      <dt>invite link</dt><dd><p>A <code>hoi://join</code> link carrying a community key and routes to reach it, and often its genesis. <a href="/wiki/links/#join">Links &amp; URIs</a>.</p></dd>
+      <dt>iroh</dt><dd><p>The QUIC library native nodes use, with ALPN <code>hoi/sync/1</code> and none of its operator's default services. <a href="/wiki/transports/#iroh">Transports</a>.</p></dd>
+      <dt>labeler</dt><dd><p>A key whose labels a person chooses to trust and apply to what they see. <a href="/wiki/trust/#labelers">Trust &amp; ranking</a>.</p></dd>
+      <dt>ladder</dt><dd><p>The four rungs of standing (newcomer, member, established, trusted) every device computes from the community's own records. <a href="/wiki/standing/#rungs">Standing &amp; review</a>.</p></dd>
+      <dt>LAN beacon</dt><dd><p>A UDP multicast packet (239.255.70.74:7848) a native device sends every 30 s for each public community it joined, sealed so only members can read where to connect. <a href="/wiki/discovery/#lan">Discovery</a>.</p></dd>
+      <dt>ledger</dt><dd><p>A community's signed, sequenced list of moderation actions, which every device replays into the community's state. <a href="/wiki/communities/#ledger">Communities</a>.</p></dd>
+      <dt>linking</dt><dd><p>Adding a new device to an identity: a sealed request through the home node, four digits compared on both screens, and the root device's approval. <a href="/wiki/identity/#linking">Keys &amp; identity</a>.</p></dd>
+      <dt>mailbox</dt><dd><p>Holders a private group names where members leave sealed messages for each other. <a href="/wiki/mailboxes/#mailboxes">Mailboxes &amp; relays</a>.</p></dd>
+      <dt>masked code</dt><dd><p>The envelope every hoi link carries: magic bytes, a checksum, and the payload XORed with a keystream derived from the checksum, so no address or token is readable in the link itself. <a href="/wiki/links/#masking">Links &amp; URIs</a>.</p></dd>
+      <dt>member</dt><dd><p>The second rung: admitted. Links allowed, votes count. <a href="/wiki/standing/#rungs">Standing &amp; review</a>.</p></dd>
+      <dt>MLS</dt><dd><p>Messaging Layer Security (OpenMLS), the group encryption under private communities. <a href="/wiki/private/#mls">Private communities</a>.</p></dd>
+    </dl>
+  </section>
+
+  <section class="wk-sec" id="n-r">
+    <h2>N – R</h2>
+    <dl class="wk-defs">
+      <dt>newcomer</dt><dd><p>The first rung: a key with enough identity work, not yet admitted. Text only, and few posts a day. <a href="/wiki/standing/#rungs">Standing &amp; review</a>.</p></dd>
+      <dt>node link</dt><dd><p>A <code>hoi://node</code> link naming a public node's routes and carrying its operator notice; a browser's way in. <a href="/wiki/links/#node">Links &amp; URIs</a>.</p></dd>
+      <dt>node list<small>nodes</small></dt><dd><p>The message in which a public node passes on the public nodes it reached itself, with the uptime it saw. <a href="/wiki/discovery/#node-lists">Discovery</a>.</p></dd>
+      <dt>nonce</dt><dd><p>The number a miner varies until a record's stamp has enough leading zero bits. <a href="/wiki/stamps/#nonce">Stamps &amp; work</a>.</p></dd>
+      <dt>operator notice</dt><dd><p>What a public node's operator says about what the node keeps and who runs it, signed by the node and read before connecting. <a href="/wiki/discovery/#notices">Discovery</a>.</p></dd>
+      <dt>packet relay</dt><dd><p>An iroh relay a hoi-node can run (<code>--packet-relay</code>): it forwards encrypted QUIC packets by endpoint and keeps only who is connected now. <a href="/wiki/hoi-node/#packet-relay">hoi-node</a>.</p></dd>
+      <dt>pairing</dt><dd><p>Connecting a new device to your home node with a one-time token, swapped for a credential. <a href="/wiki/joining/#pairing">Joining</a>.</p></dd>
+      <dt>pickup</dt><dd><p>Where a private invitation waits, sealed to the newcomer's one-time key, on holders the newcomer named. <a href="/wiki/mailboxes/#pickup">Mailboxes &amp; relays</a>.</p></dd>
+      <dt>pieces</dt><dd><p>The data and parity shares of a scattered object; any enough of them rebuild it. <a href="/wiki/scatter/#rs">Scattered delivery</a>.</p></dd>
+      <dt>public node</dt><dd><p>A node that accepts strangers and carries open communities; the only kind that publishes an address. <a href="/wiki/discovery/#public-nodes">Discovery</a>.</p></dd>
+      <dt>range reconciliation<small>rng</small></dt><dd><p>How two devices learn what the other has by comparing fingerprints of ranges of (created_at, id), splitting the ranges that differ. <a href="/wiki/sync/#range">Sync &amp; gossip</a>.</p></dd>
+      <dt>rate window</dt><dd><p>How many records of a kind a key may have in a community within an hour or a day, counted by <code>created_at</code> so every device agrees. <a href="/wiki/spam/#rate-windows">Spam &amp; rate limits</a>.</p></dd>
+      <dt>record</dt><dd><p>Everything in hoi: a signed, immutable, canonically encoded piece of data with an author, a kind, a time and an expiry. <a href="/wiki/records/#envelope">Records &amp; encoding</a>.</p></dd>
+      <dt>recovery line</dt><dd><p>A person's master secret written as one line (<code>hoi-key-1-…</code>), from which a new device rebuilds the identity. <a href="/wiki/identity/#recovery-line">Keys &amp; identity</a>.</p></dd>
+      <dt>recs, want</dt><dd><p>Records by their signed bytes, and the request for records by id. <a href="/wiki/sync/#session">Sync &amp; gossip</a>.</p></dd>
+      <dt>Reed–Solomon</dt><dd><p>The erasure code over GF(2⁸) that makes parity pieces. <a href="/wiki/scatter/#rs">Scattered delivery</a>.</p></dd>
+      <dt>registry</dt><dd><p>An optional service mapping names to community keys in a signed, append-only log, and listing short-lived node announcements. <a href="/wiki/registry/#overview">Registry</a>.</p></dd>
+      <dt>removal</dt><dd><p>A moderator's <code>remove</code> ledger entry: the record naps through the contest window, then only its id and reason stay. <a href="/wiki/communities/#removals">Communities</a>.</p></dd>
+      <dt>report</dt><dd><p>A signed record naming a key and record ids as evidence; weighted reports can autoban. <a href="/wiki/spam/#reports">Spam &amp; rate limits</a>.</p></dd>
+      <dt>revoke</dt><dd><p>The record that removes a device from an identity. <a href="/wiki/identity/#revocation">Keys &amp; identity</a>.</p></dd>
+      <dt>room</dt><dd><p>What an encrypted relay stores objects under: an id derived from a private group's epoch, meaningless to anyone outside it. <a href="/wiki/private/#epochs">Private communities</a>.</p></dd>
+      <dt>root key</dt><dd><p>The Ed25519 key that is a person. It blesses device keys and never signs posts itself. <a href="/wiki/identity/#keys">Keys &amp; identity</a>.</p></dd>
+      <dt>route</dt><dd><p>An address string: <code>&lt;endpoint&gt;@ip:port</code> for QUIC, <code>rtc:&lt;fingerprint&gt;@ip:port</code> for WebRTC. <a href="/wiki/discovery/#routes">Discovery</a>.</p></dd>
+    </dl>
+  </section>
+
+  <section class="wk-sec" id="s-z">
+    <h2>S – Z</h2>
+    <dl class="wk-defs">
+      <dt>scattered delivery</dt><dd><p>Sealing an object and spreading it as pieces over many holders so no small set of them can read or withhold it. <a href="/wiki/scatter/#overview">Scattered delivery</a>.</p></dd>
+      <dt>Shamir's secret sharing</dt><dd><p>How a master secret is split among friends: any three of five pieces bring it back, two say nothing. <a href="/wiki/identity/#friends">Keys &amp; identity</a>.</p></dd>
+      <dt>stamp</dt><dd><p>About a second of proof of work on every record: <code>BLAKE3(id ‖ nonce)</code> must start with enough zero bits. <a href="/wiki/stamps/#stamp">Stamps &amp; work</a>.</p></dd>
+      <dt>standing</dt><dd><p>What a key may do in a community, computed by every device from that community's own records. <a href="/wiki/standing/#rungs">Standing &amp; review</a>.</p></dd>
+      <dt>strike</dt><dd><p>A device's fading score per key and community; past 10 the key is bounced and a report signed. The score halves every hour. <a href="/wiki/spam/#strikes">Spam &amp; rate limits</a>.</p></dd>
+      <dt>suppression</dt><dd><p>A node operator refusing to serve a community, record or blob on their own node. Nothing is signed or sent; other nodes decide for themselves. <a href="/wiki/trust/#suppress">Trust &amp; ranking</a>.</p></dd>
+      <dt>tally</dt><dd><p>The vote count behind a post, which each device computes itself, or a signed count from an aggregator. <a href="/wiki/trust/#tally">Trust &amp; ranking</a>.</p></dd>
+      <dt>tombstone</dt><dd><p>What stays of a removed or deleted record: its id and the reason, so it can't come back. <a href="/wiki/expiry/#tombstones">Expiry &amp; removal</a>.</p></dd>
+      <dt>tracker</dt><dd><p>A registry address a community names, where public nodes carrying it announce themselves. <a href="/wiki/discovery/#trackers">Discovery</a>.</p></dd>
+      <dt>trusted</dt><dd><p>The top rung: an established member with recent contributions the community answered well. Images, audio and video. Fades if they stop. <a href="/wiki/standing/#trusted">Standing &amp; review</a>.</p></dd>
+      <dt>unlisted</dt><dd><p>A device that publishes no internet address of its own; it says so in its features. <a href="/wiki/discovery/#public-nodes">Discovery</a>.</p></dd>
+      <dt>vault</dt><dd><p>The local store of keys and community data, sealed under a data key that a passphrase or passkey unwraps. <a href="/wiki/identity/#vault">Keys &amp; identity</a>.</p></dd>
+      <dt>veto</dt><dd><p>An established member's objection to a moderator's action; enough voice overturns it on every device. <a href="/wiki/standing/#vetoes">Standing &amp; review</a>.</p></dd>
+      <dt>voice</dt><dd><p>The weight of a person in hides, blocks, vetoes and objections, handed down through vouches and capped by the strongest voucher. <a href="/wiki/standing/#voice">Standing &amp; review</a>.</p></dd>
+      <dt>vouch</dt><dd><p>An established member's signed word that a newcomer belongs. <a href="/wiki/standing/#vouches">Standing &amp; review</a>.</p></dd>
+      <dt>warmth</dt><dd><p>How many other durable places hold a community's live records: cold, cool, warm or hot. <a href="/wiki/sync/#warmth">Sync &amp; gossip</a>.</p></dd>
+      <dt>WebRTC</dt><dd><p>How browsers and phones reach nodes (UDP 7844) and, with direct links, each other: a data channel named <code>hoi</code>, ICE-lite, DTLS. <a href="/wiki/transports/#webrtc">Transports</a>.</p></dd>
+    </dl>
+  </section>
+</article>
+<!-- @wiki-close -->
+<!-- @include footer.html -->
+<script type="module" src="/src/pages/wiki.ts"></script>
+</body>
+</html>

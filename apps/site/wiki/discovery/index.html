@@ -1,0 +1,581 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <!-- @include head.html title="Discovery · hoi wiki" description="How hoi programs find each other with nothing configured: node lists, public nodes, directory gossip, the DHT among public nodes, LAN beacons, trackers and optional registries." -->
+</head>
+<body class="wiki">
+<!-- @include header.html nav="wiki" -->
+<!-- @wiki-open -->
+<article class="wk-doc">
+  <!-- @wiki-crumbs -->
+  <h1>Discovery</h1>
+  <p class="wk-lead">No program in hoi names a node, a registry or a relay to start from. A device finds its first node in an invite, a node link or its own home node, and every public node it reaches passes on the other public nodes that node reached itself. This page explains each way programs find each other: node lists, public nodes, directory gossip, the DHT among public nodes, LAN beacons, trackers and registries. It also covers the limits that keep each one from being turned against the device that uses it.</p>
+  <p class="wk-src-list">Source <a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/nodes.rs">hoi-core/src/nodes.rs</a> <a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/directory.rs">directory.rs</a> <a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/find.rs">find.rs</a> <a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/lan.rs">lan.rs</a> <a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/notice.rs">notice.rs</a> <a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/net.rs">net.rs</a> <a href="{{REPO_URL}}/blob/main/core/crates/hoi-net/src/dht.rs">hoi-net/src/dht.rs</a> <a href="{{REPO_URL}}/blob/main/core/crates/hoi-net/src/lan.rs">hoi-net/src/lan.rs</a> <a href="{{REPO_URL}}/blob/main/core/crates/hoi-node/src/trackers.rs">hoi-node/src/trackers.rs</a> <a href="{{REPO_URL}}/blob/main/core/crates/hoi-sync/src/lib.rs">hoi-sync/src/lib.rs</a> <a href="{{REPO_URL}}/blob/main/apps/web/src/lib/public-connections.ts">apps/web/src/lib/public-connections.ts</a></p>
+  <div class="wk-head-rule"></div>
+
+  <section class="wk-sec" id="starting-points">
+    <h2>Nothing configured</h2>
+    <p>The software ships with no node list, no registry address and no default relay. The <code>hoi-node</code> header says it plainly: "Nothing here names a node, a registry or a relay to start from: a node finds others through the invites it joins, the node links it is given (<code>--node</code>) and the nodes that reach it." The published web app is built with no registry and no relay URL, so the registry and encrypted-relay code paths stay idle in it.</p>
+    <p>A device can start from any one of these:</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Where a device's first routes come from">
+      <table>
+        <thead><tr><th>Source</th><th>What it carries</th><th>How far its routes are trusted</th></tr></thead>
+        <tbody>
+          <tr><td>An invite (<code>hoi://join?code=…</code>), see <a href="/wiki/links/">Links</a></td><td>The community key, its signed genesis, up to 16 peer routes, up to 8 relays, up to 2 trackers</td><td>Kept in <code>state.bootstrap</code> once the person accepts the invite (<code>remember_hints</code>)</td></tr>
+          <tr><td>A node link (<code>hoi://node?code=…</code>)</td><td>Up to 4 WebRTC and 4 native routes of one public node, and its signed operator notice</td><td>Kept and tried first, but passed on only once the node answered as a public node</td></tr>
+          <tr><td>A paired home node (<code>hoi://pair?code=…</code>)</td><td>Its WebSocket address, a pairing token, up to 4 WebRTC routes</td><td>Its hints count once it delivered valid records (<code>home_proven</code>)</td></tr>
+          <tr><td>A <code>nodes</code> list from a public node this device dialed</td><td>Up to 32 routes of other public nodes</td><td>Only tried: at most 32 kept in memory for an hour</td></tr>
+          <tr><td>A <code>found</code> answer, a DHT answer, a LAN beacon, a tracker or a registry</td><td>Routes of nodes that carry one community</td><td>Only tried (<code>try_routes</code>): kept once they deliver the community's records</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>The rule that runs through every mechanism on this page comes from <code>net.rs</code>: routes a registry or an announcement suggested "are only tried: they are saved, and passed on, once they delivered records." A route that delivers the community's records becomes a remembered member route (<code>remember_member</code>, up to 16 per community, forgotten after 30 days). Everything else stays on trial.</p>
+    <div class="wk-note info"><b>Why so cautious</b><p>A list of routes is an instruction to dial addresses. If a stranger's list were trusted, anyone could make every device that reads it probe a third party's address. So lists only ever add candidates to try, a stranger who dialed in can make a node dial nobody but itself, and a route that reaches a private network is passed on only between peers on such a network.</p></div>
+  </section>
+
+  <section class="wk-sec" id="routes">
+    <h2>Routes and scopes</h2>
+    <p>Every address in hoi is a route string. Two kinds exist, checked by <code>valid_peer_hint</code> in <a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/net.rs">net.rs</a>:</p>
+    <dl class="wk-defs">
+      <dt>native route<small>&lt;endpoint&gt;@&lt;ip:port&gt;</small></dt><dd>An iroh endpoint key as 64 hex characters, then a UDP socket address. A bare endpoint key with no address is valid too, but it reaches the node only through a relay, so lists never pass one on.</dd>
+      <dt>WebRTC route<small>rtc:&lt;fp&gt;@&lt;ip:port&gt;</small></dt><dd><code>rtc:</code>, the base64url SHA-256 of the node's DTLS certificate (43 characters), <code>@</code> and a UDP socket address. A browser needs nothing else to reach the node (see <a href="/wiki/transports/">Transports</a>).</dd>
+      <dt>limits<small>≤ 128 bytes</small></dt><dd>Port not 0; address not unspecified and not multicast.</dd>
+    </dl>
+    <p>Who a route reaches is its <code>Reach</code>: the endpoint key, or the certificate fingerprint. Addresses change and these don't, so every list is compared by reach, never by address. How far an address reaches is its <code>Scope</code>:</p>
+    <div class="wk-code" data-lang="rust" data-title="hoi-core/src/nodes.rs (trimmed)"><pre><code>pub(crate) enum Scope {
+    Machine,
+    Local,
+    Internet,
+}
+
+pub(crate) fn ip_scope(ip: IpAddr) -&gt; Scope {
+    match ip.to_canonical() {
+        IpAddr::V4(v4) =&gt; {
+            let [a, b, _, _] = v4.octets();
+            if v4.is_loopback() {
+                Scope::Machine
+            } else if v4.is_private() || v4.is_link_local() || v4.is_broadcast() || (a == 100 &amp;&amp; (64..=127).contains(&amp;b)) || a == 0 {
+                // Carrier-grade NAT (100.64/10) is a provider's network, not the internet.
+                Scope::Local
+            } else {
+                Scope::Internet
+            }
+        }
+        // IPv6: loopback is Machine, unique-local and link-local are Local
+        …
+    }
+}</code></pre></div>
+    <p>In node lists a node tells a peer only routes at least as wide as the address that peer's connection came from (<code>peer_scope</code>), and a receiver takes only such routes. A browser that reached a node over the internet never hears of other nodes' <code>192.168.x.x</code> routes that way. The person's own devices and home node count as <code>Machine</code>, so they hear every scope.</p>
+    <h3 id="who-publishes">Who publishes an address at all</h3>
+    <p><code>shares_internet_routes()</code> is true for a headless node (<code>platform == "node"</code>, its operator's own server) and for a public node. Any other device keeps only its machine and local-network routes in what strangers see, and says <code>unlisted</code> in its hello. A peer that says <code>unlisted</code> is "remembered nowhere": its connection address goes into no invite, catalog or node list, and nobody dials it back.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="What each kind of device publishes">
+      <table>
+        <thead><tr><th>Device</th><th>Publishes internet routes</th><th>Says <code>unlisted</code></th><th>Can be dialed</th></tr></thead>
+        <tbody>
+          <tr><td>Browser, phone</td><td>No (it has no routes of its own)</td><td>Yes</td><td>No: it dials out over WebRTC</td></tr>
+          <tr><td>Desktop, not a public node</td><td>No: machine and network routes only</td><td>Yes</td><td>Only while its relay switch is on (on by default on native nodes) and under the daily cap</td></tr>
+          <tr><td>Desktop with <i>Be a public node</i> on</td><td>Yes</td><td>No</td><td>Yes, while relaying and under the daily cap</td></tr>
+          <tr><td><code>hoi-node</code> (any role)</td><td>Yes</td><td>No</td><td>Yes, while relaying and under the daily cap</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="wk-sec" id="public-nodes">
+    <h2>Public nodes</h2>
+    <p>A public node is a native node that serves strangers right now. In code that is one line, <code>is_public_node() = accepts_members() &amp;&amp; accepts_carry()</code>:</p>
+    <ul>
+      <li><code>accepts_members()</code>: a desktop or <code>hoi-node</code>, the relay switch on, and today's relayed bytes under the daily cap (5 GB by default, <code>--daily-cap-gb</code>).</li>
+      <li><code>accepts_carry()</code>: the carry policy is <code>any</code>, and on the desktop the person turned on <i>Be a public node</i>. <code>hoi-node</code> is public by its flags alone: a home node is a public relay unless started with <code>--no-public-relay</code>, and <code>--public</code> is the same with no pairing listener and no person's key.</li>
+    </ul>
+    <p>A public node advertises what it does in its hello's feature list (<code>fx</code>). These are the features discovery depends on:</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Hello features used by discovery">
+      <table>
+        <thead><tr><th>Feature</th><th>Who says it</th><th>What it lets the other side do</th></tr></thead>
+        <tbody>
+          <tr><td><code>nodes</code></td><td>Everyone</td><td>Send and take <code>nodes</code> lists</td></tr>
+          <tr><td><code>catalog</code></td><td>Everyone</td><td>Send <code>catalog</code> snapshots of open communities</td></tr>
+          <tr><td><code>directory</code></td><td>Everyone</td><td>Take relayed catalog entries (marked <code>x</code>) into a directory of its own</td></tr>
+          <tr><td><code>carry</code></td><td>A node with <code>accepts_carry()</code></td><td>Ask it with <code>carry</code> to keep an open community available</td></tr>
+          <tr><td><code>keeps</code></td><td>Desktop and <code>hoi-node</code></td><td>Count its copy as durable for warmth; it gets directory windows every 300 s instead of 1800 s</td></tr>
+          <tr><td><code>unlisted</code></td><td>Anything that publishes no internet address</td><td>Nothing: don't remember, pass on or dial back its address</td></tr>
+          <tr><td><code>find</code></td><td>A public node</td><td>Ask it <code>find</code>: who carries this community?</td></tr>
+          <tr><td><code>dht</code></td><td>A public node running the DHT</td><td>Exchange <code>dht</code> contacts</td></tr>
+          <tr><td><code>signal</code> / <code>direct</code></td><td>A native node with a WebRTC listener / a browser with Direct links on</td><td>Introduce browsers to each other (see <a href="/wiki/joining/">Joining</a>)</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 id="what-public-nodes-publish">What a public node publishes</h3>
+    <ul>
+      <li>Its <b>routes</b> in every hello (<code>published_routes</code>, at most 8): up to 4 direct addresses, a bare endpoint id when it has relays, and up to 3 WebRTC routes.</li>
+      <li>A <b>node link</b> anyone can open, internet routes first, with its operator's signed notice (<a href="#node-links">below</a>). <code>hoi-node</code> writes it to <code>DIR/node-link</code> and refreshes the file whenever it changes. Only a public node has one.</li>
+      <li>Its <b>operator notice</b> in every hello to a stranger (<code>nh</code>, <code>nt</code>).</li>
+      <li>A <b>catalog</b> of the open communities it holds: each one's signed genesis, join routes, relays and a warmth hint. It also passes on the listings it heard from others (<a href="#directory">directory gossip</a>).</li>
+      <li><b>Node lists</b>: routes of the public nodes it reached itself, and the scattered-delivery holders it vouches for.</li>
+      <li>If it runs the DHT, an <b>announcement</b> under each open community's DHT key, and signed answers on its answer port.</li>
+      <li>If configured, signed <b>node announcements</b> to registries (<code>--index</code>) and to the trackers its communities name.</li>
+    </ul>
+    <h3 id="what-public-nodes-never-publish">What it never publishes</h3>
+    <ul>
+      <li><b>What it was told.</b> A node list is made only of nodes that answered as public nodes on links this node dialed. Routes it heard from others stay candidates and are never passed on.</li>
+      <li><b>Addresses of devices that say <code>unlisted</code></b>: browsers, phones, desktops that aren't public. They are never learned as member routes.</li>
+      <li><b>Routes narrower than the listener</b>: no private-network or loopback route to a peer that came over the internet.</li>
+      <li><b>Private communities</b>, anywhere: not in catalogs, hellos, <code>find</code>, the DHT or LAN beacons.</li>
+      <li><b>A community only its own devices listed.</b> A listing that came only from its home node or its person's devices may be that person's own community, so it never reaches strangers.</li>
+      <li><b>Who asked.</b> A <code>carry</code> request carries a genesis and no routes. The node keeps the reason it carries a community as one word (<code>index</code> or <code>request</code>), never a peer or an address.</li>
+      <li><b>Its person's name, hints or pairing secrets</b> to strangers. Those go only to its own devices.</li>
+    </ul>
+  </section>
+
+  <section class="wk-sec" id="node-lists">
+    <h2>Node lists</h2>
+    <p>A <code>nodes</code> message is how a device that reached one public node finds the others. A public node sends one after every hello and again whenever its list changes, and skips the send if the peer already has this exact list.</p>
+    <dl class="wk-defs">
+      <dt>t<small>text</small></dt><dd><code>"nodes"</code></dd>
+      <dt>routes<small>[text], ≤ 32, each ≤ 128 B</small></dt><dd>Routes of public nodes the sender reached itself, freshest first, a few per node (<code>MAX_NODE_ROUTES</code>).</dd>
+      <dt>h<small>[vouch], ≤ 32, optional</small></dt><dd>Scattered-delivery holders the sender saw online itself: <code>e</code> endpoint, <code>u</code> share of hourly samples linked (percent, ≤ 100), <code>d</code> days known (≤ 30), optional <code>k</code> holder key and <code>r</code> up to 2 routes. Read leniently: a bad vouch is dropped, never the list. See <a href="/wiki/scatter/">Scattered delivery</a>.</dd>
+    </dl>
+    <h3 id="node-lists-send">Who sends a list to whom</h3>
+    <p><code>shares_nodes(peer)</code> requires a hello that said <code>nodes</code>. After that it sends to the person's own devices and home node always, and to anyone else only while this node is a public node. An empty list still says something to a stranger: this node serves strangers.</p>
+    <p><code>node_list_for(peer)</code> walks the known nodes that answered within 30 days, freshest first. It skips the peer itself (by reach), skips nodes whose dial failed in the last 600 s, and drops routes narrower than the peer's scope. It stops at 32 routes.</p>
+    <h3 id="node-lists-receive">What a receiver does with one</h3>
+    <ol class="wk-steps">
+      <li><b>Rate</b><p>At most 6 <code>nodes</code> messages per peer per minute are read; the rest are ignored.</p></li>
+      <li><b>A peer that dialed in</b><p>It proves nothing about anyone else. Its list is dropped. Only its own native routes on the address its authenticated connection came from (at most 2, <code>caller_routes</code>) become candidates, and only if it doesn't say <code>unlisted</code>. That is how a node that only dials out becomes known to the nodes it reaches.</p></li>
+      <li><b>A peer this device dialed, or its own device or home node</b><p>A peer we dialed that sent a list answered as a public node, so <code>note_public_node</code> puts it at the front of <code>state.nodes</code>. Its holder vouches are noted. Up to 16 routes of the list (<code>TAKE_PER_LIST</code>), each at least as wide as the peer's scope, become candidates.</p></li>
+      <li><b>Candidates</b><p><code>take_candidates</code> drops invalid routes, routes with no address, routes already known, routes to this device or its home node, and routes to a node whose notice is pending or declined. The rest go to the front of <code>node_candidates</code>, at most 32, each for an hour.</p></li>
+    </ol>
+    <p>The routes kept for a public node are only those bound to the connection, the same rule as <code>remember_member</code>. That means the address its authenticated QUIC connection came from, the native routes it gave for that same endpoint, and WebRTC routes that carry the certificate the DTLS handshake pinned or sit on the QUIC source address. <code>trim_routes</code> keeps at most 2 of each kind. A peer can't make a device keep someone else's address under its name.</p>
+    <div class="wk-code" data-lang="rust" data-title="hoi-core/src/nodes.rs"><pre><code>/// Public nodes a device keeps between starts.
+pub(crate) const MAX_KNOWN: usize = 32;
+/// A known node that didn't answer as one for this long is forgotten.
+const KNOWN_TTL: u64 = 30 * 86_400;
+/// Routes other nodes passed on, kept in memory to be tried, and for how long.
+const MAX_CANDIDATES: usize = 32;
+const CANDIDATE_TTL: u64 = 3600;
+/// A node whose dial failed is left alone this long.
+const FAILED_PAUSE: u64 = 600;
+/// Routes kept for one node, of each kind (WebRTC, native).
+const ROUTES_PER_KIND: usize = 2;
+/// `nodes` messages taken from one peer per minute; more are ignored.
+const NODES_PER_MINUTE: u32 = 6;
+/// Routes taken from one list, and from one peer that dialed in.
+const TAKE_PER_LIST: usize = 16;
+const TAKE_PER_CALLER: usize = 2;
+/// Other public nodes a native node keeps a link to, besides its communities' peers.
+const DIAL_NATIVE: usize = 3;
+/// WebRTC routes a browser or phone tries to find communities when nothing else leads anywhere.
+const DISCOVERY_RTC: usize = 8;</code></pre></div>
+    <div class="wk-seq" data-title="A browser that reached one public node finds the next">
+lanes: Browser | Public node A | Public node B
+-- A already dialed B, and B answered as a public node --
+Public node A -> Public node B: <code>hello</code>, then B sends <code>nodes</code>
+Public node A: keeps B in <code>state.nodes</code> (seen = now)
+-- The browser opens A's node link --
+Browser -> Public node A: WebRTC to <code>rtc:&lt;A&gt;@203.0.113.1:7844</code>
+Public node A --> Browser: <code>hello</code> (notice), <code>bind</code>
+Browser -> Public node A: <code>hello</code> (salted, <code>unlisted</code>)
+Public node A --> Browser @mint: <code>nodes</code> {routes: [<code>rtc:&lt;B&gt;@203.0.113.2:7844</code>, …]}
+Browser: A answered on a link it dialed: A into <code>state.nodes</code>; B's routes into candidates
+Browser .. Public node B: B is the next route <code>discovery_candidates()</code> returns
+</div>
+    <h3 id="trying-order">The order nodes are tried in</h3>
+    <p><code>directory_groups()</code> lists nodes in this order: links the person opened (<code>seen == 0</code>), then nodes reached before, freshest first, then candidates, newest first. Each node's routes stay together. A node already connected, a node failed in the last 600 s, a node whose notice blocks it and this device's own routes are left out.</p>
+    <ul>
+      <li>A browser or phone takes up to 8 WebRTC routes from it (<code>discovery_candidates</code>), never its home node's. The web worker keeps one discovery link: every 15 s it races 3 nodes at once, keeps the first that opens and closes the others.</li>
+      <li>A native public node takes the native routes of up to 3 nodes (<code>directory_hints</code>) into its dial loop, so it hears of new nodes and passes them on. A native node that isn't public dials no extra nodes.</li>
+      <li>A private group that still needs mailboxes takes routes of a few public nodes (<code>directory_routes</code>). See <a href="/wiki/mailboxes/">Mailboxes</a>.</li>
+    </ul>
+    <p>A dial that fails calls <code>dial_failed(route)</code>. Every candidate for that node goes, and a known node rests for 600 s. The failure table holds at most 128 entries (4 × <code>MAX_KNOWN</code>).</p>
+    <h3 id="directory-status">What the app shows</h3>
+    <p><code>net_status().directory</code> is a <code>DirectoryStatus</code>:</p>
+    <dl class="wk-defs">
+      <dt>known<small>u64</small></dt><dd>Public nodes that answered as one within 30 days.</dd>
+      <dt>waiting<small>u64</small></dt><dd>Node links not answered yet plus live candidates.</dd>
+      <dt>connected<small>u64</small></dt><dd>Known public nodes connected now (not counting own devices or the home node).</dd>
+      <dt>listings<small>u64</small></dt><dd>Open communities in the directory (<a href="#directory">below</a>).</dd>
+    </dl>
+  </section>
+
+  <section class="wk-sec" id="node-links">
+    <h2>Node links</h2>
+    <p>A node link is a public node's address for anyone to open: no credential and no community. It is <code>hoi://node?code=&lt;code&gt;</code>, or the same query after <code>#/node?</code> in the web app's address (<code>https://hoi.sh/app/#/node?code=…</code>). The code packs the routes out of sight: a generic Base64 decoder shows no IP address.</p>
+    <div class="wk-bytes" data-title="A node link's code, before base64url">
+magic | 4 B | sun | 2 | <code>HON\x01</code>
+checksum | 16 B | coral | 3 | first 16 bytes of BLAKE3 of the deflated payload
+payload | ≤ 16 KiB in all | mint | 6 | deflated DAG-CBOR, XORed with a BLAKE3 stream keyed by <code>"hoi node link obfuscation v1"</code> and the checksum
+</div>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Node link payload fields">
+      <table>
+        <thead><tr><th>Key</th><th>Type</th><th>Meaning</th></tr></thead>
+        <tbody>
+          <tr><td><code>v</code></td><td>uint</td><td>1</td></tr>
+          <tr><td><code>w</code></td><td>[text], ≤ 4</td><td>WebRTC routes without the <code>rtc:</code> prefix: <code>&lt;fp&gt;@&lt;addr&gt;</code></td></tr>
+          <tr><td><code>p</code></td><td>[text], ≤ 4</td><td>Native routes <code>&lt;endpoint&gt;@&lt;addr&gt;</code>; the first names the endpoint the notice is checked against</td></tr>
+          <tr><td><code>n</code></td><td>bytes, ≤ 2048</td><td>The operator notice's canonical bytes (optional)</td></tr>
+          <tr><td><code>s</code></td><td>bytes, 64</td><td>The endpoint key's Ed25519 signature over the notice statement (required with <code>n</code>)</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>The mask is public, not a secret key. The checksum detects damage and does not authenticate. A query that mixes <code>code</code> with clear-text fields is refused, so nothing can change what the person previewed. Older links spelled the fields in the clear (<code>w=…&amp;p=…&amp;nt=…&amp;ns=…</code>) and still open.</p>
+    <p>Opening one takes two calls. <code>preview_node_link</code> reads the link without dialing anything: host, scope, endpoint, and the notice if any, checked against the endpoint. <code>open_node_link</code> then refuses the link under the consent gate unless that notice was accepted. It trims the routes (2 per kind, none of this device's own) and puts the node at the front of <code>state.nodes</code> with <code>seen = 0</code>: tried first, passed on to nobody until it answers as a public node. Inside the app this is the <i>A public node</i> screen (<code>NodeLink.svelte</code>); a link without a notice needs one extra acknowledgement.</p>
+    <div class="wk-note tip"><b>On a server</b><p><code>hoi-node --node LINK</code> (repeatable) does the same for a headless node. Every <code>hoi-node</code> prints its own link at start and writes it to <code>DIR/node-link</code>.</p></div>
+  </section>
+
+  <section class="wk-sec" id="notices">
+    <h2>Operator notices before connecting</h2>
+    <p>A public node's operator tells people what the node processes and keeps and, if they choose, who runs it and where. A person's device reads that before it says anything of its own. The notice is a <code>NodeNotice</code> (<a href="{{REPO_URL}}/blob/main/core/crates/hoi-types/src/notice.rs">hoi-types/src/notice.rs</a>). Operators write it as camelCase JSON; it travels as canonical CBOR with one-letter keys, hashed with BLAKE3.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Notice fields">
+      <table>
+        <thead><tr><th>JSON</th><th>CBOR</th><th>Cap</th><th>Meaning</th></tr></thead>
+        <tbody>
+          <tr><td><code>v</code></td><td><code>v</code></td><td>—</td><td>Notice format, 1</td></tr>
+          <tr><td><code>node</code></td><td><code>n</code></td><td>64 chars</td><td>The node's label</td></tr>
+          <tr><td><code>operator</code></td><td><code>o</code></td><td>120</td><td>Name or pseudonym; may be empty</td></tr>
+          <tr><td><code>contact</code></td><td><code>c</code></td><td>200</td><td>How to reach them; may be empty</td></tr>
+          <tr><td><code>country</code></td><td><code>k</code></td><td>2</td><td>ISO 3166-1 alpha-2, upper case; may be empty</td></tr>
+          <tr><td><code>provider</code></td><td><code>h</code></td><td>120</td><td>Hosting provider, optional</td></tr>
+          <tr><td><code>processes</code></td><td><code>p</code></td><td>600</td><td>What it processes beyond addresses (required)</td></tr>
+          <tr><td><code>ipLogging</code>, <code>retentionDays</code></td><td><code>l</code>, <code>r</code></td><td>≤ 3650 days</td><td>Whether the host logs IP addresses, and for how long</td></tr>
+          <tr><td><code>purpose</code>, <code>communityRules</code>, <code>extra</code></td><td><code>u</code>, <code>g</code>, <code>x</code></td><td>400, 600, 600</td><td>Optional text</td></tr>
+          <tr><td><code>updated</code></td><td><code>d</code></td><td><code>YYYY-MM-DD</code></td><td>Last change (required)</td></tr>
+          <tr><td><code>pieces</code></td><td><code>s</code></td><td>bool</td><td>Set by the node from <code>--hold-pieces</code>, whatever the file says</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Canonical bytes are at most 1536; a hello's <code>nt</code> or a link's <code>n</code> may carry 2048 so later fields fit. The node link's signature covers <code>"hoi node notice v1\n&lt;endpoint hex&gt;\n&lt;notice hash hex&gt;"</code>: a notice signed for one node means nothing in another's link. The vector <a href="{{REPO_URL}}/blob/main/core/vectors/node-notice.json">core/vectors/node-notice.json</a> pins the JSON, canonical bytes, hash, signature, the masked and legacy links and a stranger hello that carries the notice.</p>
+    <h3 id="consent-gate">The consent gate</h3>
+    <p>Browsers, the desktop and phones turn the gate on (<code>set_consent_gate(true)</code>); a headless node never does. Under the gate, a stranger this device dialed hears nothing until its hello arrives. Then <code>consent_check</code> decides:</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Consent check outcomes">
+      <table>
+        <thead><tr><th>The stranger's hello</th><th>Outcome</th></tr></thead>
+        <tbody>
+          <tr><td>No <code>nh</code> (an older node, or a member's device)</td><td>Proceed: our hello follows at once</td></tr>
+          <tr><td><code>nh</code> without <code>nt</code>, bytes over 2048, a hash that doesn't match, or bytes that don't parse</td><td>Penalize: the peer's score drops by 5</td></tr>
+          <tr><td>The same hash the person accepted for this node</td><td>Proceed</td></tr>
+          <tr><td>The same hash the person declined</td><td>Close, quietly</td></tr>
+          <tr><td>Anything else</td><td>Keep the words as a pending notice, emit a <code>nodeNotice</code> event, close quietly. Once the person accepts, the node is dialed again.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>A device keeps at most 64 notices, decided or not; when full, the oldest one not accepted goes first. Declining answers any open link to that node with <code>bye {reason: "declined"}</code>, and the node is dialed on this device's own initiative no more (<code>consent_blocks</code>) until the person forgets the notice. A new notice from a known node replaces the old answer, since the words changed.</p>
+    <div class="wk-note info"><b>What the node has seen by then</b><p>The node saw the device's IP address when the connection opened, as any connection shows it. The app's own Network &amp; Safety notice says so before the first connection is ever made, and the person must tick both boxes on it. What the device says of itself (its communities, hashed or named) waits for the person's answer.</p></div>
+  </section>
+
+  <section class="wk-sec" id="hellos">
+    <h2>What a hello reveals</h2>
+    <p>A hello to a stranger is written so a peer learns only what it already knows. Its rules (version 2, <code>SYNC_VERSION</code>) from <code>Node::hello</code>:</p>
+    <ul>
+      <li><code>c</code> names in the clear only the communities whose routes led to this connection (<code>routed_here</code>): a carrier learns what a member came to it for.</li>
+      <li>Every other public community goes in <code>ch</code> as a salted hash, sorted so the order says nothing. The salt <code>n</code> is 16 fresh random bytes per connection, so the same list can't be recognised on the next one.</li>
+      <li>A browser with no endpoint sends a fresh random 32-byte <code>node</code> per connection, and no <code>name</code>: one carrier can't tie a person's visits together.</li>
+      <li>No <code>hints</code>, <code>token</code>, <code>pt</code> or <code>lk</code> to strangers; those go only between a home node and its devices.</li>
+    </ul>
+    <div class="wk-bytes" data-title="What a salted community hash covers">
+context | — | lilac | 4 | BLAKE3 derive-key context <code>"hoi 2026 hello community v1"</code>
+salt | 16 B | sun | 2 | <code>n</code>, fresh per connection
+key | 32 B | mint | 4 | the community key
+</div>
+    <div class="wk-code" data-lang="rust" data-title="hoi-sync/src/lib.rs"><pre><code>pub fn community_hash(salt: &amp;[u8; 16], community: &amp;Id) -&gt; Id {
+    let mut h = blake3::Hasher::new_derive_key(COMMUNITY_HASH_CONTEXT);
+    h.update(salt);
+    h.update(community.as_bytes());
+    Id(*h.finalize().as_bytes())
+}</code></pre></div>
+    <p>The receiver hashes each public community it holds under the sender's salt and looks for a match. It keeps the salted list for the connection, so a community it takes on later (a carry request, say) is found too (<code>rematch</code>). Both lists are capped at 1024 entries.</p>
+    <p><a href="{{REPO_URL}}/blob/main/core/vectors/hello-salted.json">core/vectors/hello-salted.json</a> pins a stranger hello (one key named, one salted under <code>5a5a…5a</code>) and a home-to-device hello (both keys in the clear, with <code>token</code>, <code>pt</code> and <code>lk</code>). <a href="{{REPO_URL}}/blob/main/core/vectors/hello-hints.json">core/vectors/hello-hints.json</a> pins the <code>hints</code> extension: per community <code>c</code>, peers <code>p</code> (≤ 16, ≤ 128 B each) and relays <code>r</code> (≤ 8, ≤ 512 B each), at most 64 communities. Hints are accepted only on a paired home-node link, and from one's own home node only once it delivered records.</p>
+    <div class="wk-code" data-lang="json" data-title="core/vectors/hello-salted.json, stranger_hello decoded (bytes as hex)"><pre><code>{
+  "t": "hello", "v": 2,
+  "node": "0808080808080808080808080808080808080808080808080808080808080808",
+  "c":  ["8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c"],
+  "n":  "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+  "ch": ["1995a3150a7c89c8abc4c04f18d4267ff5fbda2b06f679e604e30f6ffcc7838b"],
+  "fx": ["catalog"],
+  "serves": false
+}</code></pre></div>
+  </section>
+
+  <section class="wk-sec" id="directory">
+    <h2>Directory gossip</h2>
+    <p>The directory is a device's list of open communities it heard of: what connected nodes carry now, and what it heard of before, from them and from the nodes they heard it from. A listing carries only the signed community definition and public join routes: no posts, profiles or pairing credentials. It is a discovery aid. Nothing in it joins anything or dials a route until the person chooses.</p>
+    <h3 id="catalog-message">The catalog message</h3>
+    <p>A <code>catalog</code> is a replacement snapshot, sent only when both peers said <code>catalog</code>: at most 64 entries and 256 KiB.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Catalog entry fields">
+      <table>
+        <thead><tr><th>Key</th><th>Type</th><th>Cap</th><th>Meaning</th></tr></thead>
+        <tbody>
+          <tr><td><code>g</code></td><td>bytes</td><td>≤ 64 KiB</td><td>The signed genesis record (wire bytes)</td></tr>
+          <tr><td><code>p</code></td><td>[text]</td><td>≤ 16 × 128 B</td><td>Peer routes where the community is carried</td></tr>
+          <tr><td><code>r</code></td><td>[text]</td><td>≤ 8 × 512 B</td><td>Relay hints</td></tr>
+          <tr><td><code>w</code></td><td>uint</td><td>0–3</td><td>Warmth hint, own entries only: durable copies the sender saw besides its own, quantised. Clamped, never a reason to drop the entry.</td></tr>
+          <tr><td><code>x</code></td><td>uint</td><td>1</td><td>Relayed: heard of from another node, not held by the sender. Only to peers that said <code>directory</code>.</td></tr>
+          <tr><td><code>a</code></td><td>uint</td><td>≤ 60 days</td><td>For a relayed entry: seconds since a node last listed it as its own. Passing a listing on never makes it younger, so a community nobody holds fades instead of circling.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 id="catalog-rights">Who gets what</h3>
+    <ul>
+      <li><b>Own entries</b> (open communities this node holds) go to its own devices, and to strangers only while it accepts members.</li>
+      <li><b>Relayed entries</b> go to a peer that said <code>directory</code> and gets our own entries. A device that takes no strangers' connections (a browser, a phone, a desktop with its relay switch off) sends them only to public nodes it dialed itself (those that said <code>carry</code>). A browser's or phone's own communities stay salted hashes; it passes on only what strangers' public nodes listed.</li>
+      <li>A device that gets no catalog of ours never hears an empty one either.</li>
+    </ul>
+    <h3 id="windows">Windows and rotation</h3>
+    <p>To a peer that takes relayed listings, a catalog is the node's own communities first (up to 48, <code>OWN_ROOM</code>), then a window of relayed ones filling the rest of the 64. <code>next_window</code> chooses it in this order: own communities that didn't fit, then listings first heard within the hour (newest first, up to 16 places), then the rest in turn from where the last window ended (a cursor per peer). Nothing the peer listed itself, nothing private to this device's own devices, nothing older than 7 days and nothing refused goes in. The rotation always moves on, so a community carried by one public node comes to be known by every node a few hops away.</p>
+    <div class="wk-stage" data-demo="gossip" data-title="A listing spreading hop by hop">
+      <p class="nojs">An animation of one item spreading through a mesh of devices, hop by hop. Each device checks it before passing it on and drops copies it already has.</p>
+      <p class="wk-stage-cap">A directory listing spreads the same way between nodes that say <code>directory</code>: a window at a time, every 300 s. Each node checks the genesis before keeping it, and a listing it already holds is merged (its routes first, the youngest age wins), not added twice.</p>
+    </div>
+    <h3 id="receiving-catalogs">Receiving a catalog</h3>
+    <ol class="wk-steps">
+      <li><b>Rate</b><p>More than 60 catalogs from one peer in a minute ends the link with <code>bye {reason: "too many community directory updates"}</code>.</p></li>
+      <li><b>Checks per entry</b><p>The genesis must decode, be a community record with open admission, and not conflict with the genesis this node holds under that key. It must pass the stamp floor for a community record, the signature check, the content rules and the clock check. Private communities are skipped. Invalid peer and relay hints are dropped; routes stay passive until the person joins.</p></li>
+      <li><b>Own entries replace the peer's snapshot</b><p>Entries the peer stopped listing are withdrawn from the directory too, unless another connected node still lists them. A changed admission policy withdraws a listing at once. A change in the warmth hint alone is the same listing, so a peer can't make this node redraw its directory at will.</p></li>
+      <li><b>Remember</b><p>Known listings get the new routes first (8 kept) and relays (4 kept), and the youngest age anyone told. New ones are added within the connection's allowance of 128 new listings an hour, unless refused or older than 21 days.</p></li>
+    </ol>
+    <div class="wk-code" data-lang="rust" data-title="hoi-core/src/directory.rs (trimmed)"><pre><code>/// Listings a browser or phone keeps; a native node keeps more, it passes them on.
+const KEEP_LIGHT: usize = 512;
+const KEEP_NATIVE: usize = 4096;
+/// A listing no node confirmed holding for this long is forgotten...
+const FORGET_AFTER: u64 = 21 * 86_400;
+/// ...and one older than this is no longer passed on: its carriers may be gone.
+const PASS_ON_FOR: u64 = 7 * 86_400;
+/// Relayed listings go out to every peer this often, a window at a time...
+pub(crate) const GOSSIP_EVERY: u64 = 300;
+/// ...and to a browser or phone (a peer that doesn't say `keeps`) this often
+pub(crate) const GOSSIP_LIGHT_EVERY: u64 = 1800;
+const OWN_ROOM: usize = 48;
+const FRESH_FOR: u64 = 3600;
+const FRESH_ROOM: usize = 16;
+/// Routes and relays kept per listing.
+const ROUTES_KEPT: usize = 8;
+const RELAYS_KEPT: usize = 4;
+/// New listings one connection may add in an hour; more are ignored.
+const NEW_PER_PEER_HOUR: u32 = 128;
+/// The directory is written at most this often, or this soon after something new arrived.
+const WRITE_EVERY: u64 = 600;
+const WRITE_NEW_AFTER: u64 = 30;</code></pre></div>
+    <p>Each <code>Listing</code> keeps <code>g</code> (the genesis, base64url), <code>p</code> and <code>r</code> (routes and relays, freshest first), <code>first</code> (first heard), <code>held</code> (when a node last listed it as its own), <code>dialed</code> (heard from a node this device dialed, or its own devices) and <code>public</code> (heard from a stranger's node). Over the limit, listings only callers brought go first, then the longest unconfirmed. The directory lives in its own storage blob, <code>"directory"</code>, apart from the rest of the state: a cache that starts over if it can't be read.</p>
+    <p><code>gossip_directory</code> is called from every sweep (every 36th 5-second round, about three minutes) and acts once 300 s have passed. It forgets listings no node confirmed for 21 days, gives each peer that says <code>keeps</code> its next window, and gives every other peer one at most every 1800 s. A peer that has no window yet gets one picked with the first catalog after its hello. The 1800 s rate exists because a public node serving dozens of browsers "would otherwise spend a gigabyte a day on windows alone."</p>
+    <div class="wk-seq" data-title="A listing travels two hops">
+lanes: Public node A | Public node B | Browser
+Public node A: carries c/garden
+Public node A -> Public node B: <code>catalog</code> [{g, p, r, w: 1}]
+Public node B: checks the genesis; <code>Listing</code> {held: now, public: true}
+-- At B's next gossip round (300 s) --
+Public node B -> Browser @mint: <code>catalog</code> [own…, {g, p, r, x: 1, a: 300}]
+Browser: checks it; keeps it, held = now − 300
+Browser: <code>discover_communities()</code> lists c/garden with an invite
+</div>
+    <h3 id="discovered">What the app lists</h3>
+    <p><code>discover_communities()</code> returns this device's own open communities, those connected nodes list now and remembered listings, sorted by name. Equal names stay separate communities: listings are kept by key, and the app labels same-name, other-key results instead of merging them (<code>nearby.ts</code>, <code>community-discovery.ts</code>). Each <code>DiscoveredCommunity</code> carries <code>id</code>, <code>name</code>, <code>color</code>, <code>description</code>, a ready <code>invite</code> (with the genesis, the routes heard and up to 2 trackers), <code>joined</code>, <code>live</code> (a node connected now lists it) and <code>seen</code>. Known community state wins over any listing: a community whose admission changed away from open, or a private one, is never listed.</p>
+  </section>
+
+  <section class="wk-sec" id="carry-warmth">
+    <h2>Carrying and warmth</h2>
+    <p>Finding a community helps only if some node holds it while its members are away. A public node that says <code>carry</code> keeps an open community on request: anyone holding the signed genesis sends <code>carry {g}</code>, and the node answers <code>carried {c, ok, reason?}</code>. The request carries no routes, so a stranger never makes a public node dial an address of their choosing. The node learns members' routes from their own authenticated connections. Refusal reasons are <code>full</code>, <code>busy</code>, <code>refused</code>, <code>not open</code>, <code>not accepting</code> and <code>invalid</code>.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Carry limits">
+      <table>
+        <thead><tr><th>Limit</th><th>Value</th></tr></thead>
+        <tbody>
+          <tr><td>Requests a peer may make, and a requester sends one peer</td><td>4 per minute (<code>CARRY_PER_MINUTE</code>)</td></tr>
+          <tr><td>Requests a node accepts, whoever asks</td><td>8 per minute, 128 per day; the rest hear <code>busy</code></td></tr>
+          <tr><td>Communities carried, index and requests together</td><td>256 by default (<code>--carry-limit</code>); requests may fill half</td></tr>
+          <tr><td>Bytes of communities carried on request</td><td>256 MiB by default (<code>--carry-mb</code>); over it, the least touched go first</td></tr>
+          <tr><td>Let go when nobody else delivered or fetched records</td><td>14 days; 1 hour if its records never came</td></tr>
+          <tr><td>Automatic requests per hello</td><td>3: a device asks a new public node for the open communities its person founded, or is about to share an invite to</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Warmth is how a device reads, from its own links, how well kept a community is (see <a href="/wiki/sync/">Sync &amp; gossip</a>). Discovery uses it twice. A catalog entry's <code>w</code> hint tells a receiver how many durable copies the sender saw, which raises the receiver's network reading but never adds up across peers. And a public node spreads load: an open community it holds, with fewer than 3 durable copies as far as it can see (<code>SPREAD_UNTIL</code>), is offered to a public node that just said hello, to at most 2 such nodes per community per day and at most 3 communities per hello. The other node's own policy and limits still decide.</p>
+  </section>
+
+  <section class="wk-sec" id="find">
+    <h2>Finding carriers: find and found</h2>
+    <p>When every route a device holds for a community has gone quiet, it tries three things in order (from <a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/find.rs">find.rs</a>): ask connected public nodes with <code>find</code>, ask the community's trackers, and, on a public node, look in the DHT.</p>
+    <ul>
+      <li><b>Who asks</b>: after a hello from a node that said <code>find</code>, and at every sweep, <code>find_missing</code> picks the open communities this device joined that no connected peer serves. It sends <code>find {c}</code> to up to 3 connected strangers that said <code>find</code>, at most once per community every 600 s (<code>FIND_EVERY</code>). The node learns that the asker looks for that community.</li>
+      <li><b>Who answers</b>: a public node, for any community that isn't private there, at most 10 finds per peer per minute. <code>found {c, r}</code> lists up to 16 routes: its own published routes if it carries <code>c</code>, the public nodes it dialed that hold, list or were asked to keep <code>c</code>, and its directory listing's routes (public listings only). It sends nothing when it knows nothing.</li>
+      <li><b>DHT follow-up</b>: a node that runs the DHT also queues a lookup (at most 32 queued) and remembers the asker for 120 s (at most 16 waiting per community). When the DHT answers, it sends a second <code>found</code>.</li>
+      <li><b>What the asker does</b>: a <code>found</code> counts only if this device asked about <code>c</code> and the sender said <code>find</code>. Its routes, minus this device's own, go on trial (<code>try_routes</code>, at most 16 per community, in memory, never saved or put in invites).</li>
+    </ul>
+    <div class="wk-seq" data-title="A browser asks who carries a community">
+lanes: Browser | Public node | DHT | Carrier
+Browser -> Public node: <code>find</code> {c}
+Public node --> Browser: <code>found</code> {c, r: [routes it knows]}
+Public node -> DHT: lookup <code>BLAKE3("hoi dht node v1" ‖ c)[..20]</code>
+DHT --> Public node: announced peers (IPv4 address, answer port)
+Public node -> Carrier: UDP query to the answer port
+Carrier --> Public node: signed answer {c, e, r, s, t}
+Public node --> Browser @mint: <code>found</code> {c, r: [checked routes]}
+Browser -> Carrier: dials a route on trial; kept once records arrive
+</div>
+  </section>
+
+  <section class="wk-sec" id="dht">
+    <h2>The DHT among public nodes</h2>
+    <p>Public nodes run a Mainline DHT node (the <code>mainline</code> crate) beside their other ports, so a community can be found by its key alone once every route anyone holds for it has gone stale. It differs from BitTorrent's use in three ways (<a href="{{REPO_URL}}/blob/main/core/crates/hoi-net/src/dht.rs">hoi-net/src/dht.rs</a>):</p>
+    <dl class="wk-defs">
+      <dt>No outside bootstrap</dt><dd>The DHT is built with <code>no_bootstrap()</code>. It starts from what hoi's own links say: after a hello with a peer that also said <code>dht</code>, each public node sends <code>dht {a}</code>, at most 4 <code>ip:port</code> contacts (IPv4, each ≤ 64 B). These are the IPv4 hosts of its own public routes at its DHT port. Contacts from at most 64 peers are kept. Joining BitTorrent's worldwide DHT is one operator's choice (<code>--dht-bootstrap HOST:PORT</code>); once one node bridges, the others learn the wider network from each other.</dd>
+      <dt>The key never enters the DHT</dt><dd>Each open community a node carries (at most 64) is announced under a 20-byte hash of its key (<code>dht_key</code>, below), with the node's answer port as the announced port.</dd>
+      <dt>Answers are signed</dt><dd>A finder sends a small padded query to that port. The node answers with a statement its endpoint key signed for that community, which the core checks before any route in it is tried.</dd>
+    </dl>
+    <div class="wk-code" data-lang="rust" data-title="hoi-core/src/find.rs"><pre><code>/// The DHT key for a community: the first 20 bytes of `BLAKE3("hoi dht v1" ‖ key)`.
+pub fn dht_key(community: &amp;Id) -&gt; [u8; 20] {
+    let mut h = blake3::Hasher::new();
+    h.update(DHT_DOMAIN.as_bytes());
+    h.update(community.as_bytes());
+    let mut out = [0u8; 20];
+    out.copy_from_slice(&amp;h.finalize().as_bytes()[..20]);
+    out
+}</code></pre></div>
+    <p><code>DHT_DOMAIN</code> is <code>"hoi dht node v1"</code>, the same constant that opens the signed statement. So the key is the first 20 bytes of <code>BLAKE3("hoi dht node v1" ‖ community key)</code>; the doc comments write the prefix as <code>"hoi dht v1"</code>, but the code hashes the constant.</p>
+    <h3 id="dht-wire">The query and the answer</h3>
+    <div class="wk-bytes" data-title="A DHT query: exactly 512 bytes, UDP to the answer port">
+magic | 4 B | sun | 2 | <code>HOI?</code>
+version | 1 B | mute | 1 | 1
+community | 32 B | mint | 4 | the community key
+nonce | 16 B | coral | 2 | random per query
+padding | 459 B | mute | 3 | zeros; anything else is refused
+</div>
+    <div class="wk-bytes" data-title="A DHT answer: at most 1200 bytes">
+magic | 4 B | sun | 2 | <code>HOI!</code>
+version | 1 B | mute | 1 | 1
+nonce | 16 B | coral | 2 | the query's
+payload | ≤ 1179 B | lilac | 6 | DAG-CBOR {c, e, r, s, t}
+</div>
+    <p>The padding keeps the answer from being much more than twice what was sent, so the answer port can't be used to amplify traffic at a spoofed address. The payload's fields are <code>c</code> (community key), <code>e</code> (endpoint key), <code>r</code> (routes, at most 8, only <code>rtc:</code> routes and native routes naming <code>e</code>), <code>t</code> (issued at, Unix seconds) and <code>s</code> (Ed25519 over <code>"hoi dht node v1\n&lt;e hex&gt;\n&lt;c hex&gt;\n&lt;t&gt;\n&lt;routes joined by ,&gt;"</code>). A finder refuses an answer whose community differs, whose <code>t</code> is more than 600 s ahead or older than 30 minutes (<code>DHT_ANSWER_TTL</code>), or whose key is weak or signature wrong. The query itself carries the community key in the clear to the answer port; only the DHT key is a hash.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="DHT parameters">
+      <table>
+        <thead><tr><th>Parameter</th><th>Value</th></tr></thead>
+        <tbody>
+          <tr><td>DHT port, answer port (UDP)</td><td>7846, 7847 (<code>--dht-port</code>, <code>--dht-answer-port</code>)</td></tr>
+          <tr><td>Loop tick</td><td>10 s</td></tr>
+          <tr><td>Re-announce</td><td>Every 15 minutes, or when the list of carried communities changes (Mainline forgets peers after about half an hour); each announce times out after 20 s</td></tr>
+          <tr><td>Restart from hoi contacts while the routing table is empty</td><td>At most every 60 s</td></tr>
+          <tr><td>Lookup</td><td>Up to 16 announced peers gathered within 15 s, 3 s wait per answer</td></tr>
+          <tr><td>Answer port rate</td><td>30 queries per source per minute, a table of 4096 sources (an IPv4 address, or an IPv6 /64)</td></tr>
+          <tr><td>Who runs it</td><td><code>hoi-node</code> while relaying with carry <code>any</code>, unless <code>--no-dht</code>; the desktop while it is a public node (bound to the VPN in VPN-only mode)</td></tr>
+          <tr><td>What is looked up</td><td>Communities a connected device asked about with <code>find</code>, and those this node joined that nobody here serves</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="wk-note info"><b>Not iroh's discovery</b><p>The iroh endpoint is built from <code>presets::Minimal</code> with a custom, initially empty relay map, "without opting into N0's DNS, pkarr or relay infrastructure." Node addresses are not published to pkarr; the DHT carries only the community announcements above.</p></div>
+  </section>
+
+  <section class="wk-sec" id="lan">
+    <h2>LAN beacons</h2>
+    <p>Members of the same community on one network find each other with a small UDP multicast beacon. This is not mDNS and no service is involved. Native nodes send it (desktop and <code>hoi-node</code>); browsers can't. A stranger on the network sees only that some device sends hoi beacons, which its UDP traffic would show anyway.</p>
+    <div class="wk-bytes" data-title="A LAN beacon (UDP to 239.255.70.74:7848)">
+magic | 5 B | sun | 2 | <code>HOIL\x01</code>
+n | 1 B | mute | 1 | communities, ≤ 8
+
+tag | 16 B | lilac | 3 | per community: changes every 10 minutes
+sealed | 74 B | mint | 6 | per community: endpoint (32) ‖ port (2), sealed under a key derived from the community
+</div>
+    <div class="wk-code" data-lang="text" data-title="hoi-core/src/lan.rs (module docs)"><pre><code>beacon = "HOIL" 0x01 ‖ n (≤ 8) ‖ n × ( tag[16] ‖ sealed[74] )
+tag    = BLAKE3-keyed(derive_key("hoi 2026 lan tag v1", community), u64be(now / 600))[..16]
+sealed = sealed::seal("hoi 2026 lan route v1", derive_key("hoi 2026 lan route key v1", community),
+                      endpoint[32] ‖ u16be(port))</code></pre></div>
+    <ul>
+      <li><b>Socket</b>: UDP port 7848 bound with address reuse (every hoi node on a machine shares it), joined to group <code>239.255.70.74</code>, multicast loop on, TTL 1.</li>
+      <li><b>Sending</b>: every 30 s, for up to 8 joined public communities. Nothing is sent when there is nothing to offer. Private communities never send one: their members are in their group, not on the community's key.</li>
+      <li><b>Hearing</b>: at most 120 beacons a minute from everyone together. A tag counts for the current or the previous 10-minute window. The node opens the sealed part, skips its own endpoint and port 0, and puts <code>&lt;endpoint&gt;@&lt;sender's IP&gt;:&lt;port&gt;</code> on trial for that community. The dial loop reaches it directly within seconds.</li>
+      <li><b>Off</b>: with <code>hoi-node --no-lan</code>, with <code>--vpn-only</code>, and on the desktop in "Only through my VPN" (a beacon goes out on the home network).</li>
+    </ul>
+    <div class="wk-seq" data-title="Two members on one network">
+lanes: Desktop | Home network | Home node
+Desktop -> Home network: beacon {tag(c), sealed(endpoint, port)} every 30 s
+Home network -> Home node: the same datagram (multicast, TTL 1)
+Home node: tag matches c it joined: route on trial
+Home node -> Desktop: QUIC <code>hoi/sync/1</code> to <code>&lt;endpoint&gt;@192.168.1.20:&lt;port&gt;</code>
+Desktop --> Home node: <code>hello</code>, then <code>rng</code> / <code>recs</code>
+Home node: records delivered: route kept in <code>state.learned</code>
+</div>
+  </section>
+
+  <section class="wk-sec" id="trackers">
+    <h2>Trackers</h2>
+    <p>An open community may name up to two trackers in its limits (<code>limits.trackers</code>): registries where public nodes that carry it say so. Then a device whose invite routes have all gone stale can still find a carrier. Which trackers is the community's choice, never the app's or a node's. A tracker is an <code>https://</code> address of at most 200 bytes, with no credentials, query, fragment or whitespace (plain <code>http://</code> only on this machine, for tests). Like other limits, trackers change by consent (see <a href="/wiki/communities/">Communities</a>).</p>
+    <ul>
+      <li><b>Invites carry them</b>: field <code>t</code>, one or two. An accepted invite's trackers are kept with its routes until the community's own limits arrive. <code>trackers_of(c)</code> returns the community's own first, then the invite's.</li>
+      <li><b>Public nodes announce to them</b>: <code>tracker_targets(16)</code> lists the trackers of the open communities a public node carries (invite-only communities' trackers never). <code>hoi-node</code> checks every 60 s and runs one announcing loop per tracker, the same signed announcement and loop as <code>--index</code> but without mirroring. It stops when no carried community names that tracker any more. A node that isn't public announces nowhere.</li>
+      <li><b>The app asks them</b>, in any build including the published one, for communities it joined that no connected node serves: <code>GET {tracker}/v2/nodes?community=&lt;key&gt;</code>, at most 16 routes of at most 128 bytes, 10 s timeout. It keeps the routes for this device's kind (WebRTC for a browser, native otherwise) and hands them to <code>publicJoin</code>, so they go on trial. Each community is checked at most every 5 minutes, at most 16 per run.</li>
+    </ul>
+  </section>
+
+  <section class="wk-sec" id="registries">
+    <h2>Registries as optional discovery</h2>
+    <p>A registry maps public names to community keys (the service itself is on <a href="/wiki/registry/">Registry</a>). Discovery uses two of its endpoints, and the published app uses neither: <code>REGISTRY_URL</code> comes from the registry address at build time and is empty there. Trackers are the exception above.</p>
+    <h3 id="node-announcements">Node announcements</h3>
+    <p>A node with <code>--index URL</code> announces itself with <code>PUT /v2/nodes</code> every 5 minutes; the registry forgets a node after 30 minutes of silence. The announcement is a <code>NodeAnnouncement</code>, signed by the node's transport key for one registry's origin, so no registry can pass it on to another:</p>
+    <div class="wk-code" data-lang="json" data-title="core/vectors/node-announcement.json (trimmed)"><pre><code>{
+  "registry": "https://registry.example",
+  "endpoint": "7ea0e3bd52e207c9d3b0eba65c0704e66fca2d8e165a175218b174fc4160e413",
+  "routes": [
+    "rtc:ERERERERERERERERERERERERERERERERERERERERERE@203.0.113.10:7844",
+    "7ea0e3bd52e207c9d3b0eba65c0704e66fca2d8e165a175218b174fc4160e413@203.0.113.10:7843"
+  ],
+  "communities": [
+    "1111111111111111111111111111111111111111111111111111111111111111",
+    "2222222222222222222222222222222222222222222222222222222222222222"
+  ],
+  "issuedAt": 1800000000,
+  "signature": "9545c4e11449bbcfad6c20e88f32378a874823d21eed4accc5a908d34e18c96763198ed9f860362de4f8a461b27f6d4845b5f679f027c8b545cf24ad103f8303"
+}</code></pre></div>
+    <div class="wk-code" data-lang="rust" data-title="hoi-core/src/registration.rs"><pre><code>pub fn node_announcement_statement(registry: &amp;str, endpoint: &amp;Id, issued_at: u64, routes: &amp;[String], communities: &amp;[Id]) -&gt; String {
+    let communities: Vec&lt;String&gt; = communities.iter().map(|c| c.hex()).collect();
+    format!("hoi public node v2\n{registry}\n{}\n{issued_at}\n{}\n{}", endpoint.hex(), routes.join(","), communities.join(","))
+}</code></pre></div>
+    <p>At most 8 routes (only <code>rtc:</code> routes and native routes naming the signing endpoint), and at most 64 open communities, the most recently joined when more are carried, then sorted. The registry origin must be <code>https://host[:port]</code> in lower case with nothing after the authority (<code>http://</code> only for this machine). The registry refuses announcements more than ten minutes off its clock. <code>hoi-node</code> announces only routes with public addresses unless the registry runs on the same machine.</p>
+    <h3 id="registry-lookups">Lookups from the app</h3>
+    <ul>
+      <li><code>metadata()</code>: <code>GET /v1/meta</code>, which must say API version 2 and schema version 3, with at most 16 <code>publicNodes</code> of at most 128 bytes each.</li>
+      <li><code>nodesFor(c)</code>: <code>GET /v2/nodes?community=&lt;key&gt;</code>: nodes that announced they carry it first, then the operator's configured nodes, then other live nodes, at most 16.</li>
+      <li>A public join link (<code>#/public?c=&lt;key&gt;&amp;name=…&amp;p=…</code>, <code>PublicJoin.svelte</code>) checks the name against the registry's verified, logged entry. It then calls <code>publicJoin(key, routes)</code> with up to 16 routes (the carriers first) and polls <code>publicJoinStatus</code> every 2 s while pending. The core still verifies every signed record. The signed genesis must arrive from a peer, its admission must be open and its name must match, or the join is rejected and its routes dropped.</li>
+      <li>In an app built with a registry, <code>PublicConnectionDiscovery</code> also asks for <code>publicNodes</code> (cached for 5 minutes) when no connected peer serves a joined open community, and hands the routes fitting this device to <code>publicJoin</code>.</li>
+    </ul>
+    <p>Every request goes with no credentials and no referrer, no cache and no redirects, and times out after 10 s. A timeout is never taken as a claim that a name is free.</p>
+  </section>
+
+  <section class="wk-sec" id="together">
+    <h2>Putting it together</h2>
+    <p>Which mechanisms each kind of device uses, in the order the code tries them:</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Discovery by device kind">
+      <table>
+        <thead><tr><th>Device</th><th>Starts from</th><th>Keeps looking with</th><th>Never</th></tr></thead>
+        <tbody>
+          <tr><td>Browser, phone</td><td>Invite, node link, pairing link</td><td>One discovery link to a public node (node lists, catalogs), up to 2 member links, <code>find</code>, the community's trackers</td><td>LAN beacons, the DHT, being dialed</td></tr>
+          <tr><td>Desktop</td><td>Invite, node link, its paired devices</td><td>iroh dial loop over invite, member and trial routes; LAN beacons; <code>find</code>; the community's trackers</td><td>Extra public nodes, DHT and announcements, unless it is a public node</td></tr>
+          <tr><td>Home node (<code>hoi-node</code>)</td><td><code>--join</code>, <code>--node</code>, devices pairing with it, nodes that dial in</td><td>Up to 3 other public nodes, catalogs, node lists, <code>find</code>, DHT, LAN, trackers, <code>--index</code></td><td>A built-in node, registry or relay</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Discovery limits at a glance">
+      <table>
+        <thead><tr><th>Mechanism</th><th>Interval</th><th>Caps</th></tr></thead>
+        <tbody>
+          <tr><td>Node lists</td><td>After each hello and on change</td><td>32 routes per list; 6 lists per peer a minute; 32 known nodes (30 d); 32 candidates (1 h)</td></tr>
+          <tr><td>Directory gossip</td><td>300 s (1800 s to peers without <code>keeps</code>)</td><td>64 entries / 256 KiB per catalog; 128 new listings per connection an hour; 512 or 4096 kept; forgotten after 21 d</td></tr>
+          <tr><td><code>find</code></td><td>600 s per community</td><td>3 nodes asked; 10 answered per peer a minute; 16 routes per answer</td></tr>
+          <tr><td>DHT</td><td>Announce every 15 min; tick 10 s</td><td>64 communities; 32 lookups; 16 peers per lookup; answers ≤ 1200 B, valid 30 min</td></tr>
+          <tr><td>LAN beacons</td><td>30 s; tags change every 600 s</td><td>8 communities per beacon; 120 heard a minute</td></tr>
+          <tr><td>Trackers</td><td>Checked every 60 s (node); 5 min per community (app)</td><td>2 per community; 16 per node; 16 routes per answer</td></tr>
+          <tr><td>Registry announcements</td><td>5 min, forgotten after 30 min</td><td>8 routes, 64 communities</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="wk-cards">
+      <a class="wk-card g-sky" href="/wiki/joining/"><i></i><b>Joining, step by step</b><span>Every frame of every join path, with what each side stores.</span></a>
+      <a class="wk-card g-sky" href="/wiki/transports/"><i></i><b>Transports</b><span>iroh QUIC, the WebSocket link and WebRTC data channels.</span></a>
+      <a class="wk-card g-sky" href="/wiki/sync/"><i></i><b>Sync &amp; gossip</b><span>What happens once two devices are linked: ranges, wants and records.</span></a>
+      <a class="wk-card g-sun" href="/wiki/hoi-node/"><i></i><b>hoi-node</b><span>The flags that make a node public, run the DHT or announce itself.</span></a>
+      <a class="wk-card g-sun" href="/wiki/registry/"><i></i><b>Registry</b><span>Names to keys, the log, and the node list a registry serves.</span></a>
+      <a class="wk-card g-coral" href="/wiki/links/"><i></i><b>Links &amp; URIs</b><span>Invites, node links and pairing links, field by field.</span></a>
+    </div>
+  </section>
+</article>
+<!-- @wiki-close -->
+<!-- @include footer.html -->
+<script type="module" src="/src/pages/wiki.ts"></script>
+</body>
+</html>

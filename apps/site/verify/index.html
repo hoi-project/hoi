@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <!-- @include head.html title="Verify a download · hoi.sh" description="How to check that the hoi you downloaded is the one we signed: compare its SHA-256, verify the release list's minisign signature, or build it yourself." -->
+</head>
+<body>
+<!-- @include header.html nav="site" -->
+
+<main id="main">
+<section class="wrap page-hero">
+  <span class="eyebrow">trust, then check</span>
+  <h1>Check what you downloaded. <span class="blue">It takes a minute.</span></h1>
+  <p class="lead">Your device checks everything in hoi: every post, every vote, every moderator action. The one thing it can't check is itself. The app you run is the trust boundary, so here is how to make sure it's the one we signed, and not something that looks like it.</p>
+</section>
+
+<section class="wrap" aria-label="Steps">
+  <div class="rows">
+    <div class="row" id="checksum">
+      <div class="row-k"><span class="num fill-sun">1</span><span>Find the checksum</span></div>
+      <div class="row-v">
+        <p>Every file in a release has a SHA-256 checksum in the release list, <a href="/releases/manifest.json">manifest.json</a>. The <a href="/download/">download page</a> shows it next to each file, with a copy button.</p>
+      </div>
+    </div>
+
+    <div class="row" id="hash">
+      <div class="row-k"><span class="num fill-mint">2</span><span>Hash your file</span></div>
+      <div class="row-v">
+        <p>Run the line for your system on the file you downloaded. Your file name may differ a little.</p>
+        <div class="codes">
+          <div class="code">
+            <div class="code-h"><span>macOS · Terminal</span><button type="button" class="copy-btn js-only" data-copy aria-label="Copy the macOS command">Copy</button></div>
+            <pre><code>shasum -a 256 ~/Downloads/hoi_0.1.0_universal.dmg</code></pre>
+          </div>
+          <div class="code">
+            <div class="code-h"><span>Linux · any shell</span><button type="button" class="copy-btn js-only" data-copy aria-label="Copy the Linux command">Copy</button></div>
+            <pre><code>sha256sum hoi_0.1.0_amd64.AppImage</code></pre>
+          </div>
+          <div class="code">
+            <div class="code-h"><span>Windows · Command Prompt</span><button type="button" class="copy-btn js-only" data-copy aria-label="Copy the Command Prompt command">Copy</button></div>
+            <pre><code>certutil -hashfile hoi_0.1.0_x64_en-US.msi SHA256</code></pre>
+          </div>
+          <div class="code">
+            <div class="code-h"><span>Windows · PowerShell</span><button type="button" class="copy-btn js-only" data-copy aria-label="Copy the PowerShell command">Copy</button></div>
+            <pre><code>Get-FileHash .\hoi_0.1.0_x64_en-US.msi -Algorithm SHA256</code></pre>
+          </div>
+        </div>
+        <p><strong>The output must match the checksum, character for character.</strong> Upper or lower case doesn't matter. If it doesn't match, delete the file and don't open it. A broken download and a swapped one look the same from here.</p>
+      </div>
+    </div>
+
+    <div class="row" id="signature">
+      <div class="row-k"><span class="num fill-sky">3</span><span>Check the list is ours</span></div>
+      <div class="row-v">
+        <p>A matching checksum proves the file matches the list. The signature proves the list came from the publisher of the trusted key. Download <a href="{{RELEASE_MANIFEST}}">manifest.json</a> and <a href="{{RELEASE_MANIFEST}}.minisig">manifest.json.minisig</a> into one folder, then run <a href="https://jedisct1.github.io/minisign/">minisign</a> with the key below:</p>
+        <div class="code">
+          <div class="code-h"><span>Any system with minisign</span><button type="button" class="copy-btn js-only" data-copy aria-label="Copy the minisign command">Copy</button></div>
+          <pre><code>minisign -Vm manifest.json -P '{{RELEASE_KEY}}'</code></pre>
+        </div>
+        <p>It should say <code>Signature and comment signature verified</code>. Anything else: stop, and tell us.</p>
+        <div class="placeholder" id="key">
+          <span class="tag">Build's trusted release key</span>
+          <p><strong>hoi release signing key (minisign)</strong></p>
+          <div class="keybox">{{RELEASE_KEY}}</div>
+          <p>Compare this key with <code>publication.json</code> in a source checkout you already trust. A key supplied only by the downloaded list is not trusted. If the keys disagree, stop.</p>
+        </div>
+        <p>The download page and app verify the exact signed list before using its URLs or notices. Desktop updates also verify the selected package's checksum, updater signature and version. These checks are separate from operating-system code signing or notarisation. Browser app updates use the browser's HTTPS and service-worker cache; a signed notice does not authenticate every file served by the website.</p>
+      </div>
+    </div>
+
+    <div class="row" id="reproduce">
+      <div class="row-k"><span class="num fill-lilac">4</span><span>Or build it yourself</span></div>
+      <div class="row-v">
+        <p>Don't want to trust our build at all? Fair. Check out the release tag and build from source. You need Node 22 or newer, pnpm 10 and stable Rust; the desktop app also needs <a href="https://v2.tauri.app/start/prerequisites/">Tauri's prerequisites</a>.</p>
+        <div class="code">
+          <div class="code-h"><span>Build from source</span><button type="button" class="copy-btn js-only" data-copy aria-label="Copy the build commands">Copy</button></div>
+          <pre><code>git clone {{REPO_URL}}.git
+cd hoi
+git checkout v0.1.0
+pnpm install --frozen-lockfile
+node scripts/reproduce.mjs
+pnpm --filter @hoi/desktop tauri build</code></pre>
+        </div>
+        <p>Then compare what you built with what we published. The browser app's WebAssembly, hoi-node and this website come out byte for byte the same on any machine with the pinned toolchains: <code>node scripts/reproduce.mjs</code> builds them and prints their SHA-256, and each hoi-node download has its digests beside it. Our checks build everything twice and fail on a single byte. The desktop installers don't: signing and packaging add timestamps and certificates on each build. Their programs come from the same sources, built the same way.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section" aria-labelledby="why">
+  <div class="wrap two">
+    <div class="section-head">
+      <span class="eyebrow">why bother</span>
+      <h2 id="why">The app is the bouncer. Check the bouncer.</h2>
+      <p class="lead">Your copy of the app checks signatures, stamps and rate limits on the records it receives. A compromised app could skip those checks or leak your keys, including private-message keys. Verify the download against a trusted publisher's signing key; encryption still depends on the client you run.</p>
+    </div>
+    <div class="note-sun">
+      <b>What we sign, and what we don't</b>
+      <p>Release downloads have checksums and a signed release list. The app can fetch static release metadata; it includes no analytics or crash reporting. Community discovery and synchronization contact separate nodes directly, as described in the privacy notice.</p>
+      <p>Found something off? See <a href="{{REPO_URL}}/blob/main/CONTRIBUTING.md#reporting-a-security-issue">how to report a security issue</a>.</p>
+    </div>
+  </div>
+</section>
+</main>
+
+<!-- @include footer.html -->
+<script type="module" src="/src/pages/page.ts"></script>
+</body>
+</html>

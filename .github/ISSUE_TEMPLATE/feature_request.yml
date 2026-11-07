@@ -1,0 +1,31 @@
+name: Feature request
+description: Propose a change in behaviour. Protocol and storage changes need discussion before code.
+labels: ["enhancement", "needs-triage"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What can't you do today, and who is affected?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: What should change? Mention alternatives you considered.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options: [core / protocol, web app, website / wiki, desktop, node setup, mobile, registry / relay, deployment, docs, other]
+    validations:
+      required: true
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope
+      options:
+        - label: This changes the protocol, storage format or key handling.

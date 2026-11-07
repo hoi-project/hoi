@@ -1,0 +1,461 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <!-- @include head.html title="Test vectors · hoi wiki" description="Every conformance vector in core/vectors: what it pins down, its structure, the generator that writes it, the tests that read it, and why changing one is a protocol change." -->
+</head>
+<body class="wiki">
+<!-- @include header.html nav="wiki" -->
+<!-- @wiki-open -->
+<article class="wk-doc">
+  <!-- @wiki-crumbs -->
+  <h1>Test <span class="acc">vectors</span></h1>
+  <p class="wk-lead">Twenty JSON files in <code>core/vectors/</code> fix the exact bytes and outcomes every implementation must produce: records with their ids and signatures, sync messages, invites, sizing for scattered delivery, standing on the ladder, signed statements for registries. They are built deterministically, read back by tests in Rust, in WebAssembly and in JavaScript, and any difference fails the suite.</p>
+  <p class="wk-src-list">Source <a href="{{REPO_URL}}/tree/main/core/vectors">core/vectors/</a> <a href="{{REPO_URL}}/blob/main/core/crates/hoi-validate/examples/vectors.rs">hoi-validate/examples/vectors.rs</a> <a href="{{REPO_URL}}/blob/main/core/crates/hoi-validate/tests/vectors.rs">hoi-validate/tests/vectors.rs</a> <a href="{{REPO_URL}}/blob/main/scripts/test-core-wasi.mjs">scripts/test-core-wasi.mjs</a></p>
+  <div class="wk-head-rule"></div>
+
+  <section class="wk-sec" id="overview">
+    <h2>Every file</h2>
+    <p>Sixteen files are written by one generator, <code>cargo run -p hoi-validate --example vectors</code>. Four are committed files that a test rebuilds or checks byte for byte. "Generator check" means the test <code>committed_vectors_are_current</code>, which reruns the generator and fails on any difference.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Every vector file">
+      <table>
+        <thead><tr><th>File</th><th>Pins down</th><th>Written by</th><th>Read by</th></tr></thead>
+        <tbody>
+          <tr><td><a href="#records"><code>records.json</code></a></td><td>20 records of every kind: canonical bytes, id, signature, stamp</td><td>generator</td><td><code>records_pass_stages_one_to_three</code></td></tr>
+          <tr><td><a href="#delegation"><code>delegation-chain.json</code></a></td><td>identity → delegation → post, and the delegation statement</td><td>generator</td><td><code>identity_and_delegation_verify</code></td></tr>
+          <tr><td><a href="#tombstone"><code>tombstone.json</code></a></td><td>an owner's <code>remove</code> of a comment</td><td>generator</td><td>generator check</td></tr>
+          <tr><td><a href="#threshold"><code>threshold.json</code></a></td><td>a 2-of-3 cosigned rules entry and its <code>proposal_id</code></td><td>generator</td><td><code>threshold_entry_cosigns_verify</code></td></tr>
+          <tr><td><a href="#ladder"><code>ladder.json</code></a></td><td>a community's standing, hides, quorums and a proposal, then a retirement</td><td>generator</td><td>generator check</td></tr>
+          <tr><td><a href="#sync-transcript"><code>sync-transcript.json</code></a></td><td>a five-message sync between two nodes</td><td>generator</td><td>generator check</td></tr>
+          <tr><td><a href="#hello-hints"><code>hello-hints.json</code></a></td><td>a hello with routing hints</td><td>generator</td><td><code>hello_hint_conformance_vector</code> (hoi-core)</td></tr>
+          <tr><td><a href="#hello-salted"><code>hello-salted.json</code></a></td><td>a stranger's salted hello and a home node's hello to its device</td><td>generator</td><td><code>salted_hellos_match_only_known_keys</code></td></tr>
+          <tr><td><a href="#carry"><code>carry.json</code></a></td><td><code>carry</code>, <code>carried</code> and a catalog entry with warmth</td><td>generator</td><td><code>carry_messages_decode_as_committed</code></td></tr>
+          <tr><td><a href="#warmth"><code>warmth.json</code></a></td><td>16 observations and 7 link sets, read to a level and score</td><td>generator</td><td><code>warmth_reads_the_same_everywhere</code></td></tr>
+          <tr><td><a href="#uris"><code>uris.json</code></a></td><td>invites in every encoding, a <code>did:key</code></td><td>generator</td><td><code>encoded_and_legacy_invites_keep_the_same_verified_genesis</code></td></tr>
+          <tr><td><a href="#media"><code>media.json</code></a></td><td>a PNG before and after sanitizing</td><td>generator</td><td><code>media_sanitizes_as_committed</code></td></tr>
+          <tr><td><a href="#pdq"><code>pdq.json</code></a></td><td>a picture's eight PDQ hashes</td><td>generator</td><td><code>pdq_reads_the_same_everywhere_within_its_tolerance</code></td></tr>
+          <tr><td><a href="#scatter"><code>scatter.json</code></a></td><td>sizing, Reed–Solomon, a sealed object, pieces, drops, envelopes, manifest, pointer</td><td>generator</td><td><code>scatter_vectors_hold</code></td></tr>
+          <tr><td><a href="#node-announcement"><code>node-announcement.json</code></a></td><td>a public node's signed announcement to one registry</td><td>generator</td><td>hoi-core, hoi-node and the registry Worker's tests</td></tr>
+          <tr><td><a href="#node-notice"><code>node-notice.json</code></a></td><td>an operator notice: canonical bytes, hash, signature, link, hello, text</td><td>generator</td><td><code>operator_notices_hash_sign_and_travel_as_committed</code>; the app's <code>notice.test.ts</code></td></tr>
+          <tr><td><a href="#shamir"><code>shamir.json</code></a></td><td>a 3-of-5 split from fixed coefficients</td><td>committed</td><td><code>the_shared_vectors</code> (hoi-crypto)</td></tr>
+          <tr><td><a href="#name-log"><code>name-log.json</code></a></td><td>the registry's name log: leaves, roots, proofs, a signed head</td><td>committed</td><td><code>the_tree_matches_the_shared_vectors</code> (hoi-node)</td></tr>
+          <tr><td><a href="#community-registration"><code>community-registration.json</code></a></td><td>a v1 name claim's statement and signature</td><td>committed; rebuilt by a test</td><td>hoi-core, hoi-node, the Node registry and its conformance suite</td></tr>
+          <tr><td><a href="#community-publication"><code>community-publication.json</code></a></td><td>a v2 publication proof bound to protocol and index</td><td>committed; rebuilt by a test</td><td>the same</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="wk-sec" id="generator">
+    <h2>The generator</h2>
+    <p><code>core/crates/hoi-validate/examples/vectors.rs</code> builds everything from fixed inputs: fixed seeds, fixed times, nonces searched from 0. Running it twice writes the same bytes on any machine, which is what lets a test compare files byte for byte.</p>
+    <div class="wk-code" data-lang="rust" data-title="hoi-validate/examples/vectors.rs (trimmed)"><pre><code>const T: u64 = 1_790_000_000;
+const DAY: u64 = 86_400;
+
+fn key(n: u8) -&gt; Keypair {
+    Keypair::from_secret(&amp;[n; 32])
+}
+
+/// Stamps at `bits`, signs, and describes the result.
+fn make(name: &amp;str, signer: &amp;Keypair, mut r: Record, bits: u32) -&gt; (Value, Wire, Id) {
+    r.nonce = hoi_crypto::pow::Puzzle::new(&amp;r, bits).search(0, 1, u64::MAX).expect("nonce");
+    let canonical = r.encode();
+    let (wire, id) = signer.sign_record(r);
+    // …name, kind, signer_seed, signer, record_cbor, id, nonce, stamp_bits, sig, wire_cbor
+}</code></pre></div>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Fixed keys in the vectors">
+      <table>
+        <thead><tr><th>Key</th><th>Seed (32 × byte)</th><th>Role</th></tr></thead>
+        <tbody>
+          <tr><td>community</td><td><code>01</code></td><td>the community key <code>8a88e3dd…</code> (it signs the genesis)</td></tr>
+          <tr><td>root</td><td><code>02</code></td><td>a person's root key; an owner</td></tr>
+          <tr><td>device</td><td><code>03</code></td><td>the root's device, blessed for scope <code>["*"]</code> for 180 days</td></tr>
+          <tr><td>mira</td><td><code>04</code></td><td>an owner who signs for herself</td></tr>
+          <tr><td>jonas</td><td><code>05</code></td><td>the third owner</td></tr>
+          <tr><td>other</td><td><code>06</code></td><td>a second community, hashed in the salted hello</td></tr>
+          <tr><td>roster holders, a friend</td><td><code>40</code>–<code>42</code>, <code>43</code></td><td>the roster record's holders; the share record's recipient</td></tr>
+          <tr><td>scatter</td><td><code>0x11</code>, <code>0x12</code>, <code>0x40</code>+<code>i</code></td><td>the community drop key, the holder node, the manifest's holders</td></tr>
+          <tr><td>registry and notice nodes</td><td><code>0x4b</code>, <code>0x4e</code></td><td>the announcing node, the node with an operator notice</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>The vectors' community uses <code>Limits { pow_bits: 8, ..Limits::default() }</code>, and every record is stamped at 8 bits. Identity work is searched from nonce 0 at the protocol floor, <code>hoi_crypto::identity::MIN_BITS</code> (4), so it is deterministic too. The scattered-delivery secrets, nonces and ephemeral seeds are fixed through hoi-crypto's <code>deterministic</code> feature; real devices draw all of them from the system.</p>
+    <h3 id="regenerate">Regenerating and checking</h3>
+    <div class="wk-code" data-lang="sh" data-title="from core/"><pre><code>cargo run -p hoi-validate --example vectors              # rewrite core/vectors/*.json
+cargo run -p hoi-validate --example vectors -- --check   # fail if they would change
+cargo test -p hoi-validate --test vectors                # read them back
+node ../scripts/test-core-wasi.mjs                       # the same, in wasm32-wasip1</code></pre></div>
+    <p><code>--check</code> prints <code>stale: core/vectors/&lt;name&gt;</code> for each file that would change and exits 1. It ignores only CRLF line endings, which Git may produce on Windows checkouts; every value and every encoded byte must match. The test <code>committed_vectors_are_current</code> runs exactly this check, failing with "core/vectors is stale: cargo run -p hoi-validate --example vectors".</p>
+  </section>
+
+  <section class="wk-sec" id="tests">
+    <h2>The tests that read them</h2>
+    <p><code>hoi-validate/tests/vectors.rs</code> reads most files and checks them against the real code, not against a second copy of the logic:</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Tests in hoi-validate/tests/vectors.rs">
+      <table>
+        <thead><tr><th>Test</th><th>Checks</th></tr></thead>
+        <tbody>
+          <tr><td><code>records_pass_stages_one_to_three</code></td><td>exactly 20 records; each decodes, hashes to its <code>id</code>, re-encodes to <code>record_cbor</code>, verifies, carries a stamp of <code>pow_bits</code> and passes the content rules; the rotation chain is consistent</td></tr>
+          <tr><td><code>identity_and_delegation_verify</code></td><td>the identity work is at least <code>MIN_BITS</code>; the device signed the delegation; the root blessed it</td></tr>
+          <tr><td><code>media_sanitizes_as_committed</code></td><td><code>sanitize(input) == sanitized</code>; <code>check</code> refuses the input and accepts the result</td></tr>
+          <tr><td><code>pdq_reads_the_same_everywhere_within_its_tolerance</code></td><td>8 hashes, each within <code>tolerance</code> bits; quality within 2; <code>match_distance</code> equals the constant</td></tr>
+          <tr><td><code>threshold_entry_cosigns_verify</code></td><td>the <code>proposal_id</code>; two cosignatures, both valid over it</td></tr>
+          <tr><td><code>warmth_reads_the_same_everywhere</code></td><td>at least 10 cases and 7 link sets, every output field equal</td></tr>
+          <tr><td><code>operator_notices_hash_sign_and_travel_as_committed</code></td><td>the canonical bytes both ways, the hash, the signature, the masked link, the legacy link, the hello, the text</td></tr>
+          <tr><td><code>carry_messages_decode_as_committed</code></td><td>the four messages decode to what they say; the genesis inside verifies</td></tr>
+          <tr><td><code>salted_hellos_match_only_known_keys</code></td><td>a stranger hears no name or credential; only a known key is found by its hash; a device hears everything in the clear</td></tr>
+          <tr><td><code>encoded_and_legacy_invites_keep_the_same_verified_genesis</code></td><td>all six invite spellings parse to one invite; the routed one masks its addresses</td></tr>
+          <tr><td><code>committed_vectors_are_current</code></td><td>the generator's <code>--check</code></td></tr>
+          <tr><td><code>scatter_vectors_hold</code></td><td>every sizing case, every piece, hash and locator, every envelope reproduced from its seed, the manifest, the pointer and its update</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 id="tests-wasm">In WebAssembly</h3>
+    <p><code>pnpm core:test:wasi</code> compiles this test file, and the unit tests of <code>hoi-crypto</code> and <code>hoi-types</code>, for <code>wasm32-wasip1</code> and runs them in Node with <code>core/</code> preopened, skipping only <code>committed_vectors_are_current</code> (it spawns Cargo). So the byte formats and the exact integer arithmetic of sizing, warmth and the rest are checked in a WASM build as well as natively, and <code>shamir.json</code> through hoi-crypto's unit test (<a href="/wiki/development/">Building &amp; testing</a>).</p>
+    <h3 id="tests-elsewhere">Elsewhere</h3>
+    <ul>
+      <li><code>hoi-core</code>: <code>hello_hint_conformance_vector</code> (<code>src/tests.rs</code>), <code>rust_and_the_registry_share_the_exact_announcement_statement</code> (<code>tests/carrier.rs</code>), <code>registration_signature_vector</code> and <code>publication_signature_vector</code> (<code>tests/discovery.rs</code>).</li>
+      <li><code>hoi-node</code>: <code>the_shared_vectors_are_accepted_without_translation</code> (<code>registry/protocol.rs</code>), <code>the_tree_matches_the_shared_vectors</code> (<code>registry/log.rs</code>).</li>
+      <li><code>hoi-crypto</code>: <code>the_shared_vectors</code> (<code>shamir.rs</code>).</li>
+      <li>JavaScript: <code>registry/server.test.mjs</code> (registration and publication), <code>registry/worker.test.mjs</code> (the announcement), <code>registry/conformance.mjs</code> (registration and publication, against every registry implementation), <code>apps/web/src/tests/notice.test.ts</code> (the operator notice). The setup app's mock bridge uses <code>node-notice.json</code>'s real node link code.</li>
+    </ul>
+  </section>
+
+  <section class="wk-sec" id="records">
+    <h2>records.json</h2>
+    <p>One record of every kind, signed and stamped, with everything a reader needs to check it: the signer's seed, the canonical record bytes without the signature, the id, the nonce and the work it reached, and the whole wire record.</p>
+    <dl class="wk-defs">
+      <dt>protocol<small>1</small></dt><dd>The record format version, the envelope's <code>v</code>.</dd>
+      <dt>pow_bits<small>8</small></dt><dd>The stamp every record here meets.</dd>
+      <dt>created_at_base<small>1790000000</small></dt><dd><code>T</code>; records are made at <code>T</code> plus a few seconds.</dd>
+      <dt>records[]<small>20 objects</small></dt><dd><code>name</code>, <code>kind</code>, <code>signer_seed</code>, <code>signer</code>, <code>record_cbor</code>, <code>id</code>, <code>nonce</code>, <code>stamp_bits</code>, <code>sig</code>, <code>wire_cbor</code>; the <code>identity</code> record adds <code>identity_bits</code> (5).</dd>
+    </dl>
+    <div class="wk-code" data-lang="json" data-title="core/vectors/records.json (one entry, trimmed)"><pre><code>{
+  "id": "e9b6f330db2a75d5f7f30d39a5eed2bf4ae071896ebae3f5…",
+  "kind": "post",
+  "name": "post",
+  "nonce": 427,
+  "record_cbor": "a861760164626f6479a3646e616d65646c656e6164746578…",
+  "sig": "9e2eebd4e83cfacc93af6b7236189dbdde681cd2f2a1cfce…",
+  "signer": "ed4928c628d1c2c6eae90338905995612959273a5c63f936…",
+  "signer_seed": "030303030303030303030303030303030303030303030303…",
+  "stamp_bits": 9,
+  "wire_cbor": "a26172a861760164626f6479a3646e616d65646c656e6164…"
+}</code></pre></div>
+    <p>Decoded, <code>wire_cbor</code> is a two-key map: <code>r</code>, the record, and <code>sig</code>, 64 bytes. That post's record is <code>{v: 1, kind: "post", community, author, created_at: 1790000060, expires_at: 1805552060, body: {title: "Which messengers survived the audit?", text: "Short version: three apps close the gap.", name: "lena"}, nonce: 427}</code>, signed by the device key (see <a href="/wiki/records/">Records &amp; encoding</a>).</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="The twenty records">
+      <table>
+        <thead><tr><th>Name</th><th>Kind</th><th>Signer</th><th>Stamp bits</th></tr></thead>
+        <tbody>
+          <tr><td><code>genesis</code></td><td>community</td><td>community key; owners root, mira, jonas, threshold 2</td><td>8</td></tr>
+          <tr><td><code>identity</code></td><td>identity</td><td>root</td><td>9</td></tr>
+          <tr><td><code>delegation</code></td><td>delegation</td><td>device</td><td>8</td></tr>
+          <tr><td><code>post</code></td><td>post</td><td>device</td><td>9</td></tr>
+          <tr><td><code>post-media</code></td><td>post</td><td>mira; one <code>image/png</code> <code>MediaRef</code> (the sanitized pixel of <code>media.json</code>)</td><td>9</td></tr>
+          <tr><td><code>comment</code></td><td>comment</td><td>mira</td><td>11</td></tr>
+          <tr><td><code>vote</code></td><td>vote</td><td>mira</td><td>13</td></tr>
+          <tr><td><code>vouch</code></td><td>vouch</td><td>mira, for root</td><td>8</td></tr>
+          <tr><td><code>review</code></td><td>review</td><td>jonas; <code>hide</code>, "off-topic"</td><td>10</td></tr>
+          <tr><td><code>edit</code></td><td>edit</td><td>device</td><td>11</td></tr>
+          <tr><td><code>label</code></td><td>label</td><td>jonas; "needs a threat model"</td><td>11</td></tr>
+          <tr><td><code>report</code></td><td>report</td><td>jonas, about mira; reason <code>rule:4</code>, the comment as evidence</td><td>10</td></tr>
+          <tr><td><code>delete</code></td><td>delete</td><td>mira, of her comment</td><td>8</td></tr>
+          <tr><td><code>revoke</code></td><td>revoke</td><td>root, of the device</td><td>9</td></tr>
+          <tr><td><code>pointer</code></td><td>pointer</td><td>device; 96 stand-in sealed bytes</td><td>8</td></tr>
+          <tr><td><code>roster</code></td><td>roster</td><td>device; three sorted holders</td><td>10</td></tr>
+          <tr><td><code>identity-committed</code></td><td>identity</td><td>a first root from a recovery line's master secret, committing to the next recovery key</td><td>10</td></tr>
+          <tr><td><code>identity-continues</code></td><td>identity</td><td>the next root, naming the person it continues</td><td>8</td></tr>
+          <tr><td><code>rotate</code></td><td>rotate</td><td>the recovery key, from the first root to the next</td><td>9</td></tr>
+          <tr><td><code>share</code></td><td>share</td><td>device; one friend's sealed share of <code>SEALED_SHARE</code> (81) bytes</td><td>11</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>The stamp bits are what each searched nonce happened to reach; every one is at least 8. Change one field and every derived value changes with it:</p>
+    <div class="wk-stage" data-demo="hash" data-title="Canonical bytes, id and signature"><p class="nojs">Editing a field of a record changes its canonical bytes, so its BLAKE3 id changes, so the signature over the old id no longer verifies.</p><p class="wk-stage-cap">This is why a vector's <code>id</code> and <code>sig</code> pin the encoding: one changed byte anywhere and both stop matching.</p></div>
+  </section>
+
+  <section class="wk-sec" id="delegation">
+    <h2>delegation-chain.json</h2>
+    <p>The chain a receiver must hold to accept a device's post. Keys: <code>root</code>, <code>device</code>, <code>delegation_id</code>, <code>post_id</code>, <code>statement</code> (32 bytes: <code>delegation_statement(root, device, ["*"], T + 180 days)</code>, the value the root signs), <code>wires</code> (the identity, delegation and post records, in that order) and a <code>note</code>.</p>
+    <div class="wk-code" data-lang="json" data-title="the delegation record inside wires[1], decoded (trimmed)"><pre><code>{ "r": { "v": 1, "kind": "delegation", "author": "ed4928c6…", "nonce": 84,
+         "created_at": 1790000000, "expires_at": 1805552000,
+         "body": { "root": "8139770e…", "scope": ["*"], "root_sig": "911a4446…", "expires_at": 1805552000 } },
+  "sig": "ceccc982…" }</code></pre></div>
+    <p>The device signs the delegation (its consent) and the record carries <code>root_sig</code>, the root's blessing. The <code>revoke</code> in <code>records.json</code> at <code>T + 180</code> stops records from the device created at or after that time. See <a href="/wiki/identity/">Keys &amp; identity</a>.</p>
+  </section>
+
+  <section class="wk-sec" id="ledger">
+    <h2>tombstone.json and threshold.json</h2>
+    <h3 id="tombstone">tombstone.json</h3>
+    <p>Keys: <code>comment_id</code>, <code>comment_wire</code>, <code>remove</code> (a full record entry like those in <code>records.json</code>), <code>remove_wire</code> and <code>note</code>. The remove is a <code>ledger</code> record by mira, an owner: <code>{seq: 1, action: "remove", target: &lt;comment id&gt;, reason: "rule 4, undisclosed vendor"}</code>. After it, compliant nodes delete the comment's body, keep its id and the entry, and refuse to ingest it again (<a href="/wiki/expiry/">Expiry &amp; removal</a>).</p>
+    <h3 id="threshold">threshold.json</h3>
+    <p>Keys: <code>proposal_id</code>, <code>note</code>, <code>entry</code>. The entry is a <code>rules</code> ledger record, <code>seq: 2</code>, text <code>"1. Be kind.\n2. Disclose vendors."</code>, published by root and cosigned by root and jonas: two of the three owners, the genesis's threshold.</p>
+    <dl class="wk-defs">
+      <dt>proposal_id<small>32 bytes</small></dt><dd>BLAKE3 of the canonical record with <code>body.cosign</code> removed, the nonce 0 and the author zeroed. Each cosigner signs these bytes, so all cosigners sign the same thing whoever publishes it and whatever stamp it gets.</dd>
+      <dt>cosign<small>[{key, sig}]</small></dt><dd>Two entries; the test checks both signatures over <code>proposal_id</code>.</dd>
+    </dl>
+    <p>See <a href="/wiki/communities/">Communities &amp; the ledger</a>.</p>
+  </section>
+
+  <section class="wk-sec" id="ladder">
+    <h2>ladder.json</h2>
+    <p>A small community run through <code>hoi_moderation::ladder::settle</code> (at most 6 rounds): the inputs, and the outcome every implementation must reach. Keys are 32 repeated bytes; <code>01…</code> is the owner. Voices are in units of <code>voice_unit</code> = <code>720720</code>; <code>vouch_epoch</code> is <code>7776000</code> (90 days).</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Ladder parameters in the vector">
+      <table>
+        <thead><tr><th>Field</th><th>Value</th></tr></thead>
+        <tbody>
+          <tr><td><code>ladder</code></td><td><code>admit_vouches: 2</code>, <code>established_age: 864000</code> (10 days), <code>hide_quorum: 3</code>, <code>block_quorum: 5</code>, <code>veto_quorum: 5</code>, <code>trusted_posts: 5</code>, <code>media_score: 10</code></td></tr>
+          <tr><td><code>genesis_at</code>, <code>now</code></td><td><code>T</code> and <code>T + 30 days</code> (retention 180 days)</td></tr>
+          <tr><td><code>vouches</code></td><td>7: the owner vouches <code>02</code>, <code>03</code>, <code>05</code>, <code>06</code> in on day 0; <code>02</code> and <code>03</code> vouch <code>04</code> on day 11; <code>04</code> vouches <code>07</code> on day 12</td></tr>
+          <tr><td><code>posts</code></td><td>3: <code>09</code>'s spam on day 29, live posts from <code>02</code> and <code>05</code> on day 28</td></tr>
+          <tr><td><code>reviews</code></td><td>6: <code>02</code>, <code>03</code>, <code>05</code>, <code>06</code> hide the spam (<code>spam</code>); <code>02</code> agrees to the proposal; <code>05</code> objects ("too strict")</td></tr>
+          <tr><td><code>proposals</code></td><td>one, by the owner on day 29, deadline day 209</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Expected outcome">
+      <table>
+        <thead><tr><th>Person</th><th>Level</th><th>Voice</th><th>Why</th></tr></thead>
+        <tbody>
+          <tr><td><code>01</code></td><td>trusted</td><td>720720 (one voice)</td><td>the owner</td></tr>
+          <tr><td><code>02</code>, <code>03</code>, <code>05</code>, <code>06</code></td><td>established</td><td>180180 (a quarter)</td><td>one vouch each from the owner</td></tr>
+          <tr><td><code>04</code></td><td>established</td><td>180180</td><td>two vouches; nobody rises above their strongest voucher</td></tr>
+          <tr><td><code>07</code></td><td>newcomer</td><td>0</td><td>its only vouch came from <code>04</code> before <code>04</code> was established</td></tr>
+          <tr><td><code>09</code></td><td>newcomer, <b>blocked</b></td><td>0</td><td>hides weighing one voice put its post to sleep and block its newcomer author</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>The rest of <code>expect</code>: <code>established: 6</code>, <code>established_voice: 1621620</code>, quorums <code>{admit: 2, hide: 720720, block: 720720, veto: 720720}</code>, the spam post in <code>hidden</code>, and the proposal <code>in-effect</code> with 6 electors, <code>agreed_voice: 900900</code>, <code>objecting_voice: 180180</code> and 3 away: it is in effect while everyone who hasn't agreed is away or objects with less than half a voice. <code>retirement</code> replays it on day 60 after the owner retired <code>04</code> on day 45: a retirement counts for someone silent for the 30 days before it, takes effect 7 days on, lapses if they sign anything again and excuses only silence. Expected: still <code>in-effect</code>, <code>retired: [04]</code>, <code>away: [03, 06]</code>, <code>retired_voice: 180180</code>. See <a href="/wiki/standing/">Standing &amp; review</a>.</p>
+    <div class="wk-stage" data-demo="ladder" data-title="The ladder"><p class="nojs">A newcomer earns vouches, becomes a member, then established and trusted, and fades when it goes quiet.</p><p class="wk-stage-cap">The steps <code>ladder.json</code> fixes for one small community.</p></div>
+  </section>
+
+  <section class="wk-sec" id="sync">
+    <h2>Sync and hello vectors</h2>
+    <h3 id="sync-transcript">sync-transcript.json</h3>
+    <p>Two nodes share 10 records and each holds 10 the other lacks. The ids are <code>BLAKE3([i])</code> for <code>i</code> in 0–29: <code>a_ids</code> are 0–19, <code>b_ids</code> 10–29. <code>messages</code> lists five encoded messages with who sent them (and, for each <code>want</code>, how many ids it asks for). After both <code>want</code>s are answered with <code>recs</code>, both sides hold all 30.</p>
+    <div class="wk-seq" data-title="The transcript in sync-transcript.json">
+lanes: a | b
+a -> b: <code>hello</code> {v: 2, node: 07…, name: "lena's browser", token, c: [community]}
+a -> b: <code>have</code> {c, ids: 20}
+b --> a: <code>want</code> {ids: the 10 b lacks}
+b -> a: <code>have</code> {c, ids: 20}
+a --> b: <code>want</code> {ids: the 10 a lacks}
+a .. b: each answers the other's <code>want</code> with <code>recs</code>
+    </div>
+    <p>Every message is a CBOR map with its type in <code>t</code>; see <a href="/wiki/sync/">Sync &amp; gossip</a> for the message set.</p>
+    <h3 id="hello-hints">hello-hints.json</h3>
+    <p>Keys: <code>msg</code> and <code>note</code>. A hello from node <code>01…</code> naming community <code>02…</code>, with one <code>hints</code> entry: <code>{c: 02…, p: ["0303…03"], r: ["https://relay.example"]}</code>. The note: an optional routing extension, accepted only on paired home-node links (a home node's own once it delivered records). hoi-core's test checks it round-trips and carries one hint with that peer.</p>
+    <h3 id="hello-salted">hello-salted.json</h3>
+    <p>Sync version 2. To a stranger, <code>c</code> names only the communities whose routes led to this connection; <code>ch</code> lists the sender's other public communities as <code>BLAKE3-derive-key(context, n ‖ key)</code>, sorted, under a per-connection 16-byte salt <code>n</code>. A receiver can match it only against keys it already holds.</p>
+    <dl class="wk-defs">
+      <dt>context<small>string</small></dt><dd><code>"hoi 2026 hello community v1"</code> (<code>COMMUNITY_HASH_CONTEXT</code>).</dd>
+      <dt>salt<small>16 bytes</small></dt><dd><code>5a</code> × 16.</dd>
+      <dt>communities<small>2 entries</small></dt><dd><code>{key, hash, named}</code>: the vectors' community, named in the clear; key <code>06</code>'s community, hashed.</dd>
+      <dt>stranger_hello<small>hex</small></dt><dd><code>{t: "hello", v: 2, node: 08…, c: [community], n: salt, ch: [one hash], fx: ["catalog"], serves: false}</code>: no name, no token.</dd>
+      <dt>home_to_device_hello<small>hex</small></dt><dd>From a home node to a device that spent its pairing link: both communities in <code>c</code>, no <code>n</code> or <code>ch</code>, <code>name: "lena's laptop"</code>, <code>token</code> (the device's own credential from now on), <code>pt</code> (the next pairing link's token), <code>lk</code> (the 32-byte key <code>link</code> messages are sealed with, <code>4c</code> × 32), <code>fx: ["link"]</code>, <code>serves: true</code>.</dd>
+    </dl>
+    <h3 id="carry">carry.json</h3>
+    <p>A <code>carry</code> request carries the signed genesis, as an invite does, and nothing else: no routes, so a stranger never makes a public node dial an address. Only nodes listing <code>carry</code> in <code>hello.fx</code> receive requests.</p>
+    <div class="wk-seq" data-title="The messages in carry.json">
+lanes: Browser | Public node
+Public node -> Browser: <code>hello</code> with <code>fx</code> including <code>carry</code>
+Browser -> Public node: <code>carry</code> {g: the signed genesis}
+Public node --> Browser: <code>carried</code> {c, ok: true}
+Public node --> Browser: or <code>carried</code> {c, ok: false, reason: "full"}
+Public node -> Browser: <code>catalog</code> {entries: [{g, p: [], r: [], w: 2}]}
+    </div>
+    <p>Keys: <code>community</code>, <code>carry</code>, <code>carried_ok</code>, <code>carried_full</code>, <code>catalog_with_warmth</code>, <code>note</code>. The refusal reasons are <code>invalid</code>, <code>not open</code>, <code>not accepting</code>, <code>full</code>, <code>busy</code> and <code>refused</code>. <code>catalog.w</code> is the durable copies the sender saw besides its own, quantized, a hint taken as a maximum (<a href="/wiki/discovery/">Discovery</a>).</p>
+    <h3 id="warmth">warmth.json</h3>
+    <p><code>hoi_sync::warmth::assess</code> over first-hand observations, and <code>assess_links</code> over a device's own connections. Keys: <code>note</code> (the full definition), <code>cases</code> (16) and <code>links</code> (7). Each case has <code>name</code>, <code>observation</code> (<code>own_durable</code>, <code>records</code>, <code>missing</code>, <code>media_wanted</code>, <code>media_present</code>, <code>holders[]</code> with <code>coverage</code>, <code>durable</code>, <code>operator</code>, <code>network</code>, <code>guarded</code>, then <code>last_sync</code>, <code>now</code>, <code>live</code>, <code>hinted</code>) and the expected <code>warmth</code>.</p>
+    <div class="wk-code" data-lang="json" data-title="core/vectors/warmth.json (cases[1], trimmed)"><pre><code>{ "name": "a browser with its home node",
+  "observation": { "records": 40, "missing": 0, "own_durable": false, "live": true,
+                   "holders": [{ "coverage": 1.0, "durable": true, "guarded": true, "network": null, "operator": null }],
+                   "last_sync": 1789999940, "now": 1790000000, … },
+  "warmth": { "level": "cool", "score": 55, "kept": 1.0, "places": 1, "hint": 1, "copies": 2.0,
+              "durable_copies": 1.0, "network_copies": 1.0, "complete": 1.0, "fresh": true, … } }</code></pre></div>
+    <p>The definition the note fixes: copies count once per independent place (holders sharing an operator key or a network, IPv4 /24, IPv6 /48 or this machine, are one place), and <code>kept</code> sums over places the most any holder there showed. The level reads <code>kept</code>: cold below one, cool below two, warm below three or while incomplete, hot from three; one level colder when less than half is here, nothing caught up for a week, or under half of the other durable copies are reached over a guarded link. Score: <code>0.6 × min(1, kept / 4) + 0.1 × spread + 0.1 × guarded + 0.12 × complete + 0.08 × fresh</code>. <code>hint</code> is <code>⌊kept⌋</code> capped at 3, what a node attaches to its catalog entry. For links, <code>effective = 1 / Σ share²</code>; score <code>0.6 × min(1, effective / 4) + 0.25 × guarded + 0.15 × (1 − largest)</code>, kept inside its level's band (cool ≤ 49, warm 50–79, hot ≥ 80).</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Some warmth cases">
+      <table>
+        <thead><tr><th>Case</th><th>Level</th><th>Score</th></tr></thead>
+        <tbody>
+          <tr><td>a browser alone, nothing missing, never synced</td><td>cold</td><td>12</td></tr>
+          <tr><td>three members' nodes, complete and fresh</td><td>hot</td><td>85</td></tr>
+          <tr><td>three nodes in one network: one place</td><td>cool</td><td>48</td></tr>
+          <tr><td>three nodes in three networks: three places</td><td>hot</td><td>85</td></tr>
+          <tr><td>one operator in two networks, and a node of its own</td><td>warm</td><td>67</td></tr>
+          <tr><td>links: three links, three places, all guarded</td><td>hot</td><td>80</td></tr>
+          <tr><td>links: three places, two links unguarded</td><td>cool</td><td>49</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="wk-sec" id="uris">
+    <h2>uris.json</h2>
+    <p>One invite to the vectors' community, carrying its signed genesis, in every spelling the app accepts, plus a routed invite.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="uris.json keys">
+      <table>
+        <thead><tr><th>Key</th><th>Value (trimmed)</th></tr></thead>
+        <tbody>
+          <tr><td><code>community</code>, <code>community_zbase32</code></td><td><code>8a88e3dd…</code>; <code>tkrq8zmwb8a3m9k15csu3q17…</code></td></tr>
+          <tr><td><code>invite</code>, <code>invite_web</code></td><td><code>hoi://join?code=SE9JAlwZ…</code>; the same after <code>https://hoi.sh/app/#/join?code=</code></td></tr>
+          <tr><td><code>v1_invite</code>, <code>v1_invite_web</code></td><td>the original unmasked code, <code>hoi://join?code=pWFjWCCK…</code>: the base64 of a CBOR map <code>{v: 1, c, r: [], p: [], g}</code>, kept for backward compatibility</td></tr>
+          <tr><td><code>legacy_invite</code>, <code>legacy_invite_web</code></td><td><code>hoi://join?c=&lt;zbase32 key&gt;&amp;g=&lt;base64 genesis&gt;</code></td></tr>
+          <tr><td><code>routed_invite</code></td><td>with peers <code>rtc:qqq…@203.0.113.7:7844</code> and <code>8a88e3dd…@[2001:db8::7]:7843</code>, relay <code>https://relay.example:443</code>, trackers, and the genesis id</td></tr>
+          <tr><td><code>routed_peers</code>, <code>routed_relays</code>, <code>routed_trackers</code></td><td>what the routed invite carries, in the clear for checking</td></tr>
+          <tr><td><code>did_key_root</code></td><td><code>did:key:z6Mko9hTggMwjSTEaJaPUfE6tqcy2xvU…</code> (the root key)</td></tr>
+          <tr><td><code>genesis_id</code></td><td><code>98de7cb6…</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>The test parses all six plain spellings to one equal invite, writes it back to exactly <code>invite</code>, verifies the genesis inside and its id, and checks that <code>routed_invite</code> carries the same genesis, peers and relays but doesn't contain <code>203.0.113.7</code>: the masked code hides its addresses (<a href="/wiki/links/">Links &amp; URIs</a>).</p>
+  </section>
+
+  <section class="wk-sec" id="media-vectors">
+    <h2>media.json and pdq.json</h2>
+    <h3 id="media">media.json</h3>
+    <p>A 1×1 PNG with a location in a <code>tEXt</code> chunk (<code>Location</code>, <code>52.37N 4.89E</code>), 102 bytes, and what <code>sanitize()</code> leaves: 69 bytes, the <code>tEXt</code> chunk gone and the rest copied as it is. Keys: <code>mime</code> (<code>image/png</code>), <code>input</code>, <code>sanitized</code>, <code>hash</code> (BLAKE3 of the clean bytes: what <code>MediaRef.hash</code> holds), <code>w</code>, <code>h</code> and <code>note</code>. <code>check()</code> refuses the input and accepts the result.</p>
+    <h3 id="pdq">pdq.json</h3>
+    <p>A 96×96 grayscale picture drawn from a formula, sanitized, and its eight PDQ hashes: as shown, mirrored left to right, upside down, turned half way, and those four transposed (<code>hoi_validate::similar::Variants</code>). Keys: <code>note</code>, <code>mime</code>, <code>picture</code> (the sanitized PNG), <code>quality</code> (100), <code>hashes</code> (8 × 64 hex), <code>tolerance</code> (4), <code>match_distance</code> (31, <code>similar::MATCH_DISTANCE</code>).</p>
+    <div class="wk-note info"><b>Within a tolerance</b><p>PDQ uses floating point, and floats round differently across hosts and implementations. So this is the one vector compared approximately: each recomputed hash must be within 4 bits of the committed one, and the quality within 2. A picture matches a listed hash when any of its variants is within <code>match_distance</code> bits (<a href="/wiki/media/">Media</a>).</p></div>
+  </section>
+
+  <section class="wk-sec" id="scatter">
+    <h2>scatter.json</h2>
+    <p>Scattered delivery, end to end, with every secret fixed so the file reproduces (<a href="/wiki/scatter/">Scattered delivery</a>). Its sections:</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="scatter.json sections">
+      <table>
+        <thead><tr><th>Key</th><th>Holds</th></tr></thead>
+        <tbody>
+          <tr><td><code>sizing</code></td><td><code>life</code> (1000000), <code>exact_up_to</code> (1000), <code>links</code> (3); 360 <code>cases</code>: every level (10, 15, 20) × generations 0, 1, 2, 4, 8, 16 × 20 numbers of places from 9 to 5000 and 4294967295 (any large network), each with <code>{k, n, m, hard}</code> or <code>null</code> when too few places; 6 <code>readings</code> of a given size back to a level</td></tr>
+          <tr><td><code>reed_solomon</code></td><td><code>k: 3</code>, the data <code>"scatter"</code>, <code>"gathers"</code>, <code>"quietly"</code>, and the pieces at indexes 0, 1, 2, 3, 4, 5, 100, 255</td></tr>
+          <tr><td><code>object</code></td><td>75 bytes of content sealed with XChaCha20-Poly1305 under its own key (<code>0c</code> × 32): class 0, 4140 sealed bytes, the synthetic 24-byte nonce (the same content, id and key always seal alike) and <code>sealed_hash</code></td></tr>
+          <tr><td><code>generation</code></td><td>generation 0 at level 10 in a large network: <code>k 15</code>, <code>n 28</code>, <code>m 35</code>, <code>piece_len 280</code>, the all-or-nothing key and the locator secret; 35 <code>pieces</code> with <code>index</code>, <code>piece</code>, a 16-byte <code>hash</code> and a 32-byte <code>locator</code>; three <code>rebuild_from</code> sets (the data pieces, the last 15, every other odd index)</td></tr>
+          <tr><td><code>drops</code></td><td>the creator's drop secret, a locator, its token and token hash, a community drop key, its 16-byte id, the statement and its signature</td></tr>
+          <tr><td><code>holder</code></td><td>a holder's endpoint, its published <code>xk</code> (from a seed), the 8-byte key id, expiry, the signed statement; a reader's one-time answer key</td></tr>
+          <tr><td><code>envelopes</code></td><td>10: requests <code>put</code> (457 bytes), <code>get</code>, <code>has</code>, <code>drop by token</code>, <code>drop by drop key</code> (256 bytes each) to the holder; replies <code>stored</code>, <code>had</code>, <code>dropped</code> (64 bytes), <code>got</code> and <code>got nothing</code> (334 bytes, <code>want_len</code> 280) to the answer key; each with its <code>ephemeral_seed</code></td></tr>
+          <tr><td><code>manifest</code></td><td>the generation's manifest as its pointer carries it (1618 bytes of CBOR), holder seeds from <code>0x40</code>, expiry <code>T + 90 days</code></td></tr>
+          <tr><td><code>pointer</code></td><td>the manifest wrapped with <code>made_at</code> (1631 bytes), and a repair's update adding the next index (<code>update_kind: "extend"</code>)</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Pieces come from the all-or-nothing transform under <code>aont_key</code> and systematic Reed–Solomon over GF(2⁸) (polynomial <code>0x11D</code>, Vandermonde rows times the inverse of the top <code>k×k</code> block). Envelopes are HPKE base mode with DHKEM(X25519, HKDF-SHA256), HKDF-SHA256 and ChaCha20-Poly1305, the ephemeral key derived from the seed. The two signed statements:</p>
+    <div class="wk-bytes" data-title="drops.statement: what a moderator's device signs with the drop key (51 B)">
+"hoi/scatter-drop/1\n" | 19 B | coral | 4 | the fixed prefix
+loc | 32 B | sky | 6 | the locator of the piece to drop
+    </div>
+    <div class="wk-bytes" data-title="holder.statement: what a holder's endpoint key signs to publish its key (89 B)">
+"hoi/scatter-xk/1\n" | 17 B | coral | 3 | the fixed prefix
+endpoint | 32 B | sun | 4 | the holder's node key
+xk | 32 B | mint | 4 | its X25519 public key
+expires_at | 8 B | lilac | 2 | big-endian seconds
+    </div>
+    <p>The test rebuilds every listed subset, checks that <code>k − 1</code> pieces rebuild nothing, opens every envelope and seals it again from its seed to the same bytes, decodes the manifest strictly, and checks the update follows the update rules and never goes back.</p>
+  </section>
+
+  <section class="wk-sec" id="shamir">
+    <h2>shamir.json</h2>
+    <p>Shamir's secret sharing over GF(2⁸), byte by byte, in the AES field (x⁸ + x⁴ + x³ + x + 1): the same field as the app's first-run rehearsal in <code>apps/web/src/lib/sayhoi/shamir.ts</code>, so one file holds both. Social recovery splits a recovery line into five shares, any three of which bring it back.</p>
+    <dl class="wk-defs">
+      <dt>about<small>string</small></dt><dd>What the file is.</dd>
+      <dt>secret<small>32 bytes</small></dt><dd><code>101112…2f</code>.</dd>
+      <dt>n, k<small>5, 3</small></dt><dd>Five shares, three to rebuild.</dd>
+      <dt>coefficients<small>64 bytes</small></dt><dd>For each secret byte in turn, its <code>k − 1 = 2</code> random coefficients, <code>c1</code> first.</dd>
+      <dt>shares<small>5 × 33 bytes</small></dt><dd>Each <code>x ‖ y</code>, with <code>x</code> = 1 to 5.</dd>
+    </dl>
+    <div class="wk-bytes" data-title="One share in shamir.json (33 B)">
+x | 1 B | sun | 1 | the share's x-coordinate, 01 to 05
+y | 32 B | lilac | 8 | the polynomial evaluated at x, one byte per secret byte
+    </div>
+    <p>hoi-crypto's test feeds these coefficients to <code>split_with</code>, compares the five shares byte for byte, and rebuilds the secret from shares 2–4. The Rust field arithmetic runs in constant time with no tables and no branches on secret values (<a href="/wiki/identity/">Keys &amp; identity</a>).</p>
+    <div class="wk-stage" data-demo="shamir" data-title="Three of five"><p class="nojs">A key split 3-of-5: any three pieces bring it back, two don't.</p><p class="wk-stage-cap">What <code>shamir.json</code> fixes, byte for byte.</p></div>
+  </section>
+
+  <section class="wk-sec" id="registry">
+    <h2>Registry and node statements</h2>
+    <p>Five files fix signed text that two independent implementations must produce identically: the Rust core and hoi-node on one side, the JavaScript registry (<code>registry/</code>) on the other. Each holds a seed, so anyone can recompute the signature (<a href="/wiki/registry/">Registry</a>).</p>
+    <h3 id="node-announcement">node-announcement.json</h3>
+    <p>The body a registry receives from a public node, plus the seed and the statement for checking. Keys: <code>seed</code> (<code>4b</code> × 32), <code>registry</code> (<code>https://registry.example</code>), <code>endpoint</code>, <code>issuedAt</code> (1800000000), <code>routes</code> (an <code>rtc:</code> route and a direct one, both on 203.0.113.10), <code>communities</code> (<code>11…</code>, <code>22…</code>), <code>statement</code>, <code>signature</code>.</p>
+    <div class="wk-code" data-lang="text" data-title="the statement format (hoi_core::node_announcement_statement)"><pre><code>hoi public node v2
+&lt;registry origin&gt;
+&lt;endpoint hex&gt;
+&lt;issued_at&gt;
+&lt;routes, comma-separated, in the order others should try them&gt;
+&lt;community keys, sorted, comma-separated&gt;</code></pre></div>
+    <p>No trailing newline. Binding the registry's origin means no registry can pass on what it was sent to another one: the Worker configured for <code>https://registry.example</code> accepts the vector, and one answering for itself refuses it with <code>wrong-registry</code>. hoi-node's test also refuses it 601 seconds after <code>issuedAt</code> (stale) or before it (future-dated).</p>
+    <h3 id="node-notice">node-notice.json</h3>
+    <p>An operator's notice as the operator writes it (<code>json</code>), the canonical bytes every implementation hashes, the statement the node's endpoint key signs, and the node link that carries them.</p>
+    <dl class="wk-defs">
+      <dt>seed, endpoint<small>hex</small></dt><dd>The node key, <code>4e</code> × 32.</dd>
+      <dt>json<small>object</small></dt><dd><code>node: "sleepy-walrus-48213"</code>, <code>operator: "Lena"</code>, a contact, <code>country: "XX"</code>, <code>provider: "Example Hosting"</code>, <code>ipLogging: true</code>, <code>retentionDays: 7</code>, <code>updated: "2026-11-03"</code>, <code>processes</code>, <code>purpose</code>, <code>v: 1</code>.</dd>
+      <dt>canonical<small>DAG-CBOR</small></dt><dd><code>NodeNotice::canonical</code>: one-letter keys (<code>n o c k h l r d p u v</code>), optional fields left out when empty; operator <code>o</code>, contact <code>c</code> and country <code>k</code> are always written and may be empty.</dd>
+      <dt>hash<small>32 bytes</small></dt><dd>BLAKE3 of the canonical bytes.</dd>
+      <dt>statement, signature<small>text, 64 bytes</small></dt><dd><code>"hoi node notice v1\n&lt;endpoint hex&gt;\n&lt;hash hex&gt;"</code>, signed with Ed25519 by the endpoint key.</dd>
+      <dt>link, web_link<small>strings</small></dt><dd>A masked <code>hoi://node?code=…</code> with the notice (<code>n</code>) and signature (<code>s</code>) inside, and its <code>https://hoi.sh/app/#/node?code=…</code> form; the test checks the addresses can't be read from it.</dd>
+      <dt>legacy_link<small>string</small></dt><dd>The earlier clear-text link (<code>w=</code>, <code>p=</code>, a deflated <code>nt=</code>, <code>ns=</code>), which still opens to the same link.</dd>
+      <dt>hello<small>hex</small></dt><dd>The node's hello to strangers with the hash and notice (<code>nh</code>, <code>nt</code>), <code>fx: ["carry", "nodes"]</code>, its direct route.</dd>
+      <dt>text<small>string</small></dt><dd>The notice as people read it: "Join notice – sleepy-walrus-48213", then Operator, Server location, What this node processes, Logging and retention, Purpose, …</dd>
+      <dt>pieces<small>object</small></dt><dd>The same notice from a node that keeps encrypted pieces for others (<code>hoi-node --hold-pieces</code>): <code>s: true</code> added and a fixed sentence shown. Older readers ignore the key; the hash covers it.</dd>
+    </dl>
+    <p>The app's <code>notice.test.ts</code> checks that its TypeScript writes the same canonical bytes and the same text, sections and pieces sentence as the Rust core. Clients show the notice before they say anything of their own (<a href="/wiki/hoi-node/">hoi-node</a>).</p>
+    <h3 id="name-log">name-log.json</h3>
+    <p>The registry's public log of names: every owner-signed claim it retained, in order, hashed into an RFC 6962 Merkle tree whose head the registry signs with its own Ed25519 log key. <code>registry/log.mjs</code> and hoi-node's <code>registry/log.rs</code> compute the same entries, tree and answers.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="name-log.json keys">
+      <table>
+        <thead><tr><th>Key</th><th>Holds</th></tr></thead>
+        <tbody>
+          <tr><td><code>about</code></td><td>what the file is</td></tr>
+          <tr><td><code>entry</code></td><td>one v2 claim's fields (<code>name</code>, <code>community</code>, <code>protocolVersion</code>, <code>indexVersion</code>, <code>signature</code>, <code>version: 2</code>) and the <code>text</code> it becomes</td></tr>
+          <tr><td><code>entries</code></td><td>7 entry texts: <code>garden_1.v2-test</code> as a v1 and a v2 claim, then <code>name-2</code> to <code>name-6</code></td></tr>
+          <tr><td><code>leaves</code></td><td>their 7 leaf hashes</td></tr>
+          <tr><td><code>roots</code></td><td>8 roots, of every prefix from the empty tree (<code>e3b0c442…</code>, SHA-256 of nothing) to all 7</td></tr>
+          <tr><td><code>inclusion</code></td><td>7 audit paths <code>{index, size, path}</code></td></tr>
+          <tr><td><code>consistency</code></td><td>9 consistency paths <code>{first, second, path}</code></td></tr>
+          <tr><td><code>head</code></td><td>a fixed log <code>secret</code> (<code>42</code> × 32), a <code>timestamp</code> (1793800000) and the <code>signed</code> head: <code>logKey</code>, <code>size: 7</code>, <code>root</code>, <code>timestamp</code>, <code>signature</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="wk-code" data-lang="text" data-title="core/crates/hoi-node/src/registry/log.rs: the texts"><pre><code>entry:  hoi name log v1\n&lt;version&gt;\n&lt;name&gt;\n&lt;community&gt;\n&lt;protocol&gt;\n&lt;index&gt;\n&lt;signature&gt;
+        (protocol and index empty for a version 1 claim)
+head:   hoi name log head v1\n&lt;logKey&gt;\n&lt;size&gt;\n&lt;root&gt;\n&lt;timestamp&gt;</code></pre></div>
+    <div class="wk-bytes" data-title="RFC 6962 hashing in name-log.json">
+0x00 | 1 B | coral | 1 | leaf prefix
+entry text | UTF-8 | sky | 8 | leaf = SHA-256(0x00 ‖ text)
+
+0x01 | 1 B | coral | 1 | node prefix
+left | 32 B | sun | 4 | node = SHA-256(0x01 ‖ left ‖ right)
+right | 32 B | sun | 4 | the split is the largest power of two below n
+    </div>
+    <h3 id="community-registration">community-registration.json</h3>
+    <p>A version 1 name claim, signed by a community key from seed <code>2a</code> × 32: <code>community</code>, <code>name</code> (<code>garden_1.v2-test</code>, already canonical), <code>seed</code>, <code>statement</code>, <code>signature</code>. The statement is <code>"hoi community name v1\n&lt;name&gt;\n&lt;community hex&gt;"</code>. hoi-core's <code>registration_signature_vector</code> rebuilds the whole JSON object from the seed and asserts it equals the file; the Node registry, the conformance suite and hoi-node accept it unchanged and refuse it under any other name.</p>
+    <h3 id="community-publication">community-publication.json</h3>
+    <p>A version 2 publication proof, which also binds the exact protocol and index edition: <code>seed</code>, <code>name</code>, <code>community</code>, <code>protocolVersion</code> (<code>"0.3"</code>), <code>indexVersion</code> (1), <code>statement</code>, <code>signature</code>. The statement is <code>"hoi community index v2\n&lt;name&gt;\n&lt;community hex&gt;\n&lt;protocol&gt;\n&lt;index&gt;"</code>. hoi-core's <code>publication_signature_vector</code> rebuilds it; the registries list it as indexed; hoi-node accepts it as a v2 claim and refuses it as a v1 one.</p>
+  </section>
+
+  <section class="wk-sec" id="changing">
+    <h2>When a vector changes</h2>
+    <p>A vector changes only when the bytes or the outcome it fixes change, and then every device that computes it the old way disagrees with every device that computes it the new way:</p>
+    <ul>
+      <li>A record's id is the BLAKE3 hash of its canonical bytes and its signature is over that id. A different encoding gives the same record another id, and older signatures stop verifying (<a href="/wiki/records/">Records &amp; encoding</a>).</li>
+      <li>The statements are signed text. A changed line, order or separator invalidates every existing proof, announcement and notice signature, and two implementations that differ by one byte refuse each other's.</li>
+      <li>Sizing, the ladder and warmth are outcomes every device must reach on its own. If two builds disagree, they pick different holders, give members different standing, or show different warmth for the same community.</li>
+    </ul>
+    <p>So the test suite treats any difference as a failure, and an intended change is a protocol change:</p>
+    <ol class="wk-steps">
+      <li><b>Change the code and its tests</b><p>Cover the change with core tests, as <code>CONTRIBUTING.md</code> asks.</p></li>
+      <li><b>Regenerate</b><p><code>cargo run -p hoi-validate --example vectors</code> from <code>core/</code>, and update any committed file a test rebuilds (<code>shamir.json</code>, <code>name-log.json</code>, the two community files).</p></li>
+      <li><b>Run every reader</b><p><code>cargo test --workspace</code>, <code>pnpm core:test:wasi</code>, <code>pnpm test</code> (the registry's suites) and <code>pnpm --filter @hoi/web test</code> (the notice test).</p></li>
+      <li><b>Declare compatibility</b><p>Builds that read the old bytes can't read the new ones. That is what <code>protocolVersion</code> and <code>supportedProtocols</code> in <code>release.json</code> state, and they change only explicitly (<a href="/wiki/releases/">Releases</a>).</p></li>
+    </ol>
+    <div class="wk-cards">
+      <a class="wk-card g-coral" href="/wiki/records/"><i></i><b>Records &amp; encoding</b><span>The envelope, canonical bytes, ids and signatures.</span></a>
+      <a class="wk-card g-lilac" href="/wiki/scatter/"><i></i><b>Scattered delivery</b><span>Sealing, the transform, pieces and envelopes.</span></a>
+      <a class="wk-card g-sun" href="/wiki/registry/"><i></i><b>Registry</b><span>Names, the log, proofs and announcements.</span></a>
+      <a class="wk-card g-mint" href="/wiki/development/"><i></i><b>Building &amp; testing</b><span>Where each test runs.</span></a>
+    </div>
+  </section>
+</article>
+<!-- @wiki-close -->
+<!-- @include footer.html -->
+<script type="module" src="/src/pages/wiki.ts"></script>
+</body>
+</html>

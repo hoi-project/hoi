@@ -1,0 +1,482 @@
+# Opt-in signed draft releases. Version selects patch/minor/major checks; see docs/CI.md.
+# Manual runs are explicit opt-in; automatic tag runs need the HOI_RELEASES_ENABLED switch in the
+# hoi-project repository.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing pushed tag to release, e.g. v1.0.0-preview.1"
+        required: true
+      desktop:
+        description: "Build the desktop and node setup bundles (macOS, Windows, Linux); off releases hoi-node only"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
+  GH_REPO: ${{ github.repository }}
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: Validate tag, versions and test tier
+    if: github.event_name == 'workflow_dispatch' || (github.repository_owner == 'hoi-project' && vars.HOI_RELEASES_ENABLED == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      tier: ${{ steps.tier.outputs.tier }}
+      sha: ${{ steps.commit.outputs.sha }}
+      tag: ${{ steps.commit.outputs.tag }}
+      prerelease: ${{ steps.tier.outputs.prerelease }}
+    steps:
+      - name: Require a version tag
+        run: '[[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]'
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: refs/tags/${{ env.TAG }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - name: Require publication configuration
+        run: HOI_PUBLICATION=1 node scripts/publication.mjs
+      - name: Validate versions, channel and release checks
+        id: tier
+        run: node scripts/release-version.mjs --check "$TAG" --github-output
+      - name: Pin all following jobs to this commit
+        id: commit
+        run: |
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+  checks:
+    needs: plan
+    uses: ./.github/workflows/release-checks.yml
+    with:
+      ref: ${{ needs.plan.outputs.sha }}
+      version: ${{ needs.plan.outputs.tag }}
+
+  long:
+    needs: plan
+    if: needs.plan.outputs.tier == 'major'
+    uses: ./.github/workflows/release-major.yml
+    with:
+      ref: ${{ needs.plan.outputs.sha }}
+      version: ${{ needs.plan.outputs.tag }}
+
+  signing:
+    name: signing secrets, tag and versions
+    needs: [plan, checks, long, security, npm-audit]
+    if: >-
+      always() && !cancelled() &&
+      needs.plan.result == 'success' && needs.checks.result == 'success' &&
+      ((needs.plan.outputs.tier == 'major' && needs.long.result == 'success' && needs.security.result == 'success' && needs.npm-audit.result == 'success') ||
+       (needs.plan.outputs.tier != 'major' && needs.long.result == 'skipped' && needs.security.result == 'skipped' && needs.npm-audit.result == 'skipped'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+      MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+      WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+      ALLOW_UNSIGNED: ${{ vars.HOI_ALLOW_UNSIGNED_INSTALLERS }}
+      DESKTOP: ${{ github.event_name != 'workflow_dispatch' || inputs.desktop }}
+    steps:
+      - name: The tag names a version
+        run: |
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || { echo "Not a release tag: $TAG (expected vX.Y.Z)" >&2; exit 2; }
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - name: The tree carries the tag's version
+        run: node scripts/release-local.mjs --check-version "${TAG#v}"
+      - name: Refuse to build a release that would ship unsigned
+        run: |
+          missing() { for n in "$@"; do [ -n "${!n}" ] || echo "$n"; done; }
+          manifest="$(missing MINISIGN_SECRET_KEY MINISIGN_PASSWORD)"
+          if [ -n "$manifest" ]; then
+            echo "The signed manifest needs: $manifest" >&2
+            exit 1
+          fi
+          [ "$DESKTOP" = "true" ] || exit 0
+          updater="$(missing TAURI_SIGNING_PRIVATE_KEY)"
+          if [ -n "$updater" ]; then
+            echo "Signed desktop updates need: $updater" >&2
+            exit 1
+          fi
+          installers="$(missing APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID WINDOWS_CERTIFICATE WINDOWS_CERTIFICATE_PASSWORD)"
+          if [ -n "$installers" ]; then
+            if [ "$ALLOW_UNSIGNED" != "true" ]; then
+              echo "Installer signing needs: ${installers//$'\n'/ }. Set HOI_ALLOW_UNSIGNED_INSTALLERS=true to release unsigned installers on purpose." >&2
+              exit 1
+            fi
+            echo "::warning::Releasing unsigned installers (HOI_ALLOW_UNSIGNED_INSTALLERS=true). The release notes say so."
+          fi
+
+  security:
+    needs: plan
+    if: needs.plan.outputs.tier == 'major'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        manifest: [core/Cargo.toml, apps/desktop/src-tauri/Cargo.toml, apps/setup/src-tauri/Cargo.toml]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - run: node scripts/check-dependency-security.mjs
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          manifest-path: ${{ matrix.manifest }}
+          arguments: --all-features
+      # A second reading of the RustSec database: it fails on vulnerabilities; deny.toml above
+      # decides what unmaintained or yanked crates mean for each graph.
+      - uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2 # v2.90.2
+        with:
+          tool: cargo-audit@0.22.2
+      - name: RustSec audit of the lockfile
+        env:
+          MANIFEST: ${{ matrix.manifest }}
+        run: cargo audit --file "$(dirname "$MANIFEST")/Cargo.lock"
+
+  npm-audit:
+    needs: plan
+    if: needs.plan.outputs.tier == 'major'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - run: pnpm audit --audit-level low
+
+  # One draft release for every job below to upload into, made before any of them starts, so
+  # the desktop and node builds run side by side. A draft already there (a release built on a
+  # computer and uploaded with release-local.mjs --upload) is used as it is.
+  draft:
+    needs: [plan, signing]
+    if: always() && !cancelled() && needs.plan.result == 'success' && needs.signing.result == 'success'
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    outputs:
+      id: ${{ steps.draft.outputs.id }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SIGNED: ${{ secrets.WINDOWS_CERTIFICATE != '' && secrets.APPLE_CERTIFICATE != '' }}
+      DESKTOP: ${{ github.event_name != 'workflow_dispatch' || inputs.desktop }}
+      PRERELEASE: ${{ needs.plan.outputs.prerelease }}
+    steps:
+      - id: draft
+        run: |
+          if [ "$DESKTOP" != "true" ]; then
+            notes="hoi-node only. Verify downloads against the signed manifest.json (minisign)."
+          elif [ "$SIGNED" = "true" ]; then
+            notes="Verify downloads against the signed manifest.json (minisign)."
+          else
+            notes="These installers are NOT code-signed for Windows and macOS. Verify downloads against the signed manifest.json (minisign) before running them."
+          fi
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --draft --verify-tag --prerelease="$PRERELEASE" --title "hoi $TAG" --notes "$notes"
+          else
+            test "$(gh release view "$TAG" --json isDraft --jq .isDraft)" = true || { echo "Release $TAG is already published; use a new version." >&2; exit 1; }
+            gh release edit "$TAG" --prerelease="$PRERELEASE"
+          fi
+          id="$(gh api "repos/$GH_REPO/releases?per_page=100" --jq "map(select(.tag_name == \"$TAG\"))[0].id")"
+          [[ "$id" =~ ^[0-9]+$ ]] || { echo "No release found for $TAG" >&2; exit 1; }
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+
+  desktop:
+    needs: [plan, draft]
+    permissions:
+      contents: write
+    if: always() && !cancelled() && needs.draft.result == 'success' && (github.event_name != 'workflow_dispatch' || inputs.desktop)
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            args: --target universal-apple-darwin
+            rust_targets: aarch64-apple-darwin,x86_64-apple-darwin
+          - os: ubuntu-22.04
+            args: ""
+            rust_targets: ""
+          # A Raspberry Pi 5 with a desktop, and other 64-bit ARM Linux computers.
+          - os: ubuntu-22.04-arm
+            args: ""
+            rust_targets: ""
+          - os: windows-latest
+            args: ""
+            rust_targets: ""
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    env:
+      HAS_WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE != '' }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          persist-credentials: false
+      - name: Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev libdbus-1-dev patchelf rpm
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: "1.97.0"
+          targets: ${{ matrix.rust_targets }}
+      - run: pnpm install --frozen-lockfile
+      - name: Windows code-signing certificate
+        if: runner.os == 'Windows' && env.HAS_WINDOWS_CERTIFICATE == 'true'
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP 'hoi-signing.pfx'
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
+          $password = ConvertTo-SecureString $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
+          $cert = Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $password
+          Remove-Item $pfx
+          $config = Join-Path $env:RUNNER_TEMP 'tauri-signing.json'
+          @{ bundle = @{ windows = @{ certificateThumbprint = $cert.Thumbprint; digestAlgorithm = 'sha256'; timestampUrl = 'http://timestamp.digicert.com' } } } | ConvertTo-Json -Depth 5 | Set-Content -Path $config -Encoding utf8
+          "TAURI_SIGNING_ARGS=--config $config" >> $env:GITHUB_ENV
+      - name: Prepare signed updater artifacts
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          node scripts/prepare-desktop-release.mjs "$RUNNER_TEMP/hoi-updater.json"
+          echo "TAURI_SIGNING_ARGS=--config $RUNNER_TEMP/hoi-updater.json" >> "$GITHUB_ENV"
+      - uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0.6.2
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          HOI_PUBLICATION: '1'
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # tauri-action signs and notarizes macOS bundles when these are set.
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          projectPath: apps/desktop
+          releaseId: ${{ needs.draft.outputs.id }}
+          args: ${{ matrix.args }} ${{ env.TAURI_SIGNING_ARGS }}
+
+  # The node setup app (apps/setup): the same platforms as the desktop app, the same switch.
+  setup:
+    needs: [plan, draft]
+    permissions:
+      contents: write
+    if: always() && !cancelled() && needs.draft.result == 'success' && (github.event_name != 'workflow_dispatch' || inputs.desktop)
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            args: --target universal-apple-darwin
+            rust_targets: aarch64-apple-darwin,x86_64-apple-darwin
+          - os: ubuntu-22.04
+            args: ""
+            rust_targets: ""
+          # A Raspberry Pi 5 with a desktop, and other 64-bit ARM Linux computers.
+          - os: ubuntu-22.04-arm
+            args: ""
+            rust_targets: ""
+          - os: windows-latest
+            args: ""
+            rust_targets: ""
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    env:
+      HAS_WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE != '' }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          persist-credentials: false
+      - name: Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev patchelf rpm
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: "1.97.0"
+          targets: ${{ matrix.rust_targets }}
+      - run: pnpm install --frozen-lockfile
+      - name: Windows code-signing certificate
+        if: runner.os == 'Windows' && env.HAS_WINDOWS_CERTIFICATE == 'true'
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP 'hoi-signing.pfx'
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
+          $password = ConvertTo-SecureString $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
+          $cert = Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $password
+          Remove-Item $pfx
+          $config = Join-Path $env:RUNNER_TEMP 'tauri-signing.json'
+          @{ bundle = @{ windows = @{ certificateThumbprint = $cert.Thumbprint; digestAlgorithm = 'sha256'; timestampUrl = 'http://timestamp.digicert.com' } } } | ConvertTo-Json -Depth 5 | Set-Content -Path $config -Encoding utf8
+          "TAURI_SIGNING_ARGS=--config $config" >> $env:GITHUB_ENV
+      - uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0.6.2
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          # tauri-action signs and notarizes macOS bundles when these are set.
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          projectPath: apps/setup
+          releaseId: ${{ needs.draft.outputs.id }}
+          args: ${{ matrix.args }} ${{ env.TAURI_SIGNING_ARGS }}
+
+  node:
+    needs: [plan, draft]
+    if: always() && !cancelled() && needs.draft.result == 'success'
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            targets: x86_64-unknown-linux-gnu
+          - os: ubuntu-22.04-arm
+            targets: aarch64-unknown-linux-gnu
+          # A Mac mini or any Mac as an always-on home node: both architectures on one runner.
+          - os: macos-latest
+            targets: aarch64-apple-darwin,x86_64-apple-darwin
+          - os: windows-latest
+            targets: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: "1.97.0"
+          targets: ${{ matrix.targets }}
+      - name: Build and upload hoi-node
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGETS: ${{ matrix.targets }}
+        run: |
+          v="${TAG#v}"
+          for target in ${TARGETS//,/ }; do
+            # Built as anyone can build it again: remapped paths, the commit's time, the pinned
+            # toolchain (scripts/reproduce.mjs). Its digest is published beside it.
+            node scripts/reproduce.mjs --only node --target "$target" > "hoi-node_${v}_${target}.digests.json"
+            exe=hoi-node
+            case "$target" in *windows*) exe=hoi-node.exe ;; esac
+            tar -C "core/target/$target/release" -czf "hoi-node_${v}_${target}.tar.gz" "$exe"
+            gh release upload "$TAG" "hoi-node_${v}_${target}.tar.gz" "hoi-node_${v}_${target}.digests.json" --clobber
+          done
+
+  manifest:
+    needs: [plan, desktop, setup, node]
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    # Also when the desktop and setup builds were left out on purpose; never after a failed build.
+    if: always() && !cancelled() && needs.plan.result == 'success' && needs.node.result == 'success' && (needs.desktop.result == 'success' || needs.desktop.result == 'skipped') && (needs.setup.result == 'success' || needs.setup.result == 'skipped')
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - name: Download release assets
+        run: mkdir -p out && gh release download "$TAG" --dir out --skip-existing
+        env:
+          GH_TOKEN: ${{ github.token }}
+      # The installers of this tag join the files, so a folder of the release's files installs as it
+      # is (install.sh uses the release files beside it, offline too). The manifest lists only what
+      # they install; the attestation below covers them too.
+      - name: Installers
+        run: node scripts/publication.mjs --installers out
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+      - run: pnpm install --frozen-lockfile
+      - name: Build manifest (sizes and SHA-256 of every file)
+        # The repository variable HOI_RELEASE_BASE_URL, when set, names where the files are
+        # published for people without access to this repository (docs/RELEASES.md).
+        env:
+          HOI_RELEASE_BASE_URL: ${{ vars.HOI_RELEASE_BASE_URL }}
+        run: node scripts/release-manifest.mjs out "$TAG" > manifest.json
+      - name: Sign manifest with minisign
+        run: |
+          sudo apt-get install -y minisign
+          echo "$MINISIGN_SECRET_KEY" | base64 -d > minisign.key
+          echo "$MINISIGN_PASSWORD" | minisign -S -s minisign.key -m manifest.json -t "hoi ${TAG}"
+          rm minisign.key
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+          MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
+      - name: Verify candidate before upload
+        run: |
+          cp manifest.json manifest.json.minisig out/
+          node scripts/release-check.mjs out
+      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-path: "out/*"
+      - run: gh release upload "$TAG" manifest.json manifest.json.minisig out/install.sh out/install.ps1 --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}

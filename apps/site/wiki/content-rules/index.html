@@ -1,0 +1,421 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <!-- @include head.html title="Text, links &amp; names · hoi wiki" description="The markdown subset, Unicode rules, link and name rules." -->
+</head>
+<body class="wiki">
+<!-- @include header.html nav="wiki" -->
+<!-- @wiki-open -->
+<article class="wk-doc">
+  <!-- @wiki-crumbs -->
+  <h1>Text, links <span class="acc">&amp; names</span></h1>
+  <p class="wk-lead">The rules every piece of text people read must pass: titles, posts, comments, names, labels and reasons. They refuse characters with a history of abuse (direction tricks, invisible and smuggled text), raw HTML and embedded media, links that hide where they lead, and copy-paste floods. A record either passes them or is refused, on the device that writes it and on every device that receives it.</p>
+  <p class="wk-src-list">Source <a href="{{REPO_URL}}/blob/main/core/crates/hoi-validate/src/text.rs">hoi-validate/src/text.rs</a> · <a href="{{REPO_URL}}/blob/main/core/crates/hoi-validate/src/lib.rs">hoi-validate/src/lib.rs</a> · <a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/node.rs">hoi-core/src/node.rs</a> · <a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/handle.rs">hoi-core/src/handle.rs</a> · <a href="{{REPO_URL}}/blob/main/core/crates/hoi-types/src/record.rs">hoi-types/src/record.rs</a></p>
+  <div class="wk-head-rule"></div>
+
+  <section class="wk-sec" id="principles">
+    <h2>Pass or refuse, never clean</h2>
+    <p>Records are signed and immutable: changing one byte changes its id and breaks its signature. So nothing is cleaned up on arrival. There is no stripping, no rewriting, and no Unicode normalization (NFC, NFKC or confusable folding) anywhere in the checks: the text a person signed is the text everyone stores, or nobody does.</p>
+    <p>The same functions run in two places. The app calls <code>hoi_validate::content</code> while preparing a post, reply or edit, so a person hears what's wrong before anything is stamped. Every receiving device calls it again at the content stage of the <a href="/wiki/validation/">validation pipeline</a>. A refusal there is <code>Reject::Content(message)</code>; when the record came from a peer, its author's key takes a strike of weight 3 (<a href="/wiki/spam/">Spam &amp; rate limits</a>).</p>
+    <div class="wk-code" data-lang="rust" data-title="hoi-validate/src/lib.rs (trimmed)"><pre><code>Body::Post { title, text: t, link, name: n, media } =&gt; {
+    c(text::line(title, "title", 300, true))?;
+    c(text::markdown(t, "text", 40_000, 2000))?;
+    if let Some(l) = link {
+        c(text::url(l).map_err(|e| format!("link: {e}")))?;
+    }
+    media_refs(media)?;
+    name(n)
+}</code></pre></div>
+  </section>
+
+  <section class="wk-sec" id="fields">
+    <h2>Three kinds of field</h2>
+    <p><code>text::chars(s, field, what)</code> checks every character of a string. <code>what</code> names the field in the error ("title has direction overrides"). The <code>Field</code> decides what is allowed besides the common rules:</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Field kinds">
+      <table>
+        <thead><tr><th><code>Field</code></th><th>Used for</th><th>Newline, tab</th><th>Direction marks, soft hyphen</th><th>Spaces</th></tr></thead>
+        <tbody>
+          <tr><td><code>Name</code></td><td>self-chosen display names</td><td>refused</td><td>refused</td><td>only U+0020</td></tr>
+          <tr><td><code>Line</code></td><td>titles, labels, reasons, alt text, community names (through <code>text::line</code>)</td><td>refused</td><td>refused</td><td>only U+0020</td></tr>
+          <tr><td><code>Body</code></td><td>post, comment and edit text, rules text, a community's description (through <code>text::markdown</code> or directly)</td><td>allowed</td><td>allowed</td><td>any space that isn't refused below</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Body text keeps direction marks and soft hyphens; one-line fields refuse them, along with every space but the plain one, so a name or a title can't hold anything that doesn't show.</p>
+  </section>
+
+  <section class="wk-sec" id="characters">
+    <h2>Refused characters</h2>
+    <p>The checks run per character, in this order; the first one that matches decides the error message.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Refused characters">
+      <table>
+        <thead><tr><th>Category</th><th>Code points</th><th>Fields</th><th>Error ends with</th><th>Example refused</th></tr></thead>
+        <tbody>
+          <tr><td>Control characters</td><td>every <code>char::is_control</code> (Unicode Cc: U+0000–U+001F, U+007F–U+009F); body text may hold U+000A newline and U+0009 tab</td><td>all</td><td>has control characters</td><td><code>bell \u{7}</code>; a newline in a title</td></tr>
+          <tr><td>Direction overrides and isolates ("Trojan Source")</td><td>U+202A–U+202E (LRE, RLE, PDF, LRO, RLO), U+2066–U+2069 (LRI, RLI, FSI, PDI)</td><td>all</td><td>has direction overrides</td><td><code>evil\u{202E}txt.exe</code>, shown as "evilexe.txt"</td></tr>
+          <tr><td>Direction marks</td><td>U+200E LRM, U+200F RLM, U+061C ALM</td><td>names, lines</td><td>has direction marks</td><td><code>mark\u{200F}</code> as a name</td></tr>
+          <tr><td>Invisible and zero-width characters</td><td>U+034F, U+115F, U+1160, U+17B4, U+17B5, U+180E, U+200B, U+2028, U+2029, U+2060–U+2064, U+206A–U+206F, U+FEFF, U+FFF9–U+FFFB, U+3164, U+FFA0, U+1D159, U+1D173–U+1D17A, U+E0001</td><td>all</td><td>has invisible characters</td><td><code>zero\u{200B}width</code></td></tr>
+          <tr><td>Soft hyphen</td><td>U+00AD</td><td>names, lines</td><td>has invisible characters</td><td>a name with a hidden break</td></tr>
+          <tr><td>Unusual spaces</td><td>every <code>char::is_whitespace</code> other than U+0020: no-break space U+00A0, U+2000–U+200A, U+202F, U+205F, U+3000, U+1680 and the rest</td><td>names, lines</td><td>has unusual spaces</td><td><code>nbsp\u{00A0}here</code> as a title</td></tr>
+          <tr><td>Hidden selectors</td><td>U+E0100–U+E01EF (variation selectors 17–256)</td><td>all</td><td>has hidden selector characters</td><td><code>x\u{E0100}\u{E0101}</code>: bytes smuggled one selector at a time</td></tr>
+          <tr><td>Private use and noncharacters</td><td>U+E000–U+F8FF, U+F0000–U+10FFFF, U+FDD0–U+FDEF, and every code point ending in FFFE or FFFF</td><td>all</td><td>has private-use characters</td><td><code>pua \u{E000}</code></td></tr>
+          <tr><td>Tag characters outside a flag</td><td>U+E0020–U+E007E, and U+E007F CANCEL TAG, anywhere but in a subdivision flag (below)</td><td>all</td><td>has hidden tag characters</td><td><code>a\u{E0041}\u{E0042}</code>: invisible "AB"</td></tr>
+          <tr><td>Stacked variation selectors</td><td>two of U+FE00–U+FE0F in a row</td><td>all</td><td>has stacked selector characters</td><td><code>x\u{FE0F}\u{FE0F}</code></td></tr>
+          <tr><td>Stacked joiners</td><td>two of U+200C ZWNJ and U+200D ZWJ in a row</td><td>all</td><td>has stacked joiners</td><td><code>a\u{200D}\u{200D}b</code></td></tr>
+          <tr><td>Stacked accents ("Zalgo")</td><td>more than four combining marks in a row from U+0300–U+036F, U+1AB0–U+1AFF, U+1DC0–U+1DFF, U+20D0–U+20FF, U+FE20–U+FE2F</td><td>all</td><td>has stacked accents</td><td><code>z\u{0301}\u{0302}\u{0303}\u{0304}\u{0305}</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="wk-note info"><b>Why tags, selectors and joiners</b><p>Tag characters (U+E0020–U+E007E) and the supplementary variation selectors render as nothing, so runs of them can spell out text nobody sees: hidden from readers, and not hidden from language models asked to summarize the thread. The rules refuse the runs and keep the ordinary uses: tags inside a flag, one selector after a character, one joiner between two.</p></div>
+    <h3 id="allowed">What still works</h3>
+    <ul>
+      <li><b>Every script, either direction.</b> Hebrew, Arabic, Persian with its ZWNJ (<code>می‌خواهم</code>), Hangul, Devanagari: only the characters in the table are refused.</li>
+      <li><b>Emoji sequences.</b> A single VS16 (<code>❤️</code>), ZWJ sequences (<code>👩‍💻</code>), skin tones.</li>
+      <li><b>Subdivision flags.</b> After U+1F3F4 WAVING BLACK FLAG, up to eight tag characters are allowed, and U+E007F CANCEL TAG ends the sequence once at least one tag came (<code>🏴󠁧󠁢󠁳󠁣󠁴󠁿</code>, Scotland). Any other character ends it too.</li>
+      <li><b>Accents.</b> Up to four combining marks in a row (<code>é\u{0301}</code> passes).</li>
+    </ul>
+    <div class="wk-code" data-lang="rust" data-title="hoi-validate/src/text.rs (trimmed)"><pre><code>match c {
+    '\u{1F3F4}' =&gt; tags = Some(0),
+    '\u{E0020}'..='\u{E007E}' =&gt; match tags {
+        Some(n) if n &lt; 8 =&gt; tags = Some(n + 1),
+        _ =&gt; return Err(format!("{what} has hidden tag characters")),
+    },
+    '\u{E007F}' =&gt; match tags {
+        Some(n) if n &gt; 0 =&gt; tags = None,
+        _ =&gt; return Err(format!("{what} has hidden tag characters")),
+    },
+    _ =&gt; tags = None,
+}</code></pre></div>
+  </section>
+
+  <section class="wk-sec" id="markdown">
+    <h2>Body text: the markdown subset</h2>
+    <p>Post, comment, edit and rules text goes through <code>text::markdown(s, what, max_chars, max_lines)</code>. It doesn't parse a markdown grammar; it refuses the constructs a renderer could turn into something other than text, in this order:</p>
+    <ol class="wk-steps">
+      <li><b>Length</b><p>More than <code>max_chars</code> characters (Unicode scalar values): "is too long". More than <code>max_lines</code> newline characters: "has too many lines".</p></li>
+      <li><b>Characters</b><p>Every character through <code>chars(s, Field::Body, …)</code>, the table above.</p></li>
+      <li><b>No raw HTML</b><p>A <code>&lt;</code> followed by an ASCII letter, <code>/</code>, <code>!</code> or <code>?</code> anywhere: "contains raw HTML". That catches tags, closing tags, comments, doctypes and processing instructions, and leaves comparisons alone: <code>2 &lt; 3 and 5 &gt; 4</code> passes.</p></li>
+      <li><b>No embedded media</b><p>The two characters <code>![</code> anywhere: "embeds media". Pictures travel as media items, checked byte by byte (<a href="/wiki/media/">Media</a>), never as a link a renderer would fetch.</p></li>
+      <li><b>At most eight addresses</b><p>Every <code>http://</code> or <code>https://</code> in the text, in any letter case, counts as a bare address, as renderers would auto-link it: it runs to the next whitespace or one of <code>) &gt; " ' &lt; ]</code>, without trailing <code>. , ; : ! ?</code>. More than <code>MAX_LINKS</code> (8): "has more than 8 links". Each must pass the <a href="#links">address rules</a>.</p></li>
+      <li><b>Link targets</b><p>Every inline link <code>[text](target)</code> and every reference definition <code>[ref]: target</code> (a line starting with <code>[</code> after at most three spaces) has its target checked, with surrounding <code>&lt; &gt;</code> trimmed. Empty targets and in-page anchors starting with <code>#</code> are skipped. Any other target must be an address that passes the rules ("text: link address must start with http:// or https://" for <code>javascript:</code>, <code>JAVASCRIPT:</code> and <code>data:</code> alike), and the link text must not name a different site (<a href="#link-text">below</a>).</p></li>
+    </ol>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Markdown examples">
+      <table>
+        <thead><tr><th>Text</th><th>Result</th></tr></thead>
+        <tbody>
+          <tr><td><code>see [the docs](https://hoi.sh/protocol) and https://example.org.</code></td><td>passes</td></tr>
+          <tr><td><code>[jump](#section)</code></td><td>passes</td></tr>
+          <tr><td><code>2 &lt; 3 and 5 &gt; 4</code></td><td>passes</td></tr>
+          <tr><td><code>&lt;script&gt;alert(1)&lt;/script&gt;</code></td><td>contains raw HTML</td></tr>
+          <tr><td><code>![cat](https://x.example/cat.png)</code></td><td>embeds media</td></tr>
+          <tr><td><code>[click](javascript:alert(1))</code></td><td>link address must start with http:// or https://</td></tr>
+          <tr><td><code>[ref]: javascript:alert(1)</code></td><td>link address must start with http:// or https://</td></tr>
+          <tr><td><code>visit https://user&#64;evil.example now</code></td><td>address hides its site behind a username</td></tr>
+          <tr><td>nine copies of <code>https://a.example</code></td><td>has more than 8 links</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>The web app shows body text as plain paragraphs, split at blank lines (<code>paragraphs</code> in <a href="{{REPO_URL}}/blob/main/apps/web/src/lib/util.ts">apps/web/src/lib/util.ts</a>), with Svelte escaping every character. The validator's rules are what any client may rely on: whatever renderer reads a record, it holds no HTML, no embedded media and no address that fails these checks.</p>
+  </section>
+
+  <section class="wk-sec" id="limits">
+    <h2>Length limits, field by field</h2>
+    <p>Counts are characters (Unicode scalar values), not bytes; lines are newline characters. "Required" means a value of only spaces is refused ("is empty"). Every record must also fit its kind's encoded size cap (<a href="/wiki/validation/">Validation pipeline</a>), which can bind first: a 40,000-character post in a script of 3-byte characters won't fit in 64 KiB.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Text limits">
+      <table>
+        <thead><tr><th>Kind</th><th>Field</th><th>Check</th><th>Limit</th></tr></thead>
+        <tbody>
+          <tr><td><code>post</code></td><td><code>title</code></td><td>line, required</td><td>300</td></tr>
+          <tr><td><code>post</code></td><td><code>text</code></td><td>markdown</td><td>40,000 characters, 2,000 lines</td></tr>
+          <tr><td><code>post</code></td><td><code>link</code></td><td>address</td><td>2,048 bytes</td></tr>
+          <tr><td><code>post</code>, <code>comment</code></td><td><code>name</code></td><td>name</td><td>32</td></tr>
+          <tr><td><code>post</code></td><td>media <code>alt</code></td><td>line</td><td>500</td></tr>
+          <tr><td><code>comment</code></td><td><code>text</code></td><td>markdown, not blank ("empty comment")</td><td>10,000 characters, 500 lines</td></tr>
+          <tr><td><code>edit</code></td><td><code>text</code></td><td>markdown</td><td>40,000 characters, 2,000 lines</td></tr>
+          <tr><td><code>edit</code></td><td><code>title</code></td><td>line, required when present</td><td>300</td></tr>
+          <tr><td><code>community</code></td><td><code>name</code></td><td>line, required</td><td>40</td></tr>
+          <tr><td><code>community</code></td><td><code>description</code></td><td>body characters</td><td>300</td></tr>
+          <tr><td><code>ledger</code></td><td><code>reason</code></td><td>line</td><td>500</td></tr>
+          <tr><td><code>ledger</code></td><td><code>text</code> (rules)</td><td>markdown</td><td>20,000 characters, 1,000 lines</td></tr>
+          <tr><td><code>label</code></td><td><code>label</code></td><td>line, required</td><td>40</td></tr>
+          <tr><td><code>label</code></td><td><code>note</code></td><td>line</td><td>300</td></tr>
+          <tr><td><code>review</code></td><td>veto <code>reason</code></td><td>line, required</td><td>200</td></tr>
+          <tr><td><code>report</code></td><td><code>reason</code></td><td>line, required, and one of the <a href="#reasons">report reasons</a></td><td>40</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>The app trims leading and trailing whitespace from titles, text and links before it builds a record; receivers don't trim anything, they check.</p>
+  </section>
+
+  <section class="wk-sec" id="links">
+    <h2>Addresses</h2>
+    <p><code>text::url</code> accepts an <code>http(s)</code> address that doesn't hide where it leads. It is used for a post's <code>link</code>, every bare address in body text and every link target. In order:</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Address rules">
+      <table>
+        <thead><tr><th>#</th><th>Rule</th><th>Error</th></tr></thead>
+        <tbody>
+          <tr><td>1</td><td>At most 2,048 bytes</td><td>address is too long</td></tr>
+          <tr><td>2</td><td>No whitespace or control characters</td><td>address has spaces or control characters</td></tr>
+          <tr><td>3</td><td>Starts with <code>http://</code> or <code>https://</code>, in any letter case</td><td>address must start with http:// or https://</td></tr>
+          <tr><td>4</td><td>The authority (up to the first <code>/</code>, <code>?</code> or <code>#</code>) holds no <code>@</code></td><td>address hides its site behind a username</td></tr>
+          <tr><td>5</td><td>No backslash in the authority</td><td>address has a backslash</td></tr>
+          <tr><td>6</td><td>A port, if any, is 1–65535</td><td>address has a bad port</td></tr>
+          <tr><td>7</td><td>An IPv6 literal <code>[…]</code> parses and isn't local (then the address passes)</td><td>address has a broken IPv6 host · address points into a private network</td></tr>
+          <tr><td>8</td><td>A host is present</td><td>address has no site</td></tr>
+          <tr><td>9</td><td>The host is ASCII</td><td>international site names must be written in punycode (xn--)</td></tr>
+          <tr><td>10</td><td>Without trailing dots and lowercased: at most 253 characters of letters, digits, <code>-</code> and <code>.</code></td><td>address has an unusual site name</td></tr>
+          <tr><td>11</td><td>A dotted-decimal IPv4 host isn't local (then the address passes)</td><td>address points into a private network</td></tr>
+          <tr><td>12</td><td>Every label is 1–63 characters and neither starts nor ends with <code>-</code></td><td>address has an unusual site name</td></tr>
+          <tr><td>13</td><td>The top-level label has a letter and doesn't start with <code>0x</code>; there are two labels or more</td><td>address has an unusual site name</td></tr>
+          <tr><td>14</td><td>Not <code>localhost</code>, and not ending in <code>.localhost</code>, <code>.local</code>, <code>.internal</code>, <code>.home</code>, <code>.lan</code>, <code>.localdomain</code> or <code>.home.arpa</code></td><td>address points into a private network</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Address examples">
+      <table>
+        <thead><tr><th>Address</th><th>Result</th></tr></thead>
+        <tbody>
+          <tr><td><code>https://hoi.sh</code></td><td>passes</td></tr>
+          <tr><td><code>https://xn--bcher-kva.example/path?q=1#x</code></td><td>passes</td></tr>
+          <tr><td><code>http://example.org:8080/a</code></td><td>passes</td></tr>
+          <tr><td><code>https://[2001:db8::1]/</code>, <code>https://93.184.216.34/</code></td><td>pass</td></tr>
+          <tr><td><code>javascript:alert(1)</code>, <code>data:text/html,hi</code></td><td>must start with http:// or https://</td></tr>
+          <tr><td><code>https://bank.example&#64;evil.example/</code></td><td>hides its site behind a username</td></tr>
+          <tr><td><code>https://bücher.example/</code></td><td>must be written in punycode</td></tr>
+          <tr><td><code>http://localhost:8080/</code>, <code>https://router.local/</code></td><td>points into a private network</td></tr>
+          <tr><td><code>http://192.168.1.1/admin</code>, <code>http://10.0.0.1</code>, <code>https://[::1]/</code></td><td>points into a private network</td></tr>
+          <tr><td><code>http://2130706433/</code>, <code>http://0x7f.0x1/</code></td><td>unusual site name (numeric tricks for 127.0.0.1)</td></tr>
+          <tr><td><code>https://example</code></td><td>unusual site name (one label)</td></tr>
+          <tr><td><code>https://exa mple.com</code></td><td>has spaces</td></tr>
+          <tr><td><code>https://example.com:0/</code></td><td>bad port</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="wk-sec" id="private-ranges">
+    <h2>Local and private networks</h2>
+    <p>A link that points into the reader's own network can probe a router, a printer or a development server from inside. These hosts are refused as "points into a private network":</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Refused address ranges">
+      <table>
+        <thead><tr><th>Family</th><th>Range</th><th>What it is</th></tr></thead>
+        <tbody>
+          <tr><td>IPv4</td><td>10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16</td><td>private networks</td></tr>
+          <tr><td>IPv4</td><td>127.0.0.0/8</td><td>loopback</td></tr>
+          <tr><td>IPv4</td><td>169.254.0.0/16</td><td>link-local</td></tr>
+          <tr><td>IPv4</td><td>0.0.0.0/8 (0.0.0.0 included)</td><td>"this network", unspecified</td></tr>
+          <tr><td>IPv4</td><td>100.64.0.0/10</td><td>carrier-grade NAT</td></tr>
+          <tr><td>IPv4</td><td>224.0.0.0 and above (255.255.255.255 included)</td><td>multicast, reserved, broadcast</td></tr>
+          <tr><td>IPv6</td><td><code>::1</code>, <code>::</code></td><td>loopback, unspecified</td></tr>
+          <tr><td>IPv6</td><td>fc00::/7</td><td>unique local</td></tr>
+          <tr><td>IPv6</td><td>fe80::/10</td><td>link-local</td></tr>
+          <tr><td>IPv6</td><td><code>::ffff:a.b.c.d</code> with a refused IPv4 address</td><td>IPv4-mapped</td></tr>
+          <tr><td>Names</td><td><code>localhost</code> and names ending in <code>.localhost</code>, <code>.local</code>, <code>.internal</code>, <code>.home</code>, <code>.lan</code>, <code>.localdomain</code>, <code>.home.arpa</code></td><td>local names</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>IPv4 hosts are recognized only in dotted-decimal form. The other spellings browsers accept for 127.0.0.1 (one decimal number, hex labels) fail rule 13: a top-level label is never all digits and never starts with <code>0x</code>.</p>
+  </section>
+
+  <section class="wk-sec" id="hosts">
+    <h2>Look-alike hosts</h2>
+    <ul>
+      <li><b>A username before the host.</b> <code>https://paypal.com&#64;evil.example/</code> goes to <code>evil.example</code>. Any <code>@</code> in the authority is refused.</li>
+      <li><b>International names in the clear.</b> A non-ASCII host could mix scripts so <code>аpple.com</code> (with a Cyrillic а) reads as <code>apple.com</code>. Hosts must be ASCII; a real international name is written in punycode, <code>xn--…</code>, where the difference shows.</li>
+      <li><b>Backslashes.</b> Some parsers read <code>\</code> as <code>/</code> and some don't, so where the host ends depends on who reads it. Refused in the authority.</li>
+      <li><b>Unusual names.</b> Only letters, digits, hyphens and dots; labels of 1–63 characters, no hyphen at either end, at most 253 characters in all.</li>
+    </ul>
+    <p>Handles that are domains follow their own, similar rule (<a href="#handles">below</a>).</p>
+  </section>
+
+  <section class="wk-sec" id="link-text">
+    <h2>Link text that names another site</h2>
+    <p><code>[paypal.com](https://evil.example/login)</code> shows one site and goes to another. For every inline link whose text reads like a site name, the text's site and the target's host must be the same site, or one a subdomain of the other.</p>
+    <div class="wk-code" data-lang="rust" data-title="hoi-validate/src/text.rs"><pre><code>/// Whether link text reads like a site name of its own ("paypal.com", "https://x.y/z").
+fn looks_like_site(text: &amp;str) -&gt; Option&lt;String&gt; {
+    let t = text.trim();
+    if t.len() &lt; 4 || t.contains(char::is_whitespace) || !t.contains('.') {
+        return None;
+    }
+    let with_scheme =
+        if t.to_ascii_lowercase().starts_with("http://") || t.to_ascii_lowercase().starts_with("https://") { t.to_string() } else { format!("https://{t}") };
+    let h = host_of(&amp;with_scheme)?;
+    let tld = h.rsplit('.').next()?;
+    (tld.len() &gt;= 2 &amp;&amp; tld.bytes().all(|b| b.is_ascii_alphabetic())).then_some(h)
+}
+
+fn same_site(a: &amp;str, b: &amp;str) -&gt; bool {
+    a == b || a.ends_with(&amp;format!(".{b}")) || b.ends_with(&amp;format!(".{a}"))
+}</code></pre></div>
+    <p><code>host_of</code> lowercases the host, drops trailing dots and a leading <code>www.</code>. Link text with a space in it, or without a dot, or with a numeric or one-letter ending, is just text. The link's text is what lies between the last <code>[</code> on the same line and the <code>](</code>.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Link text examples">
+      <table>
+        <thead><tr><th>Link</th><th>Result</th></tr></thead>
+        <tbody>
+          <tr><td><code>[read more](https://news.example/a)</code></td><td>passes: the text names no site</td></tr>
+          <tr><td><code>[https://hoi.sh](https://www.hoi.sh/)</code></td><td>passes: <code>www.</code> is dropped</td></tr>
+          <tr><td><code>[docs.hoi.sh](https://hoi.sh/)</code></td><td>passes: a subdomain</td></tr>
+          <tr><td><code>[paypal.com](https://evil.example/login)</code></td><td>link text names a different site than it leads to</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="wk-sec" id="newcomers">
+    <h2>Links and newcomers</h2>
+    <p>Newcomers share text only. <code>hoi_validate::has_links</code> says whether a post, comment or edit carries anything a renderer would follow: a <code>link</code>, or text (or a title) containing <code>http://</code>, <code>https://</code> or <code>www.</code> in any case, or any link target that isn't empty and isn't a <code>#</code> anchor.</p>
+    <p>A record with links from someone below <b>member</b> standing in that community is not refused: it is stored and <a href="/wiki/validation/">held</a>, shown to nobody but its author and passed on to nobody, with the reason "links unlock once the community has vouched for you". The app refuses it up front ("Newcomers share text only. Links unlock once members here vouch for you."). Owners and moderators are never held. See <a href="/wiki/standing/">Standing &amp; review</a>.</p>
+  </section>
+
+  <section class="wk-sec" id="names">
+    <h2>Display names</h2>
+    <p>Anyone can claim any name, so a name is never an identity: it rides on posts and comments (their optional <code>name</code> field) and devices show it next to the key. <code>text::name</code> keeps names from dressing up as something else:</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Name rules">
+      <table>
+        <thead><tr><th>Rule</th><th>Error</th><th>Refused example</th></tr></thead>
+        <tbody>
+          <tr><td>At most 32 characters</td><td>name is too long</td><td>33 × <code>x</code></td></tr>
+          <tr><td>Not blank</td><td>name is empty</td><td><code>" "</code></td></tr>
+          <tr><td>No space at the start or end</td><td>name starts or ends with a space</td><td><code>" lena"</code></td></tr>
+          <tr><td>No runs of spaces</td><td>name has runs of spaces</td><td><code>le  na</code></td></tr>
+          <tr><td>No <code>·</code>, and not starting with <code>did:</code> in any case</td><td>name looks like a key</td><td><code>a7f2·91c0</code>, <code>did:key:z6Mk</code></td></tr>
+          <tr><td>Characters as a <code>Name</code> field</td><td>name has …</td><td><code>mark\u{200F}</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>The short form of a key is written <code>a7f2·91c0</code> (the first eight hex digits, split by a middle dot), and full keys are <code>did:key:z6Mk…</code>; names may look like neither. <code>Ana María</code> and <code>lena</code> pass.</p>
+    <p>Where a person types a name (their own, a petname for someone else, a label for one of their devices, the label of a device link request), the app runs <code>clean_name</code> first: whitespace runs collapse to one space and the ends are trimmed, then <code>text::name</code> applies, and the error reads "That name won't do: …". The name a device shows for a person is the petname this person gave them, else the newest name they used in a post or comment, else their short key (<a href="/wiki/identity/">Keys &amp; identity</a>).</p>
+  </section>
+
+  <section class="wk-sec" id="other-names">
+    <h2>Other names and reasons</h2>
+    <h3 id="community-names">Community names</h3>
+    <p>A community's <code>name</code> in its genesis is a line of 1–40 characters; its <code>description</code> at most 300 characters of body text; its <code>color</code> one of <code>mint</code>, <code>sky</code>, <code>lilac</code>, <code>peach</code>, <code>sun</code>, <code>coral</code>. A name registered with a registry is stricter: <code>community_registration_name</code> trims and lowercases it, then requires 1–32 characters, the first a letter or digit, all of <code>a–z</code>, <code>0–9</code>, <code>.</code>, <code>_</code>, <code>-</code> (<a href="/wiki/registry/">Registry</a>).</p>
+    <h3 id="handles">Handles: names that are domains</h3>
+    <p>A display name that is a domain gets checked against the domain (<a href="/wiki/identity/">Keys &amp; identity</a>). <code>handle::as_domain</code> decides whether a name is one: trimmed, trailing dots dropped, lowercased; at most 253 characters with at least one dot; two labels or more, each 1–63 of <code>a–z</code>, <code>0–9</code> and <code>-</code>, no hyphen at either end; a top-level label of at least two characters, all letters or starting with <code>xn--</code>.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Domain names">
+      <table>
+        <thead><tr><th>Name</th><th>A domain?</th></tr></thead>
+        <tbody>
+          <tr><td><code>Mira.Example.org</code></td><td>yes, as <code>mira.example.org</code></td></tr>
+          <tr><td><code>xn--bcher-kva.example</code></td><td>yes</td></tr>
+          <tr><td><code>mira</code>, <code>mira.</code>, <code>a.b</code>, <code>a.123</code></td><td>no</td></tr>
+          <tr><td><code>-a.example</code>, <code>a..example</code>, <code>a b.example</code></td><td>no</td></tr>
+          <tr><td><code>mira&#64;example.org</code>, <code>über.example</code></td><td>no</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 id="wiki-pages">Wiki page names</h3>
+    <p>A <code>wiki</code> record's <code>page</code> is 1–64 characters of <code>a–z</code>, <code>0–9</code> and <code>-</code>, not starting or ending with <code>-</code> (<code>is_wiki_page</code>, checked at decode).</p>
+    <h3 id="reasons">Reasons</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Reasons">
+      <table>
+        <thead><tr><th>Where</th><th>Allowed</th><th>Otherwise</th></tr></thead>
+        <tbody>
+          <tr><td>Hiding a post (<code>review</code> with <code>hide</code>), objecting to a person (<code>vouch</code> −1)</td><td><code>spam</code>, <code>abuse</code>, <code>illegal</code>, <code>off-topic</code>, or <code>rule:</code> and 1–3 digits</td><td>"hiding needs a reason … Disagreeing is what downvotes are for"; "an objection needs a reason"</td></tr>
+          <tr><td>A vouch of 1 or 0, a review of <code>ok</code> or <code>none</code></td><td>no reason</td><td>"only objections carry a reason"; "only hides and vetoes carry a reason"</td></tr>
+          <tr><td>A veto</td><td>any line of 1–200 characters</td><td>"a veto needs a reason"</td></tr>
+          <tr><td>A <code>report</code></td><td><code>spam</code>, <code>rate</code>, <code>dup</code>, <code>illegal</code>, or <code>rule:</code> and a number; at most 64 evidence ids</td><td>"unknown report reason"</td></tr>
+          <tr><td>A ledger <code>label</code> entry</td><td>a reason that isn't blank</td><td>"label entry without a label"</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="wk-sec" id="floods">
+    <h2>Copy-paste floods</h2>
+    <p>The same words posted again and again are refused by fingerprint. <code>text_fingerprint</code> takes a post's <code>title</code>, <code>text</code> and <code>link</code> joined by newlines, or a comment's <code>text</code>, lowercases it, collapses every run of whitespace to one space, and keeps the first 16 bytes of its BLAKE3 hash. Texts under 12 characters after that have no fingerprint ("too short to mean anything"); edits and other kinds have none.</p>
+    <div class="wk-code" data-lang="rust" data-title="hoi-validate/src/lib.rs"><pre><code>pub fn text_fingerprint(r: &amp;Record) -&gt; Option&lt;[u8; 16]&gt; {
+    let words = match &amp;r.body {
+        Body::Post { title, text: t, link, .. } =&gt; format!("{title}\n{t}\n{}", link.as_deref().unwrap_or("")),
+        Body::Comment { text: t, .. } =&gt; t.clone(),
+        _ =&gt; return None,
+    };
+    let norm: String = words.to_lowercase().split_whitespace().collect::&lt;Vec&lt;_&gt;&gt;().join(" ");
+    if norm.chars().count() &lt; 12 {
+        return None;
+    }
+    let h = blake3::hash(norm.as_bytes());
+    Some(h.as_bytes()[..16].try_into().expect("16"))
+}</code></pre></div>
+    <p>So a post titled <code>Free crypto</code> saying <code>click   here now</code> and one titled <code>free CRYPTO</code> saying <code>click here</code>, a newline, <code>now</code> have the same fingerprint. The store indexes every post and comment by (community, fingerprint), and <code>check_duplicate</code> in <a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/node.rs">node.rs</a> refuses, as <code>Content</code>:</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Flood rules">
+      <table>
+        <thead><tr><th>When</th><th>Message</th></tr></thead>
+        <tbody>
+          <tr><td>The same person already used these words in this community within 7 days of this record's <code>created_at</code></td><td>the same words again</td></tr>
+          <tr><td>The author is a newcomer, and two or more other newcomers used these words within a day</td><td>the same words from several newcomers: a copy-paste flood</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>A flood from a peer costs the key a strike of weight 0.25 (<code>Offence::Duplicate</code>); a device that reports it gives the reason <code>dup</code>. The check is skipped for records read back from disk. Picture copies are caught differently, by perceptual hash (<a href="/wiki/media/">Media</a>).</p>
+  </section>
+
+  <section class="wk-sec" id="shapes">
+    <h2>The rest of the content stage</h2>
+    <p><code>hoi_validate::content</code> also checks the fields that aren't text. They fail the same way, as <code>Content(message)</code>, with the same strike for a peer's record.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Other content rules">
+      <table>
+        <thead><tr><th>Kind</th><th>Rule</th><th>Error</th></tr></thead>
+        <tbody>
+          <tr><td><code>vote</code></td><td><code>value</code> is −1, 0 or 1</td><td>a vote is -1, 0 or 1</td></tr>
+          <tr><td><code>vouch</code></td><td><code>value</code> is −1, 0 or 1, with <a href="#reasons">reasons</a> as above</td><td>a vouch is -1, 0 or 1</td></tr>
+          <tr><td><code>delegation</code></td><td>1–16 scope entries, each <code>*</code>, <code>post</code>, <code>comment</code>, <code>vote</code> or <code>moderate:</code> and a 64-digit hex id</td><td>bad delegation scope · unknown delegation scope</td></tr>
+          <tr><td><code>rotate</code></td><td><code>person</code> and <code>to</code> differ, and neither is the signing recovery key</td><td>a rotation names the person and a new root, both other than the recovery key</td></tr>
+          <tr><td><code>share</code></td><td>every sealed share is 81 bytes; one per device</td><td>a sealed share is 81 bytes · one sealed share per device</td></tr>
+          <tr><td><code>profile</code></td><td>a JPEG of at most 4 KiB, square, at most 128 pixels, decodable (<a href="/wiki/media/">Media</a>)</td><td>profile picture exceeds 4 KiB · profile pictures must be square and at most 128 pixels · profile picture cannot be decoded</td></tr>
+          <tr><td><code>profile-color</code></td><td>empty, <code>mint</code>, <code>sky</code>, <code>lilac</code>, <code>peach</code> or <code>sun</code></td><td>unknown profile color</td></tr>
+          <tr><td><code>post</code></td><td>media references (<a href="/wiki/media/">Media</a>)</td><td>a post carries at most 4 media items · unknown media type · media size out of range · the same media twice · image dimensions out of range · only images state dimensions · media too big in total</td></tr>
+          <tr><td><code>community</code></td><td>1–16 owners; a threshold from 1 to their number; a known color; valid limits (below)</td><td>a community needs 1–16 owners · threshold must be between 1 and the number of owners · unknown community colour</td></tr>
+          <tr><td><code>ledger</code></td><td>at most 256 evidence ids and 16 co-signatures</td><td>too much evidence or too many cosigners</td></tr>
+          <tr><td><code>ledger</code></td><td><code>mod-add</code>, <code>mod-remove</code>, <code>remove</code>, <code>ban</code>, <code>unban</code>, <code>label</code>, <code>pin</code>, <code>unpin</code>, <code>admit</code> and <code>retire</code> name a target</td><td>ledger action needs a target</td></tr>
+          <tr><td><code>ledger</code></td><td>a drop key exactly on <code>drop-key</code> entries: no target, a strong key, sealed once to each of at most 64 devices, 80 bytes each</td><td>only a drop-key entry carries a drop key, and it must · a drop key is sealed once to each of at most 64 devices</td></tr>
+          <tr><td><code>ledger</code></td><td><code>rules</code> carries text and a patch of 1 byte to 64 KiB; no other action carries a patch</td><td>rules entry without text · rules entry without its change (a patch of up to 64 KiB) · only a rules entry carries a patch</td></tr>
+          <tr><td><code>ledger</code></td><td><code>limits</code> carries valid limits</td><td>limits entry without limits</td></tr>
+          <tr><td><code>roster</code></td><td>expires at most 3 days after it was made</td><td>a roster lasts three days at most</td></tr>
+          <tr><td><code>pointer</code></td><td>holds a post, comment or edit, and media only for a post; a sealed manifest of 1 byte to 12 KiB</td><td>a pointer holds a post, a comment, an edit or a post's media · a pointer's sealed manifest is too large</td></tr>
+          <tr><td><code>delete</code>, <code>revoke</code>, <code>identity</code>, <code>trust</code>, <code>wiki</code>, <code>tally</code>, <code>blocklist</code></td><td>nothing more here: their shapes (sorted lists, caps, page names) are checked at decode, identity work at its own stage, a wiki update where it is read</td><td>—</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 id="limits-ranges">Community limits</h3>
+    <p>A genesis and every <code>limits</code> ledger entry must hold limits in these ranges (<code>hoi_validate::limits</code>); what each limit does is on <a href="/wiki/communities/">Communities &amp; the ledger</a>.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Limit ranges">
+      <table>
+        <thead><tr><th>Limit</th><th>Range</th><th>Error</th></tr></thead>
+        <tbody>
+          <tr><td><code>pow_bits</code></td><td>8–30</td><td>stamp difficulty must be 8–30 bits</td></tr>
+          <tr><td><code>max_retention</code></td><td>3,600 s to 10 years</td><td>retention must be between an hour and ten years</td></tr>
+          <tr><td><code>newcomer_posts_per_day</code>, <code>newcomer_age</code></td><td>at most 1,000; at most 365 days</td><td>newcomer limits out of range</td></tr>
+          <tr><td><code>autoban_threshold</code>, <code>labelers</code></td><td>1–10,000; at most 32 labelers</td><td>autoban or labelers out of range</td></tr>
+          <tr><td><code>age_issuers</code></td><td>at least one when <code>admission</code> is <code>age-proof</code></td><td>an age-proof community names the credential issuers it trusts</td></tr>
+          <tr><td><code>ladder.identity_bits</code></td><td>at most 20</td><td>identity work is at most 20 bits</td></tr>
+          <tr><td><code>ladder.admit_vouches</code>, <code>established_age</code>, <code>trusted_posts</code>, <code>media_score</code></td><td>1–16; at most 365 days; at most 1,000; at most 100,000</td><td>ladder steps out of range</td></tr>
+          <tr><td><code>ladder.hide_quorum</code>, <code>block_quorum</code>, <code>veto_quorum</code></td><td>2–100: below two, one person could hide, block or overturn alone</td><td>quorums are 2 to 100</td></tr>
+          <tr><td><code>ladder.contest_window</code></td><td>at most 14 days</td><td>the contest window is at most 14 days</td></tr>
+          <tr><td><code>scatter.resist</code></td><td>10, 15 or 20</td><td>the scatter level is 10, 15 or 20 percent of places</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="wk-sec" id="tests">
+    <h2>Where the rules are tested</h2>
+    <p>The examples on this page come from the unit tests in <a href="{{REPO_URL}}/blob/main/core/crates/hoi-validate/src/text.rs">text.rs</a> (<code>smuggling_is_refused</code>, <code>names</code>, <code>addresses</code>, <code>markdown_links</code>) and <a href="{{REPO_URL}}/blob/main/core/crates/hoi-validate/src/lib.rs">lib.rs</a> (<code>content_rules</code>, <code>new_kinds_content</code>, <code>fingerprints_ignore_case_and_spacing</code>), plus <code>domains_are_names_that_look_like_one</code> in <a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/handle.rs">handle.rs</a>. A property test feeds <code>markdown</code>, <code>name</code>, <code>url</code> and <code>has_links</code> arbitrary strings of up to 200 characters and requires that none of them panics.</p>
+  </section>
+
+  <section class="wk-sec" id="next">
+    <h2>Read next</h2>
+    <div class="wk-cards">
+      <a class="wk-card g-peach" href="/wiki/validation/"><i></i><b>Validation pipeline</b><span>Where the content stage sits, and what a refusal costs.</span></a>
+      <a class="wk-card g-peach" href="/wiki/media/"><i></i><b>Media</b><span>The byte-level rules for pictures, sound and video.</span></a>
+      <a class="wk-card g-mint" href="/wiki/spam/"><i></i><b>Spam &amp; rate limits</b><span>Strikes, reports and floods.</span></a>
+      <a class="wk-card g-coral" href="/wiki/identity/"><i></i><b>Keys &amp; identity</b><span>Names, petnames and verified handles.</span></a>
+    </div>
+  </section>
+</article>
+<!-- @wiki-close -->
+<!-- @include footer.html -->
+<script type="module" src="/src/pages/wiki.ts"></script>
+</body>
+</html>

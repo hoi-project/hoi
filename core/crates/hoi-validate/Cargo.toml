@@ -1,0 +1,27 @@
+[package]
+name = "hoi-validate"
+description = "The validation pipeline every hoi record passes (TECHNICAL.md §6). Pure functions."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+hoi-types.workspace = true
+hoi-crypto.workspace = true
+blake3.workspace = true
+thiserror.workspace = true
+image.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+# Fixed nonces and seeds, so core/vectors/scatter.json reproduces.
+hoi-crypto = { workspace = true, features = ["deterministic"] }
+hoi-sync.workspace = true
+hoi-moderation.workspace = true
+proptest.workspace = true
+
+[[example]]
+name = "vectors"

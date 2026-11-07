@@ -1,0 +1,37 @@
+[package]
+name = "hoi-setup"
+version = "1.0.0-preview.1"
+description = "hoi node setup: installs and manages a public node on a server over SSH, with a wizard"
+edition = "2024"
+license = "AGPL-3.0-only"
+repository = "https://github.com/hoi-project/hoi"
+rust-version = "1.94"
+publish = false
+
+# Its own workspace, like the desktop app: the core workspace stays free of SSH and WebKitGTK.
+# The engine (SSH, profiles, the local runner) is a crate of its own, so it builds and tests
+# without Tauri's system libraries.
+[workspace]
+members = ["engine"]
+
+[lib]
+name = "hoi_setup_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+hoi-setup-engine = { path = "engine" }
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1.54", features = ["rt-multi-thread", "sync", "time", "macros"] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3
+strip = true

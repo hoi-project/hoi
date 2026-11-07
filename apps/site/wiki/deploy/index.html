@@ -1,0 +1,502 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <!-- @include head.html title="Deploying &amp; hosting · hoi wiki" description="Static hosting, home nodes, servers and the installers." -->
+</head>
+<body class="wiki">
+<!-- @include header.html nav="wiki" -->
+<!-- @wiki-open -->
+<article class="wk-doc">
+  <!-- @wiki-crumbs -->
+  <h1>Deploying <span class="acc">&amp; hosting</span></h1>
+  <p class="wk-lead">The project deploys one thing: static files, the website at <code>/</code> and the browser app at <code>/app/</code>. Everything else is run by the people who use hoi: a home node, a public node on a server, a registry, a relay. This page covers each way to run them, every environment variable and port, what the installers download and check, how to upgrade and what to back up.</p>
+  <p class="wk-src-list">Source <a href="{{REPO_URL}}/tree/main/deploy">deploy/</a> <a href="{{REPO_URL}}/blob/main/deploy/install/install.sh">install/install.sh</a> <a href="{{REPO_URL}}/blob/main/deploy/install/install.ps1">install/install.ps1</a> <a href="{{REPO_URL}}/blob/main/deploy/home/compose.yml">home/compose.yml</a> <a href="{{REPO_URL}}/blob/main/deploy/server/compose.yml">server/compose.yml</a> <a href="{{REPO_URL}}/tree/main/deploy/server/bundle">server/bundle/</a> <a href="{{REPO_URL}}/blob/main/scripts/build-server.mjs">scripts/build-server.mjs</a> <a href="{{REPO_URL}}/blob/main/scripts/assemble-static.mjs">assemble-static.mjs</a> <a href="{{REPO_URL}}/blob/main/scripts/serve-static.mjs">serve-static.mjs</a> <a href="{{REPO_URL}}/blob/main/.github/workflows/website.yml">website.yml</a></p>
+  <div class="wk-head-rule"></div>
+
+  <section class="wk-sec" id="overview">
+    <h2>What runs where</h2>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Deployments">
+      <table>
+        <thead><tr><th>What</th><th>Who runs it</th><th>How</th><th>Section</th></tr></thead>
+        <tbody>
+          <tr><td>Website and browser app</td><td>the project (or anyone)</td><td><code>pnpm build</code> → <code>dist/</code> on any static host; GitHub Pages by workflow</td><td><a href="#static">Static hosting</a></td></tr>
+          <tr><td>Home node</td><td>a person who wants to post</td><td>the desktop app, <code>install.sh home</code>, <code>deploy/home</code> (systemd, launchd, Docker)</td><td><a href="#home">Home node</a></td></tr>
+          <tr><td>Public node</td><td>anyone, on a server</td><td><code>install.sh public</code>, the server bundle over SSH, <code>deploy/server</code> (Docker)</td><td><a href="#server">Public node on a server</a></td></tr>
+          <tr><td>Registry</td><td>a community that wants public names</td><td><code>install.sh registry</code> (hoi-node with Caddy), the Node service, a Worker</td><td><a href="/wiki/registry/">Registry</a></td></tr>
+          <tr><td>Encrypted relay</td><td>a private community</td><td>its own service in <code>relay/</code></td><td><a href="/wiki/mailboxes/">Mailboxes &amp; encrypted relays</a></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>The static deployment never launches a node, a registry or a relay, and nothing in the site or the app names one to start from. Reading, joining and, through a home node, posting happen between devices; the app finds communities through the nodes it reaches: a node link someone shared, an invite, its own home node and the public nodes those pass on (<a href="/wiki/discovery/">Discovery</a>). The <a href="/wiki/node-setup/">node setup app</a> runs the same installer on a server over SSH with a wizard.</p>
+  </section>
+
+  <section class="wk-sec" id="nothing">
+    <h2>Nothing configured by default</h2>
+    <p>No build names a registry, a relay or a node. This is enforced, not just intended:</p>
+    <ul>
+      <li>The web app's build reads the registry address with the default <code>''</code> and the relay addresses with the default <code>[]</code>; <code>registry.ts</code> again defaults to <code>''</code>. Without them, public names stay local and unregistered.</li>
+      <li>The Pages workflow pins both empty (<code>registry: ""</code>, <code>relays: "[]"</code>) and reads no repository variable for them, so no setting can add one.</li>
+      <li><code>hoi-node</code> starts with empty <code>relays</code>, <code>indexes</code>, <code>nodes</code> and <code>joins</code>. Its iroh endpoint is built from <code>presets::Minimal</code> with <code>RelayMode::Custom</code> holding only the relays it was given: none of iroh's operator's DNS, pkarr or relay services.</li>
+      <li>The compose files, <code>.env.example</code> files and installers name no registry; <code>--index</code> is the operator's choice.</li>
+      <li><code>scripts/static-boundaries.test.mjs</code> fails if any of the above changes, if the Pages workflow mentions <code>wrangler</code>, <code>docker</code>, <code>hoi-node</code> or <code>ssh</code>, or if the marketing pages gain telemetry, browser storage or background requests.</li>
+      <li><code>scripts/e2e-deployment.mjs</code> checks the built <code>dist/</code>: <code>/registry/…</code> and <code>/relay/v1/meta</code> answer 404, writes to them 404 or 405, and the app makes no request to a <code>/registry</code> or <code>/relay</code> path.</li>
+    </ul>
+    <p>The addresses that do appear are the project's own web address in links (node links and pairing links open <code>https://hoi.sh/app/</code>, the node's web base; <code>HOI_SITE_URL</code> for the site's canonical links) and the release list the installers read (<code>https://hoi.sh/releases/manifest.json</code>, overridable). Neither is a service the app or a node talks to for communities.</p>
+  </section>
+
+  <section class="wk-sec" id="static">
+    <h2>Static hosting</h2>
+    <p><code>pnpm build</code> runs <code>pnpm tokens</code>, <code>pnpm core:wasm</code>, <code>pnpm build:site</code>, <code>pnpm build:web</code> and <code>node scripts/assemble-static.mjs</code>. The result, <code>dist/</code>, is files only: no server code, server rendering, registry API, relay, content proxy or public peer. Application JavaScript and WebAssembly run on the visitor's device; assets and fonts are bundled. <a href="/wiki/website/">This website</a> covers how the site itself is built and hardened.</p>
+    <h3 id="static-assemble">assemble-static.mjs</h3>
+    <ol class="wk-steps">
+      <li><b>Check the inputs</b><p><code>apps/site/dist</code> and <code>apps/web/dist</code> must exist, and each one's <code>release.json</code> must equal the repository's <code>release.json</code>, or the script stops: rebuild both before assembling.</p></li>
+      <li><b>Copy</b><p>Empty <code>dist/</code>; copy the site into it and the app into <code>dist/app/</code>; copy <code>deploy/install/install.sh</code> and <code>install.ps1</code> to the root, so <code>SITE/install.sh</code> is the installer.</p></li>
+      <li><b>Merge <code>_headers</code></b><p>The site's catch-all <code>/*</code> block is written out per site path (<code>/</code>, <code>/404.html</code>, <code>/robots.txt</code>, <code>/sitemap.xml</code>, <code>/favicon.svg</code>, <code>/og.png</code>, <code>/release.json</code>, <code>/preview.json</code>, <code>/install.sh</code>, <code>/install.ps1</code>, <code>/.well-known/*</code>, and <code>/NAME/*</code> for each top-level directory), so the site's stricter policy never matches <code>/app/</code>; the app's blocks are prefixed with <code>/app</code>. <code>dist/app/_headers</code> is removed.</p></li>
+      <li><b>Release metadata</b><p>Write <code>dist/release.json</code> from the shared manifest and <code>dist/preview.json</code>: <code>{preview, protocol, indexVersion, revision, note}</code>. No environment flag can make a preview look stable, and the metadata never tells a device to wipe itself.</p></li>
+    </ol>
+    <h3 id="static-files">What dist/ holds</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="dist contents">
+      <table>
+        <thead><tr><th>Path</th><th>What</th><th>Caching</th></tr></thead>
+        <tbody>
+          <tr><td><code>/</code>, <code>/download/</code>, <code>/protocol/</code>, <code>/wiki/</code>, …</td><td>the website; every page carries its CSP and referrer policy in <code>&lt;meta&gt;</code> tags</td><td>host default</td></tr>
+          <tr><td><code>/app/</code></td><td>the browser app, with its own CSP <code>&lt;meta&gt;</code>; a preview app adds <code>&lt;meta name="robots" content="noindex, nofollow"&gt;</code></td><td>host default</td></tr>
+          <tr><td><code>/assets/*</code></td><td>hashed build output</td><td><code>public, max-age=31536000, immutable</code></td></tr>
+          <tr><td><code>/install.sh</code>, <code>/install.ps1</code></td><td>the installers</td><td><code>Content-Type: text/plain; charset=utf-8</code>, <code>no-cache</code></td></tr>
+          <tr><td><code>/release.json</code>, <code>/app/release.json</code></td><td>the release manifest</td><td><code>no-store</code></td></tr>
+          <tr><td><code>/releases/manifest.json</code></td><td>the release list the installers and apps read (no release named yet: <code>"latest": null</code>)</td><td><code>no-cache</code></td></tr>
+          <tr><td><code>/preview.json</code></td><td>preview flag, protocol, index edition, revision, notice</td><td>host default</td></tr>
+          <tr><td><code>/robots.txt</code>, <code>/sitemap.xml</code></td><td>the site is meant to be found: everything allowed, every page listed, canonical addresses from <code>HOI_SITE_URL</code></td><td>host default</td></tr>
+          <tr><td><code>/_headers</code></td><td>the CSP again as a header plus what a <code>&lt;meta&gt;</code> cannot carry, for hosts that read the file (Netlify and similar)</td><td></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Each <code>_headers</code> catch-all block sets <code>Content-Security-Policy</code> (with <code>frame-ancestors 'none'</code> added), <code>X-Content-Type-Options: nosniff</code>, <code>Referrer-Policy: no-referrer</code>, <code>Strict-Transport-Security: max-age=31536000; includeSubDomains</code>, <code>Permissions-Policy: interest-cohort=(), browsing-topics=(), geolocation=(), microphone=(), payment=()</code> and <code>Cross-Origin-Opener-Policy: same-origin</code>; a preview app adds <code>X-Robots-Tag: noindex, nofollow</code>. A host that sends no headers still enforces the CSP and the referrer policy from the pages; <code>frame-ancestors</code>, <code>nosniff</code> and COOP need the headers.</p>
+    <div class="wk-note tip"><b>Any static host</b><p>Upload <code>dist/</code> as it is. Serve <code>install.sh</code> and <code>install.ps1</code> as plain text without caching, and don't cache <code>/release.json</code> or <code>/releases/</code>. The static host never proxies requests; <code>/registry</code> and <code>/relay</code> do not exist on it. Hosting the app on its own origin (a separate subdomain) is better still: its keys then share nothing with the site.</p></div>
+    <h3 id="static-env">Build-time settings</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Build environment">
+      <table>
+        <thead><tr><th>Setting</th><th>Read by</th><th>Default</th><th>Effect</th></tr></thead>
+        <tbody>
+          <tr><td><code>HOI_SITE_URL</code></td><td>site</td><td><code>https://hoi.sh</code></td><td>where the site is served: install commands, canonical links, link previews, <code>robots.txt</code>, <code>sitemap.xml</code></td></tr>
+          <tr><td><code>HOI_APP_URL</code></td><td>site</td><td><code>/app/</code></td><td>where the "Browser" buttons point</td></tr>
+          <tr><td><code>HOI_REPO_URL</code></td><td>site</td><td><code>https://github.com/hoi-project/hoi</code></td><td>the source repository in links</td></tr>
+          <tr><td><code>HOI_SITE_PUBLISHER</code> (or <code>HOI_PUBLISHER</code>)</td><td>site</td><td><code>the hoi project</code></td><td>the privacy policy's responsible party</td></tr>
+          <tr><td><code>HOI_SITE_CONTACT</code> (or <code>HOI_CONTACT</code>)</td><td>site</td><td>through the source repository</td><td>the privacy policy's contact</td></tr>
+          <tr><td><code>HOI_SITE_HOSTER</code>, <code>HOI_SITE_HOSTER_PRIVACY_URL</code></td><td>site</td><td>GitHub Pages and its privacy statement</td><td>who hosts the site</td></tr>
+          <tr><td><code>HOI_PUBLISHER</code>, <code>HOI_CONTACT</code></td><td>app</td><td>empty</td><td>who publishes this build, for the app's privacy notice</td></tr>
+          <tr><td>Registry address (app build)</td><td>app</td><td>empty: no registry</td><td>a registry base URL, HTTPS (HTTP only on loopback), no credentials, query or fragment; its origin is added to <code>connect-src</code></td></tr>
+          <tr><td>Relay addresses (app build)</td><td>app</td><td><code>[]</code>: no relay</td><td>a JSON array of at most three encrypted-relay base URLs, same rules; their origins are added to <code>connect-src</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 id="static-serve">serve-static.mjs</h3>
+    <p><code>node scripts/serve-static.mjs [--port 8787] [--dir dist]</code> serves <code>dist/</code> at <code>http://127.0.0.1:8787</code> the way a plain static host does, and <code>e2e-deployment.mjs</code> imports it as <code>serveStatic({root, port, host})</code> (port 0 picks a free one; it resolves to <code>{origin, close}</code>).</p>
+    <ul>
+      <li>GET and HEAD only; anything else is 405 with <code>Allow: GET, HEAD</code>.</li>
+      <li><code>dir/</code> serves <code>dir/index.html</code>; <code>dir</code> redirects 301 to <code>dir/</code>; <code>page</code> falls back to <code>page.html</code>; anything else is 404 with <code>404.html</code>. A path outside the root is 404; an undecodable one 400.</li>
+      <li>No custom headers, only <code>Content-Type</code> (from a fixed table: <code>.wasm</code> as <code>application/wasm</code>, <code>.sh</code> as <code>application/x-sh</code>, <code>.ps1</code> as plain text, …) and <code>Content-Length</code>. Whatever the pages need travels inside them.</li>
+    </ul>
+  </section>
+
+  <section class="wk-sec" id="pages">
+    <h2>The Pages workflow</h2>
+    <p><code>.github/workflows/website.yml</code>, <i>Website</i>, builds, checks and publishes <code>dist/</code> to GitHub Pages. It deploys nothing else.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Pages workflow">
+      <table>
+        <thead><tr><th>Setting</th><th>Value</th></tr></thead>
+        <tbody>
+          <tr><td>Trigger</td><td><code>workflow_dispatch</code> only: run by hand</td></tr>
+          <tr><td>Gate</td><td>repository variable <code>HOI_PAGES_ENABLED</code> set to <code>true</code></td></tr>
+          <tr><td>Permissions</td><td><code>contents: read</code>; the deploy job alone gets <code>pages: write</code> and <code>id-token: write</code>, in the <code>github-pages</code> environment</td></tr>
+          <tr><td>Concurrency</td><td>group <code>pages</code>, a running deployment is not cancelled</td></tr>
+          <tr><td>Runner and time</td><td><code>ubuntu-latest</code>, 20 minutes per job</td></tr>
+          <tr><td>Actions</td><td>each pinned to a commit: checkout v4.4.0, pnpm/action-setup v4.3.0, setup-node v4.4.0 (Node 22, pnpm cache), rust-toolchain with Rust 1.97.0 and <code>wasm32-unknown-unknown</code>, rust-cache v2.9.3 for <code>core</code>, upload-pages-artifact v3.0.1, deploy-pages v4.0.5</td></tr>
+          <tr><td>Tools</td><td><code>cargo install wasm-bindgen-cli --version 0.2.129 --locked</code>, <code>pnpm install --frozen-lockfile</code></td></tr>
+          <tr><td>Checks</td><td><code>pnpm check:quick</code>; long tests belong to the release suites</td></tr>
+          <tr><td>Build</td><td><code>node scripts/reproduce.mjs --only static</code> with the registry address and the relay list both pinned empty</td></tr>
+          <tr><td>Artifact</td><td><code>dist</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p><code>reproduce.mjs --only static</code> builds the WebAssembly core and then the site and app exactly as <code>pnpm build</code> does, with <code>SOURCE_DATE_EPOCH</code> set to the commit's time, <code>TZ=UTC</code>, <code>LC_ALL=C</code> and <code>CARGO_INCREMENTAL=0</code>, and prints the commit and one SHA-256 over the whole <code>dist/</code> tree (every file's path and hash, sorted). Anyone with the same toolchains can build it again and compare (<a href="/wiki/releases/">Releases &amp; verification</a>).</p>
+    <ol class="wk-steps">
+      <li><b>Turn Pages on</b><p>Settings → Pages → Source: GitHub Actions. Add a custom domain there if you have one, and build with <code>HOI_SITE_URL</code> set to it.</p></li>
+      <li><b>Enable the switch</b><p>Set the repository variable <code>HOI_PAGES_ENABLED=true</code>.</p></li>
+      <li><b>Run it</b><p>Actions → Website → Run workflow.</p></li>
+    </ol>
+    <p>GitHub Pages sends no custom headers, so <code>frame-ancestors</code>, <code>nosniff</code> and COOP are not enforced there; the CSP and the referrer policy are, from the pages themselves.</p>
+  </section>
+
+  <section class="wk-sec" id="home">
+    <h2>Home node</h2>
+    <p>A home node is what you run when you want to post: a Raspberry Pi, a Mac mini, an old laptop or a NAS that stays on. It serves your phone and browser and, unless started with <code>--no-public-relay</code>, is a public relay too: it carries open communities for anyone who asks, asks your router to forward its UDP ports, passes on the public nodes it reached and writes a link to share. Every flag is on the <a href="/wiki/hoi-node/">hoi-node</a> page. A 64-bit system is needed (Raspberry Pi OS 64-bit on a Pi 3, 4 or 5).</p>
+    <div class="wk-note warn"><b>What you share</b><p>Whoever connects, and whoever its node link or other public nodes lead there, learns your home's public IP address, the open communities your node carries, and which of theirs they share with it. A registry, if you give one with <code>--index</code>, lists the address and the keys of the open communities the node holds. The node stores other people's public posts and media and can read them. Relaying for others stops for the day at <code>--daily-cap-gb</code> (5 GB by default).</p></div>
+    <h3 id="home-install">deploy/home/install.sh</h3>
+    <p>A thin wrapper: it runs <code>deploy/install/install.sh</code> with the role <code>home</code> and, unless you name a release, <code>--source</code> (build hoi-node from this checkout; the first build on a Raspberry Pi 4 takes up to an hour).</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Home installer flags">
+      <table>
+        <thead><tr><th>Flag</th><th>Effect</th></tr></thead>
+        <tbody>
+          <tr><td><code>--no-public-relay</code></td><td>the role <code>private</code> instead: a home node for your own devices and your communities' members only</td></tr>
+          <tr><td><code>--uninstall</code></td><td>the role <code>uninstall</code>: stop and remove the service, keep the data</td></tr>
+          <tr><td><code>--binary FILE</code>, <code>--release TAG</code>, <code>--from DIR</code>, <code>--manifest URL</code></td><td>install that build instead of building from the checkout</td></tr>
+          <tr><td>anything else</td><td>passed to the general installer: <code>--name</code>, <code>--daily-cap-gb</code>, <code>--no-port-mapping</code>, <code>--extra</code>, <code>--dry-run</code>, …</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="wk-code" data-lang="sh" data-title="deploy/home/README.md (trimmed)"><pre><code>deploy/home/install.sh --name "lena's pi"
+journalctl -u hoi-node -f                  # "port mapping: the router … forwards" and "node link"
+sudo cat /var/lib/hoi-node/pairing-link    # open the https:// link on your phone to pair it
+sudo cat /var/lib/hoi-node/node-link       # share this one</code></pre></div>
+    <h3 id="home-compose">deploy/home/compose.yml</h3>
+    <p>For a NAS or a Pi with Docker: <code>cp deploy/home/.env.example deploy/home/.env</code>, then <code>docker compose -f deploy/home/compose.yml up -d --build</code>. The project is <code>hoi-home</code>, the one service <code>hoi-node</code>.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Home compose settings">
+      <table>
+        <thead><tr><th>Setting</th><th>Value</th><th>Why</th></tr></thead>
+        <tbody>
+          <tr><td><code>build</code></td><td>context <code>../..</code>, <code>core/crates/hoi-node/Dockerfile</code></td><td>builds the image from the checkout</td></tr>
+          <tr><td><code>image</code></td><td><code>${HOI_NODE_IMAGE:-hoi-node:local}</code></td><td>or an image you built or pulled</td></tr>
+          <tr><td><code>command</code></td><td><code>--data /data --name ${HOI_NODE_NAME:-home node} --peer-bind 0.0.0.0:7843 --rtc-port 7844 --daily-cap-gb ${HOI_DAILY_CAP_GB:-5}</code></td><td>a home node and public relay (the default role)</td></tr>
+          <tr><td><code>network_mode</code></td><td><code>host</code></td><td>finding the router needs multicast (SSDP) and the node's address on your network; the pairing listener stays on the host's loopback, 127.0.0.1:7842</td></tr>
+          <tr><td><code>volumes</code></td><td><code>hoi-node-data:/data</code></td><td>the data directory</td></tr>
+          <tr><td><code>read_only</code>, <code>tmpfs</code></td><td>true; <code>/tmp:rw,noexec,nosuid,size=16m</code></td><td>nothing but the volume is writable</td></tr>
+          <tr><td><code>cap_drop</code>, <code>security_opt</code></td><td><code>ALL</code>; <code>no-new-privileges:true</code></td><td>no capabilities, no privilege gain</td></tr>
+          <tr><td><code>mem_limit</code>, <code>pids_limit</code></td><td><code>512m</code>, 128</td><td>resource bounds</td></tr>
+          <tr><td><code>restart</code>, <code>stop_grace_period</code></td><td><code>unless-stopped</code>, 30 s</td><td>the node commits and removes its port forwards on SIGTERM</td></tr>
+          <tr><td><code>logging</code></td><td>driver <code>local</code>, <code>max-size: 1m</code>, <code>max-file: 1</code></td><td>status lines only, kept small</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Home environment">
+      <table>
+        <thead><tr><th>Variable (<code>deploy/home/.env</code>)</th><th>Default</th><th>Effect</th></tr></thead>
+        <tbody>
+          <tr><td><code>HOI_NODE_NAME</code></td><td><code>home node</code></td><td>what your phone and browser call the node</td></tr>
+          <tr><td><code>HOI_DAILY_CAP_GB</code></td><td>5</td><td>gigabytes a day it may relay for others</td></tr>
+          <tr><td><code>HOI_NODE_IMAGE</code></td><td><code>hoi-node:local</code></td><td>run this image instead of the local build</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>To also announce to a registry, add <code>--index</code> and its URL to the command. Read the links with <code>docker compose -f deploy/home/compose.yml exec hoi-node cat /data/pairing-link</code> (and <code>/data/node-link</code>).</p>
+    <h3 id="home-router">When the router doesn't forward</h3>
+    <p>The log says which case it is. The router answered no PCP, NAT-PMP or UPnP request: turn UPnP or NAT-PMP on, or forward UDP 7843 and 7844 by hand and pass <code>--no-port-mapping --extra "--rtc-advertise PUBLIC-IP:7844"</code>. The router refused: check which devices may open ports. The router forwards from a non-public address (100.64.x.x: carrier-grade NAT, or a second router): nobody outside can reach you this way; ask for a public IPv4 address or use a small server. IPv6 needs no forward when the computer has a public IPv6 address and the router lets inbound UDP through.</p>
+  </section>
+
+  <section class="wk-sec" id="server">
+    <h2>Public node on a server</h2>
+    <p>A public node (<code>hoi-node --public</code>) has no person's key, no pairing listener and no website. It carries open communities that connected peers hand it, founders' browsers included, passes on the public nodes it reached and writes a link to <code>/data/node-link</code>. It needs no domain, registry or invite. Four ways to run one: <code>install.sh public</code> on the server, the <a href="#bundle">server bundle</a> over SSH, the <a href="/wiki/node-setup/">node setup app</a>, or the Compose file below.</p>
+    <div class="wk-note warn"><b>You answer for other people's data</b><p>A public node processes other people's IP addresses and connection data; whoever runs it is usually the one responsible for that data. Write a join notice (<code>--notice</code>; the installers take <code>--notice-file</code>) so people read who runs it before it serves them. The interactive installers say this and ask you to acknowledge it. The full text is on the <a href="/download/#operator">download page</a>.</p></div>
+    <h3 id="server-compose">deploy/server/compose.yml</h3>
+    <p>Configure <code>deploy/server/.env</code> from <code>.env.example</code>, then <code>deploy/server/deploy.sh up</code>. The project is <code>hoi-server</code>, the one service <code>public-carrier</code>.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Server compose settings">
+      <table>
+        <thead><tr><th>Setting</th><th>Value</th></tr></thead>
+        <tbody>
+          <tr><td><code>image</code></td><td><code>${HOI_CARRIER_IMAGE:-hoi-public-carrier:local}</code>, built from <code>core/crates/hoi-node/Dockerfile</code></td></tr>
+          <tr><td><code>command</code></td><td><code>--data /data --public --peer-bind 0.0.0.0:7843 --rtc-port 7844 --rtc-advertise ${HOI_RTC_ADVERTISE:?…} --name ${HOI_NODE_NAME:-public node} --carry-limit ${HOI_CARRY_LIMIT:-256}</code></td></tr>
+          <tr><td><code>network_mode</code></td><td><code>host</code>, so the node never advertises a container-only address</td></tr>
+          <tr><td><code>volumes</code></td><td><code>public-carrier-data:/data</code></td></tr>
+          <tr><td>Hardening</td><td><code>read_only</code>, 16 MB <code>noexec</code> tmpfs on <code>/tmp</code>, <code>cap_drop: [ALL]</code>, <code>no-new-privileges:true</code></td></tr>
+          <tr><td>Limits</td><td><code>mem_limit: 1g</code>, <code>cpus: 2.0</code>, <code>pids_limit: 128</code></td></tr>
+          <tr><td>Stopping</td><td><code>restart: unless-stopped</code>, <code>stop_signal: SIGINT</code>, <code>stop_grace_period: 30s</code>: the node commits before it exits</td></tr>
+          <tr><td>Logging</td><td><code>local</code>, 1 MB, one file</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Server environment">
+      <table>
+        <thead><tr><th>Variable (<code>deploy/server/.env</code>)</th><th>Default</th><th>Effect</th></tr></thead>
+        <tbody>
+          <tr><td><code>HOI_RTC_ADVERTISE</code></td><td>required</td><td>the exact public <code>IP:UDP-port</code> browsers and phones reach the host at; IPv6 in brackets, e.g. <code>[2001:db8::10]:7844</code>. Compose refuses to start without it.</td></tr>
+          <tr><td><code>HOI_CARRY_LIMIT</code></td><td>256</td><td>communities to carry at most</td></tr>
+          <tr><td><code>HOI_NODE_NAME</code></td><td><code>public node</code></td><td>the node's label</td></tr>
+          <tr><td><code>HOI_CARRIER_IMAGE</code></td><td>unset: build locally</td><td>a prebuilt image to pull instead</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>A <code>compose.override.yml</code> next to it (ignored by git, like <code>.env</code>) adds flags: <code>--index URL</code> to announce to and mirror a registry, or a mounted notice file with <code>--notice /etc/hoi-node/notice.json</code>. Operator tools run in the same service with the node stopped: <code>docker compose … run --rm --no-deps public-carrier admin --data /data suppressions</code>.</p>
+    <h3 id="server-deploy">deploy.sh</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="deploy.sh commands">
+      <table>
+        <thead><tr><th>Command</th><th>Does</th></tr></thead>
+        <tbody>
+          <tr><td><code>deploy/server/deploy.sh</code> or <code>up</code></td><td>validates the compose configuration; reads <code>HOI_CARRIER_IMAGE</code> from <code>.env</code> with <code>sed</code> (never executing the file); with an image, <code>pull</code> then <code>up -d --no-build</code>; without, <code>up -d --build</code>; prints the last 20 log lines</td></tr>
+          <tr><td><code>status</code></td><td><code>ps</code> and the last 30 log lines</td></tr>
+          <tr><td><code>logs</code></td><td>follows the log from the last 100 lines</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>It refuses to run without <code>.env</code> (exit 2) and adds <code>compose.override.yml</code> when present. It is safe to run again at any time: the database, keys and carried communities live in the named volume and survive updates.</p>
+  </section>
+
+  <section class="wk-sec" id="bundle">
+    <h2>The server bundle</h2>
+    <p>A folder with a built Linux <code>hoi-node</code> and the service installer, so the server needs no checkout, Docker, Rust, Node or release download. The target needs 64-bit Linux with systemd, Bash, tar, <code>sha256sum</code> and root or sudo; the Docker-built binary needs glibc 2.36 or newer (Debian 12, Ubuntu 24.04 and newer). Alpine and hosts without systemd are not supported.</p>
+    <h3 id="bundle-build">scripts/build-server.mjs</h3>
+    <div class="wk-code" data-lang="sh" data-title="scripts/build-server.mjs (usage)"><pre><code>pnpm build:server [--arch x64|arm64] [--binary PATH] [--out DIR]</code></pre></div>
+    <div class="wk-table" tabindex="0" role="region" aria-label="build-server options">
+      <table>
+        <thead><tr><th>Option</th><th>Default</th><th>Effect</th></tr></thead>
+        <tbody>
+          <tr><td><code>--arch</code></td><td><code>x64</code></td><td><code>x64</code>: <code>linux/amd64</code>, ELF machine 62, <code>x86_64</code>. <code>arm64</code>: <code>linux/arm64</code>, ELF machine 183, <code>aarch64</code>.</td></tr>
+          <tr><td><code>--binary</code></td><td>none: build with Docker</td><td>package an existing Linux <code>hoi-node</code> or a <code>.tar.gz</code>/<code>.tgz</code> holding it; needs no Docker</td></tr>
+          <tr><td><code>--out</code></td><td><code>dist/server</code></td><td>output directory</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <ol class="wk-steps">
+      <li><b>Docker ready?</b><p>Without <code>--binary</code>, <code>docker info</code> must succeed before anything is written.</p></li>
+      <li><b>The binary</b><p><code>docker buildx build --platform linux/… -f core/crates/hoi-node/Dockerfile --target binary --output type=local,dest=… .</code>, or the supplied file. It must be a regular file (not a link), a 64-bit little-endian ELF for the chosen machine; mode 0755.</p></li>
+      <li><b>The files</b><p><code>node-installer.sh</code> (a copy of <code>deploy/install/install.sh</code>), <code>install.sh</code> (the bundle's, with <code>@ARCH@</code> set), <code>deploy.mjs</code>, <code>README.md</code>, <code>server.conf</code> (kept from the previous build of this architecture, else <code>role=public</code>), all with Unix line endings.</p></li>
+      <li><b>Checksums</b><p><code>SHA256SUMS</code> over <code>hoi-node</code> and <code>node-installer.sh</code>. They detect corruption, not the authenticity of an untrusted bundle; <code>server.conf</code> stays editable.</p></li>
+      <li><b>Pack</b><p><code>hoi-server-linux-ARCH/</code> and <code>hoi-server-linux-ARCH.tar.gz</code> in the output directory.</p></li>
+    </ol>
+    <h3 id="bundle-install">bundle/install.sh</h3>
+    <p>Run on the server from the unpacked folder (or by full path from anywhere): <code>bash install.sh [--role public|registry|home|private|config] [options]</code>. Without a role and with a terminal it asks: 1 public node, 2 public node and registry, 3 home node and public relay, 4 private home node, 5 the saved <code>server.conf</code>; for a registry it asks the HTTPS URL and whether to configure Caddy; then keep or reset the data (keep by default). An explicit role ignores <code>server.conf</code>, so a public node never inherits a saved registry configuration. It then checks that the machine is Linux on the bundle's architecture, runs <code>sha256sum --check SHA256SUMS</code>, restores the executable bit, runs <code>hoi-node --version</code> (a failure points at glibc), and hands over to <code>node-installer.sh ROLE --binary ./hoi-node --yes …</code>.</p>
+    <p><code>server.conf</code> is plain <code>key=value</code> lines, read and never executed: <code>role=public</code>, <code>name=…</code>; a registry adds <code>registry_url=https://names.example.org</code> and <code>tls=caddy</code>.</p>
+    <h3 id="bundle-deploy">bundle/deploy.mjs</h3>
+    <p><code>pnpm deploy:server USER@HOST</code> runs <code>node deploy/server/bundle/deploy.mjs --bundle dist/server/hoi-server-linux-x64</code>; inside a bundle, <code>node deploy.mjs USER@HOST</code>. Without an action it opens a menu. It needs Node 22+, OpenSSH (<code>ssh</code>, <code>scp</code>) and <code>tar</code> on your computer; service controls need only Node and SSH.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="deploy.mjs options">
+      <table>
+        <thead><tr><th>Option</th><th>Values</th><th>Effect</th></tr></thead>
+        <tbody>
+          <tr><td><code>--action</code></td><td><code>deploy</code>, <code>check</code>, <code>services</code>, <code>status</code>, <code>logs</code>, <code>start</code>, <code>stop</code>, <code>restart</code>, <code>disable</code>, <code>enable</code></td><td>what to do; <code>check</code> uploads and checks without installing</td></tr>
+          <tr><td><code>--role</code></td><td><code>public</code>, <code>registry</code>, <code>home</code>, <code>private</code>, <code>config</code></td><td>the node to deploy; <code>registry</code> is a public node and registry in one service</td></tr>
+          <tr><td><code>--registry-url</code></td><td><code>https://</code> origin</td><td>with <code>--role registry</code></td></tr>
+          <tr><td><code>--tls</code></td><td><code>caddy</code> | <code>external</code></td><td>install Caddy, or use your own proxy</td></tr>
+          <tr><td><code>--notice</code></td><td>file</td><td>the operator's notice, uploaded with the bundle as <code>notice.json</code> and given to the installer as <code>--notice-file</code></td></tr>
+          <tr><td><code>--service</code></td><td><code>node</code>, <code>registry</code> (both hoi-node), <code>caddy</code>, <code>all</code>, or an exact unit</td><td>which service a control acts on; <code>all</code> is the installed hoi-node and Caddy only</td></tr>
+          <tr><td><code>--reset-data</code>, <code>--confirm-reset</code></td><td><code>hoi-public</code> or <code>hoi-node</code></td><td>start the role with empty data; the name must match the role's data directory</td></tr>
+          <tr><td><code>--port</code>, <code>--identity</code>, <code>--bundle</code></td><td>port, key file, folder</td><td>SSH port and key; the bundle folder</td></tr>
+          <tr><td><code>-- …</code></td><td>installer options</td><td>passed to <code>install.sh</code> on the server, e.g. <code>-- --rtc-advertise 203.0.113.10:7844</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>A deployment checks that every file of the bundle is there, packs it (with the notice) into a tarball, opens one SSH connection that carries everything (<code>ControlMaster=auto</code>, <code>ControlPersist=60</code>; on Windows, whose OpenSSH cannot share connections, the password is asked again for the upload), makes a private upload directory with <code>umask 077 &amp;&amp; mktemp -d /tmp/hoi-deploy.XXXXXXXXXX</code>, copies the tarball with <code>scp</code>, and runs <code>tar -xzf bundle.tar.gz &amp;&amp; bash ./install.sh …</code> over <code>ssh -t</code> so sudo can ask for a password. No credentials go into the bundle. Service controls run <code>systemctl</code> or <code>journalctl</code> (the last 80 lines) on named units only, as root or through sudo; the server itself is never shut down. For a public node or registry the menu first shows what running one means and asks you to acknowledge it, then asks for the notice.</p>
+  </section>
+
+  <section class="wk-sec" id="installers">
+    <h2>The installers</h2>
+    <p><code>deploy/install/install.sh</code> (macOS, Linux) and <code>install.ps1</code> (Windows) install the desktop app, the companion, or a node as a service, from the same release files the <a href="/download/">download page</a> lists. The site serves both at its root. Run either again to update or to switch roles; the data stays.</p>
+    <div class="wk-code" data-lang="sh" data-title="deploy/install/README.md (trimmed)"><pre><code>curl -fsSL https://hoi.sh/install.sh | bash                                  # asks what to install
+curl -fsSL https://hoi.sh/install.sh | bash -s -- home --name "lena's pi"
+curl -fsSL https://hoi.sh/install.sh | bash -s -- registry --registry-url https://names.example.org --tls caddy
+curl -fsSL https://hoi.sh/install.sh | bash -s -- check public                # is this computer ready?</code></pre></div>
+    <h3 id="installers-roles">Roles</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Installer roles">
+      <table>
+        <thead><tr><th>Role</th><th>Installs</th><th><code>hoi-node</code> arguments</th></tr></thead>
+        <tbody>
+          <tr><td><code>desktop</code></td><td>the hoi app; it opens as the companion in the tray</td><td></td></tr>
+          <tr><td><code>companion</code></td><td>the same app, started in the tray at every login (<code>--hidden --start-at-login</code>)</td><td></td></tr>
+          <tr><td><code>home</code> (or <code>relay</code>)</td><td>a home node and public relay, as a service</td><td>base arguments; <code>--no-port-mapping</code> on request</td></tr>
+          <tr><td><code>private</code></td><td>a home node for your own devices and your communities' members</td><td><code>--no-public-relay</code></td></tr>
+          <tr><td><code>public</code></td><td>a public node</td><td><code>--public --port-mapping</code>; pieces 2 GB unless <code>--hold-pieces-gb</code></td></tr>
+          <tr><td><code>registry</code></td><td>a public node with the registry, behind your TLS proxy or Caddy</td><td><code>--public --registry 127.0.0.1:7845 --registry-url URL --registry-origin …</code> (default <code>https://hoi.sh</code>, <code>tauri://localhost</code>, <code>http://tauri.localhost</code>) <code>--index URL --port-mapping</code></td></tr>
+          <tr><td><code>uninstall</code></td><td>removes the node service, the binary and the notice; the data stays</td><td></td></tr>
+          <tr><td><code>config</code></td><td>nothing here: writes <code>hoi-NAME.conf</code> describing a public node or registry for another computer, under a random name (64 adjectives × 64 nouns × a 5-digit number, about 368 million)</td><td></td></tr>
+          <tr><td><code>check</code></td><td>nothing: looks at this computer and says whether the node can be installed; exit 1 on a BLOCK</td><td></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>The base arguments for every node are <code>--data DIR --name NAME --peer-bind 0.0.0.0:7843 --rtc-port 7844</code>, then each <code>--index</code> (except the registry's own), <code>--node</code>, <code>--notice</code>, <code>--daily-cap-gb</code>, <code>--hold-pieces</code>, <code>--rtc-advertise</code> and the words of <code>--extra</code>. The name defaults to this computer's short host name, trimmed to 40 characters of letters, digits, spaces and <code>. _ ' -</code>.</p>
+    <h3 id="installers-flags">Flags</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="install.sh flags">
+      <table>
+        <thead><tr><th><code>install.sh</code></th><th><code>install.ps1</code></th><th>Effect</th></tr></thead>
+        <tbody>
+          <tr><td><code>--manifest URL</code></td><td><code>-Manifest</code></td><td>another release list (default <code>https://hoi.sh/releases/manifest.json</code>; PowerShell refuses anything but https)</td></tr>
+          <tr><td><code>--release TAG</code>, <code>--repo OWNER/NAME</code></td><td><code>-Release</code>, <code>-Repo</code></td><td>a GitHub release, fetched with a signed-in <code>gh</code> (works for a private repository)</td></tr>
+          <tr><td><code>--from DIR</code></td><td><code>-From</code></td><td>a release folder, e.g. from <code>scripts/release-local.mjs</code>; also used automatically when <code>manifest.json</code> sits beside the installer</td></tr>
+          <tr><td><code>--source</code></td><td></td><td>build hoi-node from this checkout (<code>cargo build --release --locked -p hoi-node</code>; honours <code>CARGO_TARGET_DIR</code>)</td></tr>
+          <tr><td><code>--binary PATH</code></td><td><code>-Binary</code></td><td>this hoi-node, or the release archive holding it</td></tr>
+          <tr><td><code>--pubkey KEY</code></td><td><code>-PubKey</code></td><td>the minisign key the release list must be signed with</td></tr>
+          <tr><td><code>--name NAME</code></td><td><code>-Name</code></td><td>the node's name</td></tr>
+          <tr><td><code>--node LINK</code> ×</td><td><code>-Node</code></td><td>a public node to look at first</td></tr>
+          <tr><td><code>--index URL</code> ×</td><td><code>-Index</code></td><td>a registry to announce to and carry from (https only)</td></tr>
+          <tr><td><code>--notice-file FILE</code></td><td><code>-NoticeFile</code></td><td>the join notice (≤ 16 KB, checked with <code>hoi-node admin notice check</code> before anything changes), installed as <code>/etc/hoi-node/notice.json</code> on Linux (next to the binary on macOS and Windows) and passed as <code>--notice</code></td></tr>
+          <tr><td><code>--daily-cap-gb N</code></td><td><code>-DailyCapGb</code></td><td>relaying cap per day</td></tr>
+          <tr><td><code>--hold-pieces-gb N</code></td><td><code>-HoldPiecesGb</code></td><td>public node or registry: 0.1 to 10000 GB of pieces, 2 when not given, 0 for none</td></tr>
+          <tr><td><code>--rtc-advertise IP:PORT</code></td><td><code>-RtcAdvertise</code></td><td>the public address browsers reach, when you forward the port yourself</td></tr>
+          <tr><td><code>--no-port-mapping</code></td><td><code>-NoPortMapping</code></td><td>don't ask the router</td></tr>
+          <tr><td><code>--registry-url URL</code></td><td><code>-RegistryUrl</code></td><td>registry: its public https address</td></tr>
+          <tr><td><code>--registry-origin O</code> ×</td><td><code>-RegistryOrigin</code></td><td>registry: allowed browser origins</td></tr>
+          <tr><td><code>--registry-listen A</code></td><td><code>-RegistryListen</code></td><td>registry: listen address, default <code>127.0.0.1:7845</code></td></tr>
+          <tr><td><code>--tls caddy</code></td><td></td><td>registry: serve its https address with Caddy from the system's packages</td></tr>
+          <tr><td><code>--extra "ARGS"</code></td><td><code>-Extra</code></td><td>more hoi-node flags, letters, digits, spaces and <code>. _ : / = , [ ] -</code> only</td></tr>
+          <tr><td><code>--domain D</code>, <code>--out FILE</code></td><td></td><td><code>config registry</code>: the registry becomes <code>https://NAME.D</code>; where to write the file (never overwritten)</td></tr>
+          <tr><td><code>--config FILE</code>, <code>--hostname NAME</code></td><td></td><td>install what the file describes; give this computer that host name (<code>hostnamectl</code>, <code>/etc/hosts</code>, cloud-init's <code>preserve_hostname</code>)</td></tr>
+          <tr><td><code>--no-firewall</code></td><td></td><td>leave an active ufw or firewalld alone</td></tr>
+          <tr><td><code>--reset-data</code>, <code>--confirm-reset NAME</code></td><td></td><td>Linux nodes: erase the role's data (<code>systemctl clean --what=state</code>) after stopping it; <code>--yes</code> never confirms</td></tr>
+          <tr><td><code>--yes</code></td><td><code>-Yes</code></td><td>ask nothing</td></tr>
+          <tr><td><code>--no-launch</code></td><td><code>-NoLaunch</code></td><td>desktop: don't open the app</td></tr>
+          <tr><td><code>--skip-checks</code></td><td></td><td>install even on a BLOCK</td></tr>
+          <tr><td><code>--dry-run</code></td><td><code>-DryRun</code></td><td>fetch and check the files, print what would be done, change nothing</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>A configuration file (<code>--config</code>) holds <code>role</code> (<code>public</code> or <code>registry</code>), <code>name</code>, <code>hostname</code>, <code>notice_file</code> (next to the file unless a full path), <code>registry_url</code>, <code>index</code>, <code>daily_cap_gb</code>, <code>hold_pieces_gb</code> and <code>tls</code>, as <code>key=value</code> lines read like flags and never run. Flags on the command line win. Nothing of the computer that wrote it goes in it.</p>
+    <h3 id="installers-verify">What they download and verify</h3>
+    <ol class="wk-steps">
+      <li><b>The release list</b><p>Fetch <code>manifest.json</code> and <code>manifest.json.minisig</code> (or copy them from <code>--from</code>, or download them with <code>gh</code>). A list that names no release yet stops the install.</p></li>
+      <li><b>Its signature</b><p>With a release key set (<code>RELEASE_PUBKEY</code> in the script, or <code>--pubkey</code>): no signature file stops the install; <code>minisign -Vqm</code> must verify it if minisign is installed, otherwise the installer says the signature was not checked. Until the project's key is published the key is empty and the installer says it checked SHA-256 only. Fetched from the site, the installer and the list come from the same place.</p></li>
+      <li><b>Pick the file</b><p>A Mac: the universal <code>.dmg</code>. Linux: a <code>.deb</code> with apt, an <code>.rpm</code> with dnf or zypper, else the AppImage. Windows: the setup <code>.exe</code>. A node: <code>hoi-node_VERSION_TARGET.tar.gz</code> for <code>x86_64</code> or <code>aarch64</code>, <code>unknown-linux-gnu</code> or <code>apple-darwin</code> (Windows: <code>x86_64-pc-windows-msvc</code>). 32-bit systems are refused.</p></li>
+      <li><b>Check it</b><p>Its SHA-256 must equal the list's, or nothing is installed. The node binary must run (<code>--version</code>), and a notice file must pass <code>hoi-node admin notice check</code>.</p></li>
+    </ol>
+    <h3 id="installers-check">The check</h3>
+    <p>Every node install first looks at the computer and prints one row per check: <b>ok</b>, <b>info</b>, <b>warn</b> (it installs, but something won't work as well) or <b>BLOCK</b> (installing would fail or leave a node nobody can reach; it stops before changing anything). The check changes nothing and asks for no password; its only outside lookups are DNS for a registry's name and the release list. No service is asked for this computer's public address.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Checks">
+      <table>
+        <thead><tr><th>Check</th><th>BLOCK when</th><th>warn when</th></tr></thead>
+        <tbody>
+          <tr><td>system</td><td>a 32-bit or unknown processor; musl, or glibc older than 2.35 for the release binary</td><td></td></tr>
+          <tr><td>services, rights</td><td>no systemd (use Docker); neither root nor sudo; sudo on a Mac</td><td></td></tr>
+          <tr><td>source</td><td>the list can't be fetched or its signature fails; no hoi-node for this computer; no curl or wget, tar, sha256sum</td><td></td></tr>
+          <tr><td>disk, memory, clock</td><td>under 512 MB free in <code>/var/lib</code></td><td>under 2 GB free; under 512 MB of memory; clock not synchronized</td></tr>
+          <tr><td>ports</td><td>UDP 7843 or 7844, or the registry's TCP port, taken by another program</td><td></td></tr>
+          <tr><td>firewall</td><td></td><td>ufw or firewalld on and <code>--no-firewall</code> keeps the ports shut</td></tr>
+          <tr><td>address</td><td></td><td>a public node or registry with only private addresses and no <code>--rtc-advertise</code></td></tr>
+          <tr><td>dns</td><td></td><td>a registry's host name has no record, or not this computer's</td></tr>
+          <tr><td>https</td><td><code>--tls caddy</code> on a Mac, without Caddy in the packages, or with TCP 80 or 443 taken</td><td>Caddy may be missing from the packages</td></tr>
+          <tr><td>notice</td><td>(a notice file that fails <code>hoi-node admin notice check</code> stops the install once the binary is there)</td><td>a public node or registry without <code>--notice-file</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 id="installers-where">What each system gets</h3>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Per system">
+      <table>
+        <thead><tr><th>System</th><th>Node runs as</th><th>Binary</th><th>Data</th><th>Log</th></tr></thead>
+        <tbody>
+          <tr><td>Linux</td><td>systemd service <code>hoi-node</code>, <code>/etc/systemd/system/hoi-node.service</code>, started with the computer</td><td><code>/usr/local/bin/hoi-node</code></td><td><code>/var/lib/hoi-node</code> (home, private) or <code>/var/lib/hoi-public</code> (public, registry)</td><td><code>journalctl -u hoi-node</code></td></tr>
+          <tr><td>macOS</td><td>launchd agent <code>sh.hoi.node</code> in your account (<code>RunAtLoad</code>, <code>KeepAlive</code>, <code>ExitTimeOut</code> 30), never with sudo</td><td><code>~/Library/Application Support/hoi-node/hoi-node</code></td><td><code>…/hoi-node/data</code> or <code>…/hoi-node/public</code></td><td><code>~/Library/Logs/hoi-node.log</code></td></tr>
+          <tr><td>Windows</td><td>scheduled task <code>hoi-node</code> at logon, hidden PowerShell, no time limit, 3 restarts a minute apart</td><td><code>%LOCALAPPDATA%\hoi-node\hoi-node.exe</code></td><td><code>…\hoi-node\data</code> or <code>…\hoi-node\public</code></td><td><code>…\hoi-node\hoi-node.log</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>A person's key and a public node's data never share a directory, so switching roles never hands a person's key to a public node. The Linux unit has the same sandbox as the checked-in <code>hoi-node.service</code> (<code>DynamicUser</code>, <code>ProtectSystem=strict</code> and the rest, see <a href="/wiki/hoi-node/">hoi-node</a>) with <code>StateDirectory</code> set to the role's directory, <code>Restart=on-failure</code>, <code>RestartSec=5</code> and <code>TimeoutStopSec=30</code>. With <code>DynamicUser</code>, systemd keeps the data in <code>/var/lib/private/NAME</code> behind the <code>/var/lib/NAME</code> link.</p>
+    <h3 id="installers-caddy">HTTPS for a registry</h3>
+    <p>With <code>--tls caddy</code> the installer installs Caddy from the system's packages (Debian 12, Ubuntu 24.04, Fedora; it waits up to 300 s for apt's lock, which a server's first-boot updates hold), writes <code>/etc/caddy/hoi-registry.caddy</code> (the registry's host name with <code>reverse_proxy</code> to <code>--registry-listen</code>, 127.0.0.1:7845 by default) and imports it from <code>/etc/caddy/Caddyfile</code>: the packaged example is set aside as <code>Caddyfile.before-hoi</code>, a Caddyfile of your own gets one import line and is put back if <code>caddy validate</code> refuses the result. Then it enables and reloads Caddy, which gets and renews the certificate once DNS leads to the server and keeps no access log. The registry needs the root of a host name of its own (<code>https://names.example.org</code>, not an IP address).</p>
+  </section>
+
+  <section class="wk-sec" id="ports">
+    <h2>Ports and firewalls</h2>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Ports">
+      <table>
+        <thead><tr><th>Port</th><th>Proto</th><th>Who</th><th>Faces</th><th>Open it?</th></tr></thead>
+        <tbody>
+          <tr><td>7842</td><td>TCP</td><td>home node: paired-device WebSocket (<code>--listen</code>)</td><td>loopback by default</td><td>never to the internet; a TLS proxy in front for remote browsers</td></tr>
+          <tr><td>7843</td><td>UDP</td><td>native peers, iroh QUIC (<code>--peer-bind 0.0.0.0:7843</code>)</td><td>internet</td><td>yes for any node others should reach</td></tr>
+          <tr><td>7844</td><td>UDP</td><td>browsers and phones, WebRTC (<code>--rtc-port</code>)</td><td>internet and home network</td><td>yes</td></tr>
+          <tr><td>7845</td><td>TCP</td><td>registry API (<code>--registry</code>, the Node service, the registry image)</td><td>loopback, behind HTTPS</td><td>no: open 443 for the proxy instead</td></tr>
+          <tr><td>7846</td><td>UDP</td><td>DHT among public nodes (<code>--dht-port</code>)</td><td>internet</td><td>yes for a public node</td></tr>
+          <tr><td>7847</td><td>UDP</td><td>DHT answers with signed routes (<code>--dht-answer-port</code>)</td><td>internet</td><td>yes for a public node</td></tr>
+          <tr><td>7848</td><td>UDP multicast</td><td>LAN beacons, group 239.255.70.74</td><td>local network only</td><td>no</td></tr>
+          <tr><td>80, 443</td><td>TCP</td><td>Caddy: certificate and the registry's HTTPS</td><td>internet</td><td>yes with <code>--tls caddy</code></td></tr>
+          <tr><td>e.g. 3340 or 443 (+442)</td><td>TCP</td><td>packet relay (<code>--packet-relay</code>); with its own TLS, plain HTTP one port below</td><td>internet</td><td>if you run one</td></tr>
+          <tr><td>8787</td><td>TCP</td><td><code>serve-static.mjs</code></td><td>loopback</td><td>no: for looking at <code>dist/</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>On Linux the installer opens UDP 7843, 7844, 7846 and 7847 (and TCP 80 and 443 with <code>--tls caddy</code>) in an active ufw (<code>ufw allow PORT comment hoi-node</code>) or firewalld (<code>firewall-cmd --permanent --add-port</code>, then reload) unless <code>--no-firewall</code>. A firewall in front of the server (your provider's, a security group) has to let the same ports in. At home, <code>home</code>, <code>public</code> and <code>registry</code> ask the router to forward the node's UDP ports with PCP, NAT-PMP or UPnP; <code>--no-port-mapping</code> skips that. Docker's published ports bypass most host firewalls, which is why the image exposes only UDP ports and keeps 7842 on loopback.</p>
+  </section>
+
+  <section class="wk-sec" id="env">
+    <h2>Every environment variable</h2>
+    <p>Grouped by what reads them. The registry service's own variables are listed in full on the <a href="/wiki/registry/">Registry</a> page.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="All environment variables">
+      <table>
+        <thead><tr><th>Setting</th><th>Read by</th><th>Default</th><th>Effect</th></tr></thead>
+        <tbody>
+          <tr><td><code>HOI_SITE_URL</code>, <code>HOI_APP_URL</code>, <code>HOI_REPO_URL</code></td><td>site build</td><td><code>https://hoi.sh</code>, <code>/app/</code>, the repository</td><td><a href="#static-env">build-time settings</a></td></tr>
+          <tr><td><code>HOI_SITE_PUBLISHER</code>, <code>HOI_SITE_CONTACT</code>, <code>HOI_SITE_HOSTER</code>, <code>HOI_SITE_HOSTER_PRIVACY_URL</code></td><td>site build</td><td>the project, the repository, GitHub Pages</td><td>the privacy policy</td></tr>
+          <tr><td><code>HOI_PUBLISHER</code>, <code>HOI_CONTACT</code></td><td>site and app builds</td><td>empty in the app</td><td>who publishes this build</td></tr>
+          <tr><td>Registry address (app build)</td><td>app build</td><td>empty</td><td>a registry for this copy of the app</td></tr>
+          <tr><td>Relay addresses (app build)</td><td>app build</td><td><code>[]</code></td><td>up to three encrypted relays for this copy</td></tr>
+          <tr><td><code>HOI_PAGES_ENABLED</code></td><td>Website workflow (repository variable)</td><td>unset: the job is skipped</td><td><code>true</code> to deploy</td></tr>
+          <tr><td><code>HOI_DEPLOYMENT_TEST_URL</code></td><td><code>e2e-deployment.mjs</code></td><td>unset: serve <code>dist/</code> itself</td><td>a local static server to test instead (loopback, path <code>/</code> only)</td></tr>
+          <tr><td><code>CHROMIUM_PATH</code></td><td>e2e scripts</td><td>Playwright's</td><td>the browser to drive</td></tr>
+          <tr><td><code>HOI_ALLOWED_ORIGINS</code></td><td><code>hoi-node</code></td><td>empty</td><td>extra web origins allowed at the paired-device listener</td></tr>
+          <tr><td><code>HOI_NODE_NAME</code></td><td><code>deploy/home</code>, <code>deploy/server</code> compose</td><td><code>home node</code> / <code>public node</code></td><td><code>--name</code></td></tr>
+          <tr><td><code>HOI_DAILY_CAP_GB</code></td><td><code>deploy/home</code></td><td>5</td><td><code>--daily-cap-gb</code></td></tr>
+          <tr><td><code>HOI_NODE_IMAGE</code></td><td><code>deploy/home</code></td><td><code>hoi-node:local</code></td><td>the image</td></tr>
+          <tr><td><code>HOI_RTC_ADVERTISE</code></td><td><code>deploy/server</code></td><td>required</td><td><code>--rtc-advertise</code></td></tr>
+          <tr><td><code>HOI_CARRY_LIMIT</code></td><td><code>deploy/server</code></td><td>256</td><td><code>--carry-limit</code></td></tr>
+          <tr><td><code>HOI_CARRIER_IMAGE</code></td><td><code>deploy/server</code>, <code>deploy.sh</code></td><td>unset: build</td><td>pull this image</td></tr>
+          <tr><td><code>CARGO_TARGET_DIR</code></td><td><code>install.sh --source</code></td><td><code>core/target</code></td><td>where the built binary is taken from</td></tr>
+          <tr><td>the registry's settings, <code>HOI_PUBLIC_NODES</code>, <code>HOI_APP_URL</code>, <code>HOI_RELEASE_CONFIG</code></td><td>the registry service and Worker</td><td>see the Registry page</td><td>its configuration</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="wk-sec" id="upgrade">
+    <h2>Upgrading</h2>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Upgrading">
+      <table>
+        <thead><tr><th>Installed with</th><th>Upgrade by</th><th>Data</th></tr></thead>
+        <tbody>
+          <tr><td><code>install.sh</code> / <code>install.ps1</code></td><td>running it again with the same or new options (a newer release, <code>--release</code>, <code>--binary</code>, or <code>--source</code> after a <code>git pull</code>); it replaces the binary and the service file and restarts</td><td>kept unless <code>--reset-data</code> is confirmed</td></tr>
+          <tr><td><code>deploy/home/install.sh</code></td><td>running it again</td><td>kept</td></tr>
+          <tr><td><code>deploy/home/compose.yml</code></td><td><code>git pull</code>, then <code>docker compose -f deploy/home/compose.yml up -d --build</code></td><td>the <code>hoi-node-data</code> volume</td></tr>
+          <tr><td><code>deploy/server</code></td><td><code>deploy/server/deploy.sh up</code> (pulls <code>HOI_CARRIER_IMAGE</code> or rebuilds)</td><td>the <code>public-carrier-data</code> volume</td></tr>
+          <tr><td>the server bundle</td><td><code>pnpm build:server</code>, then <code>pnpm deploy:server USER@HOST</code> again; <code>server.conf</code> survives rebuilds</td><td>kept unless reset</td></tr>
+          <tr><td>the static site</td><td>build and upload <code>dist/</code> again, or run the Pages workflow</td><td>none on the host</td></tr>
+          <tr><td>the registry service or Worker</td><td>redeploy; the database schema upgrades in place</td><td>back up the database first</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="wk-note limit"><b>One way</b><p>Upgrades go forward. A registry refuses a database written by a newer one, and a node store that holds suppressions refuses to open in an older hoi-node rather than fetch it all again. Keep the backup you took before upgrading until the new version runs.</p></div>
+  </section>
+
+  <section class="wk-sec" id="backup">
+    <h2>What to back up</h2>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Backups">
+      <table>
+        <thead><tr><th>What</th><th>Where</th><th>Why it matters</th></tr></thead>
+        <tbody>
+          <tr><td>A home node's data directory</td><td><code>/var/lib/hoi-node</code>, the <code>hoi-node-data</code> volume, <code>…/hoi-node/data</code></td><td>the person's device key and transport key (in <code>hoi.db</code>), paired devices' credentials, settings, suppressions, the communities it holds. Lost, the devices must pair again and the node link changes.</td></tr>
+          <tr><td>A public node's data directory</td><td><code>/var/lib/hoi-public</code>, the <code>public-carrier-data</code> volume, <code>…/hoi-node/public</code></td><td>its endpoint key (its identity in node links and registries' allowlists), suppressions, carried communities (which other nodes also hold)</td></tr>
+          <tr><td><code>registry.db</code></td><td>in the public node's data directory; the database file for the Node service</td><td>the namespace: reservations, proofs, the operator's lists, and the log with its key. A lost log key changes the log's key, and clients and mirrors that saw the old one stop.</td></tr>
+          <tr><td>The operator notice</td><td><code>/etc/hoi-node/notice.json</code> (macOS and Windows: next to the binary)</td><td>what people read before the node serves them</td></tr>
+          <tr><td>Configuration</td><td><code>deploy/home/.env</code>, <code>deploy/server/.env</code> and <code>compose.override.yml</code>, the bundle's <code>server.conf</code>, <code>hoi-NAME.conf</code></td><td>to rebuild the same deployment</td></tr>
+          <tr><td>Caddy</td><td><code>/etc/caddy/Caddyfile</code>, <code>/etc/caddy/hoi-registry.caddy</code></td><td>the registry's site; certificates are fetched again</td></tr>
+          <tr><td>The static site</td><td>nothing</td><td>it is rebuilt from the repository, byte for byte</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Back up SQLite files with the node or service stopped, or with SQLite's backup tooling, so committed WAL contents come along; copying the main file alone while it runs is not a safe backup. Backups and snapshots keep whatever was suppressed or withheld after they were taken: delete or expire them as your retention rules say, and suppress or withhold again after restoring an older one. Evidence copies from <code>hoi-node admin --evidence</code> are not backups; keep them apart from the node's volume.</p>
+  </section>
+
+  <section class="wk-sec" id="verify">
+    <h2>Checking a deployment</h2>
+    <div class="wk-code" data-lang="sh" data-title="deploy/static/README.md"><pre><code>node scripts/e2e-deployment.mjs
+node scripts/e2e-registry-browser.mjs
+node scripts/e2e-discovery.mjs</code></pre></div>
+    <p><code>e2e-deployment.mjs</code> serves the assembled <code>dist/</code> with <code>serve-static.mjs</code> (or the loopback URL in <code>HOI_DEPLOYMENT_TEST_URL</code>) and checks, within 60 s of it starting:</p>
+    <ul>
+      <li><code>/</code>, <code>/protocol/</code>, <code>/app/</code>, <code>/release.json</code> and <code>/app/release.json</code> answer 200 without <code>Set-Cookie</code>.</li>
+      <li>The pages checked (<code>/</code>, <code>/protocol/</code>, <code>/relay/</code>, <code>/app/</code>) each carry a CSP <code>&lt;meta&gt;</code> with <code>default-src 'self'</code>, <code>style-src 'self'</code>, <code>object-src 'none'</code>, <code>base-uri 'none'</code> and no <code>unsafe-inline</code> or <code>unsafe-eval</code>, plus <code>&lt;meta name="referrer" content="no-referrer"&gt;</code>.</li>
+      <li><code>robots.txt</code> allows crawling; each main page has a 50–160 character description, names itself as canonical and is in <code>sitemap.xml</code>; a preview app is <code>noindex</code>.</li>
+      <li><code>/registry/</code>, <code>/registry/v1/meta</code>, <code>/registry/v2/communities?prefix=</code> and <code>/relay/v1/meta</code> are 404; PUT to <code>/registry/v2/communities</code> or <code>/relay/v1/objects</code> is 404 or 405.</li>
+      <li>In a real browser: the demo text stays local, no cookies, no local or session storage, no IndexedDB; the website makes only same-origin GET requests and no fetch, XHR or WebSocket; the app makes no request to a registry or relay path; no page error and no CSP violation anywhere.</li>
+    </ul>
+    <p>For a node: <code>journalctl -u hoi-node -f</code> (or the container log) shows the role line, the port-mapping result and the node link; <code>install.sh check ROLE</code> re-runs the checks at any time.</p>
+  </section>
+
+  <section class="wk-sec" id="next">
+    <h2>Read next</h2>
+    <div class="wk-cards">
+      <a class="wk-card g-sun" href="/wiki/hoi-node/"><i></i><b>hoi-node</b><span>Every flag the installers and compose files pass, and what the node does with them.</span></a>
+      <a class="wk-card g-coral" href="/wiki/registry/"><i></i><b>Registry</b><span>Running a registry and what it stores.</span></a>
+      <a class="wk-card g-mint" href="/wiki/node-setup/"><i></i><b>hoi Node Setup</b><span>The wizard that runs this installer on a server over SSH.</span></a>
+      <a class="wk-card g-sky" href="/wiki/releases/"><i></i><b>Releases &amp; verification</b><span>The release list, its signature and reproducible builds.</span></a>
+      <a class="wk-card g-lilac" href="/wiki/website/"><i></i><b>This website</b><span>How the static site is built and hardened.</span></a>
+    </div>
+  </section>
+</article>
+<!-- @wiki-close -->
+<!-- @include footer.html -->
+<script type="module" src="/src/pages/wiki.ts"></script>
+</body>
+</html>

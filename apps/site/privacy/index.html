@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <!-- @include head.html title="Privacy · hoi.sh" description="What this website processes (a static site, no cookies, no tracking), what the hoi client shares on the network, and who is responsible for what." -->
+</head>
+<body>
+<!-- @include header.html nav="site" -->
+
+<main id="main">
+<section class="wrap page-hero">
+  <span class="eyebrow">privacy · no cookies · no tracking</span>
+  <h1>Privacy Policy. <span class="blue">Short, because there is little to tell.</span></h1>
+  <p class="lead">This website only delivers files. The hoi client connects to a peer-to-peer network that nobody here operates; what it shares and who answers for it is in the client's own privacy notice and in each node operator's join notice.</p>
+</section>
+
+<section class="wrap" aria-labelledby="policy-title">
+  <h2 id="policy-title" class="sr-only">The policy</h2>
+  <div class="rows">
+    <div class="row"><div class="row-k plain"><span>Responsible</span></div><div class="row-v"><p>{{PUBLISHER}}. Contact: {{CONTACT}}.</p></div></div>
+    <div class="row"><div class="row-k plain"><span>Hosting</span></div><div class="row-v"><p>This website is a static site hosted by {{HOSTER}}. When you visit it, the hoster automatically processes technical data such as your IP address, date and time, the page requested and your browser type in server logs. This is necessary to deliver the website and protect it against abuse. The hoster's <a href="{{HOSTER_PRIVACY_URL}}">privacy statement</a> says what it keeps, for how long, and where in the world it may process that data.</p></div></div>
+    <div class="row"><div class="row-k plain"><span>No cookies, no tracking</span></div><div class="row-v"><p>This website does not use cookies, analytics or third-party content. Fonts, scripts and documentation are served from this domain. The page scripts do not send questions or usage data to us or to an AI service.</p></div></div>
+    <div class="row"><div class="row-k plain"><span>Wiki explanations</span></div><div class="row-v"><p>On supported devices, an optional section helper uses the browser's built-in AI. Chrome downloads and manages its model; questions, documentation excerpts and answers are processed on your device. Opening a helper loads additional documentation from this site. Conversation context stays in memory. When you follow a suggested explanation link, a short handoff is kept in this tab's session storage, consumed at the next wiki page, and accepted for at most 15 minutes. It is not included in links or server requests. Closing the tab clears that storage. There is no cloud AI fallback.</p></div></div>
+    <div class="row"><div class="row-k plain"><span>Invite and node links</span></div><div class="row-v"><p>Invite data and node addresses are placed after the <code>#</code> in a link. Browsers do not send this part to the server, so it does not appear in the hoster's logs.</p></div></div>
+    <div class="row"><div class="row-k plain"><span>The client</span></div><div class="row-v"><p>When you use the hoi client, it connects to a peer-to-peer network that we do not operate: your IP address and connection data reach the nodes and participants you connect with, who may be anywhere in the world and under any law. The client says so before its first connection (Network &amp; Safety) and carries its own <a href="{{APP_URL}}#/privacy">privacy notice</a>. Each public node shows its operator's join notice before it serves you; that operator is responsible for the data processed on their node. Operators are asked, not forced, to say who they are and how to reach them; a notice that leaves this out says so.</p></div></div>
+    <div class="row"><div class="row-k plain"><span>Not just one node</span></div><div class="row-v"><p>The node or invite you start with is only the way in. Once you are in, joining communities, opening invites and links, reading, posting, replying and syncing can connect your device to further nodes and participants anywhere on the internet, and public nodes tell it about other public nodes it may connect to on its own. Which ones changes over time. What you publish in an open community is not encrypted and is copied to every node and member that carries it, including nodes your device never connected to.</p></div></div>
+    <div class="row"><div class="row-k plain"><span>Running a node</span></div><div class="row-v"><p>Whoever runs a public node processes other people's data and answers for it; <a href="/download/#operator">before you run a public node</a> says what that means and what the installer asks of you.</p></div></div>
+    <div class="row"><div class="row-k plain"><span>Your rights</span></div><div class="row-v"><p>You can request information about data concerning you and its correction or deletion via the contact above. For data processed on a node, contact its operator through the contact in its join notice; a node whose operator gave no contact offers no way to ask, and you can decline it.</p></div></div>
+    <div class="row"><div class="row-k plain"><span>Last updated</span></div><div class="row-v"><p>{{PRIVACY_DATE}}. This is a technical and organisational basis, not legal advice.</p></div></div>
+  </div>
+</section>
+</main>
+
+<!-- @include footer.html -->
+<script type="module" src="/src/pages/page.ts"></script>
+</body>
+</html>

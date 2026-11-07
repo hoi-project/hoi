@@ -1,0 +1,378 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <!-- @include head.html title="hoi Node Setup · hoi wiki" description="The wizard in apps/setup that installs and manages a public node over SSH or on this computer: every step, every command it runs, the host key, the uploads, the saved servers." -->
+</head>
+<body class="wiki">
+<!-- @include header.html nav="wiki" -->
+<!-- @wiki-open -->
+<article class="wk-doc">
+  <!-- @wiki-crumbs -->
+  <h1>hoi Node <span class="acc">Setup</span></h1>
+  <p class="wk-lead">hoi Node Setup is a small desktop app with a wizard for people who would rather not type the installer's commands. It logs in to a server over SSH (or works on this computer), shows every command before it runs it, runs the same <code>install.sh</code> the download page offers, and remembers the server, never its password. Afterwards it manages the node: status, logs, the join notice, updates and removal.</p>
+  <p class="wk-src-list">Source <a href="{{REPO_URL}}/tree/main/apps/setup">apps/setup</a> · <a href="{{REPO_URL}}/blob/main/apps/setup/src-tauri/src/lib.rs">src-tauri/src/lib.rs</a> · <a href="{{REPO_URL}}/blob/main/apps/setup/src-tauri/engine/src/ssh.rs">engine/src/ssh.rs</a> · <a href="{{REPO_URL}}/blob/main/apps/setup/src-tauri/engine/src/node_files.rs">engine/src/node_files.rs</a> · <a href="{{REPO_URL}}/blob/main/apps/setup/src-tauri/engine/src/profiles.rs">engine/src/profiles.rs</a> · <a href="{{REPO_URL}}/blob/main/apps/web/src/setup/Setup.svelte">apps/web/src/setup/Setup.svelte</a> · <a href="{{REPO_URL}}/blob/main/apps/web/src/setup/steps.ts">setup/steps.ts</a> · <a href="{{REPO_URL}}/blob/main/deploy/install/install.sh">deploy/install/install.sh</a></p>
+  <div class="wk-head-rule"></div>
+
+  <section class="wk-sec" id="overview">
+    <h2>What it is</h2>
+    <p>The app installs and manages a <b>public node</b> (or a public node with a registry) on a server over SSH, or on this computer. It runs <code>deploy/install/install.sh</code> and nothing else; what that script does is the subject of <a href="/wiki/deploy/">Deploying &amp; hosting</a>, and what the node then does is <a href="/wiki/hoi-node/">hoi-node</a>. It ships beside the hoi app for macOS, Windows, Linux x64 and Linux ARM64 (a Raspberry Pi 5 with a desktop), and the download page offers it once the visitor ticked "I understand that I am responsible for the data processed on my node."</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Names and identifiers">
+      <table>
+        <thead><tr><th>What</th><th>Value</th></tr></thead>
+        <tbody>
+          <tr><td>Product name</td><td><code>hoi Node Setup</code></td></tr>
+          <tr><td>Program</td><td><code>hoi-node-setup</code> (<code>mainBinaryName</code>)</td></tr>
+          <tr><td>Identifier</td><td><code>sh.hoi.setup</code></td></tr>
+          <tr><td>Packages</td><td><code>@hoi/setup</code> (the Tauri CLI wrapper), crate <code>hoi-setup</code>, crate <code>hoi-setup-engine</code></td></tr>
+          <tr><td>Version</td><td><code>1.0.0-preview.1</code></td></tr>
+          <tr><td>Bundle category</td><td><code>DeveloperTool</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="wk-sec" id="parts">
+    <h2>Three parts</h2>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Parts of the setup app">
+      <table>
+        <thead><tr><th>Part</th><th>Where</th><th>What it does</th></tr></thead>
+        <tbody>
+          <tr><td>The shell</td><td><code>apps/setup/src-tauri/src/lib.rs</code></td><td>Eighteen Tauri commands, the open SSH sessions by id, the <code>setup://log</code> and <code>setup://upload</code> events. Plugins: <code>dialog</code> (pick a key file or a hoi-node, save a file) and <code>opener</code>.</td></tr>
+          <tr><td>The engine</td><td><code>apps/setup/src-tauri/engine</code></td><td>Everything without Tauri, so it builds and tests on its own: <code>ssh.rs</code>, <code>node_files.rs</code>, <code>profiles.rs</code>, <code>local.rs</code>.</td></tr>
+          <tr><td>The window</td><td><code>apps/web/setup/</code> and <code>apps/web/src/setup/</code></td><td>A page of the web app: <code>Setup.svelte</code> (the wizard and Manage), <code>steps.ts</code> (the pure parts), <code>bridge.ts</code> (the Tauri commands), <code>mock-bridge.ts</code> (a pretend server in a plain browser).</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>The crate is a Cargo workspace of its own with the engine as its one member, like the desktop app, so the core workspace stays free of SSH and WebKitGTK. The engine uses <code>russh</code> 0.65 with only the <code>ring</code> feature: pure-Rust SSH on ring, no OpenSSL, no aws-lc-rs, no compression, and no RSA, because the <code>rsa</code> crate leaks private-key timing (RUSTSEC-2023-0071) and has no fix. <code>sha2</code> 0.11 hashes uploads.</p>
+    <p>The window reuses the web app's server kit (<code>lib/server-kit.ts</code>: names, the configuration file, the README), the notice model and texts (<code>lib/notice.ts</code>, <code>lib/legal/texts.ts</code>), and the components <code>NoticeEditor</code>, <code>NoticeText</code>, <code>QR</code> and <code>Logo</code>. <code>pnpm --filter @hoi/web build:setup</code> writes <code>apps/web/dist-setup/</code>; the installer scripts are imported as text (<code>install.sh?raw</code>, <code>install.ps1?raw</code>), so each build carries the installer of its own version, with line ends turned to LF.</p>
+  </section>
+
+  <section class="wk-sec" id="steps">
+    <h2>The wizard, step by step</h2>
+    <p>The window's <code>STEPS</code> are <code>Responsibility</code>, <code>Server</code>, <code>Host key</code>, <code>The node</code>, <code>Join notice</code>, <code>Check</code>, <code>Install</code>, <code>Done</code>. Each has a two-part headline as the website sets them, ink then blue.</p>
+    <ol class="wk-steps">
+      <li><b>Responsibility</b><p>"Before you run a public node." The <code>OPERATOR_RESPONSIBILITY</code> text as ledger rows, and a box to tick before Continue.</p></li>
+      <li><b>Server</b><p>"Where does it run? A server or this computer." Over SSH: host, port (22), user (<code>root</code>), and a login: ssh-agent, a key file (with its passphrase, if it has one) or a password "used for this session only, never stored". Servers set up here before are offered as one-click fills. <i>This computer</i> skips to step 4.</p></li>
+      <li><b>Host key</b><p>"Is this your server? Check its key." The fingerprint the server answered with, to compare with the provider's or with <code>ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub</code>. "This is my server: pin it and log in" connects and runs <code>uname -m</code>.</p></li>
+      <li><b>The node</b><p>"What it runs. And what it keeps." Public node, or public node and registry (a domain with Caddy, or an address of your own); the name (random, "Another" rolls again) and whether the server's host name follows it; <b>Keep mailboxes for private communities</b> (on, 2 GB); the program; under <i>More</i>, extra registries to announce to and a daily cap.</p></li>
+      <li><b>Join notice</b><p>"Your join notice. In your own words." <code>NoticeEditor</code> for the operator's fields, and the notice as people will read it, with its size against the 1 536-byte budget ("fits a QR code" up to 1 100 bytes). "Upload and check the server" runs the check.</p></li>
+      <li><b>Check</b><p>"Before it installs. Nothing has changed yet." The installer's rows, tagged <code>ok</code>, <code>info</code>, <code>warn</code> or <code>BLOCK</code>. Install is enabled only when the installer printed "Ready to install". A sudo password field appears for a non-root user who didn't log in with a password.</p></li>
+      <li><b>Install</b><p>The installer's output line by line: the hoi-node from this computer or from the signed release list, the notice next to the service, the hardened service, the firewall.</p></li>
+      <li><b>Done</b><p>"Your node is up. Share its link." The node's link, with the notice in it, as text and a QR code, and the notice hash. <i>Open in hoi</i> opens the link (an <code>https://</code> one) in the person's browser, where founding a community happens.</p></li>
+    </ol>
+    <p>Under the steps, "What was run on &lt;host&gt;" holds every command and every line it printed; it opens by itself from step 6.</p>
+    <div class="wk-note info"><b>One field that stays in the window</b><p><i>More</i> also shows "Public address, when NAT maps it (IP:7844)". In this version its value is not part of the options the wizard builds, so it doesn't reach the configuration file; <code>install.sh --rtc-advertise PUBLIC-IP:7844</code> on the server is the way to set it.</p></div>
+  </section>
+
+  <section class="wk-sec" id="sequence">
+    <h2>An install over SSH</h2>
+    <div class="wk-seq" data-title="Installing a public node with hoi Node Setup">
+lanes: Window | Engine | Server
+-- Look at the server --
+Window -> Engine: <code>setup_probe {host, port, user}</code>
+Engine -> Server: SSH handshake, trusting nothing
+Server --> Engine: its host key
+Engine --> Window: <code>{algorithm, fingerprint}</code>; disconnects
+Window: the person compares the fingerprint and pins it
+-- Log in --
+Window -> Engine: <code>setup_connect {target, auth, hostKey}</code>
+Engine -> Server: SSH, only that fingerprint accepted; agent, key or password
+Engine --> Window: a session id, <code>s1</code>
+Window -> Server: <code>uname -m</code>
+-- Check --
+Window -> Server: <code>umask 077 &amp;&amp; mktemp -d /tmp/hoi-setup.XXXXXXXX</code>
+Engine => Server: the kit files, each <code>cat &gt; path &amp;&amp; chmod</code>
+Engine => Server @sun: <code>hoi-node_…tar.gz</code> in 256 KiB pieces
+Engine -> Server: <code>sha256sum -- path</code>, compared with this computer's hash
+Window -> Server: <code>bash ./install.sh check --config … --yes [--binary …]</code>
+Server --> Window: rows, line by line, as <code>setup://log</code>
+-- Install --
+Window -> Server: <code>bash ./install.sh --config … --yes</code>, with a pty
+Server --> Engine: <code>[sudo] password for …:</code>
+Engine -> Server: the password, once
+Server: hoi-node, notice, systemd unit, firewall, <code>systemctl restart</code>
+-- Done --
+Window -> Server: <code>cat …/node-link</code>, <code>cat …/notice-hash</code>
+Window -> Engine: <code>setup_save_profile</code>: host, user, pinned key, config, notice
+    </div>
+  </section>
+
+  <section class="wk-sec" id="host-key">
+    <h2>The host key</h2>
+    <p>Every connection goes through one <code>russh</code> client handler whose <code>check_server_key</code> records the key it saw and answers by a <code>Trust</code>:</p>
+    <dl class="wk-defs">
+      <dt>Trust::Probe<small>step 2</small></dt><dd>Record the key, accept nothing. The handshake stops, nobody is authenticated, and the window gets <code>HostKey {algorithm, fingerprint}</code>.</dd>
+      <dt>Trust::Pinned(fingerprint)<small>every login after</small></dt><dd>Accept only a key whose SHA-256 fingerprint is exactly this string.</dd>
+    </dl>
+    <p>The fingerprint is printed the way people compare it, <code>SHA256:…</code>, with the algorithm (<code>ssh-ed25519</code>, …). A host certificate shows as "&lt;algorithm&gt; (certificate)" and its public key's fingerprint is used. When a later connection meets another key, russh fails with <code>UnknownKey</code> and the engine turns it into:</p>
+    <div class="wk-code" data-lang="rust" data-title="apps/setup/src-tauri/engine/src/ssh.rs"><pre><code>#[error("the server's host key changed: expected {expected}, got {got} ({algorithm}). Stop here unless you know why (a reinstalled server, say), then forget this server and start again")]
+HostKeyChanged { expected: String, got: String, algorithm: String },</code></pre></div>
+    <p>The window checks first too: if a saved server with the same <code>user@host:port</code> has a pinned key that differs from the probed one, step 3 shows both, disables the login button and says to forget the server under Your servers to start over.</p>
+  </section>
+
+  <section class="wk-sec" id="ssh">
+    <h2>The SSH engine</h2>
+    <div class="wk-table" tabindex="0" role="region" aria-label="SSH settings">
+      <table>
+        <thead><tr><th>Setting</th><th>Value</th></tr></thead>
+        <tbody>
+          <tr><td><code>CONNECT_TIMEOUT</code></td><td>25 s; then "the server did not answer in time"</td></tr>
+          <tr><td><code>inactivity_timeout</code></td><td>600 s</td></tr>
+          <tr><td><code>keepalive_interval</code> · <code>keepalive_max</code></td><td>15 s · 4</td></tr>
+          <tr><td><code>UPLOAD_PIECE</code></td><td>256 KiB written at a time, with progress after each</td></tr>
+          <tr><td>pty</td><td><code>xterm</code>, 160 columns × 48 rows</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 id="ssh-auth">Logging in</h3>
+    <ul>
+      <li><b>Password</b>: <code>authenticate_password</code>. The password lives in the window's memory for the session.</li>
+      <li><b>Key file</b>: <code>load_key(path, passphrase)</code>, then public-key authentication. An RSA key file is refused before anything is signed, with the advice to make an Ed25519 key (<code>ssh-keygen -t ed25519</code>) or use a password. The window passes only the path; a native dialog picks it.</li>
+      <li><b>Agent</b>: <code>SSH_AUTH_SOCK</code> on macOS and Linux, the named pipe <code>\\.\pipe\openssh-ssh-agent</code> on Windows; every identity the agent lists is tried until one is accepted.</li>
+    </ul>
+    <p>A refused login disconnects and reads "&lt;user&gt;@&lt;host&gt; did not accept that login". An unreachable port reads "could not reach &lt;host&gt;:&lt;port&gt; (…)".</p>
+    <h3 id="ssh-exec">Running commands</h3>
+    <p><code>Session::exec</code> opens a channel, optionally asks for a pty, runs the command and hands each complete line to the window as it comes, stdout as <code>out</code> and stderr as <code>err</code>, keeping a partial last line (a prompt) back. With a pty, when the output so far ends in <code>password:</code> (or <code>[sudo] password for … :</code>, ignoring a trailing bell), the engine types the given answer once. A second prompt means the answer was wrong: the run ends with exit status 255 and "the password was not accepted"; a prompt with no answer given ends it with "a password is asked and none was given".</p>
+    <h3 id="ssh-upload">Uploading without SFTP</h3>
+    <p>Files go through the same login with <code>cat</code>, not scp or SFTP. The path and mode are single-quoted for the shell by <code>quote()</code> (a quote inside becomes <code>'\''</code>):</p>
+    <div class="wk-code" data-lang="rust" data-title="apps/setup/src-tauri/engine/src/ssh.rs (trimmed)"><pre><code>let command = format!("umask 077 &amp;&amp; cat &gt; {p} &amp;&amp; chmod {m} {p}", p = quote(path), m = quote(mode));
+// … the bytes go to the command's stdin in 256 KiB pieces, then EOF …
+let want = crate::node_files::sha256_hex(bytes);
+let (code, text) = self.read(&amp;format!("sha256sum -- {}", quote(path))).await?;
+if got != want {
+    return Err(SetupError::Upload(format!("{path} arrived damaged (SHA-256 {got}, sent {want}); upload it again")));
+}</code></pre></div>
+    <p><code>upload</code> is used for the kit's text files; <code>upload_verified</code> for a hoi-node archive, which the server must hash to the same SHA-256 this computer computed.</p>
+  </section>
+
+  <section class="wk-sec" id="node-file">
+    <h2>A hoi-node from this computer</h2>
+    <p>A node can install without a published release: the wizard looks for a <code>hoi-node</code> archive built on this computer and uploads it. Release archives are named <code>hoi-node_&lt;version&gt;_&lt;rust target&gt;.tar.gz</code>, as <code>pnpm build:all</code> puts them in <code>builds/hoi-&lt;version&gt;/server/</code>.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="hoi-node archive rules">
+      <table>
+        <thead><tr><th>Rule</th><th>Value</th></tr></thead>
+        <tbody>
+          <tr><td><code>TARGETS</code></td><td><code>x86_64-unknown-linux-gnu</code>, <code>aarch64-unknown-linux-gnu</code>, <code>x86_64-apple-darwin</code>, <code>aarch64-apple-darwin</code>, <code>x86_64-pc-windows-msvc</code></td></tr>
+          <tr><td>The version</td><td>Starts with a digit, at most 64 of letters, digits and <code>+ . -</code>; the target is matched whole from the end (it has underscores of its own)</td></tr>
+          <tr><td><code>MAX_BYTES</code></td><td>200 MiB; an empty file is refused too</td></tr>
+          <tr><td>Where it looks, in order</td><td>Beside the program, <code>../server</code>, <code>server</code> next to it, then in a debug build every <code>builds/*/server</code> of the checkout, newest first</td></tr>
+          <tr><td>Upload folder</td><td>Only <code>/tmp/hoi-setup.&lt;letters and digits&gt;</code>, the folder <code>mktemp</code> made (<code>is_upload_dir</code>)</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>After login the window maps the server's <code>uname -m</code> to a target with <code>nodeTarget</code>: <code>x86_64</code> or <code>amd64</code> to <code>x86_64</code>, <code>aarch64</code> or <code>arm64</code> to <code>aarch64</code>, then <code>-unknown-linux-gnu</code> for a server; for this computer, Rust's own OS and architecture, with <code>-apple-darwin</code> on a Mac and only <code>x86_64-pc-windows-msvc</code> on Windows. The first archive found for that target is chosen ("Built on this computer"); otherwise "The signed release list". "Another file…" opens a dialog filtered to <code>.gz</code> and refuses a file built for another target ("… is for &lt;target&gt;; this server needs &lt;target&gt;."). The file is read by the Rust side, never through the window, and its size is checked again after reading.</p>
+  </section>
+
+  <section class="wk-sec" id="commands">
+    <h2>What runs on the server</h2>
+    <p>Every command is printed in the log before it runs, as <code>user@host$ command</code>. Commands that need root go through <code>asRoot(user, command)</code>: as they are for <code>root</code>, otherwise <code>sudo sh -c '&lt;command&gt;'</code> with a pty so sudo's prompt can be answered.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Commands the wizard runs">
+      <table>
+        <thead><tr><th>Step</th><th>Command</th><th>pty</th></tr></thead>
+        <tbody>
+          <tr><td>After login</td><td><code>uname -m</code></td><td>no</td></tr>
+          <tr><td>Check</td><td><code>umask 077 &amp;&amp; mktemp -d /tmp/hoi-setup.XXXXXXXX</code></td><td>no</td></tr>
+          <tr><td>Check</td><td>One <code>umask 077 &amp;&amp; cat &gt; '&lt;dir&gt;/&lt;file&gt;' &amp;&amp; chmod '&lt;mode&gt;' …</code> per kit file</td><td>no</td></tr>
+          <tr><td>Check</td><td>The hoi-node archive, then <code>sha256sum -- '&lt;dir&gt;/hoi-node_….tar.gz'</code></td><td>no</td></tr>
+          <tr><td>Check</td><td><code>cd &lt;dir&gt; &amp;&amp; bash ./install.sh check --config &lt;conf&gt; --yes [--binary ./hoi-node_….tar.gz]</code></td><td>no</td></tr>
+          <tr><td>Install</td><td>The same without <code>check</code></td><td>yes</td></tr>
+          <tr><td>Done</td><td><code>cat /var/lib/hoi-public/node-link 2&gt;/dev/null || cat /var/lib/hoi-node/node-link</code>, as root</td><td>yes</td></tr>
+          <tr><td>Done</td><td><code>cat /var/lib/hoi-public/notice-hash 2&gt;/dev/null || cat /var/lib/hoi-node/notice-hash</code>, as root</td><td>yes</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>The window reads the results itself: <code>parsePreflight</code> takes lines of the form two spaces, a level (<code>ok</code>, <code>info</code>, <code>warn</code>, <code>BLOCK</code>), a word and the text, and "Ready to install" or "Not ready" at a line's start; <code>remoteDirIn</code> accepts only <code>^/tmp/hoi-setup\.[A-Za-z0-9]+$</code>; <code>nodeLinkIn</code> takes the last <code>https://…#/node?…</code> link, else the last <code>hoi://node?…</code>; a notice hash must be 64 hex digits.</p>
+    <h3 id="commands-kit">The files uploaded</h3>
+    <p><code>kitFiles(options, installer, 'https://hoi.sh/install.sh')</code> makes them, all with LF line ends; <code>&lt;host&gt;</code> is the host name the node's name makes.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Kit files">
+      <table>
+        <thead><tr><th>File</th><th>Mode</th><th>What it is</th></tr></thead>
+        <tbody>
+          <tr><td><code>README.md</code></td><td>0644</td><td>How to check and install it by hand.</td></tr>
+          <tr><td><code>hoi-&lt;host&gt;.conf</code></td><td>0644</td><td>What <code>install.sh --config</code> reads: <code>key=value</code> lines, checked like flags, never run.</td></tr>
+          <tr><td><code>hoi-&lt;host&gt;.notice.json</code></td><td>0644</td><td>The join notice; on the server it lives at <code>/etc/hoi-node/notice.json</code>.</td></tr>
+          <tr><td><code>install.sh</code></td><td>0755</td><td>The installer this build carries.</td></tr>
+          <tr><td><code>cloud-init.yaml</code></td><td>0644</td><td>The same install as user data, for a server not ordered yet.</td></tr>
+          <tr><td><code>Caddyfile</code></td><td>0644</td><td>Only for a registry without Caddy set up by the installer: a site for a Caddy you run yourself.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="wk-code" data-lang="text" data-title="A configuration as configText writes it (comment lines left out)"><pre><code>role=registry
+name=sleepy-walrus-48213
+hostname=sleepy-walrus-48213
+notice_file=hoi-sleepy-walrus-48213.notice.json
+registry_url=https://sleepy-walrus-48213.example.org
+index=https://names.example.net
+daily_cap_gb=5
+hold_pieces_gb=2
+tls=caddy</code></pre></div>
+    <p>Lines appear only when they apply: <code>hostname</code> unless "Leave the server's own host name alone" is ticked, <code>registry_url</code> and <code>tls=caddy</code> only for a registry, <code>hold_pieces_gb</code> only with mailboxes on. A random name is an adjective, a noun and a five-digit number from the same 64 and 64 words as <code>install.sh</code>, about 368 million names; it is a label, not a secret. <code>cleanName</code> keeps letters, digits, spaces and <code>. _ ' -</code>, at most 40; <code>hostOf</code> makes a host name of at most 63 lowercase letters, digits and dashes.</p>
+  </section>
+
+  <section class="wk-sec" id="install-sh">
+    <h2>What install.sh sets up</h2>
+    <p>On Linux the installer (<code>node_linux</code>) needs systemd. For the public and registry roles the data directory is <code>/var/lib/hoi-public</code>: a key holder's data and a public node's are kept apart, so switching roles never hands a person's key to a public node. It installs the binary at <code>/usr/local/bin/hoi-node</code> (mode 0755), the notice at <code>/etc/hoi-node/notice.json</code> (0644), sets the host name (and, on cloud images, <code>preserve_hostname: true</code>), sets up Caddy for a registry with <code>tls=caddy</code>, writes the unit, opens the firewall, then <code>systemctl daemon-reload</code>, <code>enable</code> and <code>restart</code>.</p>
+    <div class="wk-code" data-lang="text" data-title="/etc/systemd/system/hoi-node.service, as install.sh writes it (trimmed)"><pre><code>[Unit]
+Description=hoi public node
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+DynamicUser=yes
+StateDirectory=hoi-public
+ExecStart=/usr/local/bin/hoi-node "--data" "/var/lib/hoi-public" "--name" "…" "--peer-bind" "0.0.0.0:7843" "--rtc-port" "7844" "--public" "--port-mapping" …
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_NETLINK
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+
+[Install]
+WantedBy=multi-user.target</code></pre></div>
+    <p>A registry adds <code>--registry</code>, <code>--registry-url</code> and <code>--index</code> for its own address; extra registries become <code>--index</code>, the notice <code>--notice</code>, a cap <code>--daily-cap-gb</code> and mailboxes <code>--hold-pieces</code>. Netlink is in the allowed address families because the node lists its network addresses and finds the router through it.</p>
+    <h3 id="install-firewall">The firewall</h3>
+    <p>The check reads the host firewall: <code>ufw</code> when its status is active, else <code>firewalld</code> when <code>firewall-cmd --state</code> is <code>running</code>. The node's ports are <code>7843/udp 7844/udp 7846/udp 7847/udp</code>, plus <code>80/tcp 443/tcp</code> with Caddy. Any of them not yet allowed are opened at install with <code>ufw allow &lt;port&gt; comment hoi-node</code> or <code>firewall-cmd --quiet --permanent --add-port=&lt;port&gt;</code> and a reload; <code>--no-firewall</code> leaves the firewall alone, and the check then warns that nobody outside reaches the node. A firewall in front of the server (the provider's) is reported as something to open too.</p>
+  </section>
+
+  <section class="wk-sec" id="local">
+    <h2>On this computer</h2>
+    <p>Choosing <i>This computer</i> runs the same steps locally through <code>local_exec(program, args, stdin)</code>, which streams both output streams line by line the way a server's are. <code>setup_write_local</code> writes the kit files into the app's cache folder, <code>kit/</code>, with mode 0755 on Unix; a name with a slash, a backslash or a leading dot is refused.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Local installs by system">
+      <table>
+        <thead><tr><th>System</th><th>Check</th><th>Install</th><th>Node link read from</th></tr></thead>
+        <tbody>
+          <tr><td>Linux</td><td><code>bash &lt;dir&gt;/install.sh check --config &lt;dir&gt;/&lt;conf&gt; --yes [--binary &lt;file&gt;]</code></td><td>For a non-root user, <code>sudo -S -p '' -v</code> with the password on stdin first; then the same without <code>check</code>, as a system service.</td><td><code>sudo -n cat /var/lib/hoi-public/node-link</code></td></tr>
+          <tr><td>macOS</td><td>The same</td><td>The same, in the person's account; no sudo.</td><td><code>~/Library/Application Support/hoi-node/public/node-link</code></td></tr>
+          <tr><td>Windows</td><td><code>powershell -ExecutionPolicy Bypass -File install.ps1 -Role … -Name … -NoticeFile … [-HoldPiecesGb …] [-Binary …] -DryRun -Yes</code>; one row, ok or BLOCK, from the exit code</td><td>The same without <code>-DryRun</code>, for the account.</td><td><code>%LOCALAPPDATA%\hoi-node\public\node-link</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="wk-sec" id="profiles">
+    <h2>Your servers</h2>
+    <p>Servers set up here are kept in <code>servers.json</code> in the app's configuration folder: how to reach them and the host key that was pinned, never a password or a key's passphrase. The file is written to <code>servers.json.tmp</code> and renamed, newest first; a profile's id is <code>user@host:port</code>, or <code>local</code> for this computer.</p>
+    <dl class="wk-defs">
+      <dt>id · label<small>string</small></dt><dd>The id, and what the person calls it (the node's name).</dd>
+      <dt>host · port · user<small>string · u16 (22) · string</small></dt><dd>Where to connect; <code>local</code> for this computer.</dd>
+      <dt>auth<small>{kind}</small></dt><dd><code>agent</code> (the default), <code>key</code> with its <code>path</code>, or <code>password</code>, which is asked for each time.</dd>
+      <dt>hostKey<small>string, optional</small></dt><dd>The pinned <code>SHA256:…</code> fingerprint.</dd>
+      <dt>role · name<small>string</small></dt><dd><code>public</code> or <code>registry</code>, and the node's name.</dd>
+      <dt>nodeLink · noticeHash<small>string, optional</small></dt><dd>What the server reported after the install.</dd>
+      <dt>config · notice<small>string</small></dt><dd>The configuration and the notice as last installed, so Manage can reinstall or edit.</dd>
+      <dt>created · lastUsed<small>Unix seconds</small></dt><dd>Set by <code>setup_save_profile</code>.</dd>
+    </dl>
+    <p>The test <code>profiles_round_trip_without_secrets</code> saves a profile and checks the file holds the host key and the word "passphrase" nowhere.</p>
+  </section>
+
+  <section class="wk-sec" id="manage">
+    <h2>Manage</h2>
+    <p>Manage connects again with the pinned key (right after an install it reuses the open session, so no second password), then shows the service's state and version and the node's link. A local profile only points to the commands the installer printed.</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Manage actions">
+      <table>
+        <thead><tr><th>Button</th><th>Runs (as root)</th></tr></thead>
+        <tbody>
+          <tr><td>Status</td><td><code>systemctl show --property=ActiveState,SubState,ActiveEnterTimestamp hoi-node; /usr/local/bin/hoi-node --version</code></td></tr>
+          <tr><td>Logs</td><td><code>journalctl -u hoi-node -n 200 --no-pager</code></td></tr>
+          <tr><td>Restart · Stop</td><td><code>systemctl restart hoi-node</code> · <code>systemctl stop hoi-node</code></td></tr>
+          <tr><td>Start and enable · Stop and disable</td><td><code>systemctl enable --now hoi-node</code> · <code>systemctl disable --now hoi-node</code></td></tr>
+          <tr><td>How much is kept</td><td><code>/usr/local/bin/hoi-node admin --data /var/lib/hoi-public pieces</code>: totals only, "pieces held: N · M MB", never what is in them</td></tr>
+          <tr><td>Mailboxes → Enable / Disable</td><td>Reapplies the saved configuration with the installed <code>/usr/local/bin/hoi-node</code>, changing only <code>hold_pieces_gb</code>; no program download. Enabling accepts 0.1 to 10,000 GB. The service restarts; disabling stops holding new objects and retains its data directory while other holders repair their copies.</td></tr>
+          <tr><td>Edit the notice → Save on the server</td><td>Uploads <code>/tmp/hoi-notice.json</code>, then <code>install -m 0644 /tmp/hoi-notice.json /etc/hoi-node/notice.json &amp;&amp; rm -f /tmp/hoi-notice.json</code>; the node reads it again within half a minute and people who accepted the old words read the new ones first</td></tr>
+          <tr><td>Keep logs this many days</td><td>Uploads a journald drop-in, then <code>mkdir -p /etc/systemd/journald.conf.d &amp;&amp; install -m 0644 /tmp/hoi-journald.conf /etc/systemd/journald.conf.d/hoi.conf &amp;&amp; rm -f … &amp;&amp; systemctl restart systemd-journald</code>; 1 to 3 650 days</td></tr>
+          <tr><td>Delete the node's logs now</td><td><code>journalctl --rotate &amp;&amp; journalctl --vacuum-time=1s --unit=hoi-node</code></td></tr>
+          <tr><td>Update (reinstall)</td><td>A new upload folder, the saved configuration and notice, this build's <code>install.sh</code>, a fitting hoi-node from this computer if there is one, then <code>install.sh --config … --yes</code></td></tr>
+          <tr><td>Uninstall</td><td><code>bash ./install.sh uninstall --yes</code>; with the node's name typed, also <code>rm -rf /var/lib/hoi-public /var/lib/private/hoi-public /etc/hoi-node</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="wk-code" data-lang="text" data-title="The journald drop-in (retentionDropIn(30))"><pre><code># Written by hoi node setup: keep this server's logs 30 days at most, as the operator notice says.
+[Journal]
+MaxRetentionSec=30day</code></pre></div>
+    <p>The node itself logs no addresses; the drop-in is for the server's own logs (sshd, the firewall), which do. An uninstall without the name typed keeps the data: "Removed; the data stays in /var/lib/hoi-public."</p>
+  </section>
+
+  <section class="wk-sec" id="window">
+    <h2>The window and its commands</h2>
+    <p>The window is 880 × 920, at least 520 × 620, centered, titled "hoi Node Setup". It talks to nothing but its own IPC, so unlike the desktop app no registry origin is ever merged into its CSP (<code>scripts/tauri.mjs</code> only narrows the Windows bundles for a preview version).</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Setup window CSP">
+      <table>
+        <thead><tr><th>Directive</th><th>Sources</th></tr></thead>
+        <tbody>
+          <tr><td><code>default-src</code>, <code>script-src</code>, <code>style-src</code>, <code>font-src</code></td><td><code>'self'</code></td></tr>
+          <tr><td><code>worker-src</code>, <code>media-src</code>, <code>object-src</code>, <code>base-uri</code>, <code>form-action</code></td><td><code>'none'</code></td></tr>
+          <tr><td><code>img-src</code></td><td><code>'self' data: blob:</code></td></tr>
+          <tr><td><code>connect-src</code></td><td><code>'self' ipc: http://ipc.localhost</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Its capabilities file grants <code>core:default</code> only: "no shell, no file system, no HTTP from the UI; files and links go through the commands." Those commands are:</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="Setup commands">
+      <table>
+        <thead><tr><th>Command</th><th>Bridge method</th><th>Does</th></tr></thead>
+        <tbody>
+          <tr><td><code>setup_profiles</code> · <code>setup_save_profile</code> · <code>setup_remove_profile</code></td><td><code>profiles</code> · <code>saveProfile</code> · <code>removeProfile</code></td><td>Read and change <code>servers.json</code>.</td></tr>
+          <tr><td><code>setup_probe</code></td><td><code>probe</code></td><td>The host key, nobody authenticated.</td></tr>
+          <tr><td><code>setup_connect</code></td><td><code>connect</code></td><td>A session id (<code>s1</code>, <code>s2</code>, …).</td></tr>
+          <tr><td><code>setup_run</code></td><td><code>run</code></td><td>A command, lines as <code>setup://log</code> <code>{run, stream, text}</code>; with <code>pty</code>, one sudo answer.</td></tr>
+          <tr><td><code>setup_read</code></td><td><code>read</code></td><td>A command's whole output.</td></tr>
+          <tr><td><code>setup_upload</code></td><td><code>upload</code></td><td>A text file through the session.</td></tr>
+          <tr><td><code>setup_upload_node</code></td><td><code>uploadNode</code></td><td>A hoi-node archive into the upload folder, progress as <code>setup://upload</code> <code>{run, sent, total}</code>, checked by SHA-256.</td></tr>
+          <tr><td><code>setup_disconnect</code></td><td><code>disconnect</code></td><td>Closes a session.</td></tr>
+          <tr><td><code>setup_local_run</code> · <code>setup_write_local</code> · <code>setup_platform</code></td><td><code>localRun</code> · <code>writeLocal</code> · <code>platform</code></td><td>This computer: a program, a kit file, and <code>{os, arch, user, home}</code>.</td></tr>
+          <tr><td><code>setup_node_files</code> · <code>setup_pick_node</code></td><td><code>nodeFiles</code> · <code>pickNode</code></td><td>hoi-node archives found, or picked.</td></tr>
+          <tr><td><code>setup_pick_file</code> · <code>setup_save_file</code></td><td><code>pickFile</code> · <code>saveFile</code></td><td>A key file's path; a native save dialog.</td></tr>
+          <tr><td><code>setup_open_url</code></td><td><code>openUrl</code></td><td>Only <code>https://</code>, at most 8 192 characters, no control characters or whitespace.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 id="window-mock">In a plain browser</h3>
+    <p><code>pnpm --filter @hoi/web dev:setup</code> serves the window on port 5175 without Tauri; <code>getBridge()</code> then returns <code>mockBridge()</code> and a callout says a pretend server answers. The mock pins <code>SHA256:mock…</code>, accepts the password <code>correct horse</code>, can't reach <code>down.example</code>, answers <code>uname -m</code> with <code>x86_64</code>, has hoi-node 9.9.9 archives for x86_64 and aarch64 Linux "built" on this computer, prints the check rows and installs a node whose link carries a real notice (from <code>core/vectors/node-notice.json</code>).</p>
+  </section>
+
+  <section class="wk-sec" id="portable">
+    <h2>The portable app</h2>
+    <p><code>pnpm build:all --only server,node-setup</code> builds the server parts and this app into one folder. The setup app needs no installing:</p>
+    <div class="wk-code" data-lang="text" data-title="builds/hoi-&lt;version&gt;/"><pre><code>server/       hoi-node_&lt;v&gt;_x86_64-unknown-linux-gnu.tar.gz, hoi-server_&lt;v&gt;_linux-x64.tar.gz
+node-setup/   hoi-node-setup_&lt;v&gt;_&lt;os&gt;-&lt;arch&gt;-portable.exe   (Windows: the program itself)
+              hoi-node-setup_&lt;v&gt;_&lt;os&gt;-&lt;arch&gt;-portable.zip   (macOS: the .app, zipped with ditto)
+              the .AppImage on Linux, and the installers</code></pre></div>
+    <p>Run from <code>node-setup/</code>, it finds the hoi-node in <code>../server/</code> by itself, so a node installs before any release is published. Installers come from <code>pnpm build:setup</code>; like the desktop app, a preview version is built for Windows without the <code>.msi</code>. In a release, <code>scripts/release-manifest.mjs</code> marks this app's files with <code>product: "setup"</code>, so the download page lists them in their own row and the installers never take them for the app. Its icon is the hoi mark on an ink tile with a server (<code>pnpm --filter @hoi/setup icons</code>), and its installer art comes from the same <code>scripts/installer-art.mjs</code> as the desktop app's.</p>
+  </section>
+
+  <section class="wk-sec" id="tests">
+    <h2>Tests</h2>
+    <div class="wk-code" data-lang="sh" data-title="Running them"><pre><code>cargo test --manifest-path apps/setup/src-tauri/Cargo.toml --workspace   # quoting, prompts, profiles, the local runner
+pnpm --filter @hoi/web test                                              # src/tests/setup-steps.test.ts
+node scripts/setup-build.test.mjs                                        # the window builds without the core
+node apps/web/scripts/e2e-setup.mjs                                      # the wizard and Manage against the pretend server</code></pre></div>
+    <ul>
+      <li><code>words_are_quoted_for_the_shell</code>: <code>it's</code> becomes <code>'it'\''s'</code>, and <code>$(touch x); `y`</code> stays one inert word.</li>
+      <li><code>password_prompts_are_seen_at_the_end_of_the_output</code> and <code>lines_are_handed_over_whole_and_prompts_kept</code>.</li>
+      <li><code>a_closed_port_is_unreachable_and_says_so</code>: port 9 on loopback.</li>
+      <li><code>output_arrives_line_by_line_from_both_streams</code>: the local runner, stdin included.</li>
+      <li><code>setup-steps.test.ts</code>: the wizard reads what the installer prints, and the commands it runs are quoted and shown as they run.</li>
+    </ul>
+  </section>
+
+  <section class="wk-sec" id="next">
+    <h2>Read next</h2>
+    <div class="wk-cards">
+      <a class="wk-card g-sun" href="/wiki/deploy/"><i></i><b>Deploying &amp; hosting</b><span>The installers, their roles and their checks.</span></a>
+      <a class="wk-card g-sun" href="/wiki/hoi-node/"><i></i><b>hoi-node</b><span>The flags, routes and admin commands it installs.</span></a>
+      <a class="wk-card g-lilac" href="/wiki/mailboxes/"><i></i><b>Mailboxes</b><span>What "Keep mailboxes for private communities" holds.</span></a>
+      <a class="wk-card g-sky" href="/wiki/links/"><i></i><b>Links &amp; URIs</b><span>The node link and the notice inside it.</span></a>
+    </div>
+  </section>
+</article>
+<!-- @wiki-close -->
+<!-- @include footer.html -->
+<script type="module" src="/src/pages/wiki.ts"></script>
+</body>
+</html>
