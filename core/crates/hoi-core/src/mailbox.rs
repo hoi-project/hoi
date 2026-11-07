@@ -1241,7 +1241,7 @@ mod tests {
     #[test]
     fn lists_round_trip_and_bad_ones_read_as_none() {
         let list = vec![
-            Mailbox { endpoint: Id([1; 32]), routes: vec!["a@1.2.3.4:7843".into(), "rtc:x@1.2.3.4:7844".into()] },
+            Mailbox { endpoint: Id([1; 32]), routes: vec!["a@192.0.2.4:7843".into(), "rtc:x@192.0.2.4:7844".into()] },
             Mailbox { endpoint: Id([2; 32]), routes: vec![] },
         ];
         assert_eq!(decode_list(&encode_list(&list, None, &[])), list);
