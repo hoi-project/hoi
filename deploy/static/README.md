@@ -59,6 +59,60 @@ copy lives on another domain. A preview app keeps itself out of search results w
 **Anywhere else.** Upload `dist/` as it is. Serve `install.sh` and `install.ps1` as plain text
 and don't cache them, and don't cache `/release.json` or `/releases/`.
 
+﻿### Signed release metadata (`/releases/`)
+
+The site and the app fetch the signed release list at `/releases/manifest.json` and its detached
+signature at `/releases/manifest.json.minisig` (the `downloads` address in `publication.json`;
+see [Releases](../../docs/RELEASES.md)). When the site and the metadata are served from different
+origins, the metadata needs CORS; when they share an origin, no CORS header is needed. Either
+way, serve both files together and never cache them for long: clients must always revalidate, so
+a new release is picked up immediately and a manifest is never paired with a stale signature.
+
+Headers for the two files (adjust the origin to your site's):
+
+```
+Access-Control-Allow-Origin: https://hoi.sh
+Vary: Origin
+Content-Type: application/json; charset=utf-8        # manifest.json
+Content-Type: text/plain; charset=utf-8               # manifest.json.minisig
+Cache-Control: no-cache                                # both: always revalidate
+```
+
+`Access-Control-Allow-Origin` may be `*` only while the metadata is public and no credentials are
+sent; a named origin is safer. `Vary: Origin` keeps caches from serving one origin's CORS answer
+to another. `no-cache` (not `no-store`) lets a conditional request return 304, so revalidation is
+cheap. The same `no-cache` rule applies to `/release.json` and to `install.sh`/`install.ps1`
+above. Hashed assets under `/assets/` are the only thing that may be cached long
+(`public, max-age=31536000, immutable`); `dist/_headers` already sets all of this for hosts that
+read that file.
+
+**Replace the pair atomically.** Upload `manifest.json` and `manifest.json.minisig` together, in
+one deploy, never one after the other: a client that reads a new manifest with the old signature
+(or the reverse) fails verification and must not be left in that state. Per host:
+
+- **Netlify / Cloudflare Pages / any host that deploys a directory atomically.** Put both files in
+  the same `dist/releases/` upload; the deploy swaps the directory in one step. Don't edit files
+  in place through a web console.
+- **GitHub Pages (Actions).** The Website workflow copies both files from the published release
+  into `dist/releases/` in the same build, so one workflow run publishes the pair together.
+- **S3 / CloudFront.** Upload both to a new `releases/vX.Y.Z/` prefix, then copy
+  `manifest.json` and `manifest.json.minisig` into `releases/` and create one invalidation for
+  `/releases/*`. Keep the old version's files in place (don't delete them in the same deploy) so
+  clients mid-update can still fetch them; delete old versions only after the new manifest has
+  been live for a while.
+- **nginx / Caddy / any server you control.** Stage both files as `manifest.json.new` and
+  `manifest.json.minisig.new`, verify the signature locally
+  (`minisign -Vm manifest.json.new -P "$RELEASE_PUBKEY"`), then rename both into place back to
+  back in one script (`mv` is atomic per file; do the two renames consecutively and reload only
+  after both). Never serve a directory listing of `/releases/`.
+- **Any host without atomic deploys.** Serve `/releases/` from a versioned path
+  (`releases/vX.Y.Z/manifest.json`) and make `/releases/manifest.json` a copy you flip in one step;
+  or accept a short window where verification fails and clients retry on the next check.
+
+Verify after every upload: `curl -sI https://hoi.sh/releases/manifest.json` shows
+`Cache-Control: no-cache` (and `Access-Control-Allow-Origin` when origins differ), and
+`minisign -Vm manifest.json -P "$RELEASE_PUBKEY"` passes against the served bytes.
+
 ## Nothing to configure
 
 The app needs no service address to work: reading, joining and, through a home node, posting all
