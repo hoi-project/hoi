@@ -135,9 +135,13 @@ GitHub release turns into `hoi.Node.Setup_`, and `hoi-node-setup_` from local bu
 manual runs, turn off `desktop` to build only hoi-node; it leaves out the setup app too. Builds and tests are separate: even a patch needs
 to compile the requested binaries.
 
-Required secrets:
+Required secrets, in the `release` environment (deployments from `v*` tags and `main` only):
 
 - `MINISIGN_SECRET_KEY` (base64 secret-key file) and `MINISIGN_PASSWORD`.
+- For desktop updates: `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`.
+  A key from `tauri signer generate` is a minisign key, base64-wrapped, so it serves as
+  `MINISIGN_SECRET_KEY` too. Before any build, the workflow signs a test file with both keys
+  and checks the result against `manifestKey` and `updaterKey`.
 - For signed desktop installers: `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`,
   `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID`,
   `WINDOWS_CERTIFICATE` (base64 PFX) and `WINDOWS_CERTIFICATE_PASSWORD`.
@@ -149,7 +153,11 @@ Artifacts, SHA-256 manifest and signature are uploaded to a **draft** release.
 The preview channel sets GitHub's pre-release flag automatically, including numeric
 `0.x` previews. Both manual and automatic runs validate the same tagged source and
 require the same signing secrets.
-Publishing the draft and deploying the site are separate manual actions.
+Publishing the draft is a manual action. It starts **Website**, which copies the newest
+published release's `manifest.json` and `manifest.json.minisig` into the site's `/releases/`
+(the `downloads` address in `publication.json`) after checking the signature. The files stay
+on the GitHub release; only `HOI_RELEASE_BASE_URL` points them elsewhere. Until a release
+is published, the site serves no signed list and the Download page says so.
 
 ## Local builds
 

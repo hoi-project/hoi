@@ -38,7 +38,8 @@ export function classify(name) {
 export function buildManifest(dir, tag, publication = loadPublication(), release = loadBuildRelease()) {
 const version = tag.replace(/^v/, '');
 const repo = publication.repository || `https://github.com/${process.env.GITHUB_REPOSITORY ?? 'hoi-project/hoi'}`;
-const base = process.env.HOI_RELEASE_BASE_URL || (publication.downloads ? `${publication.downloads.replace(/\/+$/, '')}/${tag}/` : '');
+// `downloads` is where the signed list is served (the site), not the files: they stay on the release.
+const base = process.env.HOI_RELEASE_BASE_URL || '';
 if (base && !/^https:\/\/[^\s?#]+\/$/.test(base)) {
   throw new Error('HOI_RELEASE_BASE_URL must be an https:// address ending in /');
 }

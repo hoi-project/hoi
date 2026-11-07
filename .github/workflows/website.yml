@@ -5,6 +5,9 @@ name: Website
 
 on:
   workflow_dispatch:
+  # Publishing a release puts its signed list on the site (/releases/).
+  release:
+    types: [published]
 
 permissions:
   contents: read
@@ -53,6 +56,17 @@ jobs:
           VITE_HOI_REGISTRY_URL: ""
           VITE_HOI_RELAY_URLS: "[]"
         run: node scripts/reproduce.mjs --only static
+      # The newest published release (prereleases count, drafts don't) replaces the site's
+      # placeholder list; it is checked against manifestKey first. Added after the build, so it is
+      # not part of the digests above. Without a published release the placeholder stays.
+      - name: Add the latest published release list
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="$(gh release list -R "$GITHUB_REPOSITORY" --exclude-drafts --limit 1 --json tagName --jq '.[0].tagName // empty')"
+          if [ -z "$tag" ]; then echo "No published release yet; the site keeps its placeholder list."; exit 0; fi
+          gh release download "$tag" -R "$GITHUB_REPOSITORY" -p manifest.json -p manifest.json.minisig -D dist/releases --clobber
+          node scripts/release-site-list.mjs dist/releases
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: dist

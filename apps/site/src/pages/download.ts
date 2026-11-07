@@ -2,7 +2,7 @@
 // release list (/releases/manifest.json). Without scripts the rows link to the list and the repo.
 import { $, $$, wireCopyButtons } from '../common';
 import { detectOS, OS_LABEL } from '../platform';
-import { fetchVerifiedManifest } from '../../../../scripts/release-verify.mjs';
+import { fetchBounded, fetchVerifiedManifest } from '../../../../scripts/release-verify.mjs';
 declare const __HOI_PUBLICATION__: import('../../../../scripts/publication.mjs').Publication;
 
 interface ReleaseFile {
@@ -153,11 +153,24 @@ function showEmpty(status: HTMLElement): void {
   });
 }
 
+/** The site's own unsigned list (apps/site/public/releases/manifest.json), served until the first
+ * release is published. It offers nothing, so nothing in it needs trusting; any other list must verify. */
+function isPlaceholder(bytes: Uint8Array): boolean {
+  try {
+    const m = JSON.parse(new TextDecoder().decode(bytes));
+    return m?.schema === 1 && m.latest === null && Array.isArray(m.releases) && m.releases.length === 0;
+  } catch {
+    return false;
+  }
+}
+
 async function load(): Promise<void> {
   const status = $('#release');
   if (!status) return;
   try {
     if (!__HOI_PUBLICATION__.manifestKey || !__HOI_PUBLICATION__.downloads) { showEmpty(status); return; }
+    const list = `${__HOI_PUBLICATION__.downloads.replace(/\/+$/, '')}/manifest.json`;
+    if (isPlaceholder(await fetchBounded(list, 1024 * 1024))) { showEmpty(status); return; }
     const m = await fetchVerifiedManifest(__HOI_PUBLICATION__);
     const r = m.latest ? m.releases.find((x) => x && x.version === m.latest) : undefined;
     if (r && isStr(r.version)) showRelease(m, r, status);

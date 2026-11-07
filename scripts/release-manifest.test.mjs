@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { classify } from './release-manifest.mjs';
+import { buildManifest, classify } from './release-manifest.mjs';
 import { findBundles, releaseBundleName } from './tauri-bundles.mjs';
 
 test('the node setup app is marked whichever way its product name was spelled', () => {
@@ -42,6 +42,23 @@ test('the bundle finder walks a Tauri target folder and skips .app folders', () 
     assert.deepEqual(findBundles(dir).map((p) => p.slice(dir.length + 1).replaceAll('\\', '/')).sort(), ['release/bundle/deb/hoi_1.0.0_amd64.deb', 'release/bundle/nsis/hoi_1.0.0_x64-setup.exe']);
     assert.deepEqual(findBundles(join(dir, 'missing')), []);
   } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('the files stay on the GitHub release when the list is served from the site', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'hoi-manifest-'));
+  const saved = process.env.HOI_RELEASE_BASE_URL;
+  delete process.env.HOI_RELEASE_BASE_URL;
+  try {
+    writeFileSync(join(dir, 'hoi_1.0.0_amd64.AppImage'), 'app');
+    const publication = { repository: 'https://github.com/hoi-project/hoi', downloads: 'https://hoi.sh/releases' };
+    const [file] = buildManifest(dir, 'v1.0.0', publication).releases[0].files;
+    assert.equal(file.url, 'https://github.com/hoi-project/hoi/releases/download/v1.0.0/hoi_1.0.0_amd64.AppImage');
+    process.env.HOI_RELEASE_BASE_URL = 'https://files.example/hoi/';
+    assert.equal(buildManifest(dir, 'v1.0.0', publication).releases[0].files[0].url, 'https://files.example/hoi/hoi_1.0.0_amd64.AppImage');
+  } finally {
+    if (saved === undefined) delete process.env.HOI_RELEASE_BASE_URL; else process.env.HOI_RELEASE_BASE_URL = saved;
     rmSync(dir, { recursive: true, force: true });
   }
 });
