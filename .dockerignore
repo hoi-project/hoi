@@ -2,8 +2,6 @@
 .agents
 .codex
 .aws
-.private
-public-export
 work
 builds
 **/dist-setup

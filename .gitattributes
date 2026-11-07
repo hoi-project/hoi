@@ -7,8 +7,5 @@
 *.cmd text eol=crlf
 *.bat text eol=crlf
 
-# Private maintainer material stays in the private repository, not source archives.
-/.private export-ignore
-/.private/** export-ignore
 # Installer artwork must reach the NSIS compiler byte for byte.
 *.bmp binary

@@ -9,13 +9,13 @@ checkVersion();
 for (const args of [
   ['packages/tokens/scripts/generate.mjs', '--check'],
   ['scripts/check-dependency-security.mjs'],
-  ['scripts/export-public.mjs', '--check'],
+  ['scripts/check-tracked.mjs'],
   // The wiki: every page's structure and links, and the SBOM against every lockfile.
   ['apps/site/scripts/wiki-check.mjs'],
   ['apps/site/scripts/sbom.mjs', '--check'],
   // Scattered delivery's sizing vectors against the spec's reference arithmetic.
   ['docs/spec/scatter-params.mjs', '--check', 'core/vectors/scatter.json'],
-  ['--test', 'scripts/release-tier.test.mjs', 'scripts/export-public.test.mjs',
+  ['--test', 'scripts/release-tier.test.mjs', 'scripts/check-tracked.test.mjs',
     'scripts/release-config.test.mjs', 'scripts/release-local.test.mjs',
     'scripts/release-version.test.mjs', 'scripts/release-workflow.test.mjs',
     'scripts/release-plan.test.mjs', 'scripts/release-manifest.test.mjs', 'scripts/build-all.test.mjs',
