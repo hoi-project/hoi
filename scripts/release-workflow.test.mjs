@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
-import { cpSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { applyVersion, LOCKFILES, planVersion, versionFiles } from './release-version.mjs';
 
 const read = name => readFileSync(new URL(`../.github/workflows/${name}.yml`, import.meta.url), 'utf8').replaceAll('\r\n', '\n');
@@ -56,6 +56,54 @@ function context(event, owner = 'hoi-project', releases = '', tier = 'major') {
 }
 
 const job = (workflow, name) => read(workflow).split(`\n  ${name}:\n`)[1]?.split(/\n  [\w-]+:\n/)[0];
+
+test('major suites run only a commit in the triggering revision’s history', t => {
+  const workflow = read('release-major');
+  const verify = job('release-major', 'verify-major');
+  assert.match(verify, /ref: \$\{\{ github\.sha \}\}/);
+  assert.match(verify, /fetch-depth: 0/);
+  assert.doesNotMatch(workflow, /ref: \$\{\{ inputs\.ref \}\}/);
+  for (const name of ['browser-e2e', 'webrtc-browsers']) {
+    assert.match(job('release-major', name), /ref: \$\{\{ needs\.verify-major\.outputs\.revision \}\}/);
+  }
+  const script = verify.match(/        run: \|\n((?: {10}[^\n]*\n)+)/)?.[1].replace(/^ {10}/gm, '');
+  assert.ok(script);
+  const cwd = mkdtempSync(join(tmpdir(), 'hoi-release-ref-'));
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+  const git = (...args) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  const commit = message => {
+    git('-c', 'user.name=Release Test', '-c', 'user.email=release@example.com', '-c', 'commit.gpgsign=false', 'commit', '--allow-empty', '-m', message);
+    return git('rev-parse', 'HEAD');
+  };
+  git('init', '-b', 'main');
+  const ancestor = commit('earlier release');
+  git('switch', '-c', 'other');
+  const unrelated = commit('off-branch');
+  git('switch', 'main');
+  const head = commit('triggering commit');
+  const check = requested => spawnSync('bash', ['-e', '-c', script], {
+    cwd, encoding: 'utf8', env: { ...process.env, REQUESTED_COMMIT: requested, GITHUB_OUTPUT: 'github-output' },
+  });
+  for (const requested of ['refs/heads/other', unrelated]) {
+    const result = check(requested);
+    assert.ifError(result.error);
+    assert.equal(result.status, 1, result.stderr);
+    assert.equal(git('rev-parse', 'HEAD'), head);
+  }
+  for (const requested of [head, ancestor]) {
+    const result = check(requested);
+    assert.ifError(result.error);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(git('rev-parse', 'HEAD'), requested);
+    assert.equal(readFileSync(join(cwd, 'github-output'), 'utf8').trim().split(/\r?\n/).at(-1), `revision=${requested}`);
+  }
+});
+
+test('the Pages build starts without restoring dependency caches', () => {
+  const build = job('website', 'build');
+  assert.match(build, /package-manager-cache: false/);
+  assert.doesNotMatch(build, /cache: pnpm|uses: Swatinem\/rust-cache@/);
+});
 
 test('release workflow version checks run without installed dependencies', async t => {
   const base = mkdtempSync(join(tmpdir(), 'hoi-release-workflow-'));
@@ -148,11 +196,72 @@ test('routine checks start by themselves in the public hoi-project repository, a
 test('the private test mode keeps macOS and Windows out', () => {
   const major = read('release-major');
   assert.match(major, /linux_only:\n        description:/);
-  for (const name of ['ios', 'installers']) assert.match(job('release-major', name), /if: \$\{\{ !inputs\.linux_only \}\}/, name);
+  assert.match(job('release-major', 'installers'), /if: \$\{\{ !inputs\.linux_only \}\}/);
   assert.match(job('release-major', 'rust'), /inputs\.linux_only && '\["ubuntu-latest"\]'/);
   assert.match(job('release-major', 'desktop'), /inputs\.linux_only && '\["ubuntu-22\.04"\]'/);
   assert.match(job('release-major', 'webrtc-browsers'), /inputs\.linux_only && '\[\{"browser":"firefox"/);
   assert.match(job('weekly', 'suites'), /linux_only: \$\{\{ github\.event_name == 'workflow_dispatch' && inputs\.linux_only \}\}/);
+});
+
+test('Release and Weekly only schedule mobile builds with a prepared package version', t => {
+  for (const [workflow, name] of [['release', 'long'], ['weekly', 'suites']]) {
+    assert.match(job(workflow, name), /uses: \.\/\.github\/workflows\/release-major\.yml/);
+  }
+  const verify = job('release-major', 'verify-major');
+  const step = verify.split('      - name: Check mobile build readiness\n')[1]?.split('\n      - ')[0];
+  assert.ok(step, 'the shared preflight reads the package settings');
+  assert.ok(verify.indexOf('git checkout --detach') < verify.indexOf('      - name: Check mobile build readiness'));
+  for (const platform of ['android', 'ios']) {
+    assert.match(verify, new RegExp(`^      ${platform}: \\$\\{\\{ steps\\.mobile\\.outputs\\.${platform} \\}\\}$`, 'm'));
+  }
+  const script = step.split('        run: |\n')[1].trimEnd().replace(/^ {10}/gm, '');
+  const cwd = mkdtempSync(join(tmpdir(), 'hoi-mobile-build-'));
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+  const out = join(cwd, 'github-output');
+  const cases = [
+    [{}, { android: 'false', ios: 'false' }],
+    [{ android: '{"version":null}', ios: 'not JSON' }, { android: 'false', ios: 'false' }],
+    [{ android: '{"version":"0.1.0-preview.1"}', ios: '{"version":"draft"}' }, { android: 'true', ios: 'false' }],
+    [{ android: '{"version":123}', ios: '{"version":"1.2.3"}' }, { android: 'false', ios: 'true' }],
+    [{ android: '{"version":"0.1.0"}', ios: '{"version":"1.2.3"}' }, { android: 'true', ios: 'true' }],
+  ];
+  for (const [configs, expected] of cases) {
+    for (const [platform, config] of Object.entries(configs)) {
+      const dir = join(cwd, 'apps', 'mobile', platform);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'build.json'), config);
+    }
+    writeFileSync(out, '');
+    const result = spawnSync('bash', ['-e', '-c', script], {
+      cwd, encoding: 'utf8', env: { ...process.env, GITHUB_OUTPUT: 'github-output' },
+    });
+    assert.ifError(result.error);
+    assert.equal(result.status, 0, result.stderr);
+    const outputs = Object.fromEntries(readFileSync(out, 'utf8').trim().split(/\r?\n/).map(line => line.split('=')));
+    assert.deepEqual(outputs, expected);
+    for (const weekly of [false, true]) for (const linux_only of [false, true]) {
+      const context = { inputs: { weekly, linux_only }, needs: { 'verify-major': { outputs } } };
+      assert.equal(gate('release-major', 'android', context), expected.android === 'true');
+      assert.equal(gate('release-major', 'ios', context), expected.ios === 'true' && !linux_only);
+    }
+  }
+});
+
+test('major release browser jobs use Ubuntu supported by the pinned Playwright', () => {
+  assert.match(job('release-major', 'browser-e2e'), /^    runs-on: ubuntu-24\.04$/m);
+  const webrtc = job('release-major', 'webrtc-browsers');
+  const firefoxRunners = [...webrtc.matchAll(/"browser":"firefox","os":"([^"]+)"/g)].map(([, os]) => os);
+  assert.deepEqual(firefoxRunners, ['ubuntu-24.04', 'ubuntu-24.04']);
+});
+
+test('major release browser builds do not fetch the live release feed', () => {
+  const fixture = 'scripts/fixtures/publication-browser-e2e.json';
+  for (const name of ['browser-e2e', 'webrtc-browsers']) {
+    assert.ok(job('release-major', name).includes('HOI_PUBLICATION_FILE: ${{ github.workspace }}/' + fixture), name);
+  }
+  const publication = JSON.parse(readFileSync(new URL('../' + fixture, import.meta.url), 'utf8'));
+  assert.equal(publication.downloads, '');
+  assert.equal(publication.manifestKey, '');
 });
 
 test('called release suites have no gate of their own: the caller decides', () => {

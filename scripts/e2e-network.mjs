@@ -6,11 +6,14 @@
 //   mira: sees the reply arrive live
 //
 // Needs: `pnpm core:wasm && pnpm build:web` and `cargo build -p hoi-node` (in core/).
+// Set HOI_PUBLICATION_FILE to the absolute path of scripts/fixtures/publication-browser-e2e.json
+// when building the web app to keep the preview banner's release check offline.
 // Usage: node scripts/e2e-network.mjs [--shots <dir>] [--headed]
 import { spawn } from 'node:child_process';
 import { mkdtempSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { KEY_WORK_TIMEOUT, STAMP_TIMEOUT, launch } from './e2e-browser.mjs';
 import { unlockBrowser } from './browser-vault.mjs';
@@ -91,12 +94,16 @@ async function sayHoi(page, who, { stir, next }) {
     const cx = box.x + box.width / 2;
     const cy = box.y + box.height / 2;
     const r = Math.min(box.height * 0.4, box.width * 0.42);
-    // back and forth through the swarm until the ring is full and it moves on by itself
-    for (let row = 0; row < 80 && (await act1.count()); row++) {
+    // Stir credits at most one move every 20 ms. Pace the gestures so a fast browser
+    // does not finish dispatching them before the ring has time to fill.
+    for (let row = 0; row < 200 && (await act1.count()); row++) {
       const y = cy - r + 2 * r * ((row * 0.618) % 1);
       await page.mouse.move(cx - r, y);
-      await page.mouse.move(cx + r, y + 12, { steps: 12 });
+      await delay(25);
+      await page.mouse.move(cx + r, y + 12);
+      await delay(25);
     }
+    await act1.waitFor({ state: 'hidden' });
   } else {
     await page.getByRole('button', { name: 'Skip', exact: true }).click();
   }
@@ -229,7 +236,9 @@ await snap(lena, '05-lena-poof');
 // lena's browser asks the home node for the picture while it is still coming up from mira's
 const picture = Buffer.from(
   await mira.evaluate(async () => {
-    const c = new OffscreenCanvas(480, 320);
+    const c = document.createElement('canvas');
+    c.width = 480;
+    c.height = 320;
     const g = c.getContext('2d');
     const grad = g.createLinearGradient(0, 0, 480, 320);
     grad.addColorStop(0, '#2f55e6');
@@ -240,7 +249,9 @@ const picture = Buffer.from(
     g.beginPath();
     g.arc(170, 150, 90, 0, Math.PI * 2);
     g.fill();
-    return Array.from(new Uint8Array(await (await c.convertToBlob({ type: 'image/png' })).arrayBuffer()));
+    const png = await new Promise((resolve) => c.toBlob(resolve, 'image/png'));
+    if (!png) throw new Error('Could not encode the test picture');
+    return Array.from(new Uint8Array(await png.arrayBuffer()));
   }),
 );
 await mira.goto(`${base}#/`);

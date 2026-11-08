@@ -26,5 +26,11 @@ The wrappers use Keychain on iOS and Keystore on Android. Application UI calls t
 core through `HoiNode`; keys, validation and storage belong to the core. The shared
 UI contract is documented by the types in `packages/core-api/src/types.ts`.
 
-Mobile builds are part of the major-release CI suites. See [development](../../docs/DEVELOPMENT.md)
+The shared Release and Weekly suites skip mobile builds until a platform is ready. To enable
+a platform, set `version` in its [Android](android/build.json) or [iOS](ios/build.json)
+build configuration to a version such as `"0.1.0"` or `"0.1.0-preview.1"`. The workflow
+reads the configuration from the revision being tested. A null, missing, or invalid version
+keeps the job skipped. Weekly's Linux-only mode also skips iOS.
+
+These jobs compile the native libraries. See [development](../../docs/DEVELOPMENT.md)
 and [CI](../../docs/CI.md).

@@ -33,14 +33,33 @@ jobs:
   verify-major:
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    outputs:
+      revision: ${{ steps.source.outputs.revision }}
+      android: ${{ steps.mobile.outputs.android }}
+      ios: ${{ steps.mobile.outputs.ios }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ github.sha }}
+          fetch-depth: 0
           persist-credentials: false
+      # A manual dispatch on main must not run code from an unrelated ref in main's cache scope.
+      - name: Verify and select the requested commit
+        id: source
+        env:
+          REQUESTED_COMMIT: ${{ inputs.ref }}
+        run: |
+          if ! [[ "$REQUESTED_COMMIT" =~ ^[0-9a-f]{40}$ ]] ||
+             ! git merge-base --is-ancestor "$REQUESTED_COMMIT" HEAD; then
+            echo "The requested commit must be the triggering commit or an ancestor of it." >&2
+            exit 1
+          fi
+          git checkout --detach "$REQUESTED_COMMIT"
+          echo "revision=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
+          package-manager-cache: false
       - name: Refuse long suites for a non-major version
         if: ${{ !inputs.weekly }}
         env:
@@ -48,6 +67,26 @@ jobs:
         run: |
           test "$(node scripts/release-tier.mjs "$VERSION")" = major
           node scripts/release-version.mjs --check "${VERSION#v}"
+      - name: Check mobile build readiness
+        id: mobile
+        run: |
+          node --input-type=module <<'NODE'
+          import { appendFileSync, readFileSync } from 'node:fs';
+
+          const versionPattern = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
+          for (const platform of ['android', 'ios']) {
+            const path = `apps/mobile/${platform}/build.json`;
+            let version;
+            try {
+              version = JSON.parse(readFileSync(path, 'utf8'))?.version;
+            } catch {
+              // Older revisions and unfinished packages may have no readable build settings.
+            }
+            const ready = typeof version === 'string' && version.trim() === version && versionPattern.test(version);
+            console.log(`${platform}: ${ready ? `build enabled for ${version}` : `skipped because ${path} has no valid version`}`);
+            appendFileSync(process.env.GITHUB_OUTPUT, `${platform}=${ready}\n`);
+          }
+          NODE
 
   rust:
     name: rust (${{ matrix.os }})
@@ -64,7 +103,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ needs.verify-major.outputs.revision }}
           persist-credentials: false
       # The hosted Linux image ships SDKs this job never uses; the workspace test build needs the room.
       - name: Free disk space
@@ -92,7 +131,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ needs.verify-major.outputs.revision }}
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
@@ -118,7 +157,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ needs.verify-major.outputs.revision }}
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
@@ -133,6 +172,7 @@ jobs:
   android:
     name: android (build only)
     needs: verify-major
+    if: ${{ needs.verify-major.outputs.android == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     defaults:
@@ -141,7 +181,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ needs.verify-major.outputs.revision }}
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
@@ -160,7 +200,7 @@ jobs:
   ios:
     name: ios (build only)
     needs: verify-major
-    if: ${{ !inputs.linux_only }}
+    if: ${{ needs.verify-major.outputs.ios == 'true' && !inputs.linux_only }}
     runs-on: macos-latest
     timeout-minutes: 60
     defaults:
@@ -169,7 +209,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ needs.verify-major.outputs.revision }}
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
@@ -189,7 +229,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ needs.verify-major.outputs.revision }}
           persist-credentials: false
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -212,12 +252,13 @@ jobs:
   browser-e2e:
     name: browser end-to-end
     needs: verify-major
-    runs-on: ubuntu-latest
+    # Playwright 1.56.1 does not have browser builds for Ubuntu 26.04.
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ needs.verify-major.outputs.revision }}
           persist-credentials: false
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -239,7 +280,12 @@ jobs:
       - run: pnpm core:wasm
       - name: Full JavaScript and sandbox tests
         run: pnpm check && pnpm test && pnpm test:sandbox
-      - run: pnpm build:site && pnpm build:web && node scripts/assemble-static.mjs
+      - run: pnpm build:site
+      - name: Build the app without a live release feed
+        env:
+          HOI_PUBLICATION_FILE: ${{ github.workspace }}/scripts/fixtures/publication-browser-e2e.json
+        run: pnpm build:web
+      - run: node scripts/assemble-static.mjs
       - run: pnpm exec playwright install --with-deps chromium
       - name: Encrypted vault setup, unlocking, migration and tamper protection
         run: node scripts/e2e-vault.mjs
@@ -296,8 +342,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Firefox on Linux, and Safari's engine: on macOS Playwright's WebKit is closest to Safari.
-        include: ${{ fromJSON(inputs.linux_only && '[{"browser":"firefox","os":"ubuntu-latest"}]' || '[{"browser":"firefox","os":"ubuntu-latest"},{"browser":"webkit","os":"macos-latest"}]') }}
+        # Use the same Playwright-supported Ubuntu as browser-e2e. Run WebKit on macOS.
+        include: ${{ fromJSON(inputs.linux_only && '[{"browser":"firefox","os":"ubuntu-24.04"}]' || '[{"browser":"firefox","os":"ubuntu-24.04"},{"browser":"webkit","os":"macos-latest"}]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     env:
@@ -305,7 +351,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ needs.verify-major.outputs.revision }}
           persist-credentials: false
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -325,7 +371,10 @@ jobs:
           tool: wasm-bindgen@0.2.129
       - run: pnpm install --frozen-lockfile
       - run: pnpm core:wasm
-      - run: pnpm build:web
+      - name: Build the app without a live release feed
+        env:
+          HOI_PUBLICATION_FILE: ${{ github.workspace }}/scripts/fixtures/publication-browser-e2e.json
+        run: pnpm build:web
       - run: pnpm exec playwright install --with-deps ${{ matrix.browser }}
       - name: Build home node
         run: cargo build --locked --manifest-path core/Cargo.toml -p hoi-node
@@ -350,7 +399,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ needs.verify-major.outputs.revision }}
           persist-credentials: false
       - name: Linux dependencies
         if: runner.os == 'Linux'
@@ -384,7 +433,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ needs.verify-major.outputs.revision }}
           persist-credentials: false
       - name: install.ps1 parses
         shell: pwsh
