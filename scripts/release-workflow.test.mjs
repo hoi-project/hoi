@@ -57,6 +57,108 @@ function context(event, owner = 'hoi-project', releases = '', tier = 'major') {
 
 const job = (workflow, name) => read(workflow).split(`\n  ${name}:\n`)[1]?.split(/\n  [\w-]+:\n/)[0];
 
+test('tag retry configuration fails during planning before expensive checks', () => {
+  const plan = job('release', 'plan');
+  assert.match(plan, /^    environment: release$/m);
+  const step = plan.split('      - name: Require tag retry configuration before checks\n')[1]?.split('\n      - ')[0];
+  assert.ok(step);
+  assert.match(step, /if: steps\.commit\.outputs\.previous_tag_sha != ''/);
+  assert.match(step, /RELEASE_TAG_APP_CLIENT_ID: \$\{\{ vars\.HOI_RELEASE_TAG_APP_CLIENT_ID \}\}/);
+  assert.match(step, /HAS_RELEASE_TAG_APP_PRIVATE_KEY: \$\{\{ secrets\.HOI_RELEASE_TAG_APP_PRIVATE_KEY != '' \}\}/);
+  const script = step.split('        run: |\n')[1].trimEnd().replace(/^ {10}/gm, '');
+  for (const client of ['', 'test-client']) for (const key of ['false', 'true']) {
+    const result = spawnSync('bash', ['-e', '-c', script], { encoding: 'utf8', env: {
+      PATH: process.env.PATH, RELEASE_TAG_APP_CLIENT_ID: client, HAS_RELEASE_TAG_APP_PRIVATE_KEY: key,
+    } });
+    assert.ifError(result.error);
+    assert.equal(result.status, client && key === 'true' ? 0 : 1, result.stderr);
+    if (!client) assert.match(result.stdout, /variable HOI_RELEASE_TAG_APP_CLIENT_ID/);
+    if (key === 'false') assert.match(result.stdout, /secret HOI_RELEASE_TAG_APP_PRIVATE_KEY/);
+    assert.doesNotMatch(result.stdout, /test-client/);
+  }
+  for (const name of ['checks', 'long', 'security', 'npm-audit']) {
+    assert.match(job('release', name), /^    needs: plan$/m, `${name} waits for planning`);
+  }
+});
+
+test('draft creation captures its response ID and safely recovers an empty draft', t => {
+  const script = job('release', 'draft').split('      - id: draft\n')[1]
+    .split('        run: |\n')[1].trimEnd().replace(/^ {10}/gm, '');
+  const cwd = mkdtempSync(join(tmpdir(), 'hoi-draft-'));
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+  const mock = `gh() {
+  printf '%s\\n' "$*" >> calls
+  case "$1 $2" in
+    'release view') [ "$EXISTING" = true ] || return 1; echo https://api.github.com/repos/example/hoi/releases/123 ;;
+    'release create') echo https://github.com/example/hoi/releases/tag/untagged-example ;;
+    'api --method')
+      [ "$API_FAIL" != true ] || return 1
+      printf '%s\\n' "$RESPONSE_ID"
+      ;;
+    'api repos/example/hoi/commits/'*) printf '%s\\n' "$REMOTE_SHA" ;;
+    'api https://api.github.com/repos/example/hoi/releases/123')
+      printf '123\\t%s\\t%s\\t%s\\n' "$DRAFT" "$TARGET" "$ASSETS" ;;
+    'api repos/example/hoi/releases?per_page=100') echo null ;;
+    *) return 99 ;;
+  esac
+}
+`;
+  const sha = 'a'.repeat(40);
+  const run = (patch = {}) => {
+    writeFileSync(join(cwd, 'output'), '');
+    writeFileSync(join(cwd, 'calls'), '');
+    const result = spawnSync('bash', ['-e', '-c', mock + script], { cwd, encoding: 'utf8', env: {
+      PATH: process.env.PATH, GH_REPO: 'example/hoi', TAG: 'v1.0.0-preview.2', SOURCE_SHA: sha,
+      DESKTOP: 'true', SIGNED: 'false', PRERELEASE: 'true', PREVIOUS_SHA: '',
+      GITHUB_OUTPUT: 'output', REMOTE_SHA: sha, RESPONSE_ID: '123', EXISTING: 'false',
+      DRAFT: 'true', TARGET: sha, ASSETS: '0', ...patch,
+    } });
+    assert.ifError(result.error);
+    return { ...result, output: readFileSync(join(cwd, 'output'), 'utf8'), calls: readFileSync(join(cwd, 'calls'), 'utf8') };
+  };
+  const created = run();
+  assert.equal(created.status, 0, created.stderr);
+  assert.equal(created.output, 'id=123\n');
+  assert.match(created.calls, /api --method POST .*tag_name=v1\.0\.0-preview\.2/);
+  assert.match(created.calls, new RegExp(`target_commitish=${sha}`));
+  assert.doesNotMatch(created.calls, /releases\?per_page/);
+  for (const patch of [{ TARGET: 'main' }, { ASSETS: '3' }]) {
+    const recovered = run({ EXISTING: 'true', ...patch });
+    assert.equal(recovered.status, 0, recovered.stderr);
+    assert.equal(recovered.output, 'id=123\n');
+    assert.match(recovered.calls, /api --method PATCH/);
+    assert.doesNotMatch(recovered.calls, /api --method POST/);
+  }
+  for (const patch of [
+    { REMOTE_SHA: 'b'.repeat(40) }, { API_FAIL: 'true' }, { RESPONSE_ID: 'null' },
+    { EXISTING: 'true', DRAFT: 'false' },
+    { EXISTING: 'true', TARGET: 'main', ASSETS: '1' },
+    { EXISTING: 'true', PREVIOUS_SHA: 'b'.repeat(40) },
+  ]) {
+    const rejected = run(patch);
+    assert.notEqual(rejected.status, 0, JSON.stringify(patch));
+    assert.equal(rejected.output, '');
+  }
+});
+
+test('only verified prior checks allow signing after validation jobs are skipped', () => {
+  const ctx = context('workflow_dispatch');
+  const checks = ['checks', 'long', 'security', 'npm-audit'];
+  for (const name of checks) ctx.needs[name].result = 'skipped';
+  assert.equal(gate('release', 'signing', ctx), false);
+  ctx.needs.plan.outputs.reuse_checks = 'true';
+  for (const name of checks) assert.equal(gate('release', name, ctx), false, name);
+  assert.equal(gate('release', 'signing', ctx), true);
+  for (const name of ['plan', ...checks]) {
+    const failed = structuredClone(ctx);
+    failed.needs[name].result = 'failure';
+    assert.equal(gate('release', 'signing', failed), false, name);
+  }
+  assert.equal(gate('release', 'signing', { ...ctx, cancelled: true }), false);
+  assert.match(job('release', 'plan'), /reuse_checks: \$\{\{ steps\.resume\.outputs\.reuse_checks \}\}/);
+  assert.match(job('release', 'plan'), /run: node release-tools\/scripts\/release-resume\.mjs/);
+});
+
 test('an unpublished retry validates a descendant on main and advances only the checked tag', t => {
   const step = (jobName, name) => {
     const section = job('release', jobName).split(`      - name: ${name}\n`)[1]?.split('\n      - ')[0];
@@ -418,7 +520,7 @@ test('GitHub pre-release classification comes from checked release metadata', ()
   assert.match(workflow, /node scripts\/release-version\.mjs --check "\$TAG" --github-output/);
   assert.match(workflow, /prerelease: \$\{\{ steps\.tier\.outputs\.prerelease \}\}/);
   assert.match(workflow, /PRERELEASE: \$\{\{ needs\.plan\.outputs\.prerelease \}\}/);
-  assert.match(workflow, /gh release create[^\n]*--prerelease="\$PRERELEASE"/);
+  assert.match(workflow, /-F draft=true -F "prerelease=\$PRERELEASE"/);
 });
 
 test('version commits and manual runs use the same automatic opt-in policy', () => {

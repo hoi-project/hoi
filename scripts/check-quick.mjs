@@ -18,6 +18,7 @@ for (const args of [
   ['--test', 'scripts/release-tier.test.mjs', 'scripts/check-tracked.test.mjs',
     'scripts/release-config.test.mjs', 'scripts/release-local.test.mjs',
     'scripts/release-version.test.mjs', 'scripts/release-workflow.test.mjs',
+    'scripts/release-resume.test.mjs',
     'scripts/release-plan.test.mjs', 'scripts/release-manifest.test.mjs', 'scripts/build-all.test.mjs',
     'scripts/installer-art.test.mjs',
     'scripts/static-boundaries.test.mjs', 'scripts/public-copy.test.mjs', 'scripts/wiki.test.mjs',
