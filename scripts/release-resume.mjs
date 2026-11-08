@@ -7,12 +7,13 @@ import { fileURLToPath } from 'node:url';
 const signingName = 'signing secrets, tag and versions';
 const shaPattern = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const positiveId = value => /^[1-9][0-9]*$/.test(String(value));
+class UnusableRun extends Error {}
 
-export function resumeRequest(env) {
+export function resumeRequest(env, requireRun = true) {
   const request = { repository: env.GH_REPO, runId: env.RESUME_RUN_ID,
     source: env.SOURCE_SHA, tag: env.TAG, desktop: env.DESKTOP };
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(request.repository ?? '')) throw new Error('Invalid release repository.');
-  if (!positiveId(request.runId)) throw new Error('A positive release run ID is required.');
+  if (requireRun && !positiveId(request.runId)) throw new Error('A positive release run ID is required.');
   if (!shaPattern.test(request.source ?? '')) throw new Error('A full source commit SHA is required.');
   if (!/^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$/.test(request.tag ?? '')) throw new Error('A version tag is required.');
   if (!['true', 'false'].includes(request.desktop)) throw new Error('Desktop scope must be true or false.');
@@ -20,17 +21,19 @@ export function resumeRequest(env) {
 }
 
 export function validateRun(run, request) {
-  if (String(run.id) !== String(request.runId)) throw new Error('Release run ID does not match.');
-  if (run.status !== 'completed') throw new Error('The previous release run must be completed.');
-  if (!['workflow_dispatch', 'push'].includes(run.event)) throw new Error('Only manual or tag release runs can supply checks.');
+  if (String(run.id) !== String(request.runId)) throw new UnusableRun('Release run ID does not match.');
+  if (run.status !== 'completed') throw new UnusableRun('The previous release run must be completed.');
+  if (!['workflow_dispatch', 'push'].includes(run.event)) throw new UnusableRun('Only manual or tag release runs can supply checks.');
   if (run.head_branch !== request.tag && (run.event !== 'workflow_dispatch' || run.head_branch !== 'main')) {
-    throw new Error('The previous release run must come from main or the requested release tag.');
+    throw new UnusableRun('The previous release run must come from main or the requested release tag.');
   }
-  if (run.path !== '.github/workflows/release.yml') throw new Error('The previous run must use the Release workflow.');
+  if (run.path !== '.github/workflows/release.yml') throw new UnusableRun('The previous run must use the Release workflow.');
   if (run.repository?.full_name !== request.repository || run.head_repository?.full_name !== request.repository) {
-    throw new Error('The previous run must come from this repository.');
+    throw new UnusableRun('The previous run must come from this repository.');
   }
-  if (run.head_sha !== request.source) throw new Error('The previous run checked a different source commit.');
+  // A manual run on main uses main's workflow revision while checking out an older release tag.
+  // The signing log, not the workflow head SHA, proves which product source passed the checks.
+  if (!shaPattern.test(run.head_sha ?? '')) throw new UnusableRun('The previous run has an invalid workflow revision.');
 }
 
 export function validateSigningLog(log, request) {
@@ -47,13 +50,12 @@ export function validateSigningLog(log, request) {
   }
   for (const [field, expected] of Object.entries({ ref: request.source, TAG: request.tag, DESKTOP: request.desktop })) {
     if (values[field].size !== 1 || !values[field].has(expected)) {
-      throw new Error(`The successful signing log does not prove the requested ${field}.`);
+      throw new UnusableRun(`The successful signing log does not prove the requested ${field}.`);
     }
   }
 }
 
-export async function verifyResume(env, fetcher = fetch) {
-  const request = resumeRequest(env);
+function apiClient(env, request, fetcher) {
   if (!env.GH_TOKEN) throw new Error('A GitHub token is required to verify previous release checks.');
   const base = `https://api.github.com/repos/${request.repository}`;
   const headers = { Authorization: `Bearer ${env.GH_TOKEN}`, Accept: 'application/vnd.github+json',
@@ -68,6 +70,12 @@ export async function verifyResume(env, fetcher = fetch) {
     try { return await response.json(); }
     catch { throw new Error(`Invalid ${label} response.`); }
   };
+  return { base, headers, fetchResponse, json };
+}
+
+export async function verifyResume(env, fetcher = fetch) {
+  const request = resumeRequest(env);
+  const { base, headers, fetchResponse, json } = apiClient(env, request, fetcher);
   const run = await json(`actions/runs/${request.runId}`, 'release run');
   validateRun(run, request);
   const jobs = [];
@@ -84,7 +92,7 @@ export async function verifyResume(env, fetcher = fetch) {
   const signing = jobs.filter(job => job.name === signingName);
   if (signing.length !== 1 || signing[0].status !== 'completed' || signing[0].conclusion !== 'success' ||
       !positiveId(signing[0].id) || String(signing[0].run_id) !== String(request.runId)) {
-    throw new Error('The previous run needs one successful signing gate.');
+    throw new UnusableRun('The previous run needs one successful signing gate.');
   }
   let response = await fetchResponse(`${base}/actions/jobs/${signing[0].id}/logs`,
     { headers, redirect: 'manual' }, 'signing log');
@@ -105,10 +113,42 @@ export async function verifyResume(env, fetcher = fetch) {
   return { reuse_checks: true };
 }
 
+export async function findVerifiedResume(env, fetcher = fetch) {
+  const request = resumeRequest(env, false);
+  const { json } = apiClient(env, request, fetcher);
+  const seen = new Set();
+  // GitHub caps filtered run searches at 1,000 results. Every candidate must prove its source.
+  for (let page = 1; page <= 10; page++) {
+    const result = await json(`actions/workflows/release.yml/runs?status=completed&per_page=100&page=${page}`, 'release runs');
+    if (!Array.isArray(result.workflow_runs) || !Number.isSafeInteger(result.total_count) || result.total_count < 0) {
+      throw new Error('Invalid release runs response.');
+    }
+    for (const run of result.workflow_runs) {
+      if (!positiveId(run.id)) throw new Error('Invalid release run ID in search results.');
+      if (seen.has(String(run.id))) continue;
+      seen.add(String(run.id));
+      try {
+        validateRun(run, { ...request, runId: String(run.id) });
+        await verifyResume({ ...env, RESUME_RUN_ID: String(run.id) }, fetcher);
+        return { reuse_checks: true, run_id: String(run.id),
+          run_url: `https://github.com/${request.repository}/actions/runs/${run.id}` };
+      } catch (error) {
+        // Mismatched evidence can lead to an older valid run. API failures must remain visible.
+        if (!(error instanceof UnusableRun)) throw error;
+      }
+    }
+    if (seen.size >= result.total_count) break;
+    if (!result.workflow_runs.length) throw new Error('The release runs response is incomplete.');
+  }
+  throw new Error(`No passed checks found for ${request.tag}. Choose Build.`);
+}
+
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
-    await verifyResume(process.env);
+    const result = await findVerifiedResume(process.env);
     if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, 'reuse_checks=true\n');
-    console.log('Previous release checks verified for the same source, tag and desktop scope.');
+    const summary = `Reusing verified checks from [run ${result.run_id}](${result.run_url}).`;
+    if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${summary}\n`);
+    console.log(`Reusing verified checks from ${result.run_url}`);
   } catch (error) { console.error(`release-resume: ${error.message}`); process.exitCode = 1; }
 }

@@ -30,7 +30,7 @@ export function planRelease({ automatic = false, ref, before } = {}, base = root
   const tagRef = `refs/tags/${details.tag}`;
   const exists = git(['show-ref', '--verify', '--quiet', tagRef]) !== null;
   if (exists && git(['rev-parse', `${tagRef}^{commit}`]) !== sha) {
-    throw new Error(`${details.tag} already points to another commit. Use Retry unpublished in Release for a failed release, or prepare a new version.`);
+    throw new Error(`${details.tag} already points to another commit. Choose Update tag in Release for an unpublished release, or prepare a new version.`);
   }
   return { release: true, ...details, sha, create_tag: !exists };
 }

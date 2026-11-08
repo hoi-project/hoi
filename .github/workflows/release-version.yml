@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       desktop:
-        description: "Build desktop installers as well as hoi-node"
+        description: "Desktop and setup"
         type: boolean
         default: true
 
@@ -69,5 +69,5 @@ jobs:
           fi
           test "$(gh api "repos/$GH_REPO/commits/$TAG" --jq .sha)" = "$RELEASE_SHA" || { echo "Tag $TAG no longer matches the validated commit." >&2; exit 1; }
           # GITHUB_TOKEN-created tags don't trigger push workflows; dispatch explicitly.
-          gh workflow run release.yml --ref "$TAG" -f "tag=$TAG" -f "desktop=$DESKTOP"
+          gh workflow run release.yml --ref "$TAG" -f "tag=$TAG" -f action=Build -f "desktop=$DESKTOP"
           echo "Started Release for $TAG ($RELEASE_SHA). Follow it in the Actions tab." >> "$GITHUB_STEP_SUMMARY"
