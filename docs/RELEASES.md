@@ -118,17 +118,33 @@ hoi-project/hoi, then push a version change to `main`. Without the switch (and i
 repository), automatic release jobs are skipped. Enabling them does not process old
 commits retroactively; use a manual run for an already-pushed version.
 
-The existing tag workflow is also available: create and push `v1.0.0-preview.1`
-yourself, or run **Release** with an existing tag to retry that tagged source.
-By default **Release** builds the commit the tag points to, even when you select `main`.
-For a failed, unpublished release, merge the fix to `main` at the same version. Open
-**Actions → Release → Run workflow**, select `main`, enter the existing tag and check
-**Retry unpublished**. The selected commit must descend from the lightweight tag. The
-workflow validates that commit and its version before advancing the tag and building the draft.
-If the failed build left a draft, discard it while keeping the tag before retrying. That keeps
-assets from different commits out of the same draft. Published releases require a fresh version.
+### Choose a tag and action
 
-To enable this retry option, turn on [immutable releases](https://docs.github.com/en/code-security/concepts/supply-chain-security/immutable-releases)
+Open **Actions → Release → Run workflow** and leave the workflow branch on **main**.
+Choose the **Tag** and **Action** from their menus. Leave **Desktop and setup** checked
+for all bundles; turn it off for hoi-node only.
+
+| Action | What runs |
+| --- | --- |
+| **Resume** | Finds passed checks for this tag and commit, repeats signing preflight, then continues the draft and builds. |
+| **Build** | Runs the required checks, then creates the signed draft and builds. |
+| **Check** | Runs validation, including signing preflight. No draft or release builds; **Resume** can use these results later. |
+| **Update tag** | Tests the selected main commit, then moves an unpublished tag to it and builds. |
+
+**Current version** selects the tag for the version recorded on the selected workflow
+branch. The menu also lists recent version tags. `pnpm release:version` updates that
+list during version preparation. GitHub requires literal dropdown choices; it cannot
+populate them dynamically from repository tags. Keep the workflow branch on `main`
+to use current release tooling even when building an older tag.
+
+**Resume** preserves the commit already named by the tag. Use **Update tag** only when
+the product source changed: merge the fix to `main` at the same version, then choose
+the existing tag and **Update tag**. Main must descend from the lightweight tag.
+The workflow validates that commit and its version before advancing the tag.
+If a draft already exists, inspect and discard it while keeping the tag before changing
+its source. Published releases require a fresh version.
+
+To enable **Update tag**, turn on [immutable releases](https://docs.github.com/en/code-security/concepts/supply-chain-security/immutable-releases)
 and install a dedicated GitHub App in the repository with Contents write and Administration read.
 In the `release` environment, set `HOI_RELEASE_TAG_APP_CLIENT_ID` as a variable and
 `HOI_RELEASE_TAG_APP_PRIVATE_KEY` as a secret. Put tag update and deletion protection in separate
@@ -162,21 +178,21 @@ configuration takes effect on a rerun; merging a workflow or source fix does not
 **Run workflow** and **Re-run all jobs** normally start validation again and are
 unnecessary for a configuration failure in drafting.
 
-If drafting needs a workflow fix after the checks passed, merge that fix, then start
-**Release** on `main` with the existing `tag`, the same `desktop` setting, and
-`resume_checks_from` set to the earlier Release run ID. Leave `retry_unpublished`
-off to keep building the already checked tag. Recovery verifies the earlier run's
-repository, workflow, commit and successful signing gate, and checks its retained
-signing log for the exact tag, checked-out commit and desktop setting. Missing logs
-or mismatched evidence stop the run. The successful signing gate proves the earlier
-required checks passed; the new run skips those checks but repeats signing preflight
-before continuing with the draft and builds. Changed product source needs fresh checks.
+If drafting needs a workflow fix, merge it and start **Release** on `main`. Select the
+same **Tag**, choose **Resume**, and keep the same **Desktop and setup** setting.
+There is no run ID to enter: recovery finds a completed Release run for the exact source,
+verifies its successful signing gate and retained log evidence for the tag, commit and
+desktop setting, and links the reused run in the summary. Missing or mismatched evidence
+cannot skip checks. If no matching passed run exists, choose **Build**. API or permission
+errors stop recovery rather than starting expensive suites unexpectedly.
 
 Draft creation uses the ID returned by GitHub, so a pending `untagged-...` URL does
-not require finding the new draft in a release listing. Recovery can reuse an empty
-draft from an interrupted attempt, binding it to the checked commit, or a draft
-already bound to that commit. A published release, assets from an unverified source,
-or an existing draft during a tag advance still stop the workflow for inspection.
+not require finding the new draft in a release listing. The verified tag pins the source;
+a hidden note in the release body records that commit for subsequent retries. Recovery
+can bind an empty interrupted draft or reuse a draft with the same source note. It does
+not change `target_commitish`, which can require workflow permissions unavailable to
+the built-in token. Published releases, assets without matching source evidence, and
+existing drafts during a tag advance stop the workflow for inspection.
 
 ### Build and sign
 

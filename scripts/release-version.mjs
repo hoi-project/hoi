@@ -89,6 +89,29 @@ function normalizeVersion(value) {
   return value.replace(/^v/, '');
 }
 
+/** Keep the release form's static tag choices in step with normal version preparation. */
+export function releaseTagChoices(text, version) {
+  const tag = `v${normalizeVersion(version)}`;
+  const dispatch = text.match(/^  workflow_dispatch:\r?\n((?:[ \t]*\r?\n| {4,}[^\r\n]*(?:\r?\n|$))*)/m);
+  const input = dispatch?.[0].match(/^      tag:\r?\n((?: {8,}[^\r\n]*(?:\r?\n|$))*)/m);
+  const options = input?.[0].match(/^        options:\r?\n((?: {10}-[^\r\n]*(?:\r?\n|$))*)/m);
+  if (!input || !/^        type: choice\r?$/m.test(input[0]) || !options) {
+    throw new Error('The Release workflow must define a tag choice input before preparing a version.');
+  }
+  const existing = options[1].trim().split(/\r?\n/).filter(Boolean).map(line => {
+    const value = line.trim().replace(/^-\s*/, '').replace(/^(["'])(.*)\1$/, '$2');
+    if (value !== 'Current version' && value !== `v${normalizeVersion(value)}`) {
+      throw new Error('The Release tag choices must contain version tags or Current version.');
+    }
+    return value;
+  });
+  const tags = [...new Set([tag, ...existing.filter(value => value !== 'Current version')])].slice(0, 20);
+  const newline = text.includes('\r\n') ? '\r\n' : '\n';
+  const choices = ['"Current version"', ...tags].map(value => `          - ${value}${newline}`).join('');
+  const start = dispatch.index + input.index + options.index;
+  return text.slice(0, start) + `        options:${newline}${choices}` + text.slice(start + options[0].length);
+}
+
 export function releaseDetails(version, release) {
   version = normalizeVersion(version);
   validateRelease(release);
@@ -140,6 +163,12 @@ export function planVersion(value, options = {}, base = root) {
   for (const path of LOCKFILES) {
     const before = readFileSync(join(base, path), 'utf8');
     add(path, before, lockWithVersion(before, version));
+  }
+  const workflow = '.github/workflows/release.yml';
+  // Minimal source exports and version-test fixtures need not contain GitHub workflow files.
+  if (existsSync(join(base, workflow))) {
+    const before = readFileSync(join(base, workflow), 'utf8');
+    add(workflow, before, releaseTagChoices(before, version));
   }
   if (metadataChanged) {
     const newline = manifest.includes('\r\n') ? '\r\n' : '\n';

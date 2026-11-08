@@ -81,7 +81,7 @@ test('tag retry configuration fails during planning before expensive checks', ()
   }
 });
 
-test('draft creation captures its response ID and safely recovers an empty draft', t => {
+test('draft creation and recovery avoid target permissions and preserve source provenance', t => {
   const script = job('release', 'draft').split('      - id: draft\n')[1]
     .split('        run: |\n')[1].trimEnd().replace(/^ {10}/gm, '');
   const cwd = mkdtempSync(join(tmpdir(), 'hoi-draft-'));
@@ -92,12 +92,13 @@ test('draft creation captures its response ID and safely recovers an empty draft
     'release view') [ "$EXISTING" = true ] || return 1; echo https://api.github.com/repos/example/hoi/releases/123 ;;
     'release create') echo https://github.com/example/hoi/releases/tag/untagged-example ;;
     'api --method')
+      case "$*" in *target_commitish=*) echo 'gh: Resource not accessible by integration (HTTP 403)' >&2; return 1 ;; esac
       [ "$API_FAIL" != true ] || return 1
       printf '%s\\n' "$RESPONSE_ID"
       ;;
     'api repos/example/hoi/commits/'*) printf '%s\\n' "$REMOTE_SHA" ;;
     'api https://api.github.com/repos/example/hoi/releases/123')
-      printf '123\\t%s\\t%s\\t%s\\n' "$DRAFT" "$TARGET" "$ASSETS" ;;
+      printf '123\\t%s\\t%s\\t%s\\t%s\\n' "$DRAFT" "$EXISTING_PRERELEASE" "$ASSETS" "$BODY64" ;;
     'api repos/example/hoi/releases?per_page=100') echo null ;;
     *) return 99 ;;
   esac
@@ -111,7 +112,7 @@ test('draft creation captures its response ID and safely recovers an empty draft
       PATH: process.env.PATH, GH_REPO: 'example/hoi', TAG: 'v1.0.0-preview.2', SOURCE_SHA: sha,
       DESKTOP: 'true', SIGNED: 'false', PRERELEASE: 'true', PREVIOUS_SHA: '',
       GITHUB_OUTPUT: 'output', REMOTE_SHA: sha, RESPONSE_ID: '123', EXISTING: 'false',
-      DRAFT: 'true', TARGET: sha, ASSETS: '0', ...patch,
+      DRAFT: 'true', EXISTING_PRERELEASE: 'true', ASSETS: '0', BODY64: '', ...patch,
     } });
     assert.ifError(result.error);
     return { ...result, output: readFileSync(join(cwd, 'output'), 'utf8'), calls: readFileSync(join(cwd, 'calls'), 'utf8') };
@@ -120,19 +121,33 @@ test('draft creation captures its response ID and safely recovers an empty draft
   assert.equal(created.status, 0, created.stderr);
   assert.equal(created.output, 'id=123\n');
   assert.match(created.calls, /api --method POST .*tag_name=v1\.0\.0-preview\.2/);
-  assert.match(created.calls, new RegExp(`target_commitish=${sha}`));
+  assert.match(created.calls, new RegExp(`<!-- hoi-release-source: ${sha} -->`));
+  assert.doesNotMatch(created.calls, /target_commitish/);
   assert.doesNotMatch(created.calls, /releases\?per_page/);
-  for (const patch of [{ TARGET: 'main' }, { ASSETS: '3' }]) {
-    const recovered = run({ EXISTING: 'true', ...patch });
+  const boundBody = `Release notes.\n\n<!-- hoi-release-source: ${sha} -->`;
+  for (const body of ['', 'Release notes.\nKeep this text.']) {
+    const recovered = run({ EXISTING: 'true', BODY64: Buffer.from(body).toString('base64') });
     assert.equal(recovered.status, 0, recovered.stderr);
     assert.equal(recovered.output, 'id=123\n');
     assert.match(recovered.calls, /api --method PATCH/);
+    assert.ok(recovered.calls.includes(body));
+    assert.match(recovered.calls, new RegExp(`<!-- hoi-release-source: ${sha} -->`));
+    assert.doesNotMatch(recovered.calls, /target_commitish/);
     assert.doesNotMatch(recovered.calls, /api --method POST/);
   }
+  const resumed = run({ EXISTING: 'true', BODY64: Buffer.from(boundBody).toString('base64'), ASSETS: '3' });
+  assert.equal(resumed.status, 0, resumed.stderr);
+  assert.equal(resumed.output, 'id=123\n');
+  assert.doesNotMatch(resumed.calls, /api --method/, 'a matching draft needs no metadata writes');
+  const reclassified = run({ EXISTING: 'true', BODY64: Buffer.from(boundBody).toString('base64'), EXISTING_PRERELEASE: 'false' });
+  assert.equal(reclassified.status, 0, reclassified.stderr);
+  assert.match(reclassified.calls, /api --method PATCH/);
+  assert.doesNotMatch(reclassified.calls, /target_commitish/);
   for (const patch of [
     { REMOTE_SHA: 'b'.repeat(40) }, { API_FAIL: 'true' }, { RESPONSE_ID: 'null' },
     { EXISTING: 'true', DRAFT: 'false' },
-    { EXISTING: 'true', TARGET: 'main', ASSETS: '1' },
+    { EXISTING: 'true', ASSETS: '1' },
+    { EXISTING: 'true', BODY64: Buffer.from(`<!-- hoi-release-source: ${'b'.repeat(40)} -->`).toString('base64') },
     { EXISTING: 'true', PREVIOUS_SHA: 'b'.repeat(40) },
   ]) {
     const rejected = run(patch);
@@ -157,6 +172,61 @@ test('only verified prior checks allow signing after validation jobs are skipped
   assert.equal(gate('release', 'signing', { ...ctx, cancelled: true }), false);
   assert.match(job('release', 'plan'), /reuse_checks: \$\{\{ steps\.resume\.outputs\.reuse_checks \}\}/);
   assert.match(job('release', 'plan'), /run: node release-tools\/scripts\/release-resume\.mjs/);
+});
+
+test('release controls offer tag and action menus without a run ID', () => {
+  const workflow = read('release');
+  const inputs = workflow.split('  workflow_dispatch:\n    inputs:\n')[1].split('\npermissions:')[0];
+  assert.match(inputs, /tag:\n        description: "Tag"\n        type: choice/);
+  assert.match(inputs, /action:\n        description: "Action"\n        type: choice/);
+  for (const action of ['Resume', 'Build', 'Check', 'Update tag']) assert.ok(inputs.includes(`          - ${action}\n`));
+  assert.doesNotMatch(inputs, /resume_checks_from|retry_unpublished|type: string/);
+  const plan = job('release', 'plan');
+  assert.match(plan, /RETRY_UNPUBLISHED: \$\{\{ inputs\.action == 'Update tag' \}\}/);
+  assert.match(plan, /name: Find passed checks\n        if: inputs\.action == 'Resume'/);
+  assert.doesNotMatch(plan, /RESUME_RUN_ID:/);
+  const checkOnly = context('workflow_dispatch');
+  checkOnly.inputs.action = 'Check';
+  for (const name of ['checks', 'long', 'security', 'npm-audit']) assert.equal(gate('release', name, checkOnly), true, name);
+  assert.equal(gate('release', 'signing', checkOnly), true, 'finish reusable validation with signing preflight');
+  assert.equal(gate('release', 'draft', checkOnly), false);
+  checkOnly.needs.draft.result = 'skipped';
+  for (const name of ['node', 'desktop', 'setup']) assert.equal(gate('release', name, checkOnly), false, name);
+});
+
+test('tag selection uses the chosen source and resolves Current version without typing', t => {
+  const step = job('release', 'plan').split('      - name: Select release source\n')[1].split('\n      - ')[0];
+  const script = step.split('        run: |\n')[1].trimEnd().replace(/^ {10}/gm, '');
+  const cwd = mkdtempSync(join(tmpdir(), 'hoi-release-selection-'));
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+  const git = (...args) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  const commit = () => {
+    git('-c', 'user.name=Release Test', '-c', 'user.email=release@example.com', '-c', 'commit.gpgsign=false', 'commit', '--allow-empty', '-m', 'test');
+    return git('rev-parse', 'HEAD');
+  };
+  git('init', '-b', 'main');
+  const tagged = commit();
+  git('tag', 'v1.0.0-preview.2');
+  const main = commit();
+  const run = (tag, action) => {
+    git('checkout', '--detach', main);
+    writeFileSync(join(cwd, 'env'), '');
+    const result = spawnSync('bash', ['-e', '-c', 'node() { echo v1.0.0-preview.2; }\n' + script], {
+      cwd, encoding: 'utf8', env: { PATH: process.env.PATH, REQUESTED_TAG: tag, ACTION: action,
+        GITHUB_ENV: 'env', GITHUB_STEP_SUMMARY: 'summary' },
+    });
+    assert.ifError(result.error);
+    return result;
+  };
+  for (const tag of ['v1.0.0-preview.2', 'Current version']) for (const action of ['Resume', 'Build', 'Check', 'Update tag']) {
+    const selected = run(tag, action);
+    assert.equal(selected.status, 0, selected.stderr);
+    assert.equal(git('rev-parse', 'HEAD'), action === 'Update tag' ? main : tagged);
+    assert.equal(readFileSync(join(cwd, 'env'), 'utf8'), 'TAG=v1.0.0-preview.2\n');
+  }
+  for (const [tag, action] of [['main', 'Build'], ['v9.9.9', 'Build'], ['Current version', 'Skip checks']]) {
+    assert.notEqual(run(tag, action).status, 0);
+  }
 });
 
 test('an unpublished retry validates a descendant on main and advances only the checked tag', t => {
@@ -544,6 +614,6 @@ test('tag creation pins the validated commit and explicitly dispatches its relea
   assert.match(workflow, /RELEASE_SHA: \$\{\{ needs.plan.outputs.sha \}\}/);
   assert.match(workflow, /gh api --method POST[^\n]*git\/refs[^\n]*-f "ref=refs\/tags\/\$TAG" -f "sha=\$RELEASE_SHA"/);
   assert.match(workflow, /commits\/\$TAG" --jq .sha\)" = "\$RELEASE_SHA"/);
-  assert.match(workflow, /gh workflow run release.yml --ref "\$TAG" -f "tag=\$TAG" -f "desktop=\$DESKTOP"/);
+  assert.match(workflow, /gh workflow run release.yml --ref "\$TAG" -f "tag=\$TAG" -f action=Build -f "desktop=\$DESKTOP"/);
   assert.doesNotMatch(workflow, /--force|--method PATCH/);
 });

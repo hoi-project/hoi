@@ -2,6 +2,7 @@
 # Manual runs are explicit opt-in; automatic tag runs need the HOI_RELEASES_ENABLED switch in the
 # hoi-project repository.
 name: Release
+run-name: Release · ${{ inputs.action || 'Build' }} · ${{ inputs.tag || github.ref_name }}
 
 on:
   push:
@@ -9,18 +10,25 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing pushed tag to release, e.g. v1.0.0-preview.1"
+        description: "Tag"
+        type: choice
         required: true
-      retry_unpublished:
-        description: "Test the selected main commit and advance this unpublished tag after checks pass"
-        type: boolean
-        default: false
-      resume_checks_from:
-        description: "Completed Release run ID whose successful checks cover this same tag, commit and desktop setting"
-        type: string
-        default: ""
+        default: "Current version"
+        options:
+          - "Current version"
+          - v1.0.0-preview.2
+          - v1.0.0-preview.1
+      action:
+        description: "Action"
+        type: choice
+        default: Resume
+        options:
+          - Resume
+          - Build
+          - Check
+          - Update tag
       desktop:
-        description: "Build the desktop and node setup bundles (macOS, Windows, Linux); off releases hoi-node only"
+        description: "Desktop and setup"
         type: boolean
         default: true
 
@@ -28,11 +36,11 @@ permissions:
   contents: read
 
 env:
-  TAG: ${{ inputs.tag || github.ref_name }}
   GH_REPO: ${{ github.repository }}
 
 concurrency:
-  group: release-${{ inputs.tag || github.ref_name }}
+  # Current version and an explicit tag can select the same release.
+  group: release
   cancel-in-progress: false
 
 jobs:
@@ -55,16 +63,30 @@ jobs:
       prerelease: ${{ steps.tier.outputs.prerelease }}
       reuse_checks: ${{ steps.resume.outputs.reuse_checks }}
     steps:
-      - name: Require a version tag
-        run: '[[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]'
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.retry_unpublished && github.sha || format('refs/tags/{0}', env.TAG) }}
-          fetch-depth: ${{ inputs.retry_unpublished && '0' || '1' }}
+          ref: ${{ github.sha }}
+          fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
+      - name: Select release source
+        env:
+          REQUESTED_TAG: ${{ inputs.tag || github.ref_name }}
+          ACTION: ${{ inputs.action || 'Build' }}
+        run: |
+          case "$ACTION" in Resume|Build|Check|'Update tag') ;; *) echo "Unknown release action." >&2; exit 1 ;; esac
+          tag="$REQUESTED_TAG"
+          if [ "$tag" = 'Current version' ]; then
+            tag="$(node --input-type=module -e 'import { checkVersion } from "./scripts/release-version.mjs"; console.log(checkVersion().tag)')"
+          fi
+          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || { echo "Choose a version tag." >&2; exit 1; }
+          if [ "$ACTION" != 'Update tag' ]; then
+            git checkout --detach "refs/tags/$tag"
+          fi
+          echo "TAG=$tag" >> "$GITHUB_ENV"
+          echo "Release: $tag · $ACTION" >> "$GITHUB_STEP_SUMMARY"
       - name: Require publication configuration
         run: HOI_PUBLICATION=1 node scripts/publication.mjs
       - name: Validate versions, channel and release checks
@@ -73,12 +95,12 @@ jobs:
       - name: Pin all following jobs to this commit
         id: commit
         env:
-          RETRY_UNPUBLISHED: ${{ inputs.retry_unpublished }}
+          RETRY_UNPUBLISHED: ${{ inputs.action == 'Update tag' }}
         run: |
           sha="$(git rev-parse HEAD)"
           if [ "$RETRY_UNPUBLISHED" = true ]; then
             test "$GITHUB_EVENT_NAME" = workflow_dispatch && test "$GITHUB_REF" = refs/heads/main ||
-              { echo "Retry unpublished releases by running Release on main." >&2; exit 1; }
+              { echo "Choose Update tag by running Release on main." >&2; exit 1; }
             ref="refs/tags/$TAG"
             previous="$(git rev-parse --verify "$ref")"
             if [ "$previous" != "$sha" ]; then
@@ -106,7 +128,7 @@ jobs:
             exit 1
           fi
       - name: Check out recovery tooling from the selected workflow revision
-        if: inputs.resume_checks_from != ''
+        if: inputs.action == 'Resume'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
@@ -114,12 +136,11 @@ jobs:
           sparse-checkout: scripts/release-resume.mjs
           sparse-checkout-cone-mode: false
           persist-credentials: false
-      - name: Verify previously successful release checks
-        if: inputs.resume_checks_from != ''
+      - name: Find passed checks
+        if: inputs.action == 'Resume'
         id: resume
         env:
           GH_TOKEN: ${{ github.token }}
-          RESUME_RUN_ID: ${{ inputs.resume_checks_from }}
           SOURCE_SHA: ${{ steps.commit.outputs.sha }}
           DESKTOP: ${{ inputs.desktop }}
         run: node release-tools/scripts/release-resume.mjs
@@ -155,6 +176,7 @@ jobs:
     # Signing secrets live in the release environment (v* tags and main only).
     environment: release
     env:
+      TAG: ${{ needs.plan.outputs.tag }}
       MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
       MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -271,11 +293,11 @@ jobs:
       - run: pnpm audit --audit-level low
 
   # One draft release for every job below to upload into, made before any of them starts, so
-  # the desktop and node builds run side by side. A draft already there (a release built on a
-  # computer and uploaded with release-local.mjs --upload) is used as it is.
+  # the desktop and node builds run side by side. An existing draft must be empty or carry
+  # the same source marker before its assets can be reused.
   draft:
     needs: [plan, signing]
-    if: always() && !cancelled() && needs.plan.result == 'success' && needs.signing.result == 'success'
+    if: always() && !cancelled() && inputs.action != 'Check' && needs.plan.result == 'success' && needs.signing.result == 'success'
     environment: release
     permissions:
       contents: write
@@ -284,6 +306,7 @@ jobs:
     outputs:
       id: ${{ steps.draft.outputs.id }}
     env:
+      TAG: ${{ needs.plan.outputs.tag }}
       GH_TOKEN: ${{ github.token }}
       SIGNED: ${{ secrets.WINDOWS_CERTIFICATE != '' && secrets.APPLE_CERTIFICATE != '' }}
       DESKTOP: ${{ github.event_name != 'workflow_dispatch' || inputs.desktop }}
@@ -325,6 +348,7 @@ jobs:
           test "$(gh api "repos/$GH_REPO/commits/$TAG" --jq .sha)" = "$SOURCE_SHA" ||
             { echo "Tag $TAG does not point to the validated commit." >&2; exit 1; }
       - id: draft
+        name: Prepare release draft
         env:
           PREVIOUS_SHA: ${{ needs.plan.outputs.previous_tag_sha }}
           SOURCE_SHA: ${{ needs.plan.outputs.sha }}
@@ -340,17 +364,27 @@ jobs:
             { echo "Tag $TAG does not point to the validated commit." >&2; exit 1; }
           if release_url="$(gh release view "$TAG" --json apiUrl --jq .apiUrl)"; then
             test -z "$PREVIOUS_SHA" || { echo "A release for $TAG appeared during the tag update. Inspect it before retrying." >&2; exit 1; }
-            read -r id draft target assets < <(gh api "$release_url" --jq '[.id, .draft, .target_commitish, (.assets | length)] | @tsv')
+            metadata="$(gh api "$release_url" --jq '[.id, .draft, .prerelease, (.assets | length), ((.body // "") | @base64)] | @tsv')"
+            read -r id draft prerelease assets body64 <<< "$metadata"
             test "$draft" = true || { echo "Release $TAG is already published; use a new version." >&2; exit 1; }
-            # An empty draft left by an interrupted attempt can be bound to the checked commit.
-            # Existing assets from another source must never be mixed into this release.
-            test "$target" = "$SOURCE_SHA" || test "$assets" = 0 ||
+            body="$(printf '%s' "$body64" | base64 --decode)"
+            source="$(printf '%s\n' "$body" | sed -n 's/^<!-- hoi-release-source: \([0-9a-f]\{40,64\}\) -->$/\1/p')"
+            test -z "$source" || test "$source" = "$SOURCE_SHA" ||
+              { echo "Draft $TAG belongs to another source commit. Inspect it before retrying." >&2; exit 1; }
+            # Existing assets need recorded provenance; an empty interrupted draft can be bound now.
+            test "$source" = "$SOURCE_SHA" || test "$assets" = 0 ||
               { echo "Draft $TAG has assets without a matching source commit. Inspect it before retrying." >&2; exit 1; }
-            id="$(gh api --method PATCH "$release_url" -f "target_commitish=$SOURCE_SHA" -F "prerelease=$PRERELEASE" --jq .id)"
+            if [ "$source" != "$SOURCE_SHA" ] || [ "$prerelease" != "$PRERELEASE" ]; then
+              [ "$source" = "$SOURCE_SHA" ] || body="${body}"$'\n\n'"<!-- hoi-release-source: $SOURCE_SHA -->"
+              # target_commitish is only for creating a missing tag, not source provenance.
+              # Setting it to an older workflow revision needs a permission GITHUB_TOKEN cannot get.
+              id="$(gh api --method PATCH "$release_url" -f "body=$body" -F "prerelease=$PRERELEASE" --jq .id)"
+            fi
           else
             # Drafts have pending tags; do not refind a newly created release in the REST list.
+            notes="${notes}"$'\n\n'"<!-- hoi-release-source: $SOURCE_SHA -->"
             id="$(gh api --method POST "repos/$GH_REPO/releases" -f "tag_name=$TAG" \
-              -f "target_commitish=$SOURCE_SHA" -f "name=hoi $TAG" -f "body=$notes" \
+              -f "name=hoi $TAG" -f "body=$notes" \
               -F draft=true -F "prerelease=$PRERELEASE" --jq .id)"
           fi
           [[ "$id" =~ ^[0-9]+$ ]] || { echo "No release found for $TAG" >&2; exit 1; }
@@ -521,6 +555,8 @@ jobs:
 
   node:
     needs: [plan, draft]
+    env:
+      TAG: ${{ needs.plan.outputs.tag }}
     if: always() && !cancelled() && needs.draft.result == 'success'
     permissions:
       contents: write
@@ -567,6 +603,8 @@ jobs:
 
   manifest:
     needs: [plan, desktop, setup, node]
+    env:
+      TAG: ${{ needs.plan.outputs.tag }}
     environment: release
     permissions:
       contents: write
