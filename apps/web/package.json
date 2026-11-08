@@ -1,6 +1,6 @@
 {
   "name": "@hoi/web",
-  "version": "1.0.0-preview.1",
+  "version": "1.0.0-preview.2",
   "private": true,
   "type": "module",
   "description": "The hoi app as a static PWA. Also the UI of the desktop companion (Tauri 2).",

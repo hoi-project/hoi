@@ -282,9 +282,11 @@ jobs:
         run: pnpm check && pnpm test && pnpm test:sandbox
       - run: pnpm build:site
       - name: Build the app without a live release feed
-        env:
-          HOI_PUBLICATION_FILE: ${{ github.workspace }}/scripts/fixtures/publication-browser-e2e.json
-        run: pnpm build:web
+        run: |
+          # Generate the override from the tagged tree, which may predate the test fixture.
+          config="$RUNNER_TEMP/hoi-browser-publication.json"
+          node --input-type=commonjs -p 'JSON.stringify({ ...require("./publication.json"), downloads: "", manifestKey: "", updaterKey: "" })' > "$config"
+          HOI_PUBLICATION_FILE="$config" pnpm build:web
       - run: node scripts/assemble-static.mjs
       - run: pnpm exec playwright install --with-deps chromium
       - name: Encrypted vault setup, unlocking, migration and tamper protection
@@ -372,9 +374,11 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm core:wasm
       - name: Build the app without a live release feed
-        env:
-          HOI_PUBLICATION_FILE: ${{ github.workspace }}/scripts/fixtures/publication-browser-e2e.json
-        run: pnpm build:web
+        run: |
+          # Generate the override from the tagged tree, which may predate the test fixture.
+          config="$RUNNER_TEMP/hoi-browser-publication.json"
+          node --input-type=commonjs -p 'JSON.stringify({ ...require("./publication.json"), downloads: "", manifestKey: "", updaterKey: "" })' > "$config"
+          HOI_PUBLICATION_FILE="$config" pnpm build:web
       - run: pnpm exec playwright install --with-deps ${{ matrix.browser }}
       - name: Build home node
         run: cargo build --locked --manifest-path core/Cargo.toml -p hoi-node

@@ -1,6 +1,6 @@
 {
   "name": "@hoi/core-api",
-  "version": "1.0.0-preview.1",
+  "version": "1.0.0-preview.2",
   "private": true,
   "type": "module",
   "description": "TypeScript contract of the hoi core API, shared by every UI shell. Mirrors core/crates/hoi-core/src/dto.rs.",

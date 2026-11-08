@@ -1,6 +1,6 @@
 [package]
 name = "hoi-setup"
-version = "1.0.0-preview.1"
+version = "1.0.0-preview.2"
 description = "hoi node setup: installs and manages a public node on a server over SSH, with a wizard"
 edition = "2024"
 license = "AGPL-3.0-only"

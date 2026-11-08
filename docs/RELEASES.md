@@ -120,6 +120,9 @@ commits retroactively; use a manual run for an already-pushed version.
 
 The existing tag workflow is also available: create and push `v1.0.0-preview.1`
 yourself, or run **Release** with an existing tag to retry that tagged source.
+To pick up fixes merged since the tag, prepare a new version on the fixed commit
+and start **Release: version**. Selecting a newer workflow branch in **Release**
+still builds and tests the source at the existing tag.
 Automatic tag pushes obey the same switches. The **Release: version** workflow uses
 the built-in GitHub token to create its tag and explicitly dispatch the build:
 [token-created tags do not trigger push workflows](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow).

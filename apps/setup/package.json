@@ -1,6 +1,6 @@
 {
   "name": "@hoi/setup",
-  "version": "1.0.0-preview.1",
+  "version": "1.0.0-preview.2",
   "private": true,
   "type": "module",
   "description": "hoi node setup: a small Tauri 2 app that installs and manages a public node on a server over SSH, or on this computer, with a wizard.",
