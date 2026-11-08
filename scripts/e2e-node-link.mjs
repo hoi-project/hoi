@@ -20,7 +20,7 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { KEY_WORK_TIMEOUT, STAMP_TIMEOUT, launch } from './e2e-browser.mjs';
+import { KEY_WORK_TIMEOUT, STAMP_TIMEOUT, launch, transportPage } from './e2e-browser.mjs';
 import { unlockBrowser } from './browser-vault.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -87,7 +87,8 @@ writeFileSync(noticeFile, JSON.stringify({
 }));
 const lenas = await start(
   hoiNode,
-  ['--data', lenaData, '--listen', '127.0.0.1:17862', '--rtc-port', '17864', '--name', "lena's pi", '--no-port-mapping', '--notice', noticeFile],
+  ['--data', lenaData, '--listen', '127.0.0.1:17862', '--rtc-port', '17864',
+    '--rtc-advertise', '127.0.0.1:17864', '--name', "lena's pi", '--no-port-mapping', '--notice', noticeFile],
   {},
   linkIn,
 ).catch((e) => fail(e.message));
@@ -98,21 +99,13 @@ if (!lenas.match.notice) fail(`the node link carries no signed notice: ${lenaLin
 if (!lenaLink.startsWith('code=') || /127\.0\.0\.1|@/.test(lenaLink)) fail(`the node link shows its addresses: ${lenaLink}`);
 if (!readFileSync(join(lenaData, 'notice-hash'), 'utf8').trim().match(/^[0-9a-f]{64}$/)) fail('no notice-hash file');
 console.log("✓ lena's pi is up as a public node with no registry, relay or node configured, printed its node link with her signed notice in it");
-await start(process.execPath, [join(root, 'apps/web/node_modules/vite/bin/vite.js'), 'preview', '--port', String(WEB_PORT), '--strictPort'], { cwd: join(root, 'apps/web') }, (out) => out.includes(String(WEB_PORT))).catch((e) => fail(e.message));
-const base = `http://localhost:${WEB_PORT}/`;
+await start(process.execPath, [join(root, 'apps/web/node_modules/vite/bin/vite.js'), 'preview', '--host', '127.0.0.1', '--port', String(WEB_PORT), '--strictPort'], { cwd: join(root, 'apps/web') }, (out) => out.includes(String(WEB_PORT))).catch((e) => fail(e.message));
+const base = `http://127.0.0.1:${WEB_PORT}/`;
 const nodeLink = `${base}#/node?${lenaLink}`;
 console.log(`✓ web app at ${base}, nothing configured in it`);
 
 const browser = await launch({ headless: !args.includes('--headed') });
 const errors = [];
-async function person(name) {
-  const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
-  const page = await ctx.newPage();
-  page.on('pageerror', (e) => errors.push(`${name}: ${e}`));
-  page.on('console', (m) => m.type() === 'error' && errors.push(`${name}: ${m.text()}`));
-  page.setDefaultTimeout(30_000);
-  return page;
-}
 const snap = async (page, name) => shots && page.screenshot({ path: join(shots, `${name}.png`), fullPage: true });
 
 /** "Say hoi" without stirring: watch the identity work, meet the key, go on. */
@@ -142,7 +135,7 @@ async function openNodeLink(page, who) {
 }
 
 // ------------------------------------------------------------------ mira starts a community
-const mira = await person('mira');
+const mira = await transportPage(browser, 'mira', errors);
 await openNodeLink(mira, 'mira');
 console.log("✓ mira opened lena's node link in a browser with nothing configured and reached the node");
 await mira.getByRole('link', { name: '+ Start a community' }).click();
@@ -169,7 +162,7 @@ await mira.waitForTimeout(3000);
 await mira.close();
 
 // ------------------------------------------------------------------ kim finds it, with mira gone
-const kim = await person('kim');
+const kim = await transportPage(browser, 'kim', errors);
 await openNodeLink(kim, 'kim');
 const listed = kim.locator('a.crow', { hasText: 'c/gardening' });
 await listed.waitFor({ timeout: 30_000 });

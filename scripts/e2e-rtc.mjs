@@ -19,7 +19,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { devices } from 'playwright';
-import { KEY_WORK_TIMEOUT, STAMP_TIMEOUT, device, launch } from './e2e-browser.mjs';
+import { KEY_WORK_TIMEOUT, STAMP_TIMEOUT, device, launch, transportPage } from './e2e-browser.mjs';
 import { unlockBrowser } from './browser-vault.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -29,6 +29,7 @@ if (shots) mkdirSync(shots, { recursive: true });
 const NODE_PORT = 17852;
 const RTC_PORT = 17854;
 const WEB_PORT = 4181;
+const origin = `http://127.0.0.1:${WEB_PORT}`;
 const children = [];
 const fail = (msg) => {
   console.error(`✗ ${msg}`);
@@ -74,31 +75,23 @@ function start(cmd, argv, opts, ready) {
 const data = mkdtempSync(join(tmpdir(), 'hoi-node-'));
 const node = await start(
   join(root, 'core/target/debug', process.platform === 'win32' ? 'hoi-node.exe' : 'hoi-node'),
-  ['--data', data, '--listen', `127.0.0.1:${NODE_PORT}`, '--name', 'the pi', '--rtc-port', String(RTC_PORT), '--show-pairing', '--no-port-mapping'],
+  ['--data', data, '--listen', `127.0.0.1:${NODE_PORT}`, '--name', 'the pi', '--rtc-port', String(RTC_PORT),
+    '--rtc-advertise', `127.0.0.1:${RTC_PORT}`, '--show-pairing', '--no-port-mapping'],
   // The page at ${WEB_PORT} may open the loopback listener (other origins are refused).
-  { env: { ...process.env, HOI_ALLOWED_ORIGINS: `http://localhost:${WEB_PORT}` } },
+  { env: { ...process.env, HOI_ALLOWED_ORIGINS: origin } },
   (out) => (/relaying for members/.test(out) ? out : null),
 ).catch((e) => fail(e.message));
 const pairing = node.match.match(/hoi:\/\/pair\?\S+/)?.[0];
-const webPair = node.match.match(/https?:\/\/\S+#\/pair\?(\S+)/)?.[1];
-if (!pairing || !webPair) fail(`no pairing links:\n${node.match}`);
-if (!/&w=/.test(webPair)) fail(`the node advertises no WebRTC route (no network address?):\n${node.match}`);
-console.log(`✓ hoi-node up, WebRTC on UDP ${RTC_PORT}, phone link carries ${webPair.split('&w=')[1].split(',').length} route(s)`);
+if (!pairing) fail('the node did not print a pairing link');
+if (!node.match.includes(`WebRTC on UDP ${RTC_PORT} for browsers and phones:`)) fail('the node did not advertise a WebRTC route');
+console.log(`✓ hoi-node up, WebRTC on UDP ${RTC_PORT}`);
 
-await start(process.execPath, [join(root, 'apps/web/node_modules/vite/bin/vite.js'), 'preview', '--port', String(WEB_PORT), '--strictPort'], { cwd: join(root, 'apps/web') }, (out) => out.includes(String(WEB_PORT))).catch((e) => fail(e.message));
-const base = `http://localhost:${WEB_PORT}/`;
+await start(process.execPath, [join(root, 'apps/web/node_modules/vite/bin/vite.js'), 'preview', '--host', '127.0.0.1', '--port', String(WEB_PORT), '--strictPort'], { cwd: join(root, 'apps/web') }, (out) => out.includes(String(WEB_PORT))).catch((e) => fail(e.message));
+const base = `${origin}/`;
 console.log(`✓ web app at ${base}`);
 
 const browser = await launch({ headless: !args.includes('--headed') });
 const errors = [];
-async function person(name, device) {
-  const ctx = await browser.newContext(device ?? { viewport: { width: 1280, height: 900 } });
-  const page = await ctx.newPage();
-  page.on('pageerror', (e) => errors.push(`${name}: ${e}`));
-  page.on('console', (m) => m.type() === 'error' && errors.push(`${name}: ${m.text()}`));
-  page.setDefaultTimeout(30_000);
-  return page;
-}
 const snap = async (page, name) => shots && page.screenshot({ path: join(shots, `${name}.png`), fullPage: true });
 
 /** "Say hoi" without stirring: watch the identity work, meet the key, go on. */
@@ -112,7 +105,7 @@ async function sayHoi(page, who, next) {
 }
 
 // ------------------------------------------------------------------ mira, at her computer
-const mira = await person('mira');
+const mira = await transportPage(browser, 'mira', errors);
 await mira.goto(base);
 await unlockBrowser(mira);
 await mira.fill('input.input.big', 'mira');
@@ -150,9 +143,11 @@ await unlockBrowser(mira);
 await mira.getByRole('button', { name: '+ Link a device' }).click();
 const nextPair = await mira.getByLabel(/Pairing link for your other browser or phone/).inputValue();
 await mira.keyboard.press('Escape');
-if (!/#\/pair\?.*w=/.test(nextPair)) fail(`mira's browser shows no WebRTC pairing link for her phone: ${nextPair}`);
-const phone = await person('phone', device(devices['Pixel 7']));
-await phone.goto(nextPair);
+// Keep the node's opaque pairing code and open it against the app built for this test.
+const pairRoute = new URL(nextPair).hash;
+if (!pairRoute.startsWith('#/pair?code=')) fail('the browser did not show an encoded pairing link');
+const phone = await transportPage(browser, 'phone', errors, device(devices['Pixel 7']));
+await phone.goto(`${base}${pairRoute}`);
 await unlockBrowser(phone);
 await phone.getByRole('heading', { name: 'Connect to the pi.' }).waitFor();
 await snap(phone, '01-phone-connect');
@@ -214,7 +209,7 @@ console.log('✓ the phone shows what passes, and how: encrypted · WebRTC, DTLS
 
 // ------------------------------------------------------------------ kim joins while mira is away
 await mira.close();
-const kim = await person('kim');
+const kim = await transportPage(browser, 'kim', errors);
 await kim.goto(invite);
 await unlockBrowser(kim);
 await kim.fill('input.input.big', 'kim');

@@ -22,13 +22,20 @@
   let read = $state(false);
   $effect(() => {
     const l = link;
+    const hasToken = Boolean(params.get('code') || params.get('t'));
     preview = null;
-    read = !params.get('code') && !params.get('t');
-    if (read) return;
+    read = !hasToken;
+    if (!hasToken) return;
+    let current = true;
     app.core.previewPair(l).then(
-      (p) => { preview = p; read = true; },
-      () => { preview = null; read = true; },
+      (p) => {
+        if (!current) return;
+        preview = p;
+        read = true;
+      },
+      () => { if (current) read = true; },
     );
+    return () => { current = false; };
   });
   const name = $derived(preview?.name || 'your computer');
   const valid = $derived(!!preview && (!!preview.url || preview.routes.length > 0));

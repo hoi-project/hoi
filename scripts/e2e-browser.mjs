@@ -2,6 +2,7 @@
 // webkit (Safari's engine, close to Safari but not Safari itself). The WebRTC runs go through
 // all three in the major-release suites (docs/CI.md).
 import { chromium, firefox, webkit } from 'playwright';
+import { consentAccepted } from './browser-vault.mjs';
 
 export const BROWSER = process.env.HOI_E2E_BROWSER || 'chromium';
 
@@ -27,6 +28,17 @@ export function launch(options = {}) {
   if (BROWSER === 'webkit') return webkit.launch(options);
   if (BROWSER !== 'chromium') throw new Error(`HOI_E2E_BROWSER is chromium, firefox or webkit, not ${BROWSER}`);
   return chromium.launch({ ...options, executablePath: process.env.CHROMIUM_PATH || undefined });
+}
+
+/** Start a transport test with consent recorded and a fresh browser context. */
+export async function transportPage(browser, name, errors, options = { viewport: { width: 1280, height: 900 } }) {
+  const context = await browser.newContext({ ...options, serviceWorkers: 'block' });
+  await consentAccepted(context);
+  const page = await context.newPage();
+  page.on('pageerror', (e) => errors.push(`${name}: ${e}`));
+  page.on('console', (m) => m.type() === 'error' && errors.push(`${name}: ${m.text()}`));
+  page.setDefaultTimeout(30_000);
+  return page;
 }
 
 /** A Playwright device descriptor this browser can take: Firefox has no mobile emulation. */

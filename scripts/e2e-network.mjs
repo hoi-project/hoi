@@ -15,7 +15,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { KEY_WORK_TIMEOUT, STAMP_TIMEOUT, launch } from './e2e-browser.mjs';
+import { KEY_WORK_TIMEOUT, STAMP_TIMEOUT, launch, transportPage } from './e2e-browser.mjs';
 import { unlockBrowser } from './browser-vault.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -75,14 +75,6 @@ console.log(`✓ web app at ${base}`);
 
 const browser = await launch({ headless: !args.includes('--headed') });
 const errors = [];
-async function person(name) {
-  const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
-  const page = await ctx.newPage();
-  page.on('pageerror', (e) => errors.push(`${name}: ${e}`));
-  page.on('console', (m) => m.type() === 'error' && errors.push(`${name}: ${m.text()}`));
-  page.setDefaultTimeout(30_000);
-  return page;
-}
 const snap = async (page, name) => shots && page.screenshot({ path: join(shots, `${name}.png`) });
 
 /** "Say hoi": stir the swarm (or skip), watch the real identity work try by try, meet the key, go on. */
@@ -126,7 +118,7 @@ async function pair(page, who, link = pairing) {
 }
 
 // ------------------------------------------------------------------ mira
-const mira = await person('mira');
+const mira = await transportPage(browser, 'mira', errors);
 await mira.goto(base);
 await unlockBrowser(mira);
 await mira.fill('input.input.big', 'mira');
@@ -154,6 +146,7 @@ await mira.fill('#ctitle', 'Which messengers survived the audit?');
 await mira.fill('#ctext', 'Short version: three apps close the gap.');
 await mira.getByRole('button', { name: 'Sign & send' }).click();
 await mira.getByText('Which messengers survived the audit?').first().waitFor({ timeout: STAMP_TIMEOUT });
+const postedSecond = await mira.evaluate(() => Math.floor(Date.now() / 1000));
 console.log('✓ mira posted (signed, stamped, sent)');
 await snap(mira, '02-mira-posted');
 
@@ -164,6 +157,8 @@ await mira.waitForURL(/#\/c\//);
 await mira.goto(`${mira.url().split('/manage')[0]}/manage`);
 await unlockBrowser(mira);
 await mira.locator('label', { hasText: '30 d' }).first().click();
+// Records use whole seconds. The new limits must take effect strictly after the post.
+await mira.waitForFunction((second) => Math.floor(Date.now() / 1000) > second, postedSecond);
 await mira.getByRole('button', { name: 'Propose new limits' }).click();
 await mira.locator('.kv', { hasText: 'Posts fade after' }).getByText('30 days').waitFor();
 console.log('✓ mira shortened the window to 30 days after posting');
@@ -171,7 +166,7 @@ await mira.goto(`${base}#/`);
 await unlockBrowser(mira);
 
 // ------------------------------------------------------------------ lena
-const lena = await person('lena');
+const lena = await transportPage(browser, 'lena', errors);
 await lena.goto(invite);
 await unlockBrowser(lena);
 await lena.fill('input.input.big', 'lena');

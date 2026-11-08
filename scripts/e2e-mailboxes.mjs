@@ -12,8 +12,8 @@
 //   the holders: keep only sealed objects (`hoi-node admin pieces` counts them) and say so in
 //     their notices
 //
-// Needs: `pnpm core:wasm` and `cargo build -p hoi-node` (in core/), and an IPv4 address on this
-// machine besides loopback. The app is served by Vite with no registry and no relay.
+// Needs: `pnpm core:wasm` and `cargo build -p hoi-node` (in core/), and a non-link-local IPv4
+// address on this machine besides loopback. Vite serves the app with no registry and no relay.
 // Usage: node scripts/e2e-mailboxes.mjs   (CHROMIUM_PATH picks a browser)
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
@@ -41,9 +41,10 @@ const fail = (msg) => {
   process.exit(1);
 };
 
-// Two places on one machine: loopback, and the first other IPv4 address it has.
-const lan = Object.values(networkInterfaces()).flat().find((i) => i?.family === 'IPv4' && !i.internal)?.address;
-if (!lan) fail('this machine has no IPv4 address besides loopback: the second holder needs one');
+// Two places on one machine: loopback and a network address the browser can reach.
+const lan = Object.values(networkInterfaces()).flat().find((i) =>
+  i?.family === 'IPv4' && !i.internal && !i.address.startsWith('169.254.'))?.address;
+if (!lan) fail('the second holder needs a non-link-local IPv4 address besides loopback');
 
 async function freeUdpPort(host) {
   const s = createSocket('udp4');

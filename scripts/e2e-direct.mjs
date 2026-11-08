@@ -156,10 +156,12 @@ try {
   const stopped = once(pi, 'exit');
   pi.kill();
   await stopped;
+  // With the node gone, ICE consent can take 30 seconds to expire (RFC 7675).
+  // Leave time for the browser to report the failure and update the app's network state.
   await until(async () => !(await mira.evaluate(async () => {
     const net = await (await import('/src/lib/app.svelte.ts')).app.core.net();
     return net.connections?.some((c) => c.connected && c.kind === 'public');
-  })), 'mira still sees the pi', 30_000);
+  })), 'mira still sees the pi', 60_000);
   assert.equal((await directLinks(mira)).length, 1, 'the direct link outlives the pi');
   const second = await mira.evaluate(async (id) => (await (await import('/src/lib/app.svelte.ts')).app.core.createPost({ community: id, title: 'Straight across', text: 'The pi is off.' })).id, community);
   await until(() => kim.evaluate(async (p) => !!(await (await import('/src/lib/app.svelte.ts')).app.core.post(p).catch(() => null)), second), "mira's post didn't reach kim with the pi off", 30_000);

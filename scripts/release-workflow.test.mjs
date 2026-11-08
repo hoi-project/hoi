@@ -254,14 +254,24 @@ test('major release browser jobs use Ubuntu supported by the pinned Playwright',
   assert.deepEqual(firefoxRunners, ['ubuntu-24.04', 'ubuntu-24.04']);
 });
 
-test('major release browser builds do not fetch the live release feed', () => {
-  const fixture = 'scripts/fixtures/publication-browser-e2e.json';
+test('major release browser builds can use a tagged checkout without the offline fixture', t => {
+  const cwd = mkdtempSync(join(tmpdir(), 'hoi-browser-publication-'));
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+  const publication = { schema: 1, site: 'https://example.org', repository: 'https://example.org/hoi',
+    contact: '', downloads: 'https://example.org/releases', manifestKey: 'manifest', updaterKey: 'updater' };
+  writeFileSync(join(cwd, 'publication.json'), JSON.stringify(publication));
   for (const name of ['browser-e2e', 'webrtc-browsers']) {
-    assert.ok(job('release-major', name).includes('HOI_PUBLICATION_FILE: ${{ github.workspace }}/' + fixture), name);
+    const step = job('release-major', name).split('      - name: Build the app without a live release feed\n')[1]?.split('\n      - ')[0];
+    const script = step?.split('        run: |\n')[1]?.trimEnd().replace(/^ {10}/gm, '');
+    assert.ok(script, name);
+    const build = 'pnpm() { test "$1" = build:web && cat "$HOI_PUBLICATION_FILE"; }\n';
+    const result = spawnSync('bash', ['-e', '-c', build + script], {
+      cwd, encoding: 'utf8', env: { ...process.env, RUNNER_TEMP: '.' },
+    });
+    assert.ifError(result.error);
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), { ...publication, downloads: '', manifestKey: '', updaterKey: '' }, name);
   }
-  const publication = JSON.parse(readFileSync(new URL('../' + fixture, import.meta.url), 'utf8'));
-  assert.equal(publication.downloads, '');
-  assert.equal(publication.manifestKey, '');
 });
 
 test('called release suites have no gate of their own: the caller decides', () => {
