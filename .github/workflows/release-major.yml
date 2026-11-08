@@ -35,6 +35,8 @@ jobs:
     timeout-minutes: 5
     outputs:
       revision: ${{ steps.source.outputs.revision }}
+      android: ${{ steps.mobile.outputs.android }}
+      ios: ${{ steps.mobile.outputs.ios }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -65,6 +67,26 @@ jobs:
         run: |
           test "$(node scripts/release-tier.mjs "$VERSION")" = major
           node scripts/release-version.mjs --check "${VERSION#v}"
+      - name: Check mobile build readiness
+        id: mobile
+        run: |
+          node --input-type=module <<'NODE'
+          import { appendFileSync, readFileSync } from 'node:fs';
+
+          const versionPattern = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
+          for (const platform of ['android', 'ios']) {
+            const path = `apps/mobile/${platform}/build.json`;
+            let version;
+            try {
+              version = JSON.parse(readFileSync(path, 'utf8'))?.version;
+            } catch {
+              // Older revisions and unfinished packages may have no readable build settings.
+            }
+            const ready = typeof version === 'string' && version.trim() === version && versionPattern.test(version);
+            console.log(`${platform}: ${ready ? `build enabled for ${version}` : `skipped because ${path} has no valid version`}`);
+            appendFileSync(process.env.GITHUB_OUTPUT, `${platform}=${ready}\n`);
+          }
+          NODE
 
   rust:
     name: rust (${{ matrix.os }})
@@ -150,6 +172,7 @@ jobs:
   android:
     name: android (build only)
     needs: verify-major
+    if: ${{ needs.verify-major.outputs.android == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     defaults:
@@ -177,7 +200,7 @@ jobs:
   ios:
     name: ios (build only)
     needs: verify-major
-    if: ${{ !inputs.linux_only }}
+    if: ${{ needs.verify-major.outputs.ios == 'true' && !inputs.linux_only }}
     runs-on: macos-latest
     timeout-minutes: 60
     defaults:

@@ -100,6 +100,8 @@ and unlock a browser vault with a passkey through Chromium's virtual authenticat
 `hoi-node_<version>_<target>.digests.json` published beside the archive.
 
 Required release checks must succeed before any draft or release assets are written.
+In Release and Weekly, Android and iOS compile checks run only when the
+[platform's build configuration](../apps/mobile/README.md#integrate) declares a valid version.
 Major suites only run a commit at or before the triggering commit in its Git history. If you
 dispatch Release for a major tag outside the selected branch's history, select the tag itself.
 Jobs have timeouts and minimal permissions; branch runs cancel obsolete runs, `main` runs

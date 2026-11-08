@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { cpSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -196,11 +196,55 @@ test('routine checks start by themselves in the public hoi-project repository, a
 test('the private test mode keeps macOS and Windows out', () => {
   const major = read('release-major');
   assert.match(major, /linux_only:\n        description:/);
-  for (const name of ['ios', 'installers']) assert.match(job('release-major', name), /if: \$\{\{ !inputs\.linux_only \}\}/, name);
+  assert.match(job('release-major', 'installers'), /if: \$\{\{ !inputs\.linux_only \}\}/);
   assert.match(job('release-major', 'rust'), /inputs\.linux_only && '\["ubuntu-latest"\]'/);
   assert.match(job('release-major', 'desktop'), /inputs\.linux_only && '\["ubuntu-22\.04"\]'/);
   assert.match(job('release-major', 'webrtc-browsers'), /inputs\.linux_only && '\[\{"browser":"firefox"/);
   assert.match(job('weekly', 'suites'), /linux_only: \$\{\{ github\.event_name == 'workflow_dispatch' && inputs\.linux_only \}\}/);
+});
+
+test('Release and Weekly only schedule mobile builds with a prepared package version', t => {
+  for (const [workflow, name] of [['release', 'long'], ['weekly', 'suites']]) {
+    assert.match(job(workflow, name), /uses: \.\/\.github\/workflows\/release-major\.yml/);
+  }
+  const verify = job('release-major', 'verify-major');
+  const step = verify.split('      - name: Check mobile build readiness\n')[1]?.split('\n      - ')[0];
+  assert.ok(step, 'the shared preflight reads the package settings');
+  assert.ok(verify.indexOf('git checkout --detach') < verify.indexOf('      - name: Check mobile build readiness'));
+  for (const platform of ['android', 'ios']) {
+    assert.match(verify, new RegExp(`^      ${platform}: \\$\\{\\{ steps\\.mobile\\.outputs\\.${platform} \\}\\}$`, 'm'));
+  }
+  const script = step.split('        run: |\n')[1].trimEnd().replace(/^ {10}/gm, '');
+  const cwd = mkdtempSync(join(tmpdir(), 'hoi-mobile-build-'));
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+  const out = join(cwd, 'github-output');
+  const cases = [
+    [{}, { android: 'false', ios: 'false' }],
+    [{ android: '{"version":null}', ios: 'not JSON' }, { android: 'false', ios: 'false' }],
+    [{ android: '{"version":"0.1.0-preview.1"}', ios: '{"version":"draft"}' }, { android: 'true', ios: 'false' }],
+    [{ android: '{"version":123}', ios: '{"version":"1.2.3"}' }, { android: 'false', ios: 'true' }],
+    [{ android: '{"version":"0.1.0"}', ios: '{"version":"1.2.3"}' }, { android: 'true', ios: 'true' }],
+  ];
+  for (const [configs, expected] of cases) {
+    for (const [platform, config] of Object.entries(configs)) {
+      const dir = join(cwd, 'apps', 'mobile', platform);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'build.json'), config);
+    }
+    writeFileSync(out, '');
+    const result = spawnSync('bash', ['-e', '-c', script], {
+      cwd, encoding: 'utf8', env: { ...process.env, GITHUB_OUTPUT: 'github-output' },
+    });
+    assert.ifError(result.error);
+    assert.equal(result.status, 0, result.stderr);
+    const outputs = Object.fromEntries(readFileSync(out, 'utf8').trim().split(/\r?\n/).map(line => line.split('=')));
+    assert.deepEqual(outputs, expected);
+    for (const weekly of [false, true]) for (const linux_only of [false, true]) {
+      const context = { inputs: { weekly, linux_only }, needs: { 'verify-major': { outputs } } };
+      assert.equal(gate('release-major', 'android', context), expected.android === 'true');
+      assert.equal(gate('release-major', 'ios', context), expected.ios === 'true' && !linux_only);
+    }
+  }
 });
 
 test('major release browser jobs use Ubuntu supported by the pinned Playwright', () => {
