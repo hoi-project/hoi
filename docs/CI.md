@@ -100,6 +100,8 @@ and unlock a browser vault with a passkey through Chromium's virtual authenticat
 `hoi-node_<version>_<target>.digests.json` published beside the archive.
 
 Required release checks must succeed before any draft or release assets are written.
+Major suites only run a commit at or before the triggering commit in its Git history. If you
+dispatch Release for a major tag outside the selected branch's history, select the tag itself.
 Jobs have timeouts and minimal permissions; branch runs cancel obsolete runs, `main` runs
 finish. Only release-writing jobs, code-scanning uploads and Pages deployment get write
 permissions; the tag creation job also has `actions: write` to dispatch Release. Every action

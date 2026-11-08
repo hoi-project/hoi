@@ -3,7 +3,7 @@ import { cpSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { applyVersion, LOCKFILES, planVersion, versionFiles } from './release-version.mjs';
 
 const read = name => readFileSync(new URL(`../.github/workflows/${name}.yml`, import.meta.url), 'utf8').replaceAll('\r\n', '\n');
@@ -56,6 +56,54 @@ function context(event, owner = 'hoi-project', releases = '', tier = 'major') {
 }
 
 const job = (workflow, name) => read(workflow).split(`\n  ${name}:\n`)[1]?.split(/\n  [\w-]+:\n/)[0];
+
+test('major suites run only a commit in the triggering revision’s history', t => {
+  const workflow = read('release-major');
+  const verify = job('release-major', 'verify-major');
+  assert.match(verify, /ref: \$\{\{ github\.sha \}\}/);
+  assert.match(verify, /fetch-depth: 0/);
+  assert.doesNotMatch(workflow, /ref: \$\{\{ inputs\.ref \}\}/);
+  for (const name of ['browser-e2e', 'webrtc-browsers']) {
+    assert.match(job('release-major', name), /ref: \$\{\{ needs\.verify-major\.outputs\.revision \}\}/);
+  }
+  const script = verify.match(/        run: \|\n((?: {10}[^\n]*\n)+)/)?.[1].replace(/^ {10}/gm, '');
+  assert.ok(script);
+  const cwd = mkdtempSync(join(tmpdir(), 'hoi-release-ref-'));
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+  const git = (...args) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  const commit = message => {
+    git('-c', 'user.name=Release Test', '-c', 'user.email=release@example.com', '-c', 'commit.gpgsign=false', 'commit', '--allow-empty', '-m', message);
+    return git('rev-parse', 'HEAD');
+  };
+  git('init', '-b', 'main');
+  const ancestor = commit('earlier release');
+  git('switch', '-c', 'other');
+  const unrelated = commit('off-branch');
+  git('switch', 'main');
+  const head = commit('triggering commit');
+  const check = requested => spawnSync('bash', ['-e', '-c', script], {
+    cwd, encoding: 'utf8', env: { ...process.env, REQUESTED_COMMIT: requested, GITHUB_OUTPUT: 'github-output' },
+  });
+  for (const requested of ['refs/heads/other', unrelated]) {
+    const result = check(requested);
+    assert.ifError(result.error);
+    assert.equal(result.status, 1, result.stderr);
+    assert.equal(git('rev-parse', 'HEAD'), head);
+  }
+  for (const requested of [head, ancestor]) {
+    const result = check(requested);
+    assert.ifError(result.error);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(git('rev-parse', 'HEAD'), requested);
+    assert.equal(readFileSync(join(cwd, 'github-output'), 'utf8').trim().split(/\r?\n/).at(-1), `revision=${requested}`);
+  }
+});
+
+test('the Pages build starts without restoring dependency caches', () => {
+  const build = job('website', 'build');
+  assert.match(build, /package-manager-cache: false/);
+  assert.doesNotMatch(build, /cache: pnpm|uses: Swatinem\/rust-cache@/);
+});
 
 test('release workflow version checks run without installed dependencies', async t => {
   const base = mkdtempSync(join(tmpdir(), 'hoi-release-workflow-'));
