@@ -142,6 +142,44 @@ Validation is selected automatically from the tag: patch = quick, minor = limite
 major = full. Prereleases inherit their numeric version's tier. See [CI](CI.md).
 Validation runs on the pinned source commit and must pass before artifact creation.
 
+### Resume a failed run
+
+After fixing a missing variable, secret or GitHub App permission, open the existing
+**Release** run and choose **Re-run jobs → Re-run failed jobs**. GitHub keeps successful
+jobs and their outputs, then reruns failed jobs and their dependent jobs. This resumes
+drafting and builds without repeating successful validation or signing checks.
+From the CLI, use `gh run rerun RUN_ID --failed --repo hoi-project/hoi`.
+
+If `actions/create-github-app-token` reports an empty `client-id`, set the
+`HOI_RELEASE_TAG_APP_CLIENT_ID` **variable** in the `release` environment. Also ensure
+the `HOI_RELEASE_TAG_APP_PRIVATE_KEY` secret and the app setup above are present.
+The workflow checks that both values are present during planning, before the test
+suites; the `release` environment's approvals and branch restrictions apply there too.
+Only retries that advance a tag need these app credentials.
+
+A rerun uses the original workflow revision and pinned source. Fixing environment
+configuration takes effect on a rerun; merging a workflow or source fix does not.
+**Run workflow** and **Re-run all jobs** normally start validation again and are
+unnecessary for a configuration failure in drafting.
+
+If drafting needs a workflow fix after the checks passed, merge that fix, then start
+**Release** on `main` with the existing `tag`, the same `desktop` setting, and
+`resume_checks_from` set to the earlier Release run ID. Leave `retry_unpublished`
+off to keep building the already checked tag. Recovery verifies the earlier run's
+repository, workflow, commit and successful signing gate, and checks its retained
+signing log for the exact tag, checked-out commit and desktop setting. Missing logs
+or mismatched evidence stop the run. The successful signing gate proves the earlier
+required checks passed; the new run skips those checks but repeats signing preflight
+before continuing with the draft and builds. Changed product source needs fresh checks.
+
+Draft creation uses the ID returned by GitHub, so a pending `untagged-...` URL does
+not require finding the new draft in a release listing. Recovery can reuse an empty
+draft from an interrupted attempt, binding it to the checked commit, or a draft
+already bound to that commit. A published release, assets from an unverified source,
+or an existing draft during a tag advance still stop the workflow for inspection.
+
+### Build and sign
+
 The workflow builds hoi-node archives, desktop installers and the node setup app
 (`apps/setup`, product name "hoi Node Setup", so its files start `hoi Node Setup_`, which a
 GitHub release turns into `hoi.Node.Setup_`, and `hoi-node-setup_` from local builds;

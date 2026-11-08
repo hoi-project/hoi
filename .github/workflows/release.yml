@@ -15,6 +15,10 @@ on:
         description: "Test the selected main commit and advance this unpublished tag after checks pass"
         type: boolean
         default: false
+      resume_checks_from:
+        description: "Completed Release run ID whose successful checks cover this same tag, commit and desktop setting"
+        type: string
+        default: ""
       desktop:
         description: "Build the desktop and node setup bundles (macOS, Windows, Linux); off releases hoi-node only"
         type: boolean
@@ -38,12 +42,18 @@ jobs:
     if: github.event_name == 'workflow_dispatch' || (github.event.created && github.repository_owner == 'hoi-project' && vars.HOI_RELEASES_ENABLED == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    # Resolve retry configuration before starting the expensive checks.
+    environment: release
+    permissions:
+      contents: read
+      actions: read
     outputs:
       tier: ${{ steps.tier.outputs.tier }}
       sha: ${{ steps.commit.outputs.sha }}
       tag: ${{ steps.commit.outputs.tag }}
       previous_tag_sha: ${{ steps.commit.outputs.previous_tag_sha }}
       prerelease: ${{ steps.tier.outputs.prerelease }}
+      reuse_checks: ${{ steps.resume.outputs.reuse_checks }}
     steps:
       - name: Require a version tag
         run: '[[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]'
@@ -82,9 +92,41 @@ jobs:
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "Building $TAG from $sha." >> "$GITHUB_STEP_SUMMARY"
+      - name: Require tag retry configuration before checks
+        if: steps.commit.outputs.previous_tag_sha != ''
+        env:
+          RELEASE_TAG_APP_CLIENT_ID: ${{ vars.HOI_RELEASE_TAG_APP_CLIENT_ID }}
+          HAS_RELEASE_TAG_APP_PRIVATE_KEY: ${{ secrets.HOI_RELEASE_TAG_APP_PRIVATE_KEY != '' }}
+        run: |
+          missing=()
+          [ -n "$RELEASE_TAG_APP_CLIENT_ID" ] || missing+=("variable HOI_RELEASE_TAG_APP_CLIENT_ID")
+          [ "$HAS_RELEASE_TAG_APP_PRIVATE_KEY" = true ] || missing+=("secret HOI_RELEASE_TAG_APP_PRIVATE_KEY")
+          if [ "${#missing[@]}" -gt 0 ]; then
+            printf '::error::Set %s in the release environment before retrying an unpublished tag. See docs/RELEASES.md.\n' "${missing[@]}"
+            exit 1
+          fi
+      - name: Check out recovery tooling from the selected workflow revision
+        if: inputs.resume_checks_from != ''
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: release-tools
+          sparse-checkout: scripts/release-resume.mjs
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - name: Verify previously successful release checks
+        if: inputs.resume_checks_from != ''
+        id: resume
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RESUME_RUN_ID: ${{ inputs.resume_checks_from }}
+          SOURCE_SHA: ${{ steps.commit.outputs.sha }}
+          DESKTOP: ${{ inputs.desktop }}
+        run: node release-tools/scripts/release-resume.mjs
 
   checks:
     needs: plan
+    if: needs.plan.outputs.reuse_checks != 'true'
     uses: ./.github/workflows/release-checks.yml
     with:
       ref: ${{ needs.plan.outputs.sha }}
@@ -92,7 +134,7 @@ jobs:
 
   long:
     needs: plan
-    if: needs.plan.outputs.tier == 'major'
+    if: needs.plan.outputs.tier == 'major' && needs.plan.outputs.reuse_checks != 'true'
     uses: ./.github/workflows/release-major.yml
     with:
       ref: ${{ needs.plan.outputs.sha }}
@@ -103,9 +145,11 @@ jobs:
     needs: [plan, checks, long, security, npm-audit]
     if: >-
       always() && !cancelled() &&
-      needs.plan.result == 'success' && needs.checks.result == 'success' &&
+      needs.plan.result == 'success' &&
+      ((needs.plan.outputs.reuse_checks == 'true' && needs.checks.result == 'skipped' && needs.long.result == 'skipped' && needs.security.result == 'skipped' && needs.npm-audit.result == 'skipped') ||
+      (needs.plan.outputs.reuse_checks != 'true' && needs.checks.result == 'success' &&
       ((needs.plan.outputs.tier == 'major' && needs.long.result == 'success' && needs.security.result == 'success' && needs.npm-audit.result == 'success') ||
-       (needs.plan.outputs.tier != 'major' && needs.long.result == 'skipped' && needs.security.result == 'skipped' && needs.npm-audit.result == 'skipped'))
+       (needs.plan.outputs.tier != 'major' && needs.long.result == 'skipped' && needs.security.result == 'skipped' && needs.npm-audit.result == 'skipped'))))
     runs-on: ubuntu-latest
     timeout-minutes: 25
     # Signing secrets live in the release environment (v* tags and main only).
@@ -180,7 +224,7 @@ jobs:
 
   security:
     needs: plan
-    if: needs.plan.outputs.tier == 'major'
+    if: needs.plan.outputs.tier == 'major' && needs.plan.outputs.reuse_checks != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     strategy:
@@ -212,7 +256,7 @@ jobs:
 
   npm-audit:
     needs: plan
-    if: needs.plan.outputs.tier == 'major'
+    if: needs.plan.outputs.tier == 'major' && needs.plan.outputs.reuse_checks != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -283,6 +327,7 @@ jobs:
       - id: draft
         env:
           PREVIOUS_SHA: ${{ needs.plan.outputs.previous_tag_sha }}
+          SOURCE_SHA: ${{ needs.plan.outputs.sha }}
         run: |
           if [ "$DESKTOP" != "true" ]; then
             notes="hoi-node only. Verify downloads against the signed manifest.json (minisign)."
@@ -291,14 +336,23 @@ jobs:
           else
             notes="These installers are NOT code-signed for Windows and macOS. Verify downloads against the signed manifest.json (minisign) before running them."
           fi
-          if ! gh release view "$TAG" >/dev/null 2>&1; then
-            gh release create "$TAG" --draft --verify-tag --prerelease="$PRERELEASE" --title "hoi $TAG" --notes "$notes"
-          else
+          test "$(gh api "repos/$GH_REPO/commits/$TAG" --jq .sha)" = "$SOURCE_SHA" ||
+            { echo "Tag $TAG does not point to the validated commit." >&2; exit 1; }
+          if release_url="$(gh release view "$TAG" --json apiUrl --jq .apiUrl)"; then
             test -z "$PREVIOUS_SHA" || { echo "A release for $TAG appeared during the tag update. Inspect it before retrying." >&2; exit 1; }
-            test "$(gh release view "$TAG" --json isDraft --jq .isDraft)" = true || { echo "Release $TAG is already published; use a new version." >&2; exit 1; }
-            gh release edit "$TAG" --prerelease="$PRERELEASE"
+            read -r id draft target assets < <(gh api "$release_url" --jq '[.id, .draft, .target_commitish, (.assets | length)] | @tsv')
+            test "$draft" = true || { echo "Release $TAG is already published; use a new version." >&2; exit 1; }
+            # An empty draft left by an interrupted attempt can be bound to the checked commit.
+            # Existing assets from another source must never be mixed into this release.
+            test "$target" = "$SOURCE_SHA" || test "$assets" = 0 ||
+              { echo "Draft $TAG has assets without a matching source commit. Inspect it before retrying." >&2; exit 1; }
+            id="$(gh api --method PATCH "$release_url" -f "target_commitish=$SOURCE_SHA" -F "prerelease=$PRERELEASE" --jq .id)"
+          else
+            # Drafts have pending tags; do not refind a newly created release in the REST list.
+            id="$(gh api --method POST "repos/$GH_REPO/releases" -f "tag_name=$TAG" \
+              -f "target_commitish=$SOURCE_SHA" -f "name=hoi $TAG" -f "body=$notes" \
+              -F draft=true -F "prerelease=$PRERELEASE" --jq .id)"
           fi
-          id="$(gh api "repos/$GH_REPO/releases?per_page=100" --jq "map(select(.tag_name == \"$TAG\"))[0].id")"
           [[ "$id" =~ ^[0-9]+$ ]] || { echo "No release found for $TAG" >&2; exit 1; }
           echo "id=$id" >> "$GITHUB_OUTPUT"
 
