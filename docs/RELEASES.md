@@ -102,7 +102,7 @@ A local commit must be pushed before GitHub can see it.
 Ordinary pushes with the same product version are ignored. The initial creation of
 `main` does not release an imported repository automatically; use a manual run for
 that first release. Use a new version for each published release. Existing tags are
-reused only when they point to the exact selected commit; they are never moved.
+reused by **Release: version** only when they point to the exact selected commit.
 
 ## GitHub
 
@@ -120,16 +120,27 @@ commits retroactively; use a manual run for an already-pushed version.
 
 The existing tag workflow is also available: create and push `v1.0.0-preview.1`
 yourself, or run **Release** with an existing tag to retry that tagged source.
-To pick up fixes merged since the tag, prepare a new version on the fixed commit
-and start **Release: version**. Selecting a newer workflow branch in **Release**
-still builds and tests the source at the existing tag.
+By default **Release** builds the commit the tag points to, even when you select `main`.
+For a failed, unpublished release, merge the fix to `main` at the same version. Open
+**Actions → Release → Run workflow**, select `main`, enter the existing tag and check
+**Retry unpublished**. The selected commit must descend from the lightweight tag. The
+workflow validates that commit and its version before advancing the tag and building the draft.
+If the failed build left a draft, discard it while keeping the tag before retrying. That keeps
+assets from different commits out of the same draft. Published releases require a fresh version.
+
+To enable this retry option, turn on [immutable releases](https://docs.github.com/en/code-security/concepts/supply-chain-security/immutable-releases)
+and install a dedicated GitHub App in the repository with Contents write and Administration read.
+In the `release` environment, set `HOI_RELEASE_TAG_APP_CLIENT_ID` as a variable and
+`HOI_RELEASE_TAG_APP_PRIVATE_KEY` as a secret. Put tag update and deletion protection in separate
+rulesets and grant the app a bypass for the update rule only. The workflow uses an expiring
+installation token for the tag advance. [GitHub ruleset configuration](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/creating-rulesets-for-a-repository)
 Automatic tag pushes obey the same switches. The **Release: version** workflow uses
 the built-in GitHub token to create its tag and explicitly dispatch the build:
 [token-created tags do not trigger push workflows](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow).
 
 Validation is selected automatically from the tag: patch = quick, minor = limited,
 major = full. Prereleases inherit their numeric version's tier. See [CI](CI.md).
-Validation runs on the resolved tag commit and must pass before artifact creation.
+Validation runs on the pinned source commit and must pass before artifact creation.
 
 The workflow builds hoi-node archives, desktop installers and the node setup app
 (`apps/setup`, product name "hoi Node Setup", so its files start `hoi Node Setup_`, which a

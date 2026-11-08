@@ -52,7 +52,7 @@ runs, and pushes whose base is unknown, check everything.
 | `weekly.yml` / Weekly | Saturdays (public repository); by hand anywhere, `linux_only` by default | the full major suites on `main` |
 | `release-version.yml` / Release: version | version push to `main` (switch), or manual | validates versions, creates the tag and starts Release |
 | `release.yml` / Release | tag push (switch), or manual existing tag | validates, builds, signs and uploads a draft with the channel's pre-release flag |
-| `release-checks.yml` / Release: checks | called by Release | quick or minor validation on the exact tagged commit |
+| `release-checks.yml` / Release: checks | called by Release | quick or minor validation on the pinned source commit |
 | `release-major.yml` / Release: major suites | called by Release for a validated major tag, and by Weekly | full suites on Linux, macOS and Windows (`linux_only` keeps them on Linux) |
 | `website.yml` / Website | manual (`HOI_PAGES_ENABLED`) | website publication check (repository and site, no signing keys), quick checks, static build and Pages upload |
 
@@ -83,7 +83,7 @@ Artifact compilation and signing still happen for every release; reducing tests 
 not remove the work needed to build release binaries.
 
 Every pull request already runs more than the minor tier; the tiers decide what a release
-re-runs on its exact tag before signing.
+re-runs on the pinned source before signing.
 
 ## Major suites
 

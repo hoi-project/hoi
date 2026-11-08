@@ -11,6 +11,10 @@ on:
       tag:
         description: "Existing pushed tag to release, e.g. v1.0.0-preview.1"
         required: true
+      retry_unpublished:
+        description: "Test the selected main commit and advance this unpublished tag after checks pass"
+        type: boolean
+        default: false
       desktop:
         description: "Build the desktop and node setup bundles (macOS, Windows, Linux); off releases hoi-node only"
         type: boolean
@@ -30,20 +34,23 @@ concurrency:
 jobs:
   plan:
     name: Validate tag, versions and test tier
-    if: github.event_name == 'workflow_dispatch' || (github.repository_owner == 'hoi-project' && vars.HOI_RELEASES_ENABLED == 'true')
+    # Tag advances by the release app also send a push event. Only new tags start a release.
+    if: github.event_name == 'workflow_dispatch' || (github.event.created && github.repository_owner == 'hoi-project' && vars.HOI_RELEASES_ENABLED == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
       tier: ${{ steps.tier.outputs.tier }}
       sha: ${{ steps.commit.outputs.sha }}
       tag: ${{ steps.commit.outputs.tag }}
+      previous_tag_sha: ${{ steps.commit.outputs.previous_tag_sha }}
       prerelease: ${{ steps.tier.outputs.prerelease }}
     steps:
       - name: Require a version tag
         run: '[[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]'
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: refs/tags/${{ env.TAG }}
+          ref: ${{ inputs.retry_unpublished && github.sha || format('refs/tags/{0}', env.TAG) }}
+          fetch-depth: ${{ inputs.retry_unpublished && '0' || '1' }}
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -55,9 +62,26 @@ jobs:
         run: node scripts/release-version.mjs --check "$TAG" --github-output
       - name: Pin all following jobs to this commit
         id: commit
+        env:
+          RETRY_UNPUBLISHED: ${{ inputs.retry_unpublished }}
         run: |
-          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          sha="$(git rev-parse HEAD)"
+          if [ "$RETRY_UNPUBLISHED" = true ]; then
+            test "$GITHUB_EVENT_NAME" = workflow_dispatch && test "$GITHUB_REF" = refs/heads/main ||
+              { echo "Retry unpublished releases by running Release on main." >&2; exit 1; }
+            ref="refs/tags/$TAG"
+            previous="$(git rev-parse --verify "$ref")"
+            if [ "$previous" != "$sha" ]; then
+              test "$(git cat-file -t "$previous")" = commit ||
+                { echo "Only lightweight release tags can be advanced." >&2; exit 1; }
+              git merge-base --is-ancestor "$previous" "$sha" ||
+                { echo "The selected main commit must descend from $TAG." >&2; exit 1; }
+              echo "previous_tag_sha=$previous" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Building $TAG from $sha." >> "$GITHUB_STEP_SUMMARY"
 
   checks:
     needs: plan
@@ -208,6 +232,7 @@ jobs:
   draft:
     needs: [plan, signing]
     if: always() && !cancelled() && needs.plan.result == 'success' && needs.signing.result == 'success'
+    environment: release
     permissions:
       contents: write
     runs-on: ubuntu-latest
@@ -220,7 +245,44 @@ jobs:
       DESKTOP: ${{ github.event_name != 'workflow_dispatch' || inputs.desktop }}
       PRERELEASE: ${{ needs.plan.outputs.prerelease }}
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: needs.plan.outputs.previous_tag_sha != ''
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        if: needs.plan.outputs.previous_tag_sha != ''
+        id: retry-token
+        with:
+          client-id: ${{ vars.HOI_RELEASE_TAG_APP_CLIENT_ID }}
+          private-key: ${{ secrets.HOI_RELEASE_TAG_APP_PRIVATE_KEY }}
+          permission-administration: read
+          permission-contents: write
+      - name: Advance the unpublished tag
+        if: needs.plan.outputs.previous_tag_sha != ''
+        env:
+          GH_TOKEN: ${{ steps.retry-token.outputs.token }}
+          PREVIOUS_SHA: ${{ needs.plan.outputs.previous_tag_sha }}
+          SOURCE_SHA: ${{ needs.plan.outputs.sha }}
+        run: |
+          # Immutable releases also protect against publication racing this update.
+          test "$(gh api "repos/$GH_REPO/immutable-releases" --jq .enabled)" = true ||
+            { echo "Enable immutable releases before advancing release tags." >&2; exit 1; }
+          releases="$(gh api --paginate "repos/$GH_REPO/releases?per_page=100" --jq ".[] | select(.tag_name == \"$TAG\") | .draft")"
+          case "$releases" in
+            '') ;;
+            true) echo "Discard the existing draft for $TAG before retrying with a different commit." >&2; exit 1 ;;
+            *) echo "Release $TAG is already published. Use a new version." >&2; exit 1 ;;
+          esac
+          # A second actor changing this ref after validation invalidates the lease.
+          ref="refs/tags/$TAG"
+          git -c credential.helper= -c 'credential.helper=!gh auth git-credential' push \
+            --force-with-lease="$ref:$PREVIOUS_SHA" origin "$SOURCE_SHA:$ref"
+          test "$(gh api "repos/$GH_REPO/commits/$TAG" --jq .sha)" = "$SOURCE_SHA" ||
+            { echo "Tag $TAG does not point to the validated commit." >&2; exit 1; }
       - id: draft
+        env:
+          PREVIOUS_SHA: ${{ needs.plan.outputs.previous_tag_sha }}
         run: |
           if [ "$DESKTOP" != "true" ]; then
             notes="hoi-node only. Verify downloads against the signed manifest.json (minisign)."
@@ -232,6 +294,7 @@ jobs:
           if ! gh release view "$TAG" >/dev/null 2>&1; then
             gh release create "$TAG" --draft --verify-tag --prerelease="$PRERELEASE" --title "hoi $TAG" --notes "$notes"
           else
+            test -z "$PREVIOUS_SHA" || { echo "A release for $TAG appeared during the tag update. Inspect it before retrying." >&2; exit 1; }
             test "$(gh release view "$TAG" --json isDraft --jq .isDraft)" = true || { echo "Release $TAG is already published; use a new version." >&2; exit 1; }
             gh release edit "$TAG" --prerelease="$PRERELEASE"
           fi

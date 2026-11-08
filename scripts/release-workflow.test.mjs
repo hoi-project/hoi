@@ -47,7 +47,7 @@ function gate(workflow, job, context) {
 
 function context(event, owner = 'hoi-project', releases = '', tier = 'major') {
   return {
-    github: { event_name: event, repository_owner: owner, repository: `${owner}/hoi`, event: { repository: { private: false } } },
+    github: { event_name: event, repository_owner: owner, repository: `${owner}/hoi`, event: { created: true, repository: { private: false } } },
     vars: { HOI_RELEASES_ENABLED: releases },
     inputs: { desktop: false },
     needs: Object.fromEntries(['plan', 'checks', 'long', 'security', 'npm-audit', 'signing', 'draft', 'node', 'desktop', 'setup']
@@ -56,6 +56,83 @@ function context(event, owner = 'hoi-project', releases = '', tier = 'major') {
 }
 
 const job = (workflow, name) => read(workflow).split(`\n  ${name}:\n`)[1]?.split(/\n  [\w-]+:\n/)[0];
+
+test('an unpublished retry validates a descendant on main and advances only the checked tag', t => {
+  const step = (jobName, name) => {
+    const section = job('release', jobName).split(`      - name: ${name}\n`)[1]?.split('\n      - ')[0];
+    const script = section?.split('        run: |\n')[1]?.trimEnd().replace(/^ {10}/gm, '');
+    assert.ok(script, name);
+    return script;
+  };
+  const pin = step('plan', 'Pin all following jobs to this commit');
+  const advance = step('draft', 'Advance the unpublished tag');
+  const cwd = mkdtempSync(join(tmpdir(), 'hoi-release-retry-'));
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+  const git = (...args) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  const commit = message => {
+    git('-c', 'user.name=Release Test', '-c', 'user.email=release@example.com', '-c', 'commit.gpgsign=false', 'commit', '--allow-empty', '-m', message);
+    return git('rev-parse', 'HEAD');
+  };
+  git('init', '-b', 'main');
+  git('init', '--bare', 'remote.git');
+  git('remote', 'add', 'origin', 'remote.git');
+  const base = commit('before the release');
+  const previous = commit('failed release');
+  const tag = 'v1.0.0-preview.2';
+  const ref = `refs/tags/${tag}`;
+  git('tag', tag, previous);
+  git('push', 'origin', ref);
+  const source = commit('fix on main');
+
+  const run = (script, env = {}) => {
+    const result = spawnSync('bash', ['-e', '-c', script], { cwd, encoding: 'utf8', env: {
+      ...process.env, TAG: tag, GH_REPO: 'example/hoi', GITHUB_OUTPUT: 'github-output', GITHUB_STEP_SUMMARY: 'summary',
+      GITHUB_EVENT_NAME: 'workflow_dispatch', GITHUB_REF: 'refs/heads/main', RETRY_UNPUBLISHED: 'true', ...env,
+    } });
+    assert.ifError(result.error);
+    return result;
+  };
+  assert.match(run(pin, { GITHUB_REF: 'refs/heads/topic' }).stderr, /running Release on main/);
+  git('checkout', '--detach', base);
+  assert.match(run(pin).stderr, /must descend/);
+  git('switch', 'main');
+  git('-c', 'user.name=Release Test', '-c', 'user.email=release@example.com', '-c', 'tag.gpgsign=false',
+    'tag', '-a', 'v1.0.0-preview.3', '-m', 'annotated', previous);
+  assert.match(run(pin, { TAG: 'v1.0.0-preview.3' }).stderr, /Only lightweight/);
+  const planned = run(pin);
+  assert.equal(planned.status, 0, planned.stderr);
+  assert.deepEqual(readFileSync(join(cwd, 'github-output'), 'utf8').trim().split(/\r?\n/),
+    [`previous_tag_sha=${previous}`, `sha=${source}`, `tag=${tag}`]);
+  const gh = `gh() {
+  case "$2" in
+    */immutable-releases) printf '%s\\n' "$MOCK_IMMUTABLE" ;;
+    --paginate) printf '%s\\n' "$MOCK_RELEASES" ;;
+    */commits/*) git --git-dir=remote.git rev-parse "refs/tags/$TAG" ;;
+    *) return 99 ;;
+  esac
+}
+`;
+  const update = env => run(gh + advance, { PREVIOUS_SHA: previous, SOURCE_SHA: source, MOCK_IMMUTABLE: 'true', ...env });
+  const remoteTag = () => git('--git-dir=remote.git', 'rev-parse', ref);
+  for (const [env, error] of [
+    [{ MOCK_IMMUTABLE: 'false' }, /Enable immutable releases/],
+    [{ MOCK_RELEASES: 'true' }, /Discard the existing draft/],
+    [{ MOCK_RELEASES: 'false' }, /already published/],
+  ]) {
+    const result = update(env);
+    assert.equal(result.status, 1, result.stderr);
+    assert.match(result.stderr, error);
+    assert.equal(remoteTag(), previous);
+  }
+  const advanced = update();
+  assert.equal(advanced.status, 0, advanced.stderr);
+  assert.equal(remoteTag(), source);
+  const newer = commit('second fix on main');
+  const stale = update({ SOURCE_SHA: newer });
+  assert.equal(stale.status, 1, stale.stderr);
+  assert.match(stale.stderr, /stale info/);
+  assert.equal(remoteTag(), source);
+});
 
 test('major suites run only a commit in the triggering revision’s history', t => {
   const workflow = read('release-major');
@@ -119,6 +196,7 @@ test('release workflow version checks run without installed dependencies', async
   applyVersion(planVersion(version, {}, base), base);
   for (const [workflow, name, step, variable] of [
     ['release-major', 'verify-major', 'Refuse long suites for a non-major version', 'VERSION'],
+    ['release', 'plan', 'Validate versions, channel and release checks', 'TAG'],
     ['release', 'signing', "The tree carries the tag's version", 'TAG'],
   ]) {
     await t.test(`${workflow} / ${name}`, () => {
@@ -127,7 +205,7 @@ test('release workflow version checks run without installed dependencies', async
       assert.ok(run, step);
       const script = run === '|' ? section.split('        run: |\n')[1].replace(/^          /gm, '') : run;
       const check = tag => spawnSync('bash', ['-e', '-c', script], {
-        cwd: base, encoding: 'utf8', env: { PATH: process.env.PATH, [variable]: tag },
+        cwd: base, encoding: 'utf8', env: { PATH: process.env.PATH, GITHUB_OUTPUT: 'github-output', [variable]: tag },
       });
       const match = check(`v${version}`);
       assert.ifError(match.error);
@@ -302,6 +380,15 @@ test('automatic releases need the switch in the hoi-project repository and valid
     failed.needs[job].result = 'failure';
     assert.equal(gate('release', 'signing', failed), false, job);
   }
+});
+
+test('advancing an existing tag cannot trigger another release and requires successful validation', () => {
+  const retag = context('push', 'hoi-project', 'true');
+  retag.github.event.created = false;
+  assert.equal(gate('release', 'plan', retag), false);
+  const failedSigning = context('workflow_dispatch');
+  failedSigning.needs.signing.result = 'failure';
+  assert.equal(gate('release', 'draft', failedSigning), false);
 });
 
 test('failed or cancelled builds cannot produce a signed manifest', () => {
