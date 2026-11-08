@@ -15,8 +15,8 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { KEY_WORK_TIMEOUT, STAMP_TIMEOUT, launch } from './e2e-browser.mjs';
-import { consentAccepted, unlockBrowser } from './browser-vault.mjs';
+import { KEY_WORK_TIMEOUT, STAMP_TIMEOUT, launch, transportPage } from './e2e-browser.mjs';
+import { unlockBrowser } from './browser-vault.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const args = process.argv.slice(2);
@@ -75,15 +75,6 @@ console.log(`✓ web app at ${base}`);
 
 const browser = await launch({ headless: !args.includes('--headed') });
 const errors = [];
-async function person(name) {
-  const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 }, serviceWorkers: 'block' });
-  await consentAccepted(ctx);
-  const page = await ctx.newPage();
-  page.on('pageerror', (e) => errors.push(`${name}: ${e}`));
-  page.on('console', (m) => m.type() === 'error' && errors.push(`${name}: ${m.text()}`));
-  page.setDefaultTimeout(30_000);
-  return page;
-}
 const snap = async (page, name) => shots && page.screenshot({ path: join(shots, `${name}.png`) });
 
 /** "Say hoi": stir the swarm (or skip), watch the real identity work try by try, meet the key, go on. */
@@ -127,7 +118,7 @@ async function pair(page, who, link = pairing) {
 }
 
 // ------------------------------------------------------------------ mira
-const mira = await person('mira');
+const mira = await transportPage(browser, 'mira', errors);
 await mira.goto(base);
 await unlockBrowser(mira);
 await mira.fill('input.input.big', 'mira');
@@ -175,7 +166,7 @@ await mira.goto(`${base}#/`);
 await unlockBrowser(mira);
 
 // ------------------------------------------------------------------ lena
-const lena = await person('lena');
+const lena = await transportPage(browser, 'lena', errors);
 await lena.goto(invite);
 await unlockBrowser(lena);
 await lena.fill('input.input.big', 'lena');

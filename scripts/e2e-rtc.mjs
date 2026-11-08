@@ -19,8 +19,8 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { devices } from 'playwright';
-import { KEY_WORK_TIMEOUT, STAMP_TIMEOUT, device, launch } from './e2e-browser.mjs';
-import { consentAccepted, unlockBrowser } from './browser-vault.mjs';
+import { KEY_WORK_TIMEOUT, STAMP_TIMEOUT, device, launch, transportPage } from './e2e-browser.mjs';
+import { unlockBrowser } from './browser-vault.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const args = process.argv.slice(2);
@@ -92,15 +92,6 @@ console.log(`✓ web app at ${base}`);
 
 const browser = await launch({ headless: !args.includes('--headed') });
 const errors = [];
-async function person(name, device) {
-  const ctx = await browser.newContext({ ...(device ?? { viewport: { width: 1280, height: 900 } }), serviceWorkers: 'block' });
-  await consentAccepted(ctx);
-  const page = await ctx.newPage();
-  page.on('pageerror', (e) => errors.push(`${name}: ${e}`));
-  page.on('console', (m) => m.type() === 'error' && errors.push(`${name}: ${m.text()}`));
-  page.setDefaultTimeout(30_000);
-  return page;
-}
 const snap = async (page, name) => shots && page.screenshot({ path: join(shots, `${name}.png`), fullPage: true });
 
 /** "Say hoi" without stirring: watch the identity work, meet the key, go on. */
@@ -114,7 +105,7 @@ async function sayHoi(page, who, next) {
 }
 
 // ------------------------------------------------------------------ mira, at her computer
-const mira = await person('mira');
+const mira = await transportPage(browser, 'mira', errors);
 await mira.goto(base);
 await unlockBrowser(mira);
 await mira.fill('input.input.big', 'mira');
@@ -155,7 +146,7 @@ await mira.keyboard.press('Escape');
 // Keep the node's opaque pairing code and open it against the app built for this test.
 const pairRoute = new URL(nextPair).hash;
 if (!pairRoute.startsWith('#/pair?code=')) fail('the browser did not show an encoded pairing link');
-const phone = await person('phone', device(devices['Pixel 7']));
+const phone = await transportPage(browser, 'phone', errors, device(devices['Pixel 7']));
 await phone.goto(`${base}${pairRoute}`);
 await unlockBrowser(phone);
 await phone.getByRole('heading', { name: 'Connect to the pi.' }).waitFor();
@@ -218,7 +209,7 @@ console.log('✓ the phone shows what passes, and how: encrypted · WebRTC, DTLS
 
 // ------------------------------------------------------------------ kim joins while mira is away
 await mira.close();
-const kim = await person('kim');
+const kim = await transportPage(browser, 'kim', errors);
 await kim.goto(invite);
 await unlockBrowser(kim);
 await kim.fill('input.input.big', 'kim');

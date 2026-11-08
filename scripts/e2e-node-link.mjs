@@ -20,8 +20,8 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { KEY_WORK_TIMEOUT, STAMP_TIMEOUT, launch } from './e2e-browser.mjs';
-import { consentAccepted, unlockBrowser } from './browser-vault.mjs';
+import { KEY_WORK_TIMEOUT, STAMP_TIMEOUT, launch, transportPage } from './e2e-browser.mjs';
+import { unlockBrowser } from './browser-vault.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const args = process.argv.slice(2);
@@ -106,15 +106,6 @@ console.log(`✓ web app at ${base}, nothing configured in it`);
 
 const browser = await launch({ headless: !args.includes('--headed') });
 const errors = [];
-async function person(name) {
-  const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 }, serviceWorkers: 'block' });
-  await consentAccepted(ctx);
-  const page = await ctx.newPage();
-  page.on('pageerror', (e) => errors.push(`${name}: ${e}`));
-  page.on('console', (m) => m.type() === 'error' && errors.push(`${name}: ${m.text()}`));
-  page.setDefaultTimeout(30_000);
-  return page;
-}
 const snap = async (page, name) => shots && page.screenshot({ path: join(shots, `${name}.png`), fullPage: true });
 
 /** "Say hoi" without stirring: watch the identity work, meet the key, go on. */
@@ -144,7 +135,7 @@ async function openNodeLink(page, who) {
 }
 
 // ------------------------------------------------------------------ mira starts a community
-const mira = await person('mira');
+const mira = await transportPage(browser, 'mira', errors);
 await openNodeLink(mira, 'mira');
 console.log("✓ mira opened lena's node link in a browser with nothing configured and reached the node");
 await mira.getByRole('link', { name: '+ Start a community' }).click();
@@ -171,7 +162,7 @@ await mira.waitForTimeout(3000);
 await mira.close();
 
 // ------------------------------------------------------------------ kim finds it, with mira gone
-const kim = await person('kim');
+const kim = await transportPage(browser, 'kim', errors);
 await openNodeLink(kim, 'kim');
 const listed = kim.locator('a.crow', { hasText: 'c/gardening' });
 await listed.waitFor({ timeout: 30_000 });
