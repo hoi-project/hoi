@@ -19,6 +19,8 @@ dimpl = { path = "../vendor/dimpl" }
 core-models = { path = "../vendor/core-models" }
 # Shared Darwin ioctl layout: libc exposes its request type only on macOS.
 netdev = { path = "../vendor/netdev-0.46.3" }
+# Darwin routing constants are no longer exported by libc on iOS.
+netwatch = { path = "../vendor/netwatch-0.19.3" }
 
 [workspace.dependencies]
 hoi-types = { path = "crates/hoi-types" }

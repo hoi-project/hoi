@@ -155,6 +155,23 @@ test('the private test mode keeps macOS and Windows out', () => {
   assert.match(job('weekly', 'suites'), /linux_only: \$\{\{ github\.event_name == 'workflow_dispatch' && inputs\.linux_only \}\}/);
 });
 
+test('major release browser jobs use Ubuntu supported by the pinned Playwright', () => {
+  assert.match(job('release-major', 'browser-e2e'), /^    runs-on: ubuntu-24\.04$/m);
+  const webrtc = job('release-major', 'webrtc-browsers');
+  const firefoxRunners = [...webrtc.matchAll(/"browser":"firefox","os":"([^"]+)"/g)].map(([, os]) => os);
+  assert.deepEqual(firefoxRunners, ['ubuntu-24.04', 'ubuntu-24.04']);
+});
+
+test('major release browser builds do not fetch the live release feed', () => {
+  const fixture = 'scripts/fixtures/publication-browser-e2e.json';
+  for (const name of ['browser-e2e', 'webrtc-browsers']) {
+    assert.ok(job('release-major', name).includes('HOI_PUBLICATION_FILE: ${{ github.workspace }}/' + fixture), name);
+  }
+  const publication = JSON.parse(readFileSync(new URL('../' + fixture, import.meta.url), 'utf8'));
+  assert.equal(publication.downloads, '');
+  assert.equal(publication.manifestKey, '');
+});
+
 test('called release suites have no gate of their own: the caller decides', () => {
   assert.doesNotMatch(job('release-checks', 'checks'), /^    if:/m);
   assert.doesNotMatch(job('release-major', 'verify-major'), /^    if:/m);

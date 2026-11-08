@@ -212,7 +212,8 @@ jobs:
   browser-e2e:
     name: browser end-to-end
     needs: verify-major
-    runs-on: ubuntu-latest
+    # Playwright 1.56.1 does not have browser builds for Ubuntu 26.04.
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -239,7 +240,12 @@ jobs:
       - run: pnpm core:wasm
       - name: Full JavaScript and sandbox tests
         run: pnpm check && pnpm test && pnpm test:sandbox
-      - run: pnpm build:site && pnpm build:web && node scripts/assemble-static.mjs
+      - run: pnpm build:site
+      - name: Build the app without a live release feed
+        env:
+          HOI_PUBLICATION_FILE: ${{ github.workspace }}/scripts/fixtures/publication-browser-e2e.json
+        run: pnpm build:web
+      - run: node scripts/assemble-static.mjs
       - run: pnpm exec playwright install --with-deps chromium
       - name: Encrypted vault setup, unlocking, migration and tamper protection
         run: node scripts/e2e-vault.mjs
@@ -296,8 +302,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Firefox on Linux, and Safari's engine: on macOS Playwright's WebKit is closest to Safari.
-        include: ${{ fromJSON(inputs.linux_only && '[{"browser":"firefox","os":"ubuntu-latest"}]' || '[{"browser":"firefox","os":"ubuntu-latest"},{"browser":"webkit","os":"macos-latest"}]') }}
+        # Use the same Playwright-supported Ubuntu as browser-e2e. Run WebKit on macOS.
+        include: ${{ fromJSON(inputs.linux_only && '[{"browser":"firefox","os":"ubuntu-24.04"}]' || '[{"browser":"firefox","os":"ubuntu-24.04"},{"browser":"webkit","os":"macos-latest"}]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     env:
@@ -325,7 +331,10 @@ jobs:
           tool: wasm-bindgen@0.2.129
       - run: pnpm install --frozen-lockfile
       - run: pnpm core:wasm
-      - run: pnpm build:web
+      - name: Build the app without a live release feed
+        env:
+          HOI_PUBLICATION_FILE: ${{ github.workspace }}/scripts/fixtures/publication-browser-e2e.json
+        run: pnpm build:web
       - run: pnpm exec playwright install --with-deps ${{ matrix.browser }}
       - name: Build home node
         run: cargo build --locked --manifest-path core/Cargo.toml -p hoi-node

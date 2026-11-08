@@ -7,6 +7,14 @@ The two application workspaces intentionally use the same `[patch.crates-io]` en
 
 ## Release pipeline fixes
 
+- `netwatch-0.19.3` is the published crate at commit
+  `0030e57fc70981895bb86212ff0f059cc41c8a4e`, with both upstream licenses and the
+  normalized manifest preserved. It backports the Rust source changes from
+  [net-tools#267](https://github.com/n0-computer/net-tools/pull/267) to define
+  Darwin routing constants locally, including the macOS test that compares
+  them with libc. libc 0.2.190 and later expose these constants only on macOS.
+  The backport retains the existing netdev version and its patch below.
+
 - `netdev-0.46.3` is the published crate at commit
   `4505d238696975a97b029c1b8607487453c0f86e`, with its MIT license and normalized
   manifest preserved. Only `src/os/darwin/ipv6_addr_flags.rs` changes: provide the
