@@ -199,7 +199,6 @@ test('the private test mode keeps macOS and Windows out', () => {
   assert.match(job('release-major', 'installers'), /if: \$\{\{ !inputs\.linux_only \}\}/);
   assert.match(job('release-major', 'rust'), /inputs\.linux_only && '\["ubuntu-latest"\]'/);
   assert.match(job('release-major', 'desktop'), /inputs\.linux_only && '\["ubuntu-22\.04"\]'/);
-  assert.match(job('release-major', 'webrtc-browsers'), /inputs\.linux_only && '\[\{"browser":"firefox"/);
   assert.match(job('weekly', 'suites'), /linux_only: \$\{\{ github\.event_name == 'workflow_dispatch' && inputs\.linux_only \}\}/);
 });
 
@@ -250,8 +249,8 @@ test('Release and Weekly only schedule mobile builds with a prepared package ver
 test('major release browser jobs use Ubuntu supported by the pinned Playwright', () => {
   assert.match(job('release-major', 'browser-e2e'), /^    runs-on: ubuntu-24\.04$/m);
   const webrtc = job('release-major', 'webrtc-browsers');
-  const firefoxRunners = [...webrtc.matchAll(/"browser":"firefox","os":"([^"]+)"/g)].map(([, os]) => os);
-  assert.deepEqual(firefoxRunners, ['ubuntu-24.04', 'ubuntu-24.04']);
+  assert.match(webrtc, /^    runs-on: ubuntu-24\.04$/m);
+  assert.match(webrtc, /^        browser: \[firefox, webkit\]$/m);
 });
 
 test('major release browser builds can use a tagged checkout without the offline fixture', t => {

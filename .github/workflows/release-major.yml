@@ -344,9 +344,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Use the same Playwright-supported Ubuntu as browser-e2e. Run WebKit on macOS.
-        include: ${{ fromJSON(inputs.linux_only && '[{"browser":"firefox","os":"ubuntu-24.04"}]' || '[{"browser":"firefox","os":"ubuntu-24.04"},{"browser":"webkit","os":"macos-latest"}]') }}
-    runs-on: ${{ matrix.os }}
+        browser: [firefox, webkit]
+    # Use the same Playwright-supported Ubuntu as browser-e2e for the loopback WebRTC tests.
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
       HOI_E2E_BROWSER: ${{ matrix.browser }}
