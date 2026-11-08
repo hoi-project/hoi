@@ -6,6 +6,7 @@ import assert from 'node:assert/strict';
 import { mkdir } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { expect } from '@playwright/test';
 import { chromium } from 'playwright';
 import { createServer as createViteServer } from '../apps/web/node_modules/vite/dist/node/index.js';
 import { isPaddedSize } from '../relay/protocol.mjs';
@@ -205,9 +206,14 @@ try {
   const received = await call(member, 'post', post.id);
   assert.equal(received.title, title);
   assert.equal(received.text, text);
-  const media = await call(member, 'media', post.media[0].hash);
+  // Sync delivers the ciphertext. The browser's look worker validates the image before the core stores it.
+  const hash = post.media[0].hash;
+  await expect.poll(async () => (await call(member, 'post', post.id)).media.some(item => item.hash === hash && item.available), {
+    message: 'the received PNG is validated and stored', timeout: 30_000,
+  }).toBe(true);
+  const media = await call(member, 'media', hash);
   assert.equal(media.mime, 'image/png');
-  assert.deepEqual(Buffer.from(media.data), Buffer.from((await call(founder, 'media', post.media[0].hash)).data));
+  assert.deepEqual(Buffer.from(media.data), Buffer.from((await call(founder, 'media', hash)).data));
 
   const stored = await objects(member, community.id);
   assert.ok(stored.length > 0);
@@ -234,7 +240,7 @@ try {
   await boot(member);
   assert.equal((await call(member, 'post', post.id)).text, text, 'private records survive browser reload');
   assert.equal((await call(member, 'privateGroup', community.id)).room, group.room, 'MLS state survives browser reload');
-  assert.deepEqual(Buffer.from((await call(member, 'media', post.media[0].hash)).data), Buffer.from(media.data), 'encrypted media was persisted locally after validation');
+  assert.deepEqual(Buffer.from((await call(member, 'media', hash)).data), Buffer.from(media.data), 'encrypted media was persisted locally after validation');
 
   const previousEpoch = (await call(founder, 'privateGroup', community.id)).epoch;
   const removed = await call(founder, 'privateRemove', community.id, memberMe.device);
@@ -292,8 +298,10 @@ try {
 
   await memberUi.goto(`${uiOrigin}/#/private`);
   await boot(memberUi);
+  const continueJoining = memberUi.getByRole('dialog', { name: 'Turn on your VPN before joining' }).getByRole('button', { name: 'Continue joining' });
   await memberUi.getByRole('button', { name: 'Create invitation request', exact: true }).click();
-  const requestField = memberUi.getByLabel('Send this request to the owner', { exact: true });
+  await continueJoining.click();
+  const requestField = memberUi.getByLabel('Send this request to a member', { exact: true });
   await requestField.waitFor();
   await ownerUi.getByText('Invite someone or manage devices', { exact: true }).click();
   await ownerUi.getByLabel('Their invitation request', { exact: true }).fill(await requestField.inputValue());
@@ -307,7 +315,7 @@ try {
   await invitation.waitFor({ timeout: 30_000 });
   await memberUi.getByLabel('Your private invitation', { exact: true }).fill(await invitation.inputValue());
   await memberUi.getByRole('button', { name: 'Open private invitation', exact: true }).click();
-  await memberUi.getByRole('dialog', { name: 'Turn on your VPN before joining' }).getByRole('button', { name: 'Continue joining' }).click();
+  await continueJoining.click();
   await memberUi.getByRole('heading', { name: 'private-ui-test', exact: true }).waitFor({ timeout: 30_000 });
   assert.equal((await call(memberUi, 'privateGroup', uiCommunity)).active, true);
 
