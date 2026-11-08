@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { cpSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
 import { spawnSync } from 'node:child_process';
+import { applyVersion, LOCKFILES, planVersion, versionFiles } from './release-version.mjs';
 
 const read = name => readFileSync(new URL(`../.github/workflows/${name}.yml`, import.meta.url), 'utf8').replaceAll('\r\n', '\n');
 
@@ -53,6 +56,40 @@ function context(event, owner = 'hoi-project', releases = '', tier = 'major') {
 }
 
 const job = (workflow, name) => read(workflow).split(`\n  ${name}:\n`)[1]?.split(/\n  [\w-]+:\n/)[0];
+
+test('release workflow version checks run without installed dependencies', async t => {
+  const base = mkdtempSync(join(tmpdir(), 'hoi-release-workflow-'));
+  t.after(() => rmSync(base, { recursive: true, force: true }));
+  const scripts = readdirSync(new URL('./', import.meta.url))
+    .filter(name => name.endsWith('.mjs')).map(name => `scripts/${name}`);
+  const paths = new Set([...versionFiles().map(file => file.path), ...LOCKFILES,
+    'package.json', 'release.json', ...scripts]);
+  for (const path of paths) cpSync(new URL(`../${path}`, import.meta.url), join(base, path));
+
+  // The major gate needs a major release even when the real checkout carries a different tier.
+  const version = '1.0.0-preview.1';
+  applyVersion(planVersion(version, {}, base), base);
+  for (const [workflow, name, step, variable] of [
+    ['release-major', 'verify-major', 'Refuse long suites for a non-major version', 'VERSION'],
+    ['release', 'signing', "The tree carries the tag's version", 'TAG'],
+  ]) {
+    await t.test(`${workflow} / ${name}`, () => {
+      const section = job(workflow, name)?.split(`      - name: ${step}\n`)[1]?.split('\n      - ')[0];
+      const run = section?.match(/^        run: (.+)$/m)?.[1];
+      assert.ok(run, step);
+      const script = run === '|' ? section.split('        run: |\n')[1].replace(/^          /gm, '') : run;
+      const check = tag => spawnSync('bash', ['-e', '-c', script], {
+        cwd: base, encoding: 'utf8', env: { PATH: process.env.PATH, [variable]: tag },
+      });
+      const match = check(`v${version}`);
+      assert.ifError(match.error);
+      assert.equal(match.status, 0, match.stderr);
+      const mismatch = check('v2.0.0-preview.1');
+      assert.equal(mismatch.status, 1, mismatch.stderr);
+      assert.match(mismatch.stderr, /Not version 2\.0\.0-preview\.1/);
+    });
+  }
+});
 
 test('routine checks start by themselves in the public hoi-project repository, anywhere by hand', () => {
   const ctx = (event, { owner = 'hoi-project', isPrivate = false, head } = {}) => ({ vars: {}, github: {

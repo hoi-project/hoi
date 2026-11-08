@@ -47,7 +47,7 @@ jobs:
           VERSION: ${{ inputs.version }}
         run: |
           test "$(node scripts/release-tier.mjs "$VERSION")" = major
-          node scripts/release-local.mjs --check-version "${VERSION#v}"
+          node scripts/release-version.mjs --check "${VERSION#v}"
 
   rust:
     name: rust (${{ matrix.os }})

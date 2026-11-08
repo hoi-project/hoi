@@ -113,7 +113,7 @@ jobs:
         with:
           node-version: 22
       - name: The tree carries the tag's version
-        run: node scripts/release-local.mjs --check-version "${TAG#v}"
+        run: node scripts/release-version.mjs --check "${TAG#v}"
       - name: Refuse to build a release that would ship unsigned
         run: |
           missing() { for n in "$@"; do [ -n "${!n}" ] || echo "$n"; done; }
