@@ -12,16 +12,25 @@ export function cspString(directives) {
 }
 
 function hasCspMeta(html) {
-  // Documentation, comments and script strings can mention CSP without enforcing one.
-  const markup = html.replace(/<!--[\s\S]*?-->|<(script|style|title)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, '');
-  const head = markup.match(/<head\b[^>]*>([\s\S]*?)<\/head\s*>/i)?.[1] ?? '';
+  // Read the original tokens: deleting comments or raw text could join fragments into a fake tag.
+  // Consume comments and raw-text elements intact, including an unclosed element through EOF.
+  const tokens = /<!--[\s\S]*?(?:-->|$)|<(script|style|title)(?=[\s/>])(?:[^"'<>]|"[^"]*"|'[^']*')*>[\s\S]*?(?:<\/\1\s*>|$)|<(\/?)([a-z][\w:-]*)\b(?:[^"'<>]|"[^"]*"|'[^']*')*>/gi;
+  let inHead = false;
   let templateDepth = 0;
-  for (const [tag, closing, tagName] of head.matchAll(/<(\/?)([a-z][\w:-]*)\b(?:[^"'<>]|"[^"]*"|'[^']*')*>/gi)) {
-    if (tagName.toLowerCase() === 'template') {
+  for (const [tag, , closing, name] of html.matchAll(tokens)) {
+    if (!name) continue;
+    const tagName = name.toLowerCase();
+    if (tagName === 'head' && !templateDepth) {
+      if (closing) return false;
+      inHead = true;
+      continue;
+    }
+    if (!inHead) continue;
+    if (tagName === 'template') {
       templateDepth = Math.max(0, templateDepth + (closing ? -1 : 1));
       continue;
     }
-    if (closing || templateDepth || tagName.toLowerCase() !== 'meta') continue;
+    if (closing || templateDepth || tagName !== 'meta') continue;
     // Consume complete attribute values so a quoted example isn't mistaken for http-equiv.
     for (const [, name, doubleQuoted, singleQuoted, unquoted] of tag.matchAll(/\s([^\s=<>/"']+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g)) {
       const value = doubleQuoted ?? singleQuoted ?? unquoted ?? '';
