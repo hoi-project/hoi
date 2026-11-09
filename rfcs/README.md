@@ -42,4 +42,5 @@ merged.
 | RFC                                   | Title                     | Status   |
 | ------------------------------------- | ------------------------- | -------- |
 | [0000](0000-decision-process.md)      | How hoi makes decisions   | accepted |
+| [0001](0001-deletion-lifecycle.md)    | Durable deletion lifecycle | proposed |
 | [0002](0002-bulk-author-deletion.md) | Bulk author deletion coverage | proposed |
