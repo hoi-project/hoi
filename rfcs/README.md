@@ -42,3 +42,4 @@ merged.
 | RFC                                   | Title                     | Status   |
 | ------------------------------------- | ------------------------- | -------- |
 | [0000](0000-decision-process.md)      | How hoi makes decisions   | accepted |
+| [0006](0006-node-verification.md)    | Node declarations and verification | proposed |
