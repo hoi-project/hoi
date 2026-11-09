@@ -42,3 +42,4 @@ merged.
 | RFC                                   | Title                     | Status   |
 | ------------------------------------- | ------------------------- | -------- |
 | [0000](0000-decision-process.md)      | How hoi makes decisions   | accepted |
+| [0004](0004-holder-privacy-validation.md) | Holder privacy validation | proposed |
