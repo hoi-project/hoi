@@ -42,3 +42,4 @@ merged.
 | RFC                                   | Title                     | Status   |
 | ------------------------------------- | ------------------------- | -------- |
 | [0000](0000-decision-process.md)      | How hoi makes decisions   | accepted |
+| [0003](0003-safe-local-cleanup.md)    | Safe local cleanup | proposed |
