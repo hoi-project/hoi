@@ -2,7 +2,7 @@
 
 Issue: [#36](https://github.com/hoi-project/hoi/issues/36)
 
-Status: proposed
+Status: accepted
 
 ## Summary
 
