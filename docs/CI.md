@@ -20,13 +20,15 @@ Two switches stay deliberate, because they publish or sign:
 Manually running **Release: version** or **Release** is explicit opt-in and works without the
 switch, including all called validation suites, signing and uploads.
 
-## Fast, and only what changed
+## Fast checks and complete code scanning
 
 The **Changes** job (`scripts/ci-changes.mjs`, seconds) reads the pull request's own changes, or
 the push's, and switches jobs on: Rust for `core/` and `vendor/`; Web for apps, packages,
 tokens and the pnpm files; dependency audits for manifests and lockfiles; workflow linting for
-`.github/`; CodeQL for the languages touched. A documentation pull request runs the quick checks
-only. A job skipped this way counts as passed for required checks, which is why there are no
+`.github/`. CodeQL always scans Rust, JavaScript/TypeScript and Actions: pull requests need the
+same analysis configurations as `main` for GitHub to compare their results. A documentation pull
+request runs the quick checks and all CodeQL languages. A job skipped by the changes filter counts
+as passed for required checks, which is why there are no
 workflow-level `paths:` filters (they would leave required checks pending). Manual and scheduled
 runs, and pushes whose base is unknown, check everything.
 
@@ -47,7 +49,7 @@ runs, and pushes whose base is unknown, check everything.
 | File / name | When | What |
 | --- | --- | --- |
 | `ci.yml` / CI | every pull request and push to `main`; by hand anywhere | **Changes**; **Quick checks** (`pnpm check:quick`, always); **Web** (site and API types, web unit tests); **Rust** (fmt, clippy `-D warnings`, `cargo llvm-cov nextest` over the workspace including the conformance vectors); **SonarCloud** (scan with the Rust coverage; `sonar-project.properties`; passes with a notice without `SONAR_TOKEN`) |
-| `security.yml` / Security | pull requests, `main`, daily; by hand anywhere | **Changes**; CodeQL per changed language (Rust, JavaScript/TypeScript, Actions; `security-extended`; a private repository analyses without uploading); per Cargo graph the dependency regression gate's tests, cargo-deny and cargo-audit; cargo-vet; `pnpm audit`; GitHub dependency review (pull requests); zizmor and actionlint |
+| `security.yml` / Security | pull requests, `main`, daily; by hand anywhere | **Changes**; CodeQL for every language (Rust, JavaScript/TypeScript, Actions; `security-extended`; a private repository analyses without uploading); per Cargo graph the dependency regression gate's tests, cargo-deny and cargo-audit; cargo-vet; `pnpm audit`; GitHub dependency review (pull requests); zizmor and actionlint |
 | `scorecard.yml` / Scorecard | `main`, weekly, branch-rule changes | OpenSSF Scorecard; results in the Security tab and the public badge (public repository only) |
 | `weekly.yml` / Weekly | Saturdays (public repository); by hand anywhere, `linux_only` by default | the full major suites on `main` |
 | `release-version.yml` / Release: version | version push to `main` (switch), or manual | validates versions, creates the tag and starts Release |

@@ -1,6 +1,7 @@
-# Code scanning and supply chain. Pull requests run what their changes touch (scripts/ci-changes.mjs):
-# CodeQL for the languages changed, workflow linting for workflow changes, dependency audits for
-# manifest and lockfile changes. Main and a daily run check everything, so a new advisory shows up
+# Code scanning and supply chain. CodeQL runs every language so pull requests have the same
+# configurations as main. Other pull request jobs run what their changes touch (scripts/ci-changes.mjs):
+# workflow linting for workflow changes, dependency audits for manifest and lockfile changes.
+# Main and a daily run check everything, so a new advisory shows up
 # within a day without turning unrelated pull requests red. Not a required check. Where it runs:
 # as CI (public hoi-project repository by itself; anywhere by hand). See docs/CI.md.
 name: Security
@@ -29,7 +30,6 @@ jobs:
     outputs:
       deps: ${{ steps.match.outputs.deps }}
       workflows: ${{ steps.match.outputs.workflows }}
-      codeql: ${{ steps.match.outputs.codeql }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -45,7 +45,6 @@ jobs:
   codeql:
     name: CodeQL (${{ matrix.language }})
     needs: changes
-    if: needs.changes.outputs.codeql != '[]'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -56,7 +55,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        language: ${{ fromJSON(needs.changes.outputs.codeql) }}
+        language: [actions, javascript-typescript, rust]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

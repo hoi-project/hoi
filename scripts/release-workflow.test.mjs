@@ -424,8 +424,6 @@ test('routine checks start by themselves in the public hoi-project repository, a
   assert.equal(gate('ci', 'sonarcloud', outputs({})), true, 'Sonar after Rust');
   assert.equal(gate('ci', 'sonarcloud', { ...outputs({}), needs: { changes: { result: 'success' }, rust: { result: 'skipped' } } }), true, 'Sonar without Rust changes');
   assert.equal(gate('ci', 'sonarcloud', { ...outputs({}), needs: { changes: { result: 'success' }, rust: { result: 'failure' } } }), false, 'no Sonar after failed tests');
-  assert.equal(gate('security', 'codeql', outputs({ codeql: '[]' })), false);
-  assert.equal(gate('security', 'codeql', outputs({ codeql: '["rust"]' })), true);
   for (const name of ['rust-deps', 'vet', 'npm']) {
     assert.equal(gate('security', name, outputs({ deps: 'false' })), false, name);
     assert.equal(gate('security', name, outputs({ deps: 'true' })), true, name);
@@ -447,6 +445,17 @@ test('routine checks start by themselves in the public hoi-project repository, a
     assert.doesNotMatch(read(workflow), /HOI_ACTIONS_ENABLED/, workflow);
     assert.doesNotMatch(read(workflow), /cargo install (cargo-audit|cargo-vet|wasm-bindgen-cli|cargo-nextest|cargo-llvm-cov)/, `${workflow}: prebuilt tools`);
   }
+});
+
+test('CodeQL supplies every baseline language configuration on every Security run', () => {
+  const codeql = job('security', 'codeql');
+  assert.doesNotMatch(codeql, /^    if:/m, 'website and documentation pull requests need every baseline configuration');
+  assert.match(codeql, /^    needs: changes$/m, 'the repository gate still applies');
+  assert.match(codeql, /^        language: \[actions, javascript-typescript, rust\]$/m);
+  assert.match(codeql, /^          languages: \$\{\{ matrix\.language \}\}$/m);
+  assert.match(codeql, /^          category: \/language:\$\{\{ matrix\.language \}\}$/m);
+  assert.match(codeql, /^          queries: security-extended$/m);
+  assert.match(codeql, /^          upload: \$\{\{ github\.event\.repository\.private && 'never' \|\| 'always' \}\}$/m);
 });
 
 test('the private test mode keeps macOS and Windows out', () => {
