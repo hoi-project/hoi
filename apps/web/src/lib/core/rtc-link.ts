@@ -114,11 +114,16 @@ export async function openRtc(routes: string[], mode: RtcMode, on: RtcHandlers):
   const dc = pc.createDataChannel('hoi', { negotiated: true, id: 0, ordered: true });
   const ch = frame(pc, dc, on);
 
-  const offer = await pc.createOffer();
-  const sdp = (offer.sdp ?? '').replace(/^a=ice-ufrag:.*$/gm, `a=ice-ufrag:${ufrag}`).replace(/^a=ice-pwd:.*$/gm, `a=ice-pwd:${ufrag}`);
-  const mid = /^a=mid:(\S+)/m.exec(sdp)?.[1] ?? '0';
-  await pc.setLocalDescription({ type: 'offer', sdp });
-  await pc.setRemoteDescription({ type: 'answer', sdp: answerSdp(node, ufrag, mid) });
+  try {
+    const offer = await pc.createOffer();
+    const sdp = (offer.sdp ?? '').replace(/^a=ice-ufrag:.*$/gm, `a=ice-ufrag:${ufrag}`).replace(/^a=ice-pwd:.*$/gm, `a=ice-pwd:${ufrag}`);
+    const mid = /^a=mid:(\S+)/m.exec(sdp)?.[1] ?? '0';
+    await pc.setLocalDescription({ type: 'offer', sdp });
+    await pc.setRemoteDescription({ type: 'answer', sdp: answerSdp(node, ufrag, mid) });
+  } catch (error) {
+    ch.shut('could not connect');
+    throw error;
+  }
 
   await new Promise<void>((resolve, reject) => {
     const t = setTimeout(() => {

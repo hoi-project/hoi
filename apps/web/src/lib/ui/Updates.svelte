@@ -58,15 +58,18 @@
 </script>
 
 <section class="updates" aria-label="App updates">
-  <h3>App updates</h3>
-  <p class="help">Installed: {__HOI_VERSION__}. {desktop ? 'Checking contacts the static release host. Downloads are verified before you choose to install.' : 'The browser keeps a complete cached app while an update downloads. Reload when your writing is saved.'}</p>
+  <div class="heading">
+    <h3>App updates</h3>
+    <p class="installed">Installed: <strong>{__HOI_VERSION__}</strong></p>
+  </div>
+  <p class="help">{desktop ? 'Checking contacts the static release host. Downloads are verified before you choose to install.' : 'The browser keeps a complete cached app while an update downloads. Reload when your writing is saved.'}</p>
   <div class="actions">
     <button type="button" class="pill pill-sm" disabled={!!busy} onclick={check}>{error ? 'Retry update check' : 'Check for updates'}</button>
     {#if desktop && result?.state === 'available' && !ready}<button type="button" class="pill pill-sm" disabled={!!busy} onclick={download}>Download and verify {result.version}</button>{/if}
     {#if desktop && ready}<button type="button" class="pill pill-sm pill-sun" disabled={!!busy} onclick={install}>Install and restart</button>{/if}
     {#if !desktop && sw.waiting}<button type="button" class="pill pill-sm pill-sun" onclick={applyUpdate}>Reload to update</button>{/if}
   </div>
-  <div role="status" aria-live="polite">
+  <div class="status" role="status" aria-live="polite">
     {#if busy}<p>{busy}</p>{/if}
     {#if busy === 'Downloading and verifying…'}<progress max="100" value={progress} aria-label="Update download">{progress}%</progress>{/if}
     {#if ready && !busy}<p>Verified and ready. Installing restarts hoi; save any unfinished writing first.</p>
@@ -78,10 +81,17 @@
 </section>
 
 <style>
-  .updates { margin-block: 20px; }
-  .actions { display: flex; flex-wrap: wrap; gap: 8px; }
-  .actions button { min-height: 44px; }
-  p { line-height: 1.5; overflow-wrap: anywhere; }
-  progress { width: min(100%, 320px); }
-  .error { color: var(--ink); border-left: 4px solid var(--coral); padding-left: 10px; }
+  .updates { margin-block: var(--space-5); }
+  .heading { display: grid; gap: var(--space-2); margin-bottom: var(--space-3); }
+  h3 { font-size: var(--type-title-size); font-weight: var(--type-title-weight); line-height: var(--type-title-lh); letter-spacing: var(--type-title-tracking); }
+  .installed { font-size: var(--type-meta-size); color: var(--mute); }
+  .installed strong { color: var(--ink); }
+  .help { margin-bottom: var(--space-4); max-width: 72ch; }
+  .actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+  .actions button { min-height: 44px; max-width: 100%; white-space: normal; }
+  p { line-height: var(--type-body-lh); overflow-wrap: anywhere; }
+  .status { display: grid; gap: var(--space-2); }
+  .status:not(:empty), .error { margin-top: var(--space-4); }
+  progress { width: 100%; max-width: 32ch; }
+  .error { color: var(--ink); background: var(--soft); border-left: var(--space-1) solid var(--coral); padding: var(--space-3); }
 </style>

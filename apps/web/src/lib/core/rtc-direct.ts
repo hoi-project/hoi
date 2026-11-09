@@ -67,7 +67,7 @@ function start(stun: string[], on: DirectHandlers) {
   if (typeof RTCPeerConnection === 'undefined') throw new Error('This browser has no WebRTC.');
   const pc = new RTCPeerConnection({ iceServers: servers(stun), iceTransportPolicy: 'all', bundlePolicy: 'max-bundle' });
   const dc = pc.createDataChannel('hoi', { negotiated: true, id: 0, ordered: true });
-  const ch = frame(pc, dc, on);
+  const ch = frame(pc, dc, on, 'browser');
   const timer = setTimeout(() => ch.shut('timeout'), GATHER_MS + OPEN_MS);
   dc.addEventListener('open', () => {
     clearTimeout(timer);

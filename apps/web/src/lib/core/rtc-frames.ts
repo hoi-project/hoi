@@ -2,6 +2,8 @@
 // into 16 KiB data channel messages. Shared by links to nodes (rtc-link.ts) and between
 // browsers (rtc-direct.ts).
 
+import { rtcAddresses, type RtcAddress } from './rtc-addresses';
+
 /** Data channel messages we send; every browser and the node take at least this much. */
 const CHUNK = 16 * 1024;
 /** Largest sync message (hoi-sync MAX_MESSAGE). */
@@ -21,7 +23,8 @@ export interface Framed {
 }
 
 /** Wires framing onto `dc`; closing either side closes both and calls `on.close` once. */
-export function frame(pc: RTCPeerConnection, dc: RTCDataChannel, on: FrameHandlers): Framed {
+export function frame(pc: RTCPeerConnection, dc: RTCDataChannel, on: FrameHandlers, kind: RtcAddress['kind'] = 'node'): Framed {
+  const stopAddress = rtcAddresses.track(pc, kind);
   dc.binaryType = 'arraybuffer';
   dc.bufferedAmountLowThreshold = 1024 * 1024;
   let closed = false;
@@ -35,6 +38,7 @@ export function frame(pc: RTCPeerConnection, dc: RTCDataChannel, on: FrameHandle
   function shut(reason: string) {
     if (closed) return;
     closed = true;
+    stopAddress();
     try {
       dc.close();
       pc.close();
