@@ -1,0 +1,50 @@
+name: hoi-walkthrough
+services:
+  walkthrough:
+    image: hoi-walkthrough:local
+    build:
+      context: ..
+      dockerfile: sandbox/Walkthrough.Dockerfile
+    init: true
+    environment:
+      HOI_WALKTHROUGH_CONTAINER: "1"
+      HOI_WALKTHROUGH_DATA: /data
+      HOI_NODE_BIN: /usr/local/bin/hoi-node
+      PLAYWRIGHT_BROWSERS_PATH: /ms-playwright
+    networks: [walkthrough]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    tmpfs:
+      - "/tmp:rw,size=1g,uid=1000,gid=1000"
+      - "/data:rw,size=512m,uid=1000,gid=1000"
+      - "/srv/apps/web/node_modules/.vite:rw,size=256m,uid=1000,gid=1000"
+      - "/srv/apps/web/node_modules/.vite-temp:rw,size=16m,uid=1000,gid=1000"
+    shm_size: 512m
+    mem_limit: 4g
+    cpus: 4
+    pids_limit: 512
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:7080/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+  gateway:
+    image: hoi-walkthrough:local
+    command: ["node", "sandbox/walkthrough-gateway.mjs"]
+    init: true
+    ports:
+      - "127.0.0.1:7080:7080"
+    networks: [ingress, walkthrough]
+    depends_on:
+      walkthrough:
+        condition: service_healthy
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    mem_limit: 128m
+    pids_limit: 32
+networks:
+  ingress:
+  walkthrough:
+    internal: true

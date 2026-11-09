@@ -6,6 +6,157 @@ its rules.
 
 ## Start everything
 
+### Network walkthrough (offline, no AI)
+
+The network walkthrough is a separate mode of this sandbox. It runs two real browser/WASM
+clients, two public carrier nodes, two registries, and two encrypted relays on one computer.
+The central player follows a private plan from Alice to Bob. It keeps the route, the current
+operation, and its input and output together. Use Next for one illustrated step, Play/Pause
+for an animated run, and Back or Replay to review the captured steps. The active device and
+connection show where the message is. Reduced-motion settings retain these highlights
+without moving the message marker. Input and output grow to the same height with their content,
+including expanded layers; neither panel has an internal scrollbar. A public-announcement comparison and optional detailed
+evidence show the different visibility of public data.
+
+The connection steps replay the setup that the local clients completed: Alice creates
+the community, Bob joins it, and the clients select services. In the private example, the
+sandbox hands Bob's invitation between the two real cores locally; it does not simulate an
+invitation network. Both members use the same private community and room, with independent
+local group state. Public members share the community while connecting to different carriers
+in this demonstration. Joining the same community does not require sharing a carrier.
+
+The public connection sequence also explains a possible earlier context: Alice might know
+node A from one community, and Bob node B from another. Neither connection proves that the
+nodes know the new shared community or each other. After joining the shared open community,
+Bob can ask a connected public node to keep it. The request reveals the signed community
+definition to that node; if it accepts under its policy and limits, it can store the public records.
+The invitation alone does not notify all of Bob's known nodes or tell them who invited him.
+These two explanatory steps are separate from the captured sandbox setup: this run discovers
+carriers through registries and starts B with A's node link. Private invitations do not offer
+the private group to public carriers.
+
+The player runs a real operation when its output is first needed, then illustrates its
+internal steps. Signing and encryption are one core operation, as are opening and validation;
+the animation does not pause those operations inside the core. Public delivery also runs
+automatically before its route is replayed. The current step distinguishes captured boundary
+values, explained internal structure, and inferred public hops. Back and Replay only review
+evidence and never resend the message. Pause prevents the next operation; an operation that
+has already started may finish. Failure stops playback and leaves recovery controls available.
+
+The network map separates finding a service from sending a message. Select a device or arrow
+to inspect its input, operation, output and evidence. The private example uploads complete
+copies to two configured relays and downloads from one of them; the relays do not forward
+this message to each other. The public example shows registry discovery and restricts Alice
+to carrier A and Bob to carrier B. Carrier B starts with A's public node link; the browsers'
+WebRTC fingerprint and port allowlists prevent either browser from bypassing that middle
+link. The reverse direction uses the same topology. A connection or matching stored record
+is labelled as that evidence. The node-to-node passage is inferred from the enforced topology
+and matching endpoint records, not presented as a captured native packet.
+
+The encryption view draws the successive layers inside the sender and receiver devices.
+Select a layer to see how the signed post becomes group-encrypted content, how padding hides
+its exact inner length, how the outer package is formed, and how the receiver reverses those
+operations. Actual post views and outer bytes are identified separately from structural
+diagrams of intermediate buffers that the core does not export. Secret keys stay in the core.
+
+With Docker Desktop's Linux engine running, install the package once from the repository root:
+
+```sh
+node sandbox/launch.mjs walkthrough install
+node sandbox/launch.mjs walkthrough
+# Equivalent: pnpm sandbox:walkthrough install && pnpm sandbox:walkthrough
+```
+
+Open **http://localhost:7080** and start the private-plan example. Alice and Bob already have
+independent identities and have joined the same private community through the real invitation
+flow. Their group secrets remain on their devices; the relays do not receive those secrets.
+
+1. **Write:** choose the title and message that Alice wants Bob to read.
+2. **Protect:** Alice's Rust core creates the signed post and encrypted relay object. Inspect
+   the actual object bytes and fingerprint. A signed post and an encrypted object have different
+   identifiers: one identifies the post, the other identifies its encrypted bytes.
+3. **Store:** send the encrypted object to both relays and compare their stored copies with
+   Alice's output. These are complete copies, not fragments or shards.
+4. **Download:** Bob fetches the ciphertext. Compare all downloaded bytes with the stored
+   object; Bob's core has not opened this new message yet.
+5. **Open and verify:** pass the downloaded ciphertext into Bob's real Rust core, which uses
+   his private group state, authenticates and validates the message, and returns the readable
+   post. Compare its identifier, title and text with Alice's original input.
+
+Private delivery advances only when the corresponding action is requested. Automatic private
+syncing is disabled for these managed clients. Reviewing an earlier step displays captured
+evidence; it does not undo a cryptographic action. Finish the current journey or reset before
+starting a different message after encryption.
+
+If an operation fails after partially changing a client or store, the walkthrough marks its
+current visibility as unverified and requires a reset. It does not repeat a mutation or
+pretend that the last completed step describes the partly changed network.
+
+The core rejects a message that the same author already sent. This leaves the draft editable:
+change its title or text and choose **Prepare this message** again. To repeat the exact example,
+use **Reset demonstration** at the top of the page. Failed operations also show a reset button
+beside the error. **Refresh evidence** reloads observations; it does not restart a failed run.
+
+The byte inspector separates the real outer nonce, encrypted payload and authentication tag.
+Inner signing, encoding, padding and MLS operations are explained from the production code;
+their intermediate buffers and secret keys are not exported or invented. A fingerprint proves
+byte identity, not readability. Opening the matching ciphertext and comparing the resulting
+post is the end-to-end demonstration.
+
+Public WebRTC delivery runs automatically, so its comparison is explicitly a recorded run,
+not a paused private journey. Registries appear in public discovery context, not as post
+storage or as steps in the private delivery path. Advanced views retain the raw service data
+and the real app screenshots. A pending observation is not proof of delivery.
+
+**Reset demonstration** discards the current demonstration and creates fresh identities,
+communities and posts. Startup also begins a fresh demonstration; this mode is deliberately
+temporary and should contain only invented sample data. It uses a separate Docker project
+and does not reset the AI community sandbox.
+
+```sh
+node sandbox/launch.mjs walkthrough stop
+node sandbox/launch.mjs walkthrough status
+node sandbox/launch.mjs walkthrough logs
+```
+
+Installation downloads the pinned toolchains and existing browser dependencies. Subsequent
+startup uses `--no-build --pull never` and works offline. All protocol services and the managed
+browser clients run on loopback inside one container on an internal Docker network. Only the
+observer port is published through a fixed-upstream gateway, bound to the host's loopback.
+The gateway alone joins the ingress network; protocol participants cannot use it to reach
+other destinations. No Docker socket, host CLI worker,
+external AI provider, public registry, or production node is used. Browser requests are also
+restricted to the local services. Re-run `install` after changing source.
+
+#### Reading the privacy views
+
+- **Client:** an authorized participant can read its own public and private feed. The local
+  operator deliberately sees these client views; this is an observation tool, not a security
+  boundary against the person running it.
+- **Public carrier:** full public records are readable, including post content. Encrypted
+  transport does not make public content private to its carrier.
+- **Registry:** public names, signed listings and node routes are visible. It does not store
+  private post bodies.
+- **Private relay:** the displayed bytes are actual stored ciphertext, accompanied by opaque
+  room/object identifiers, padded sizes, sequence and expiry. The relay has no client content
+  keys. Request timing and network addresses remain observable to a service even when they
+  are not retained in its database.
+
+The walkthrough demonstrates the current protocol. It does not claim that every kind of
+user data is already hidden from every node, or that a ciphertext preview proves the entire
+system secure. Observation code lives under `sandbox/` and does not change protocol formats,
+storage layouts, or production key handling.
+
+Focused checks: `node --test sandbox/walkthrough-*.test.mjs`. Run the screen regression with
+`node --test sandbox/e2e-walkthrough-ui.mjs`. After the existing native node and WASM builds,
+`node sandbox/walkthrough-smoke.mjs` checks real delivery, paused private stages, matching
+stored/downloaded ciphertext, recovered plaintext, stale actions, app views, and reset.
+The browser checks need an installed Playwright
+Chromium; `CHROMIUM_PATH` can select an existing executable. These developer checks run on the
+host; the packaged walkthrough provides the Docker network isolation described above.
+
+### Community scenarios
+
 With Docker Desktop running Linux containers and Node 22+ installed, run from the repository root:
 
 ```powershell
