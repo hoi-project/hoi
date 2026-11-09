@@ -45,3 +45,4 @@ merged.
 | [0001](0001-deletion-lifecycle.md)    | Durable deletion lifecycle | proposed |
 | [0002](0002-bulk-author-deletion.md) | Bulk author deletion coverage | proposed |
 | [0003](0003-safe-local-cleanup.md)    | Safe local cleanup | proposed |
+| [0004](0004-holder-privacy-validation.md) | Holder privacy validation | proposed |
