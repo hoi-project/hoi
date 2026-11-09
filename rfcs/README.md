@@ -42,3 +42,4 @@ merged.
 | RFC                                   | Title                     | Status   |
 | ------------------------------------- | ------------------------- | -------- |
 | [0000](0000-decision-process.md)      | How hoi makes decisions   | accepted |
+| [0005](0005-scatter-failure-validation.md) | Scatter failure validation | proposed |
