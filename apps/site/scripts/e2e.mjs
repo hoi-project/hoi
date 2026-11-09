@@ -3,7 +3,7 @@
 //   node scripts/e2e.mjs [--shots <dir>] [--quick] [--shots-only] [--playground]
 // Serves dist/ with `vite preview` and loads every page at 1280×900 and 390×844, light and dark,
 // scripts on and off, with and without reduced motion (plus a 320×640 layout pass). Fails on console errors, failed requests,
-// any request to another origin, or horizontal overflow. Runs the home demos and the download page
+// any CSP violation, request to another origin, or horizontal overflow. Runs the home demos and the download page
 // with an empty and a filled release manifest. Uses the playwright package from the repo root.
 import { spawn } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -59,16 +59,31 @@ async function waitForServer() {
 }
 
 /* ---------- helpers ---------- */
-function watch(page, where, allowed = []) {
-  page.on('console', (m) => { if (m.type() === 'error') fail(where, `console error: ${m.text()}`); });
-  page.on('pageerror', (e) => fail(where, `page error: ${e.message}`));
-  page.on('requestfailed', (r) => fail(where, `request failed: ${r.url()} (${r.failure()?.errorText})`));
+const watchers = new WeakMap();
+async function watch(page, where, allowed = []) {
+  const previous = watchers.get(page);
+  if (previous) { Object.assign(previous, { where, allowed }); return; }
+  const current = { where, allowed };
+  watchers.set(page, current);
+  const report = (message) => fail(current.where, message);
+  await page.exposeFunction('__reportCspViolation', (violation) => report(`CSP violation: ${JSON.stringify(violation)}`));
+  await page.addInitScript(() => {
+    document.addEventListener('securitypolicyviolation', (event) => {
+      void window.__reportCspViolation({
+        directive: event.effectiveDirective, blocked: event.blockedURI,
+        source: event.sourceFile, line: event.lineNumber, column: event.columnNumber,
+      });
+    });
+  });
+  page.on('console', (m) => { if (m.type() === 'error') report(`console error: ${m.text()}`); });
+  page.on('pageerror', (e) => report(`page error: ${e.message}`));
+  page.on('requestfailed', (r) => report(`request failed: ${r.url()} (${r.failure()?.errorText})`));
   page.on('request', (r) => {
     const u = new URL(r.url());
     if (u.protocol === 'data:' || u.protocol === 'blob:') return;
-    if (u.origin !== ORIGIN && u.origin !== PUBLISHED_ORIGIN && !allowed.includes(u.origin)) fail(where, `third-party request: ${r.url()}`);
+    if (u.origin !== ORIGIN && u.origin !== PUBLISHED_ORIGIN && !current.allowed.includes(u.origin)) report(`third-party request: ${r.url()}`);
   });
-  page.on('response', (r) => { if (r.status() >= 400) fail(where, `HTTP ${r.status()} ${r.url()}`); });
+  page.on('response', (r) => { if (r.status() >= 400) report(`HTTP ${r.status()} ${r.url()}`); });
 }
 
 // Drive scrolling from here: with scripts disabled the page's own timers never fire.
@@ -129,7 +144,7 @@ async function matrix(browser) {
     for (const path of PAGES) {
       const page = await ctx.newPage();
       const where = `${label} ${path}`;
-      watch(page, where);
+      await watch(page, where);
       await page.goto(ORIGIN + path, { waitUntil: 'load' });
       await page.evaluate(() => document.fonts.ready);
       await scrollThrough(page);
@@ -152,7 +167,7 @@ async function wikiPass(browser) {
     for (const path of WIKI_ALL) {
       const page = await ctx.newPage();
       const where = `wiki ${vpName} ${path}`;
-      watch(page, where);
+      await watch(page, where);
       await page.goto(ORIGIN + path, { waitUntil: 'load' });
       await scrollThrough(page);
       await sleep(150);
@@ -167,7 +182,7 @@ async function wikiPass(browser) {
   console.log('• wiki search and playground');
   const ctx = await browser.newContext({ viewport: VIEWPORTS.desktop });
   const page = await ctx.newPage();
-  watch(page, 'wiki search');
+  await watch(page, 'wiki search');
   await page.goto(ORIGIN + '/wiki/');
   await page.keyboard.press('/');
   await page.keyboard.type('reconciliation');
@@ -175,7 +190,7 @@ async function wikiPass(browser) {
   const hits = await page.locator('.wk-dlg-res a').count();
   if (!hits) fail('wiki search', 'no results for "reconciliation"');
   await page.keyboard.press('Escape');
-  watch(page, 'playground');
+  await watch(page, 'playground');
   await page.goto(ORIGIN + '/wiki/playground/');
   await page.locator('[data-pg-speed]').fill('3');
   await page.locator('[data-pg-play]').click();
@@ -203,7 +218,7 @@ async function playgroundPass(browser) {
     console.log(`• ${where}`);
     const ctx = await browser.newContext({ viewport, hasTouch: true, reducedMotion: viewport.height < 500 ? 'no-preference' : 'reduce' });
     const page = await ctx.newPage();
-    watch(page, where);
+    await watch(page, where);
     await page.goto(ORIGIN + '/wiki/playground/');
     const shell = page.locator('#pg');
     assert.deepEqual(await shell.boundingBox(), { x: 0, y: 0, ...viewport }, `${where}: fills the viewport`);
@@ -299,7 +314,7 @@ async function demos(browser) {
   const ctx = await browser.newContext({ viewport: VIEWPORTS.desktop });
   const page = await ctx.newPage();
   const where = 'demos /';
-  watch(page, where);
+  await watch(page, where);
   await page.goto(ORIGIN + '/');
   await sleep(1200);
   // live network: nodes get built and posts hop
@@ -364,7 +379,7 @@ async function demos(browser) {
   // relay switch: off → notice first → "Turn it on" → on; clicking again turns it off
   {
     const rp = await browser.newPage({ viewport: VIEWPORTS.desktop });
-    watch(rp, 'demos /relay/');
+    await watch(rp, 'demos /relay/');
     await rp.goto(ORIGIN + '/relay/');
     const sw = rp.getByRole('switch', { name: 'Keep communities reachable' });
     await sw.click();
@@ -383,7 +398,7 @@ async function demos(browser) {
   // reduced motion: same buttons, instant end states
   const rctx = await browser.newContext({ viewport: VIEWPORTS.mobile, reducedMotion: 'reduce' });
   const rp = await rctx.newPage();
-  watch(rp, 'demos / reduced');
+  await watch(rp, 'demos / reduced');
   await rp.goto(ORIGIN + '/');
   await rp.getByRole('button', { name: 'Sign & send' }).click();
   await sleep(100);
@@ -454,7 +469,7 @@ async function download(browser) {
   {
     const ctx = await browser.newContext({ viewport: VIEWPORTS.mobile, colorScheme: 'dark' });
     const page = await ctx.newPage();
-    watch(page, 'download empty');
+    await watch(page, 'download empty');
     await page.goto(ORIGIN + '/download/');
     await page.getByText('No signed release yet').first().waitFor({ timeout: 4000 }).catch(() => fail('download empty', 'no empty state'));
     if (!(await page.getByText('pnpm --filter @hoi/desktop tauri build').first().isVisible())) fail('download empty', 'build commands not shown');
@@ -469,7 +484,7 @@ async function download(browser) {
     const ctx = await browser.newContext({ viewport: VIEWPORTS.desktop, permissions: ['clipboard-read', 'clipboard-write'], userAgent: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36' });
     await ctx.addInitScript(() => Object.defineProperty(navigator, 'userAgentData', { value: { platform: 'Linux' } }));
     const page = await ctx.newPage();
-    watch(page, 'download filled', [keyed.origin, DOWNLOADS_ORIGIN]);
+    await watch(page, 'download filled', [keyed.origin, DOWNLOADS_ORIGIN]);
     const bytes = Buffer.from(JSON.stringify({ ...SAMPLE, release: JSON.parse(readFileSync(join(siteDir, '../../release.json'), 'utf8')) }));
     await page.route(`${DOWNLOADS}/manifest.json`, (r) => r.fulfill({ body: bytes, contentType: 'application/json' }));
     await page.route(`${DOWNLOADS}/manifest.json.minisig`, (r) => r.fulfill({ body: keyed.sign(bytes), contentType: 'text/plain' }));

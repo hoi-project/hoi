@@ -134,7 +134,7 @@ pub trait Persist: Send {
       </table>
     </div>
     <h3 id="persist-commit">What commit writes</h3>
-    <p><code>Node::commit()</code> first settles communities whose state changed, writes autobans due on a moderator's device, then appends the blobs that are dirty, in this order: <code>profile-colors</code> and <code>profiles</code>, <code>mls</code>, <code>directory</code>, <code>scatter</code>, <code>state</code>, <code>keys</code>. Record puts and deletes were queued as they happened. Then the whole batch goes to <code>persist.apply</code> in one call.</p>
+    <p><code>Node::commit()</code> first settles communities whose state changed, writes autobans due on a moderator's device, then appends the blobs that are dirty, in this order: <code>profile-colors</code> and <code>profiles</code>, <code>mls</code>, <code>directory</code>, <code>scatter</code>, <code>deletion-journal</code>, <code>state</code>, <code>keys</code>. Record puts and deletes were queued as they happened. Then the whole batch goes to <code>persist.apply</code> in one call.</p>
     <div class="wk-note warn"><b>A failed save keeps the journal</b><p>If <code>apply</code> fails, the batch is not cleared. The next <code>commit()</code> sends the same changes again with any newer ones after them, so records, keys and state are retried together and newer state never lands before older records. <code>core/crates/hoi-core/tests/persistence.rs</code> fails two commits, renames the person, then lets storage work: the reopened node has the new name, every record, and a root key that still signs.</p></div>
     <p>Hosts add a policy on top. <code>hoi_net::Shared::with</code> stops the network while saving fails: it drops the outbox, closes every link, sends one notice, and refuses incoming messages and new sync sessions until a commit succeeds, so remote traffic can't keep growing the unsaved journal (<code>hoi-net/src/storage_tests.rs</code>). The web worker's settler keeps the drained changes in a pending array until IndexedDB or OPFS accepted them, and only then sends queued messages and emits events.</p>
     <div class="wk-code" data-lang="ts" data-title="apps/web/src/lib/core/durable-settle.ts (trimmed)"><pre><code>export function createDurableSettler(node, persist, flushOutbox, emit) {
@@ -157,13 +157,14 @@ pub trait Persist: Send {
       <table>
         <thead><tr><th>Key</th><th>Contents</th><th>If unreadable at startup</th></tr></thead>
         <tbody>
-          <tr><td><code>format</code></td><td><code>{"version": 3}</code> (<code>STORAGE_FORMAT_VERSION</code>), strict JSON</td><td><code>storage-incompatible</code>; missing means version 1</td></tr>
+          <tr><td><code>format</code></td><td><code>{"version": 4}</code> (<code>STORAGE_FORMAT_VERSION</code>), strict JSON</td><td><code>storage-incompatible</code>; missing means version 1</td></tr>
           <tr><td><code>state</code></td><td><code>LocalState</code> as JSON</td><td><code>storage-incompatible</code></td></tr>
           <tr><td><code>keys</code></td><td><code>Secrets</code> as JSON (hex secret keys)</td><td><code>storage-incompatible</code></td></tr>
           <tr><td><code>mls</code></td><td>Private communities: the OpenMLS key-value storage, groups, pending requests and invitations, as JSON</td><td><code>storage-incompatible</code></td></tr>
           <tr><td><code>profiles</code>, <code>profile-colors</code></td><td>The newest profile picture and color revision per person</td><td><code>storage-incompatible</code></td></tr>
           <tr><td><code>directory</code></td><td>Open communities heard of from other nodes</td><td>starts over: it is only a cache</td></tr>
           <tr><td><code>scatter</code></td><td>Scattered delivery: holder sightings, objects kept in pieces, mailbox progress, injections</td><td>starts over: holders answer <code>taken</code>, so nothing is overwritten</td></tr>
+          <tr><td><code>deletion-journal</code></td><td>Versioned author-deletion jobs, per-locator retry capabilities and outcomes, and bounded pending deletes</td><td><code>storage-incompatible</code>; lost authority is never silently treated as completion</td></tr>
           <tr><td><code>m:&lt;hash&gt;</code></td><td>One media blob, checked bytes</td><td>dropped if its BLAKE3 doesn't match the key, or if the operator suppressed it</td></tr>
           <tr><td><code>previews</code>, <code>pv:&lt;hash&gt;</code></td><td>Link previews kept here and their pictures</td><td>loaded best-effort</td></tr>
         </tbody>
@@ -209,7 +210,7 @@ pub trait Persist: Send {
       <li><b>Load</b><p><code>persist.load()</code> returns every record's wire bytes and every blob.</p></li>
       <li><b>Check the format</b><p>The <code>format</code> blob must parse as <code>{version}</code> with nothing else and a version from 1 to 3. A missing one means 1. Anything else fails with <code>storage-incompatible</code>: “Saved storage metadata is damaged or uses an unsupported format. No stored data was changed.”</p></li>
       <li><b>Read the blobs</b><p><code>mls</code>, <code>state</code>, <code>profiles</code>, <code>profile-colors</code> and <code>keys</code> must parse, and every secret key in <code>keys</code> must be a valid key (a remote device's secret must match its public key); <code>directory</code> and <code>scatter</code> start over if they don't; media and previews are collected.</p></li>
-      <li><b>Record the format</b><p>A store with no format, or an older one, gets <code>{"version": 3}</code> written. A missing <code>node_id</code> gets a random one.</p></li>
+      <li><b>Record the format</b><p>A store with no format, or an older one, gets <code>{"version": 4}</code> written. Older software must refuse this version rather than lose deletion jobs. A missing <code>node_id</code> gets a random one.</p></li>
       <li><b>Sort the records</b><p>Each wire is decoded. One this build can't decode stays on disk untouched and is counted in <code>Boot.preservedRecords</code>; it is neither indexed nor served. The rest are sorted by <code>(priority(kind), created_at)</code>: communities, identities, rotations, delegations, revokes, ledger entries, vouches, then posts, comments, edits, reviews, votes, labels, reports, deletes, profiles, profile colors, pointers, rosters, shares, trust, wiki, tallies and blocklists.</p></li>
       <li><b>Ingest</b><p>Each goes through <code>ingest</code> with <code>Source::Load</code>. A record the current rules refuse (other than a duplicate) gets a <code>Delete</code> queued. Identity work already in <code>state.identity_work</code> is not recomputed.</p></li>
       <li><b>Check the media</b><p>A blob is kept only if its bytes hash to its name and the operator didn't suppress it; otherwise it is deleted.</p></li>
@@ -380,18 +381,23 @@ Core worker --> Page: unlocked
     <h2>Pieces kept for others</h2>
     <p>A node that holds pieces for scattered delivery (<code>hoi-node --hold-pieces GB</code>, or the desktop's switch while it is a public node) keeps them in a <code>PieceStore</code>: opaque bytes under a 32-byte locator, the last UTC day they are kept, the creator's drop hash and the community drop key's id, and nothing about who sent them. They are read on demand, never loaded at startup.</p>
     <div class="wk-code" data-lang="text" data-title="hoi-store/src/pieces.rs (SqlitePieces)"><pre><code>PRAGMA journal_mode = WAL;
-PRAGMA synchronous = NORMAL;
-CREATE TABLE IF NOT EXISTS pieces(
+PRAGMA synchronous = FULL;
+PRAGMA secure_delete = ON;
+CREATE TABLE IF NOT EXISTS held_pieces(
   loc BLOB PRIMARY KEY, expiry_day INTEGER NOT NULL, touched_day INTEGER NOT NULL,
   drop_hash BLOB NOT NULL, drop_key_id BLOB NOT NULL, bytes BLOB NOT NULL);
-CREATE INDEX IF NOT EXISTS pieces_expiry ON pieces(expiry_day);
-CREATE INDEX IF NOT EXISTS pieces_touched ON pieces(touched_day);</code></pre></div>
+CREATE TABLE IF NOT EXISTS dropped_pieces(
+  loc BLOB PRIMARY KEY, expiry_day INTEGER NOT NULL,
+  drop_hash BLOB NOT NULL, drop_key_id BLOB NOT NULL);</code></pre></div>
     <dl class="wk-defs">
-      <dt>put<small>Stored, Exists, Full</small></dt><dd>A piece is never overwritten: a second put under the same locator answers <code>Exists</code>. When the budget is reached the store first sweeps expired pieces, then evicts pieces nobody fetched or probed for <code>IDLE_DAYS = 30</code> days, oldest first, and only then answers <code>Full</code>.</dd>
+      <dt>put<small>Stored, Exists, Dropped, Full</small></dt><dd>A piece is never overwritten: a second put under the same locator answers <code>Exists</code>. An unexpired drop marker answers <code>Dropped</code>, mapped to a refused put on the wire. When the budget is reached the store first sweeps expired pieces, then evicts pieces nobody fetched or probed for <code>IDLE_DAYS = 30</code> days, oldest first, and only then answers <code>Full</code>.</dd>
       <dt>get, has<small>bytes, length</small></dt><dd>Only while not expired; both count as touched today.</dd>
-      <dt>sweep<small>count</small></dt><dd>Deletes every piece whose expiry day has passed.</dd>
+      <dt>mark_dropped<small>authenticated by the core</small></dt><dd>Atomically replaces a payload with its locator, original expiry day, drop hash and drop-key ID. The last two authenticate repeats without retaining raw capabilities or signatures. No explicit author or community ID, or payload, is kept in the marker; the existing correlation between pieces using the same drop-key ID remains.</dd>
+      <dt>sweep<small>count</small></dt><dd>Deletes pieces and markers only after their inclusive expiry day has passed; returns the number of payloads removed.</dd>
     </dl>
-    <p>The file is <code>pieces.db</code> next to <code>hoi.db</code>, deliberately outside the vault: the pieces are ciphertext the node can't read and the metadata names nobody. On the desktop it exists only while the setting is on; turning it off deletes the file and its <code>-wal</code>, <code>-shm</code> and <code>-journal</code> sidecars. <code>MemPieces</code> is the in-memory version for tests and small holders.</p>
+    <p>The file is <code>pieces.db</code> next to <code>hoi.db</code>, outside the vault: its pieces are ciphertext and no author or community identifier is retained. Turning holding off discards payloads while retaining unexpired markers, so re-enabling cannot replay an acknowledged drop. Each admitted piece reserves a metadata slot; the count limit is one per 128 bytes of payload budget, at least one. Live markers never make room for new pieces. <code>MemPieces</code> and in-memory SQLite enforce the same rules while running, but do not advertise restart durability.</p>
+    <p>The holder schema is version 1. Legacy payloads migrate to <code>held_pieces</code> without inventing prior deletion acknowledgements. An incompatible sentinel table at the old <code>pieces</code> name stops older software from opening a file whose markers it would ignore; newer unknown schema versions are refused. A supported snapshot restore calls <code>SqlitePieces::restore(path, budget)</code>, which discards all restored payloads before returning a serving store and preserves available markers. Ordinary restart keeps live payloads. Direct disk rollback outside that restore path is not covered, and deleting rows does not erase external backups or prove physical erasure.</p>
+    <p>Full member snapshots have a Rust API, <code>Node::open_restored</code>; the applications do not provide a full database snapshot import screen or command. It quarantines public content until ordinary synchronization applies available deletions, without claiming global freshness. For private communities it discards cached posts, comments, edits, pointers, associated repair caches, partial media and queued encrypted content. Shared media with surviving references, identity and membership records, signed deletions and their retry jobs survive. Pending deletion authority must be saved first; if capacity or unresolved shared references prevent that, restoration refuses to discard it. Private output stays quarantined until an accepted fresh authenticated join. An active restored MLS membership has no general reset/rejoin path: recover on a fresh device and obtain an authorized private invitation instead. Key-file and recovery-line imports restore identity separately and contain no MLS snapshot state. Normal restart keeps its cache.</p>
   </section>
 
   <section class="wk-sec" id="programs">
@@ -401,7 +407,7 @@ CREATE INDEX IF NOT EXISTS pieces_touched ON pieces(touched_day);</code></pre></
         <thead><tr><th>Program</th><th>Location</th><th>Files</th><th>At rest</th></tr></thead>
         <tbody>
           <tr><td>Web app</td><td>the site's origin storage</td><td>OPFS <code>store-hoi/log-a</code>, <code>log-b</code>, or IndexedDB database <code>hoi</code></td><td>passphrase vault (with up to four passkeys)</td></tr>
-          <tr><td>Desktop</td><td>Tauri's app data directory</td><td><code>hoi.db</code> (+ <code>-wal</code>, <code>-shm</code>); <code>pieces.db</code> while keeping pieces for others</td><td>passphrase vault; the app's recovery reset deletes only <code>hoi.db</code> and its sidecars</td></tr>
+          <tr><td>Desktop</td><td>Tauri's app data directory</td><td><code>hoi.db</code> (+ <code>-wal</code>, <code>-shm</code>); <code>pieces.db</code> for held pieces and retained drop markers</td><td>passphrase vault; the app's recovery reset deletes only <code>hoi.db</code> and its sidecars</td></tr>
           <tr><td>Android</td><td><code>filesDir/hoi</code></td><td><code>hoi.db</code>, <code>last-sync</code></td><td>platform-key vault; key in the Android Keystore</td></tr>
           <tr><td>iOS</td><td>Application Support <code>/hoi</code>, excluded from backups</td><td><code>hoi.db</code>, <code>last-sync</code></td><td>platform-key vault; key in the Keychain, this device only</td></tr>
           <tr><td><code>hoi-node</code></td><td><code>--data DIR</code> (default <code>./hoi-node-data</code>)</td><td><code>hoi.db</code>, <code>pieces.db</code> (<code>--hold-pieces</code>), <code>registry.db</code> (<code>--registry</code>), <code>hoi-node.lock</code>, <code>node-link</code>, <code>pairing-link</code>, <code>notice-hash</code>, <code>packet-relay-blocked.txt</code></td><td>not encrypted: plain <code>Sqlite</code></td></tr>
@@ -420,12 +426,12 @@ CREATE INDEX IF NOT EXISTS pieces_touched ON pieces(touched_day);</code></pre></
         <thead><tr><th>Test</th><th>What it proves</th></tr></thead>
         <tbody>
           <tr><td><code>hoi-core/src/tests/storage_compatibility.rs</code>: <code>malformed_or_future_local_metadata_never_overwrites_existing_storage</code></td><td>Eleven damaged or future <code>state</code>, <code>keys</code> and <code>format</code> blobs (truncated JSON, <code>null</code>, unknown fields, a bad key, a bad certificate, versions 4294967295, 0, <code>"1"</code>, an extra field): every open fails with <code>storage-incompatible</code>, the message says no data changed, and every record and blob is byte for byte the same afterwards.</td></tr>
-          <tr><td><code>…unversioned_legacy_storage_is_read_without_replacing_keys_and_gains_a_guard</code></td><td>A store with no <code>format</code> opens with the same root key, leaves <code>keys</code> unchanged and gains <code>{"version": 3}</code>.</td></tr>
+          <tr><td><code>…unversioned_legacy_storage_is_read_without_replacing_keys_and_gains_a_guard</code></td><td>A store with no <code>format</code> opens with the same root key, leaves <code>keys</code> unchanged and gains the current format guard.</td></tr>
           <tr><td><code>…version_one_public_storage_upgrades_without_replacing_identity_or_history</code></td><td>A format-1 store written before the private-state fields existed upgrades with its identity and posts intact; the format version must be at least 2 so format-1 software refuses private-capable storage.</td></tr>
           <tr><td><code>hoi-core/tests/persistence.rs</code></td><td>Failed commits are retried with records, keys and the latest state, in order.</td></tr>
           <tr><td><code>hoi-net/src/storage_tests.rs</code></td><td>A storage failure cancels links, sends one notice, queues no stale messages; while it lasts, incoming traffic is refused and the journal does not grow; a fresh link after recovery starts with a <code>hello</code>.</td></tr>
           <tr><td><code>hoi-store/src/vault.rs</code> (7 tests)</td><td>Deleted, swapped, replayed and injected cells and an old inventory all fail closed; a failed transaction keeps the last committed inventory; migration leaves no plaintext in the database or its WAL, also after an interrupted checkpoint.</td></tr>
-          <tr><td><code>hoi-store/src/pieces.rs</code>, <code>sqlite.rs</code></td><td>Budget, eviction order, expiry and restarts; put, load and delete.</td></tr>
+          <tr><td><code>hoi-store/src/pieces.rs</code>, <code>sqlite.rs</code></td><td>Budget, eviction, inclusive marker expiry, replay rejection, failed transactions and retry, migration, downgrade refusal, restart and supported snapshot restoration.</td></tr>
           <tr><td><code>hoi-crypto/src/vault.rs</code></td><td>Passkeys open the same vault and only with their own answer, four at most; damaged slot lists and expensive parameters are refused.</td></tr>
           <tr><td><code>hoi-ffi/src/keys.rs</code></td><td>Legacy identity and MLS state migrate together; a missing legacy key creates no replacement; a keystore that can't save opens no node; a crash before cleanup is retried.</td></tr>
         </tbody>

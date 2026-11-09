@@ -267,6 +267,7 @@ download.ts --> Browser: download buttons, sizes, SHA-256 and copy buttons
   <section class="wk-sec" id="e2e">
     <h2>Browser tests</h2>
     <p><code>scripts/e2e.mjs</code> runs against the built <code>dist/</code> through <code>vite preview</code> on port 4317 (<code>PORT</code> overrides) and fails on any console error, page error, failed request, HTTP status of 400 or more, request to another origin, or horizontal overflow.</p>
+    <p>After building, <code>pnpm --filter @hoi/site test:e2e:csp</code> checks the production CSP in Chromium and Firefox. Install both test browsers with <code>pnpm exec playwright install chromium firefox</code>. The suite records <code>securitypolicyviolation</code> events while visiting every page and using copy controls, verifies the copied commands and accessible feedback, and exercises the selection fallback with clipboard access denied. Release metadata is supplied locally so the checks stay offline.</p>
     <div class="wk-table" tabindex="0" role="region" aria-label="The e2e matrix">
       <table>
         <thead><tr><th>Dimension</th><th>Values</th></tr></thead>

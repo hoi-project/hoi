@@ -5,6 +5,30 @@ use std::collections::{BTreeMap, HashMap};
 
 use serde::{Deserialize, Serialize};
 
+/// Observed deletion work. Counts never establish complete inventory or global erasure.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ffi", derive(uniffi::Record))]
+pub struct DeletionProgress {
+    pub id: String,
+    pub target: String,
+    pub local_removed: bool,
+    pub record_submitted: bool,
+    pub queued: u32,
+    pub submitted: u32,
+    pub acknowledged: u32,
+    pub legacy_removal: u32,
+    pub unknown: u32,
+    pub refused: u32,
+    pub unreachable: u32,
+    pub expired: u32,
+    pub outstanding: u32,
+    pub coverage_gaps: u32,
+    pub expires_at: u64,
+    pub requires_local_state: bool,
+    pub inventory_complete: bool,
+}
+
 /// The trust ladder's steps and quorums (PROTOCOL.md §15, §16). Seconds for durations.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]

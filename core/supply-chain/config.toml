@@ -1069,7 +1069,7 @@ criteria = "safe-to-deploy"
 [[exemptions.libsqlite3-sys]]
 version = "0.39.1"
 criteria = "safe-to-deploy"
-notes = "Patched SQLite release for RUSTSEC-2026-0459; carries forward the existing unaudited baseline."
+notes = "Security update for RUSTSEC-2026-0459: bundled SQLite 3.54.1, with bundled-sqlcipher disabled. Retains the existing exemption, not a full source audit; upstream provenance, MIT license, build integration and storage tests checked."
 
 [[exemptions.linux-raw-sys]]
 version = "0.12.1"
@@ -1634,7 +1634,7 @@ criteria = "safe-to-deploy"
 [[exemptions.rusqlite]]
 version = "0.41.1"
 criteria = "safe-to-deploy"
-notes = "Required for the patched libsqlite3-sys release; carries forward the existing unaudited baseline."
+notes = "Upstream upgrade required for libsqlite3-sys 0.39 and RUSTSEC-2026-0459. Retains the existing exemption, not a full source audit; MIT license and MSRV remain compatible, with the existing bundled feature."
 
 [[exemptions.rustc-hash]]
 version = "2.1.3"

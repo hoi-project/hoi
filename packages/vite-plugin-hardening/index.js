@@ -11,6 +11,35 @@ export function cspString(directives) {
     .join('; ');
 }
 
+function hasCspMeta(html) {
+  // Read the original tokens: deleting comments or raw text could join fragments into a fake tag.
+  // Consume comments and raw-text elements intact, including an unclosed element through EOF.
+  const tokens = /<!--[\s\S]*?(?:-->|$)|<(script|style|title)(?=[\s/>])(?:[^"'<>]|"[^"]*"|'[^']*')*>[\s\S]*?(?:<\/\1\s*>|$)|<(\/?)([a-z][\w:-]*)\b(?:[^"'<>]|"[^"]*"|'[^']*')*>/gi;
+  let inHead = false;
+  let templateDepth = 0;
+  for (const [tag, , closing, name] of html.matchAll(tokens)) {
+    if (!name) continue;
+    const tagName = name.toLowerCase();
+    if (tagName === 'head' && !templateDepth) {
+      if (closing) return false;
+      inHead = true;
+      continue;
+    }
+    if (!inHead) continue;
+    if (tagName === 'template') {
+      templateDepth = Math.max(0, templateDepth + (closing ? -1 : 1));
+      continue;
+    }
+    if (closing || templateDepth || tagName !== 'meta') continue;
+    // Consume complete attribute values so a quoted example isn't mistaken for http-equiv.
+    for (const [, name, doubleQuoted, singleQuoted, unquoted] of tag.matchAll(/\s([^\s=<>/"']+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g)) {
+      const value = doubleQuoted ?? singleQuoted ?? unquoted ?? '';
+      if (name.toLowerCase() === 'http-equiv' && value.toLowerCase() === 'content-security-policy') return true;
+    }
+  }
+  return false;
+}
+
 /**
  * @param {{ csp?: Record<string, string[]> | false, sri?: boolean }} [opts]
  * @returns {import('vite').Plugin}
@@ -48,8 +77,8 @@ export default function hardening(opts = {}) {
       for (const [fileName, item] of Object.entries(bundle)) {
         if (item.type !== 'asset' || !fileName.endsWith('.html')) continue;
         let html = typeof item.source === 'string' ? item.source : Buffer.from(item.source).toString('utf8');
-        if (csp && !html.includes('Content-Security-Policy')) {
-          html = html.replace(/<head>/i, `<head>\n    <meta http-equiv="Content-Security-Policy" content="${csp}">`);
+        if (csp && !hasCspMeta(html)) {
+          html = html.replace(/<head\b[^>]*>/i, (head) => `${head}\n    <meta http-equiv="Content-Security-Policy" content="${csp}">`);
         }
         if (sri) {
           html = html.replace(/<(script|link)\b([^>]*?)(\/?)>/gi, (tag, name, attrs, slash) => {

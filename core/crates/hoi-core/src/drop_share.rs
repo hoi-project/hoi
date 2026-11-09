@@ -9,7 +9,7 @@ use hoi_types::{
     uri::{b64, unb64},
 };
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 const CONTEXT: &[u8] = b"hoi own-device scatter deletion v1";
 const MAX_CAPS: usize = 4096;
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -61,13 +61,33 @@ impl Node {
         Some(Capability { manifest: b64(&m.encode()), tokens })
     }
     pub(crate) fn save_drop_cap(&mut self, cap: Capability) {
-        let Some(m) = cap.read().filter(|m| m.expires_at > self.now()) else { return };
+        let Some(m) = cap.read().filter(|m| self.drop_cap_needed(m)) else { return };
         let id = cap_id(&m);
         if self.scatter.saved.drop_caps.len() >= MAX_CAPS && !self.scatter.saved.drop_caps.contains_key(&id) {
             return;
         }
         self.scatter.saved.drop_caps.insert(id, cap);
         self.scatter.dirty = true;
+        self.capture_deleted_cap(&m);
+    }
+    fn drop_cap_needed(&self, m: &Manifest) -> bool {
+        m.expires_at > self.now() || (self.deletion_object_suppressed(Id(m.object)) && self.now() / 86_400 <= m.expires_at.div_ceil(86_400))
+    }
+    fn capture_deleted_cap(&mut self, m: &Manifest) {
+        let communities: BTreeSet<_> = self.deletions.saved.jobs.values().filter(|j| j.objects.contains(&Id(m.object))).map(|j| j.community).collect();
+        let id = cap_id(m);
+        let Some(cap) = self.scatter.saved.drop_caps.get(&id).cloned() else { return };
+        let mut complete = true;
+        for community in communities {
+            self.scatter.saved.drop_caps.insert(id, cap.clone());
+            // A saved capability supplies its own tokens. Never derive replacement tokens
+            // from this device's secret, even when its original sender is no longer known.
+            complete &= matches!(self.queue_late_deletion_generation(community, m, Some(Id::ZERO)), Ok(true));
+        }
+        if !complete {
+            self.scatter.saved.drop_caps.insert(id, cap);
+            self.scatter.dirty = true;
+        }
     }
     pub(crate) fn drop_share_tick(&mut self) {
         let now = self.now();
@@ -83,8 +103,17 @@ impl Node {
             }
         }
         let before = self.scatter.saved.drop_caps.len();
-        self.scatter.saved.drop_caps.retain(|_, cap| cap.read().is_some_and(|m| m.expires_at > now));
+        let expired: Vec<_> =
+            self.scatter.saved.drop_caps.iter().filter(|(_, cap)| cap.read().is_none_or(|m| !self.drop_cap_needed(&m))).map(|(id, _)| *id).collect();
+        for id in expired {
+            self.scatter.saved.drop_caps.remove(&id);
+        }
         self.scatter.dirty |= before != self.scatter.saved.drop_caps.len();
+        let pending: Vec<_> =
+            self.scatter.saved.drop_caps.values().filter_map(|cap| cap.read()).filter(|m| self.deletion_object_suppressed(Id(m.object))).collect();
+        for m in pending {
+            self.capture_deleted_cap(&m);
+        }
         let local: Vec<_> = self
             .scatter
             .saved
@@ -93,6 +122,7 @@ impl Node {
             .flat_map(|k| &k.gens)
             .filter(|g| g.from.is_none())
             .filter_map(|g| g.read())
+            .filter(|m| !self.deletion_object_suppressed(Id(m.object)))
             .filter(|m| !self.scatter.saved.drop_caps.contains_key(&cap_id(m)))
             .take(8)
             .collect();
@@ -115,7 +145,8 @@ impl Node {
             .filter(|id| *id != sender && self.active_own_device(id))
             .filter_map(|id| Some((id, self.delegation_seal(&id)?)))
             .collect();
-        let caps: Vec<_> = self.scatter.saved.drop_caps.values().collect();
+        let caps: Vec<_> =
+            self.scatter.saved.drop_caps.values().filter(|cap| cap.read().is_some_and(|m| !self.deletion_object_suppressed(Id(m.object)))).collect();
         if caps.is_empty() || devices.is_empty() {
             return;
         }

@@ -348,12 +348,17 @@ fn pieces(data: &Path) -> Result<Vec<String>, String> {
         return Err(format!("this node holds no pieces ({} does not exist; see --hold-pieces)", path.display()));
     }
     let conn = rusqlite::Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|e| e.to_string())?;
+    let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).map_err(|e| e.to_string())?;
+    // Read either payload schema without migrating a database a running node may own.
+    // Schema 1 keeps only a compatibility sentinel at `pieces`; drop markers are not payloads.
+    let table = match version {
+        0 => "pieces",
+        1 => "held_pieces",
+        _ => return Err("This piece database requires a newer storage implementation.".into()),
+    };
     let today = (now() / 86_400) as i64;
-    let (count, bytes, soon): (i64, i64, i64) = conn
-        .query_row("SELECT COUNT(*), COALESCE(SUM(LENGTH(bytes)), 0), COALESCE(SUM(expiry_day < ?1 + 7), 0) FROM pieces WHERE expiry_day >= ?1", [today], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
-        })
-        .map_err(|e| e.to_string())?;
+    let query = format!("SELECT COUNT(*), COALESCE(SUM(LENGTH(bytes)), 0), COALESCE(SUM(expiry_day < ?1 + 7), 0) FROM {table} WHERE expiry_day >= ?1");
+    let (count, bytes, soon): (i64, i64, i64) = conn.query_row(&query, [today], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).map_err(|e| e.to_string())?;
     Ok(vec![format!("pieces held: {count} · {:.1} MB · none readable here", bytes as f64 / 1e6), format!("expiring within a week: {soon}")])
 }
 
@@ -583,8 +588,49 @@ mod tests {
             let meta = |d| PieceMeta { expiry_day: d, drop_hash: [0; 32], drop_key_id: [0; 16] };
             s.put(&[1; 32], meta(today + 3), &[0; 2000], today).unwrap();
             s.put(&[2; 32], meta(today + 90), &[0; 3000], today).unwrap();
+            s.put(&[3; 32], meta(today + 3), &[0; 4000], today).unwrap();
+            assert!(s.mark_dropped(&[3; 32], today).unwrap());
+            assert_eq!(pieces(&dir).unwrap()[0], "pieces held: 2 · 0.0 MB · none readable here", "markers are not held pieces, even while the store is open");
         }
         assert_eq!(pieces(&dir).unwrap(), vec!["pieces held: 2 · 0.0 MB · none readable here".to_string(), "expiring within a week: 1".to_string()]);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn legacy_piece_totals_are_read_without_migrating_the_database() {
+        let dir = temp_dir();
+        let path = dir.join("pieces.db");
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE pieces(loc BLOB PRIMARY KEY, expiry_day INTEGER NOT NULL, touched_day INTEGER NOT NULL,
+             drop_hash BLOB NOT NULL, drop_key_id BLOB NOT NULL, bytes BLOB NOT NULL);",
+        )
+        .unwrap();
+        let today = (now() / 86_400) as i64;
+        for (id, expiry) in [(1u8, today), (2, today + 7), (3, today - 1)] {
+            conn.execute(
+                "INSERT INTO pieces VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                rusqlite::params![&[id; 32][..], expiry, today, &[0u8; 32][..], &[0u8; 16][..], &[0u8; 100_000][..]],
+            )
+            .unwrap();
+        }
+        drop(conn);
+        let before = std::fs::read(&path).unwrap();
+        assert_eq!(pieces(&dir).unwrap(), vec!["pieces held: 2 · 0.2 MB · none readable here", "expiring within a week: 1"]);
+        assert_eq!(std::fs::read(&path).unwrap(), before, "inspection must not migrate or modify a legacy store");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn unknown_piece_schema_is_refused_without_modifying_the_database() {
+        let dir = temp_dir();
+        let path = dir.join("pieces.db");
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch("PRAGMA user_version = 2;").unwrap();
+        drop(conn);
+        let before = std::fs::read(&path).unwrap();
+        assert!(pieces(&dir).unwrap_err().contains("newer storage implementation"));
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
