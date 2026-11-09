@@ -677,6 +677,7 @@ Browser -> Public node: <code>hello</code> {n, ch: salted community hashes, …}
       </table>
     </div>
     <div class="wk-note warn"><b>Addresses are not hidden</b><p>Every node you connect to sees your IP address, as every internet connection does. hoi keeps your network key apart from your posting keys and names communities to strangers only as salted hashes, but it does not route through anonymizing networks. The VPN mode changes which address peers see, not whether they see one.</p></div>
+    <p>In a browser, <b>You → Your address</b> shows a connection's source IP when WebRTC reports a reflected address for its active connection. This readout stays in the page and is cleared when the connection changes or ends. WebSocket links and browsers that withhold the address show it as unavailable; that does not hide it from the other device. Direct browser links also exchange connection addresses. The readout does not verify VPN protection or replace the separate list of listening addresses on native devices.</p>
   </section>
 
   <section class="wk-sec" id="next">
