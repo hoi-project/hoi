@@ -43,8 +43,8 @@ merged.
 | ------------------------------------- | ------------------------- | -------- |
 | [0000](0000-decision-process.md)      | How hoi makes decisions   | accepted |
 | [0001](0001-deletion-lifecycle.md)    | Durable deletion lifecycle | accepted |
-| [0002](0002-bulk-author-deletion.md) | Bulk author deletion coverage | proposed |
-| [0003](0003-safe-local-cleanup.md)    | Safe local cleanup | proposed |
-| [0004](0004-holder-privacy-validation.md) | Holder privacy validation | proposed |
-| [0005](0005-scatter-failure-validation.md) | Scatter failure validation | proposed |
-| [0006](0006-node-verification.md)    | Node declarations and verification | proposed |
+| [0002](0002-bulk-author-deletion.md) | Bulk author deletion coverage | accepted |
+| [0003](0003-safe-local-cleanup.md)    | Safe local cleanup | accepted |
+| [0004](0004-holder-privacy-validation.md) | Holder privacy validation | accepted |
+| [0005](0005-scatter-failure-validation.md) | Scatter failure validation | accepted |
+| [0006](0006-node-verification.md)    | Node declarations and verification | accepted |
