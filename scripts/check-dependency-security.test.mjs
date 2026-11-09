@@ -11,6 +11,15 @@ test('a second vulnerable version cannot hide behind a patched version', () => {
   assert.deepEqual(dependencySecurityErrors(safe), []);
   for (const version of ['0.5.5', '0.7.5', '0.7.6-rc.1']) assert.match(dependencySecurityErrors(safe + '\n' + dependency('crypto-bigint', version)).join('\n'), /RUSTSEC-2026-0387/);
 });
+test('bundled SQLite cannot regress to the page-cache memory exposure', () => {
+  for (const version of ['0.39.0', '0.39.1', '0.40.0', '1.0.0']) {
+    assert.deepEqual(dependencySecurityErrors(safe + '\n' + dependency('libsqlite3-sys', version)), []);
+  }
+  const patched = safe + '\n' + dependency('libsqlite3-sys', '0.39.1');
+  for (const version of ['0.38.2', '0.39.0-rc.1', 'invalid']) {
+    assert.match(dependencySecurityErrors(patched + '\n' + dependency('libsqlite3-sys', version)).join('\n'), /RUSTSEC-2026-0459/);
+  }
+});
 test('an unmaintained macro or unpatched registry provider fails closed', () => {
   assert.match(dependencySecurityErrors(safe + '\n' + dependency('proc-macro-error2', '2.0.1')).join('\n'), /RUSTSEC-2026-0173/);
   assert.match(dependencySecurityErrors(safe.replace('name = "dimpl"', 'source = "registry+https://github.com/rust-lang/crates.io-index"\nname = "dimpl"')).join('\n'), /dimpl must use/);

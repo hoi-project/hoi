@@ -138,6 +138,7 @@ criteria = "safe-to-deploy"</code></pre></div>
         <thead><tr><th>Rule</th><th>Why</th></tr></thead>
         <tbody>
           <tr><td><code>crypto-bigint</code> must be present, and every copy at least <code>0.7.6</code>, without a prerelease</td><td><code>RUSTSEC-2026-0387</code>; a second, vulnerable copy can't hide behind a patched one</td></tr>
+          <tr><td>every <code>libsqlite3-sys</code> copy must be at least <code>0.39.0</code>, without a prerelease</td><td><code>RUSTSEC-2026-0459</code>; older bundled SQLite can expose uninitialized memory when opening a crafted database and WAL</td></tr>
           <tr><td>no <code>proc-macro-error2</code></td><td>it reintroduces <code>RUSTSEC-2026-0173</code></td></tr>
           <tr><td>no <code>async-executor</code> <code>1.14.0</code></td><td>yanked for a use-after-free; 1.14.1 or newer</td></tr>
           <tr><td><code>netdev</code> <code>0.46.3</code> must have no <code>source</code></td><td>it must be the local iOS compatibility patch</td></tr>

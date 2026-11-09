@@ -1,6 +1,6 @@
 [package]
 name = "hoi-setup-engine"
-version = "1.0.0-preview.1"
+version = "1.0.0-preview.3"
 description = "What the hoi node setup app does: one SSH session with a pinned host key, uploads, commands with sudo prompts answered, saved servers, and the same steps on this computer."
 edition = "2024"
 license = "AGPL-3.0-only"
