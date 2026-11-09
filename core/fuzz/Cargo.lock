@@ -959,7 +959,7 @@ dependencies = [
 
 [[package]]
 name = "hoi-crypto"
-version = "1.0.0-preview.1"
+version = "1.0.0-preview.3"
 dependencies = [
  "argon2",
  "blake3",
@@ -990,7 +990,7 @@ dependencies = [
 
 [[package]]
 name = "hoi-sync"
-version = "1.0.0-preview.1"
+version = "1.0.0-preview.3"
 dependencies = [
  "blake3",
  "hoi-types",
@@ -998,7 +998,7 @@ dependencies = [
 
 [[package]]
 name = "hoi-types"
-version = "1.0.0-preview.1"
+version = "1.0.0-preview.3"
 dependencies = [
  "base64",
  "blake3",
@@ -1011,7 +1011,7 @@ dependencies = [
 
 [[package]]
 name = "hoi-validate"
-version = "1.0.0-preview.1"
+version = "1.0.0-preview.3"
 dependencies = [
  "blake3",
  "hoi-crypto",

@@ -1067,8 +1067,9 @@ version = "0.8.9"
 criteria = "safe-to-deploy"
 
 [[exemptions.libsqlite3-sys]]
-version = "0.38.2"
+version = "0.39.1"
 criteria = "safe-to-deploy"
+notes = "Patched SQLite release for RUSTSEC-2026-0459; carries forward the existing unaudited baseline."
 
 [[exemptions.linux-raw-sys]]
 version = "0.12.1"
@@ -1631,8 +1632,9 @@ version = "0.1.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.rusqlite]]
-version = "0.40.2"
+version = "0.41.1"
 criteria = "safe-to-deploy"
+notes = "Required for the patched libsqlite3-sys release; carries forward the existing unaudited baseline."
 
 [[exemptions.rustc-hash]]
 version = "2.1.3"
