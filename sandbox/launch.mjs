@@ -69,6 +69,7 @@ function printLinks() {
 }
 
 export async function main(args = process.argv.slice(2)) {
+  if (args[0] === 'walkthrough') return (await import('./walkthrough-launch.mjs')).main(args.slice(1));
   if (!/^[a-z0-9][a-z0-9-]{0,47}$/.test(project)) throw new Error('COMPOSE_PROJECT_NAME must contain lowercase letters, digits, and hyphens (maximum 48 characters).');
   const command = args[0] || 'up';
   if (['help', '--help', '-h'].includes(command)) {

@@ -13,7 +13,7 @@
 # recommended; it also needs the `claude` CLI and Node available in the shell that runs.
 $ErrorActionPreference = 'Stop'
 # The complete stack uses a native Node launcher; no Bash/WSL is needed for it.
-if ($args.Count -eq 0 -or $args[0] -in @('dashboard', 'start', 'stop', 'status') -or ($args[0] -eq 'up' -and $args.Count -eq 1)) {
+if ($args.Count -eq 0 -or $args[0] -in @('dashboard', 'start', 'stop', 'status', 'walkthrough') -or ($args[0] -eq 'up' -and $args.Count -eq 1)) {
     if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
         throw 'Node 22 or newer is required. Install Node, then rerun ./sandbox/hoi-sandbox.ps1 dashboard.'
     }

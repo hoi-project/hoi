@@ -13,6 +13,7 @@
     "sandbox": "node sandbox/launch.mjs",
     "sandbox:stop": "node sandbox/launch.mjs stop",
     "sandbox:status": "node sandbox/launch.mjs status",
+    "sandbox:walkthrough": "node sandbox/walkthrough-launch.mjs",
     "test:sandbox": "node --test sandbox/*.test.mjs",
     "registry": "node registry/server.mjs",
     "test:registry": "node --test registry/server.test.mjs",

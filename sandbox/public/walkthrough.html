@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>hoi · follow a message</title>
+  <link rel="stylesheet" href="/shared/tokens.css">
+  <link rel="stylesheet" href="/shared/fonts.css">
+  <link rel="stylesheet" href="/shared/site.css">
+  <link rel="stylesheet" href="/walkthrough.css">
+</head>
+<body>
+  <a class="skip" href="#main">Skip to walkthrough</a>
+  <header class="site-header">
+    <nav class="wrap journey-nav" aria-label="Walkthrough">
+      <a class="logo" href="#main">hoi<span class="logo-sh"> / sandbox</span></a>
+      <span class="journey-local">A message, from beginning to end</span>
+      <span id="network-status" class="journey-status" role="status">Connecting</span>
+    </nav>
+  </header>
+  <main id="main" class="wrap journey-main">
+    <div class="journey-heading">
+      <div><p class="journey-kicker">Look behind the message</p><h1>What can each computer read?</h1><p class="journey-intro">Follow Alice’s plan to Bob. See the input, the protected bytes, and the text Bob gets back.</p></div>
+      <div class="journey-actions"><button class="pill pill-sm" id="refresh" type="button">Refresh evidence</button><button class="pill pill-sm" id="reset" type="button">Reset demonstration</button></div>
+    </div>
+    <p id="connection-error" class="journey-error" role="alert" hidden></p>
+    <p id="phase" class="journey-muted" role="status">Preparing the local network…</p>
+    <noscript><p class="journey-error">Enable JavaScript to run this local walkthrough.</p></noscript>
+
+    <section class="journey-scenario" aria-labelledby="scenario-title">
+      <div class="journey-scenario-heading">
+        <h2 id="scenario-title">The example</h2>
+        <div class="journey-scenarios" role="group" aria-label="Choose an example">
+          <button type="button" id="scenario-private" aria-pressed="true">Private plan</button>
+          <button type="button" id="scenario-public" aria-pressed="false">Public announcement</button>
+        </div>
+      </div>
+      <p id="scenario-description">Alice wants Bob to know where to meet, without the storage services reading the plan.</p>
+      <details id="example-composer" open><summary>Message for this run · edit the title and text</summary>
+      <details id="setup-details" class="journey-setup">
+        <summary>Before we begin: who has access?</summary>
+        <div id="setup-explanation"></div>
+      </details>
+      <form id="example-form" class="journey-form">
+        <div class="journey-field"><label for="post-title">Post title</label><input id="post-title" maxlength="120" required value="Our private meeting" autocomplete="off"></div>
+        <div class="journey-field"><label for="post-text">Message</label><textarea id="post-text" rows="2" maxlength="2000" required>Meet by the blue door at seven. Bring the notebook.</textarea></div>
+        <div class="journey-form-action"><button class="pill pill-ink" id="prepare" type="submit" disabled>Prepare this message</button><p id="prepare-note" class="journey-muted">This first step only prepares the input. You decide when each next operation runs.</p></div>
+      </form>
+      </details>
+      <p id="action-status" class="journey-muted" role="status"></p>
+    </section>
+
+    <section id="journey-panel" class="journey-panel" aria-labelledby="step-title">
+      <p id="journey-error" class="journey-error" role="alert" hidden></p>
+      <div id="journey-recovery" class="journey-recovery" hidden><p class="journey-muted">Refresh reloads the observations. Reset starts a fresh demonstration.</p><button id="recovery-reset" class="pill pill-ink" type="button">Reset and start again</button></div>
+      <section id="story-player" class="story-player" aria-labelledby="story-title"></section>
+      <details id="journey-details" class="journey-details"><summary>Detailed evidence · inspect the captured records and bytes</summary>
+      <nav aria-label="Message journey"><ol id="journey-steps" class="journey-steps"></ol></nav>
+      <div class="journey-step-heading">
+        <div><p id="step-location" class="journey-kicker">Alice → encrypted storage → Bob</p><h2 id="step-title" tabindex="-1">Start with a private plan</h2></div>
+        <span id="view-mode" class="journey-mode">Ready to begin</span>
+      </div>
+      <p id="step-explanation" class="journey-explanation">Prepare the message above. Then advance one real operation at a time.</p>
+      <div class="journey-controls">
+        <p id="next-explanation" class="journey-muted"></p>
+        <button id="return-latest" class="pill" type="button" hidden>Return to latest step</button>
+        <button id="next" class="pill pill-ink" type="button" disabled>Prepare a message first</button>
+      </div>
+      <section class="journey-visual" aria-labelledby="network-map-title">
+        <div class="journey-visual-heading"><div><p class="journey-kicker">Follow the connections</p><h3 id="network-map-title">Where this message goes</h3></div><span id="map-caption" class="journey-muted"></span></div>
+        <p class="journey-muted">Select a computer or an arrow to inspect what enters, what happens, and what leaves.</p>
+        <div id="network-map" class="journey-network-map"></div>
+        <div id="discovery-map" class="journey-discovery"></div>
+      </section>
+      <section id="crypto-visual" class="journey-visual" aria-labelledby="crypto-title">
+        <div class="journey-visual-heading"><div><p class="journey-kicker">Look inside the devices</p><h3 id="crypto-title">How the protection is added and removed</h3></div></div>
+        <p id="crypto-copy-model" class="journey-muted">The receiver opens one complete encrypted copy. The relay copies are not pieces to join together.</p>
+        <div id="crypto-sender" class="journey-crypto-device"></div>
+        <div id="crypto-receiver" class="journey-crypto-device"></div>
+      </section>
+      <div class="journey-selection-heading"><div><p class="journey-kicker">Inspect the selected part</p><h3 id="selection-title" tabindex="-1">This whole step</h3></div><button id="inspect-whole-step" class="journey-text-button" type="button" hidden>Back to whole step</button></div>
+      <p id="selection-source" class="journey-muted" hidden></p>
+      <div class="journey-io">
+        <section class="journey-card"><p class="journey-panel-label">Input</p><div id="step-input"></div></section>
+        <div class="journey-transform"><span aria-hidden="true">→</span><p id="selection-action" hidden></p></div>
+        <section class="journey-card"><p class="journey-panel-label">Result</p><div id="step-result"></div></section>
+      </div>
+      <div id="message-comparison" class="journey-comparison" hidden></div>
+      <section class="journey-readability" aria-labelledby="readability-title">
+        <h3 id="readability-title">Who can read the message at this step?</h3>
+        <ul id="readability"></ul>
+      </section>
+      <details id="evidence-details" class="journey-evidence" hidden>
+        <summary>How we know · measured evidence and core operations</summary>
+        <div id="evidence-content"></div>
+      </details>
+      <details id="app-preview" class="journey-app-preview" hidden>
+        <summary>See Bob’s real app screen</summary>
+        <p class="journey-muted">Captured from Bob’s running client after it opened and checked this message.</p>
+        <img id="app-screen" alt="Bob’s running hoi app" hidden>
+        <p id="screenshot-status" class="journey-muted"></p>
+        <button id="refresh-screen" class="journey-text-button" type="button">Refresh app screen</button>
+      </details>
+      </details>
+    </section>
+
+    <details id="advanced" class="journey-advanced">
+      <summary>Advanced · inspect services</summary>
+      <p class="journey-muted">These are separate storage views, not extra stops in the selected message’s path. Public registries help find public communities and carriers; they do not receive this private message.</p>
+      <div class="journey-field"><label for="service-picker">Service storage</label><select id="service-picker"></select></div>
+      <div id="service-inspector"></div>
+      <details><summary>What this local experiment does and does not show</summary><ul id="limitations"></ul></details>
+    </details>
+  </main>
+  <footer class="wrap journey-footer"><span>hoi · real clients and protocol, local observation</span><span>Session <code id="session">—</code></span></footer>
+  <dialog id="reset-dialog" class="journey-reset-dialog"><form method="dialog"><h2>Start a fresh demonstration?</h2><p>This replaces the seeded users, communities and posts with a new local session.</p><div class="journey-actions"><button class="pill" value="cancel">Keep this session</button><button class="pill pill-ink" value="reset">Reset demonstration</button></div></form></dialog>
+  <script type="module" src="/walkthrough.mjs"></script>
+</body>
+</html>
