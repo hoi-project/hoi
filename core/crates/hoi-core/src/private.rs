@@ -1036,7 +1036,101 @@ impl Node {
     }
     /// Messages of group `c` waiting to go out.
     pub(crate) fn private_pending(&self, c: Id) -> Vec<CipherObject> {
+        if self.deletion_restore_quarantined(Some(c)) {
+            return Vec::new();
+        }
         self.private.groups.get(&c).map(|s| s.objects.clone()).unwrap_or_default()
+    }
+
+    pub(crate) fn private_record_submitted(&self, c: Id, id: Id) -> bool {
+        self.private.groups.get(&c).is_some_and(|g| g.sent_records.contains(&id))
+    }
+
+    pub(crate) fn private_forget_partial(&mut self, hash: Id) {
+        for group in self.private.groups.values_mut() {
+            if group.partial.remove(&hash).is_some() {
+                self.private.dirty = true;
+            }
+        }
+    }
+
+    /// RFC-0001: a snapshot's private epoch cannot prove that its cached content is current.
+    /// Discard that cache before serving; a later authenticated bootstrap may start fresh.
+    pub(crate) fn private_discard_snapshot_content(&mut self, c: Id) -> R<()> {
+        let kept: Vec<_> = self.scatter.saved.kept.values().filter(|k| k.community == Some(c)).cloned().collect();
+        for k in &kept {
+            let mut generations: Vec<_> = k.gens.iter().chain(&k.cleanup_gens).filter_map(|g| g.read().map(|m| (m, g.from.is_none()))).collect();
+            let objects: BTreeSet<_> = generations.iter().map(|(m, _)| m.object).collect();
+            for cap in self.scatter.saved.drop_caps.values() {
+                if let Some(m) = cap.read().filter(|m| objects.contains(&m.object))
+                    && !generations.iter().any(|(old, _)| *old == m)
+                {
+                    generations.push((m, false));
+                }
+            }
+            for (m, local) in generations {
+                // A previously interrupted deletion can still have authority only in Kept.
+                // Preserve it in the job first, or refuse restore without disposing the cache.
+                self.queue_deletion_generation(k, &m, local)?;
+            }
+        }
+        let records: BTreeSet<Id> =
+            self.store.in_community(&c).filter(|s| matches!(s.record.kind(), Kind::Post | Kind::Comment | Kind::Edit | Kind::Pointer)).map(|s| s.id).collect();
+        let mut media: BTreeSet<Id> = records
+            .iter()
+            .filter_map(|id| self.store.get(id))
+            .flat_map(|s| match &s.record.body {
+                Body::Post { media, .. } => media.iter().map(|m| m.hash).collect::<Vec<_>>(),
+                _ => Vec::new(),
+            })
+            .collect();
+        let objects: BTreeSet<Id> = self.scatter.saved.kept.iter().filter(|(_, k)| k.community == Some(c)).map(|(id, _)| *id).collect();
+        for object in &objects {
+            if let Some(k) = self.scatter.saved.kept.remove(object) {
+                media.extend(k.media);
+            }
+        }
+        self.scatter.saved.drop_caps.retain(|_, cap| cap.read().is_none_or(|m| !objects.contains(&Id(m.object))));
+        self.scatter.saved.two_hop.retain(|id, _| !objects.contains(id));
+        self.scatter.saved.own_pointers.retain(|id, _| !records.contains(id));
+        self.scatter.saved.home_delivery.retain(|id, _| !records.contains(id));
+        self.scatter.saved.injecting.retain(|id, _| !records.contains(id));
+        self.scatter.saved.injected.retain(|id| !records.contains(id));
+        self.scatter.saved.whole.retain(|id| !records.contains(id));
+        self.scatter.in_pieces.retain(|id| !records.contains(id));
+        self.scatter.standins.retain(|_, s| s.community != c);
+        if let Some(group) = self.private.groups.get_mut(&c) {
+            media.extend(group.partial.keys().copied());
+            group.partial.clear();
+            group.objects.clear();
+            group.send_all_again();
+        }
+        if let Some(progress) = self.scatter.saved.mailboxes.get_mut(&c) {
+            // Keep the sequence counter: reusing a previous immutable mailbox slot is unsafe.
+            progress.slots.clear();
+        }
+        for id in records {
+            // This is cache disposal, not an author tombstone. Fresh authenticated history
+            // may still contain this record, so do not call drop_record/mark_deleted.
+            if self.store.remove(&id).is_some() {
+                self.changes.push(hoi_store::Change::Delete { id });
+            }
+            self.state.saved.remove(&id);
+        }
+        for hash in media {
+            if self.store.media_users(&hash).next().is_none() {
+                if self.store.remove_blob(&hash) {
+                    self.changes.push(hoi_store::Change::Blob { key: crate::node::media_key(&hash), value: None });
+                }
+                self.media_wanted.remove(&hash);
+                self.scatter.saved.open_partial.remove(&hash);
+            }
+        }
+        self.private.dirty = true;
+        self.scatter.dirty = true;
+        self.dirty.insert(c);
+        self.mark_state();
+        Ok(())
     }
     /// Whether a membership change may be made now: nothing is waiting to go out, or everything
     /// waiting already has its place in this device's mailbox slots, ahead of the change.
@@ -1384,6 +1478,7 @@ impl Node {
         }
         let saved = SavedGroup { received: vec![hex_encode(&Sha256::digest(&sealed))], ..SavedGroup::new(false) };
         self.private.groups.insert(c, saved);
+        self.deletion_private_caught_up(c);
         self.private.pending_request = None;
         self.private.save(&p);
         self.community(&c.hex())
@@ -1430,8 +1525,11 @@ impl Node {
         self.private_group(community)
     }
     pub fn private_outbox(&mut self, community: &str) -> R<Vec<CipherObject>> {
-        self.renew_delegation();
         let c = parse(community)?;
+        if self.deletion_restore_quarantined(Some(c)) {
+            return Ok(Vec::new());
+        }
+        self.renew_delegation();
         let p = self.private.provider();
         let mut g = load(&p, c)?;
         let mut saved = self.private.groups.get(&c).cloned().ok_or_else(fail)?;
@@ -2939,6 +3037,67 @@ mod adversarial {
         let inv = a.private_invite(c, &request).unwrap();
         b.private_join(&inv).unwrap();
         sync(a, b, c);
+    }
+    #[test]
+    fn private_snapshot_disposal_clears_partials_without_reusing_mailbox_slots() {
+        let now = Arc::new(AtomicU64::new(1_790_000_000));
+        let mut n = client("owner", &now);
+        let community = community(&mut n);
+        let c = parse(&community).unwrap();
+        let hash = Id([71; 32]);
+        assert!(!n.private_outbox(&community).unwrap().is_empty());
+        n.private.groups.get_mut(&c).unwrap().partial.insert(hash, PartialMedia { total: 8, parts: [(0, vec![1; 4])].into() });
+        n.scatter.saved.mailboxes.entry(c).or_default().next_seq = 17;
+        n.private_discard_snapshot_content(c).unwrap();
+        assert!(n.private.groups[&c].partial.is_empty());
+        assert!(n.private.groups[&c].objects.is_empty());
+        assert_eq!(n.scatter.saved.mailboxes[&c].next_seq, 17);
+    }
+    #[test]
+    fn private_snapshot_disposal_captures_pending_authority_before_removing_manifests() {
+        let now = Arc::new(AtomicU64::new(1_790_000_000));
+        let mut n = client("owner", &now);
+        let community = community(&mut n);
+        let c = parse(&community).unwrap();
+        let post = n
+            .create_post(&crate::dto::PostDraft { community, title: "deleted before placement completed".into(), text: String::new(), link: None, media: None })
+            .unwrap();
+        let target = parse(&post.id).unwrap();
+        n.delete_own(&post.id).unwrap();
+        let manifest = hoi_types::scatter::Manifest {
+            object: [61; 32],
+            sealed: [62; 32],
+            class: hoi_types::scatter::Class::from_index(0).unwrap(),
+            generation: 0,
+            level: 10,
+            places: 50,
+            k: 3,
+            n: 5,
+            m: 7,
+            hashes: vec![[63; 16]; 5],
+            holders: (1..=5).map(|i| Id([i; 32])).collect(),
+            loc_secret: [64; 32],
+            key: [65; 32],
+            expires_at: n.now() + 86_400,
+            keys: Vec::new(),
+        };
+        let object = Id(manifest.object);
+        n.scatter.saved.kept.insert(
+            object,
+            crate::keep::Kept {
+                community: Some(c),
+                records: vec![target],
+                expires_at: manifest.expires_at,
+                cleanup_gens: vec![crate::keep::Gen { manifest: b64(&manifest.encode()), made_at: n.now(), confirmed: false, from: None }],
+                ..Default::default()
+            },
+        );
+        n.private_discard_snapshot_content(c).unwrap();
+        assert!(!n.scatter.saved.kept.contains_key(&object));
+        let job = &n.deletions.saved.jobs[&n.deletion_for_target(target).unwrap()];
+        assert_eq!(job.targets.len(), 5);
+        assert!(job.targets.values().all(|t| t.token.is_some()));
+        assert!(job.objects.contains(&object));
     }
     #[test]
     fn a_commit_sends_again_only_what_went_in_the_epoch_it_ended() {

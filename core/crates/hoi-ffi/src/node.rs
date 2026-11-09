@@ -603,6 +603,13 @@ impl HoiNode {
         self.api(|n| n.delete_own(&id))
     }
 
+    pub fn deletion_progress(&self) -> R<Vec<DeletionProgress>> {
+        self.api(|n| {
+            n.commit()?;
+            Ok(n.deletion_progress())
+        })
+    }
+
     /// `value`: 1 up, -1 down, 0 take it back. Returns the new score.
     pub fn vote(&self, target: String, value: i32) -> R<i64> {
         self.api(|n| n.vote(&target, i64::from(value)))

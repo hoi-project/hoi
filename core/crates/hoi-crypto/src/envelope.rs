@@ -141,6 +141,14 @@ pub fn xk_statement(endpoint: &[u8; 32], xk: &[u8; 32], expires_at: u64) -> Vec<
     s
 }
 
+/// The holder's durable-marker capability, bound to the same key and expiry as its hello.
+/// Separate from the ordinary key signature so a forwarder cannot upgrade a legacy holder.
+pub fn drop_journal_statement(endpoint: &[u8; 32], xk: &[u8; 32], expires_at: u64) -> Vec<u8> {
+    let mut statement = xk_statement(endpoint, xk, expires_at);
+    statement.extend_from_slice(b"\0drop-journal");
+    statement
+}
+
 /// What a holder signs with its endpoint key to bind the certificate it serves WebRTC with to
 /// that endpoint: a browser pins the certificate when it dials but sees no endpoint, and needs
 /// one to know whose holder key a hello carries (PROTOCOL.md §21).
@@ -938,6 +946,12 @@ mod tests {
         assert!(!xk_valid(&endpoint, &a.public(), 2_000, &sig, 2_000), "expired");
         assert!(!xk_valid(&endpoint, &a.public(), 2_001, &sig, 1_000), "another date");
         assert!(!xk_valid(&[1; 32], &a.public(), 2_000, &sig, 1_000), "another node");
+        let capability = drop_journal_statement(&endpoint, &a.public(), 2_000);
+        assert!(!crate::verify(&node.public(), &capability, &sig), "a key signature is not a durable capability");
+        let proof = node.sign(&capability);
+        assert!(crate::verify(&node.public(), &capability, &proof));
+        assert!(!crate::verify(&node.public(), &drop_journal_statement(&endpoint, &a.public(), 2_001), &proof));
+        assert!(!crate::verify(&node.public(), &drop_journal_statement(&endpoint, &[0; 32], 2_000), &proof));
     }
 
     #[test]

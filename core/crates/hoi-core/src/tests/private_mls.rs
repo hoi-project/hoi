@@ -37,6 +37,101 @@ fn setup() -> (Arc<AtomicU64>, Node, Node, String) {
 }
 
 #[test]
+fn private_snapshot_restore_discards_old_content_and_outbox_without_forging_deletions() {
+    let t = Arc::new(AtomicU64::new(T0));
+    let memory = Mem::default();
+    let mut n = node("desktop", &t, &memory);
+    n.create_identity("Robin").unwrap();
+    let private = n.create_private_community(draft("private garden")).unwrap().id;
+    let c = Id::from_hex(&private).unwrap();
+    let public = n.create_community(draft("public garden")).unwrap().id;
+    let visible = post(&mut n, &public, "public snapshot");
+    let shared_draft = PostDraft {
+        community: public.clone(),
+        title: "shared attachment".into(),
+        text: String::new(),
+        link: None,
+        media: Some(vec![MediaDraft { data: hoi_types::uri::b64(&picture(32, image::ImageFormat::Png)), alt: None }]),
+    };
+    let shared = n.create_post(&shared_draft).unwrap();
+    n.create_post(&PostDraft { community: private.clone(), ..shared_draft }).unwrap();
+    let shared_hash = Id::from_hex(&shared.media[0].hash).unwrap();
+    let removed = post(&mut n, &private, "already deleted");
+    n.delete_own(&removed.id).unwrap();
+    let deletion = n.store.all().find(|s| matches!(s.record.body, Body::Delete)).unwrap().id;
+    let old = n
+        .create_post(&PostDraft {
+            community: private.clone(),
+            title: "private snapshot".into(),
+            text: "cached before catch-up".into(),
+            link: None,
+            media: Some(vec![MediaDraft { data: hoi_types::uri::b64(&png_with_location()), alt: None }]),
+        })
+        .unwrap();
+    let old_id = Id::from_hex(&old.id).unwrap();
+    let old_wire = n.store.get(&old_id).unwrap().wire.clone();
+    let hash = Id::from_hex(&old.media[0].hash).unwrap();
+    let object = Id([91; 32]);
+    let manifest = hoi_types::scatter::Manifest {
+        object: object.0,
+        sealed: [92; 32],
+        class: hoi_types::scatter::Class::from_index(0).unwrap(),
+        generation: 0,
+        level: 10,
+        places: 50,
+        k: 3,
+        n: 5,
+        m: 7,
+        hashes: vec![[93; 16]; 5],
+        holders: (1..=5).map(|i| Id([i; 32])).collect(),
+        loc_secret: [94; 32],
+        key: [95; 32],
+        expires_at: T0 + 86_400,
+        keys: Vec::new(),
+    };
+    let cap_id = crate::drop_share::cap_id(&manifest);
+    n.save_drop_cap(n.capability_for(&manifest).unwrap());
+    n.scatter.saved.kept.insert(
+        object,
+        crate::keep::Kept {
+            community: Some(c),
+            records: vec![old_id],
+            expires_at: manifest.expires_at,
+            gens: vec![crate::keep::Gen { manifest: hoi_types::uri::b64(&manifest.encode()), made_at: T0, confirmed: true, from: None }],
+            ..Default::default()
+        },
+    );
+    n.scatter.dirty = true;
+    assert!(!n.private_outbox(&private).unwrap().is_empty(), "snapshot includes queued encrypted content");
+    n.commit().unwrap();
+    let ordinary = node("desktop", &t, &memory);
+    assert!(ordinary.store.contains(&old_id), "ordinary restart keeps its cache");
+    drop(ordinary);
+    let clock = t.clone();
+    let mut restored =
+        Node::open_restored(Box::new(memory.clone()), "desktop", "https://example.com/", Box::new(move || clock.load(Ordering::SeqCst))).unwrap();
+    assert!(!restored.store.contains(&old_id));
+    assert!(!restored.store.has_blob(&hash));
+    assert!(restored.store.has_blob(&shared_hash), "a surviving public reference keeps its shared media bytes");
+    assert!(!restored.scatter.saved.kept.contains_key(&object));
+    assert!(!restored.scatter.saved.drop_caps.contains_key(&cap_id));
+    assert!(restored.store.contains(&Id::from_hex(&visible.id).unwrap()), "public cache uses catch-up quarantine");
+    assert!(restored.store.contains(&deletion));
+    assert!(restored.deletion_for_target(Id::from_hex(&removed.id).unwrap()).is_some());
+    assert!(restored.state.skeletons.contains_key(&Id::from_hex(&removed.id).unwrap()));
+    assert!(restored.private_outbox(&private).unwrap().is_empty());
+    assert!(restored.private_pending(c).is_empty());
+    assert!(!restored.store.is_deleted(&old_id), "discarding a stale snapshot must allow normal authenticated recovery");
+    restored.ingest(&old_wire, &Source::PrivateRelay).unwrap();
+    assert!(restored.post(&old.id).is_err(), "receiving content alone does not release private quarantine");
+    restored.commit().unwrap();
+    drop(restored);
+    let mut reopened = node("desktop", &t, &memory);
+    assert!(reopened.deletion_restore_quarantined(Some(c)));
+    assert!(reopened.private_outbox(&private).unwrap().is_empty());
+}
+
+#[test]
 fn private_mls_roundtrip_media_tamper_and_replay() {
     let (_t, mut a, mut b, c) = setup();
     let p = a

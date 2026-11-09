@@ -310,6 +310,35 @@ fn scatter_vectors() -> Value {
     let xk_expires = T + 30 * DAY;
     let xk_statement = envelope::xk_statement(&endpoint, &xk.public(), xk_expires);
     let xk_sig = node.sign(&xk_statement);
+    let drop_journal_statement = envelope::drop_journal_statement(&endpoint, &xk.public(), xk_expires);
+    let drop_journal_sig = node.sign(&drop_journal_statement);
+    let holder_key = hoi_sync::HolderKey { xk: xk.public(), expires_at: xk_expires, sig: xk_sig.0, rtc: None, drop_journal: Some(drop_journal_sig.0) };
+    let drop_journal_hello = hoi_sync::Msg::Hello {
+        v: hoi_sync::SYNC_VERSION,
+        node: Id(endpoint),
+        name: None,
+        token: None,
+        communities: Vec::new(),
+        salt: None,
+        hashed: Vec::new(),
+        serves: false,
+        hints: Vec::new(),
+        routes: Vec::new(),
+        features: vec![hoi_sync::FEATURE_DROP_JOURNAL.into()],
+        pairing: None,
+        link_key: None,
+        notice_hash: None,
+        notice: None,
+        holder: Some(holder_key),
+        forwards: false,
+        rebuilds: false,
+    }
+    .encode();
+    let drop_journal_nodes = hoi_sync::Msg::Nodes {
+        routes: Vec::new(),
+        holders: vec![hoi_sync::Vouch { endpoint: Id(endpoint), up: 100, days: 30, key: Some(holder_key), routes: Vec::new() }],
+    }
+    .encode();
     let answer = XKey::from_seed(&[0x14; 32]).expect("answer key");
     let piece_len = class.piece_len(g0.k);
     let first = shards.piece(0);
@@ -344,6 +373,8 @@ fn scatter_vectors() -> Value {
         ("got nothing", Reply::Got(None), piece_len),
         ("had", Reply::Had(Some(piece_len as u32)), 0),
         ("dropped", Reply::Dropped(envelope::Dropped::Dropped), 0),
+        ("drop unknown", Reply::Dropped(envelope::Dropped::Unknown), 0),
+        ("drop refused", Reply::Dropped(envelope::Dropped::Refused), 0),
     ];
     for (i, (name, rep, want)) in replies.iter().enumerate() {
         let seed = [0x30 + i as u8; 32];
@@ -402,6 +433,8 @@ fn scatter_vectors() -> Value {
         "holder": {
             "endpoint": h(&endpoint), "xk_seed": h(&[0x13; 32]), "xk": h(&xk.public()), "key_id": h(&envelope::key_id(&xk.public())),
             "expires_at": xk_expires, "statement": h(&xk_statement), "sig": h(&xk_sig.0),
+            "drop_journal": { "statement": h(&drop_journal_statement), "sig": h(&drop_journal_sig.0),
+                "hello": h(&drop_journal_hello), "nodes": h(&drop_journal_nodes) },
             "answer_key_seed": h(&[0x14; 32]), "answer_key": h(&answer.public()),
         },
         "envelopes": envelopes,

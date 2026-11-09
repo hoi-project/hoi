@@ -12,6 +12,49 @@ fn unhex(s: &str) -> Vec<u8> {
 }
 
 #[test]
+fn durable_drop_capability_is_bound_to_the_holder_key() {
+    use hoi_crypto::envelope;
+    use hoi_types::{Id, Sig};
+    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(vectors().join("scatter.json")).unwrap()).unwrap();
+    let holder = &v["holder"];
+    let bytes32 = |v: &serde_json::Value| <[u8; 32]>::try_from(unhex(v.as_str().unwrap())).unwrap();
+    let endpoint = bytes32(&holder["endpoint"]);
+    let xk = bytes32(&holder["xk"]);
+    let expires = holder["expires_at"].as_u64().unwrap();
+    let capability = &holder["drop_journal"];
+    let statement = unhex(capability["statement"].as_str().expect("durable drop capability vector"));
+    assert_eq!(envelope::drop_journal_statement(&endpoint, &xk, expires), statement);
+    let proof = Sig(unhex(capability["sig"].as_str().unwrap()).try_into().unwrap());
+    assert!(hoi_crypto::verify(&Id(endpoint), &statement, &proof));
+    let ordinary = Sig(unhex(holder["sig"].as_str().unwrap()).try_into().unwrap());
+    assert!(!hoi_crypto::verify(&Id(endpoint), &statement, &ordinary), "ordinary holder keys never imply durable drops");
+    for altered in [
+        envelope::drop_journal_statement(&[0; 32], &xk, expires),
+        envelope::drop_journal_statement(&endpoint, &[0; 32], expires),
+        envelope::drop_journal_statement(&endpoint, &xk, expires + 1),
+    ] {
+        assert!(!hoi_crypto::verify(&Id(endpoint), &altered, &proof), "proof is bound to endpoint, key and expiry");
+    }
+    for field in ["hello", "nodes"] {
+        let bytes = unhex(capability[field].as_str().unwrap());
+        let msg = hoi_sync::Msg::decode(&bytes).unwrap();
+        assert_eq!(msg.encode(), bytes);
+        let key = match msg {
+            hoi_sync::Msg::Hello { holder, features, .. } => {
+                assert!(features.iter().any(|f| f == hoi_sync::FEATURE_DROP_JOURNAL));
+                holder.unwrap()
+            }
+            hoi_sync::Msg::Nodes { holders, .. } => {
+                assert_eq!(holders[0].endpoint, Id(endpoint));
+                holders[0].key.unwrap()
+            }
+            _ => panic!("unexpected capability message"),
+        };
+        assert_eq!((key.xk, key.expires_at, key.drop_journal), (xk, expires, Some(proof.0)));
+    }
+}
+
+#[test]
 fn records_pass_stages_one_to_three() {
     let text = std::fs::read_to_string(vectors().join("records.json")).expect("run the vectors example");
     let v: serde_json::Value = serde_json::from_str(&text).unwrap();
@@ -372,7 +415,15 @@ fn scatter_vectors_hold() {
     let answer = XKey::from_seed(&a32(&hd["answer_key_seed"])).unwrap();
     assert_eq!(answer.public(), a32(&hd["answer_key"]));
     let kinds = [("put", Kind::Put), ("get", Kind::Get), ("has", Kind::Has), ("drop by token", Kind::Drop), ("drop by drop key", Kind::Drop)];
-    let answers = [("stored", Kind::Stored), ("got", Kind::Got), ("got nothing", Kind::Got), ("had", Kind::Had), ("dropped", Kind::Dropped)];
+    let answers = [
+        ("stored", Kind::Stored),
+        ("got", Kind::Got),
+        ("got nothing", Kind::Got),
+        ("had", Kind::Had),
+        ("dropped", Kind::Dropped),
+        ("drop unknown", Kind::Dropped),
+        ("drop refused", Kind::Dropped),
+    ];
     let envs = v["envelopes"].as_array().unwrap();
     assert_eq!(envs.len(), kinds.len() + answers.len());
     for e in envs {
@@ -393,6 +444,12 @@ fn scatter_vectors_hold() {
             let rep = envelope::open_reply(*kind, &answer, &loc, want, &bytes).unwrap_or_else(|err| panic!("{name}: {err}"));
             if name == "got" {
                 assert_eq!(rep, Reply::Got(Some(by_index[0].clone())));
+            }
+            match name {
+                "dropped" => assert_eq!(rep, Reply::Dropped(envelope::Dropped::Dropped)),
+                "drop unknown" => assert_eq!(rep, Reply::Dropped(envelope::Dropped::Unknown)),
+                "drop refused" => assert_eq!(rep, Reply::Dropped(envelope::Dropped::Refused)),
+                _ => {}
             }
             assert_eq!(envelope::seal_reply_with_seed(&answer.public(), &loc, &rep, want, &seed).unwrap(), bytes, "{name} reproduces");
         }

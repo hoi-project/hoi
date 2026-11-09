@@ -189,7 +189,26 @@ pub enum ScatterOutcome {
     Loaded(Vec<u8>),
     /// What each index probed answered (`has`, crate::keep).
     Probed(Vec<ProbeResult>),
+    /// Individual holder observations, never a claim of global erasure (RFC-0001).
+    Dropped(Vec<DropResult>),
     Failed(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DropOutcome {
+    /// No request left this attempt: unavailable route/key or its per-place capacity.
+    Queued,
+    Acknowledged,
+    LegacyRemoval,
+    Unknown,
+    Refused,
+    Unreachable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DropResult {
+    pub index: u8,
+    pub outcome: DropOutcome,
 }
 
 /// One index's answer to a probe: kept, not kept (the holder said so), or no answer (none in
@@ -209,6 +228,9 @@ pub(crate) struct ScatterState {
     next_op: u64,
     pub(crate) pending: BTreeMap<(String, u32), Pending>,
     ops: BTreeMap<u64, Op>,
+    /// Completed placements remain available until their outcome is consumed, so deletion
+    /// captures even a failed placement's possibly stored pieces before discarding it.
+    placements: BTreeMap<u64, Manifest>,
     /// Sightings and mailbox progress, saved in [`BLOB`].
     pub saved: ScatterSaved,
     pub dirty: bool,
@@ -295,6 +317,9 @@ struct ProbeOp {
     /// Per index: kept, not kept, or no answer; and the place key of the forwarder asked.
     answers: BTreeMap<u8, (Option<bool>, u64)>,
     fkey: BTreeMap<String, u64>,
+    drops: Option<BTreeMap<u8, DropOutcome>>,
+    /// Marker capability verified against each holder's signed key when the request was sent.
+    durable: BTreeSet<u8>,
 }
 
 /// What a probe asks each holder: whether it keeps its piece, or to drop it with the creator's
@@ -304,6 +329,13 @@ pub(crate) enum Ask {
     DropToken([u8; 32]),
     DropTokens(BTreeMap<Id, [u8; 32]>),
     DropKey([u8; 32]),
+}
+
+struct AskTarget {
+    index: u8,
+    holder: Id,
+    loc: [u8; 32],
+    auth: Option<DropAuth>,
 }
 
 /// What a forwarder's place is called across operations: its network, else its operator, else
@@ -666,7 +698,7 @@ impl Node {
     /// The signed key this node's hellos carry while it holds pieces, with the binding of its
     /// WebRTC certificate to its endpoint when it serves WebRTC (for browsers).
     pub(crate) fn holder_hello(&self) -> Option<HolderKey> {
-        self.scatter.pieces.as_ref()?;
+        let store = self.scatter.pieces.as_ref()?;
         let t = self.transport_kp.as_ref()?;
         let period = self.now() / KEY_PERIOD;
         let xk = self.holder_key(period)?.public();
@@ -678,7 +710,8 @@ impl Node {
             .filter_map(|r| crate::net::rtc_parts(r))
             .find_map(|(fp, _)| hoi_types::uri::unb64(fp).ok().and_then(|b| <[u8; 32]>::try_from(b).ok()));
         let rtc = cert.map(|cert| RtcBinding { endpoint: t.public(), cert, sig: t.sign(&envelope::rtc_statement(&t.public().0, &cert)).0 });
-        Some(HolderKey { xk, expires_at, sig: sig.0, rtc })
+        let drop_journal = store.durable_drops().then(|| t.sign(&envelope::drop_journal_statement(&t.public().0, &xk, expires_at)).0);
+        Some(HolderKey { xk, expires_at, sig: sig.0, rtc, drop_journal })
     }
 
     /// Keeps a peer's holder key if its signature checks out against the endpoint the
@@ -707,10 +740,12 @@ impl Node {
     }
 
     /// Keeps a holder key whose signature checked out, the latest per holder.
-    fn remember_key(&mut self, endpoint: Id, key: HolderKey) {
+    fn remember_key(&mut self, endpoint: Id, mut key: HolderKey) {
         let now = self.now();
+        key.drop_journal =
+            key.drop_journal.filter(|sig| hoi_crypto::verify(&endpoint, &envelope::drop_journal_statement(&endpoint.0, &key.xk, key.expires_at), &Sig(*sig)));
         let keys = &mut self.scatter.keys;
-        if keys.get(&endpoint).is_some_and(|k| k.expires_at >= key.expires_at) {
+        if keys.get(&endpoint).is_some_and(|k| k.expires_at > key.expires_at || (k.expires_at == key.expires_at && k.drop_journal == key.drop_journal)) {
             return;
         }
         if keys.len() >= MAX_KEYS && !keys.contains_key(&endpoint) {
@@ -1032,6 +1067,7 @@ impl Node {
                             Ok(Some(kept)) if kept == *piece => Stored::Ok,
                             _ => Stored::Taken,
                         },
+                        Ok(PutOutcome::Dropped) => Stored::Refused,
                         Ok(PutOutcome::Full) | Err(_) => Stored::Full,
                     }
                 };
@@ -1044,16 +1080,19 @@ impl Node {
             }
             Request::Has { loc, .. } => (Reply::Had(store.has(loc, today).ok().flatten()), 0),
             Request::Drop { loc, auth, .. } => {
-                let outcome = match store.meta(loc).ok().flatten() {
-                    None => Dropped::Unknown,
-                    Some(meta) => {
+                let outcome = match store.drop_meta(loc, today) {
+                    Ok(None) => Dropped::Unknown,
+                    Err(_) => Dropped::Refused,
+                    Ok(Some(meta)) => {
                         let allowed = match auth {
                             DropAuth::Token(d) => sc::drop_token_matches(d, &meta.drop_hash),
                             DropAuth::Signed { key, sig } => {
                                 sc::drop_key_id(key) == meta.drop_key_id && hoi_crypto::verify(&Id(*key), &sc::drop_statement(loc), &Sig(*sig))
                             }
                         };
-                        if allowed && store.remove(loc).unwrap_or(false) { Dropped::Dropped } else { Dropped::Refused }
+                        // A marker is committed before acknowledgement; failed storage leaves
+                        // the request unresolved and authenticated duplicates keep its expiry.
+                        if allowed && store.mark_dropped(loc, today).unwrap_or(false) { Dropped::Dropped } else { Dropped::Refused }
                     }
                 };
                 (Reply::Dropped(outcome), 0)
@@ -1592,7 +1631,10 @@ impl Node {
     }
 
     fn finish(&mut self, op: u64, outcome: ScatterOutcome) {
-        self.scatter.pending.retain(|_, p| p.op != op || p.mail.is_some());
+        if let Some(manifest) = self.scatter_placement(op) {
+            self.scatter.placements.insert(op, manifest);
+        }
+        self.discard_pending_scatter(op);
         self.scatter.ops.insert(op, Op::Done(Box::new(outcome)));
         self.job_done(op);
     }
@@ -1681,6 +1723,7 @@ impl Node {
 
     fn on_answer(&mut self, peer: &str, op: PieceOp, rid: u32, env: Vec<u8>) {
         let Some(p) = self.scatter.pending.remove(&(peer.to_string(), rid)) else { return };
+        self.discard_scatter_messages(&BTreeSet::from([(peer.to_string(), rid)]));
         let answer =
             if op == PieceOp::Gone { None } else { envelope::open_reply(kind_of(op), &p.reply, &p.loc, p.want, &env).ok().filter(|_| kind_of(op) == p.kind) };
         if let Some(request) = p.mail {
@@ -1715,11 +1758,19 @@ impl Node {
                 self.check_load(p.op);
             }
             (Some(Op::Probe(pr)), answer) => {
+                if let Some(drops) = pr.drops.as_mut() {
+                    let result = match answer {
+                        Some(Reply::Dropped(Dropped::Dropped)) if pr.durable.contains(&p.index) => DropOutcome::Acknowledged,
+                        Some(Reply::Dropped(Dropped::Dropped)) => DropOutcome::LegacyRemoval,
+                        Some(Reply::Dropped(Dropped::Unknown)) => DropOutcome::Unknown,
+                        Some(Reply::Dropped(Dropped::Refused)) => DropOutcome::Refused,
+                        _ => DropOutcome::Unreachable,
+                    };
+                    drops.insert(p.index, result);
+                }
                 let result = match answer {
                     Some(Reply::Had(Some(_))) => Some(true),
                     Some(Reply::Had(None)) => Some(false),
-                    // a drop: still kept only when the holder refused it
-                    Some(Reply::Dropped(d)) => Some(d == Dropped::Refused),
                     _ => None,
                 };
                 pr.answers.insert(p.index, (result, p.via.as_ref().and_then(|v| pr.fkey.get(v)).copied().unwrap_or(0)));
@@ -1809,36 +1860,100 @@ impl Node {
         self.scatter_ask(manifest, &indexes, &BTreeMap::new(), with)
     }
 
-    fn scatter_ask(&mut self, manifest: &Manifest, indexes: &[u8], failed: &BTreeMap<u8, BTreeSet<u64>>, ask: &Ask) -> R<u64> {
-        if self.scatter.ops.len() >= MAX_OPS {
-            return Err(busy());
+    /// A durable deletion needs only holder/locator capabilities, never object decryption
+    /// keys. Unknown routes remain unresolved until another retry (RFC-0001).
+    pub(crate) fn scatter_drop_targets(&mut self, targets: &[(Id, Id, [u8; 32])]) -> R<u64> {
+        if targets.len() > hoi_types::scatter::MAX_M || targets.len() > 256 {
+            return Err(ApiError::invalid("Too many deletion targets in one attempt."));
         }
+        let holders: Vec<_> = targets.iter().map(|t| t.0).collect();
+        // Without retaining a generation's manifest, use the conservative cap of one
+        // locator per forwarder place in this attempt, below every supported k.
+        let (mut paths, fkey, forwarders) = self.ask_paths(&holders, 1);
+        for holder in &holders {
+            if !paths.holders.contains_key(holder)
+                && let Some(key) = self.key_of(holder)
+            {
+                let via = forwarders.iter().map(|f| f.peer.clone()).collect();
+                paths.holders.insert(*holder, (key, via));
+            }
+        }
+        let targets = targets
+            .iter()
+            .enumerate()
+            .map(|(index, &(holder, loc, token))| AskTarget { index: index as u8, holder, loc: loc.0, auth: Some(DropAuth::Token(token)) })
+            .collect();
+        self.start_asks(targets, paths, fkey, &BTreeMap::new(), true)
+    }
+
+    fn scatter_ask(&mut self, manifest: &Manifest, indexes: &[u8], failed: &BTreeMap<u8, BTreeSet<u64>>, ask: &Ask) -> R<u64> {
+        let (mut paths, fkey, forwarders) = self.ask_paths(&manifest.holders, manifest.k.saturating_sub(1) as usize);
+        paths.relay_unvouched(manifest, &forwarders);
+        let targets = indexes
+            .iter()
+            .filter_map(|&index| {
+                let holder = *manifest.holders.get(index as usize)?;
+                let loc = sc::locator(&manifest.loc_secret, &manifest.object, manifest.generation, index);
+                let auth = match ask {
+                    Ask::Has => None,
+                    Ask::DropToken(secret) => Some(DropAuth::Token(sc::drop_token(secret, &loc))),
+                    Ask::DropTokens(tokens) => Some(DropAuth::Token(*tokens.get(&Id(loc))?)),
+                    Ask::DropKey(secret) => {
+                        let kp = hoi_crypto::Keypair::from_secret(secret);
+                        Some(DropAuth::Signed { key: kp.public().0, sig: kp.sign(&sc::drop_statement(&loc)).0 })
+                    }
+                };
+                Some(AskTarget { index, holder, loc, auth })
+            })
+            .collect();
+        self.start_asks(targets, paths, fkey, failed, !matches!(ask, Ask::Has))
+    }
+
+    fn ask_paths(&self, holders: &[Id], cap: usize) -> (Paths, BTreeMap<String, u64>, Vec<Forwarder>) {
         let forwarders = self.forwarders();
         let fkey: BTreeMap<String, u64> = forwarders.iter().map(|f| (f.peer.clone(), place_key(&f.candidate))).collect();
         let reach = self.reachable_holders(&forwarders, None);
         let mut all: Vec<Candidate> = forwarders.iter().map(|f| f.candidate).collect();
         all.extend(reach.iter().map(|h| h.candidate));
         let place = place::places(&all);
-        let mut paths = Paths { cap: manifest.k as usize - 1, ..Default::default() };
+        let mut paths = Paths { cap, ..Default::default() };
         for (i, f) in forwarders.iter().enumerate() {
             paths.place.insert(f.peer.clone(), place[i]);
         }
         for (j, h) in reach.iter().enumerate() {
             let own = place[forwarders.len() + j];
             let via: Vec<String> = h.via.iter().filter(|f| paths.place.get(*f) != Some(&own)).cloned().collect();
-            if manifest.holders.contains(&h.endpoint) && !via.is_empty() {
+            if holders.contains(&h.endpoint) && !via.is_empty() {
                 paths.holders.insert(h.endpoint, (h.xk, via));
             }
         }
-        paths.relay_unvouched(manifest, &forwarders);
+        (paths, fkey, forwarders)
+    }
+
+    fn start_asks(
+        &mut self,
+        targets: Vec<AskTarget>,
+        mut paths: Paths,
+        fkey: BTreeMap<String, u64>,
+        failed: &BTreeMap<u8, BTreeSet<u64>>,
+        dropping: bool,
+    ) -> R<u64> {
+        if self.scatter.ops.len() >= MAX_OPS {
+            return Err(busy());
+        }
         let now = self.now();
         let live = self.live_forwarders();
         let hops = self.hops(&live);
         let id = self.scatter.next_op;
         self.scatter.next_op += 1;
         let mut sent = Vec::new();
-        for &index in indexes {
-            let Some(&holder) = manifest.holders.get(index as usize) else { continue };
+        let requested: BTreeSet<u8> = targets.iter().map(|t| t.index).collect();
+        let durable = targets
+            .iter()
+            .filter(|t| self.scatter.keys.get(&t.holder).is_some_and(|k| k.expires_at > now && k.drop_journal.is_some()))
+            .map(|t| t.index)
+            .collect();
+        for AskTarget { index, holder, loc, auth } in targets {
             let before = failed.get(&index);
             let avoid: BTreeSet<String> = fkey.iter().filter(|(_, k)| before.is_some_and(|b| b.contains(k))).map(|(f, _)| f.clone()).collect();
             let Some(forwarder) = paths.choose(&holder, index, &avoid, &live).or_else(|| paths.choose(&holder, index, &BTreeSet::new(), &live)) else {
@@ -1846,34 +1961,25 @@ impl Node {
             };
             paths.carry(&forwarder, index);
             let xk = paths.holders[&holder].0;
-            let loc = sc::locator(&manifest.loc_secret, &manifest.object, manifest.generation, index);
             let Ok(reply) = XKey::generate() else { continue };
-            let request = match ask {
-                Ask::Has => Request::Has { loc, reply: reply.public() },
-                Ask::DropToken(secret) => Request::Drop { loc, reply: reply.public(), auth: DropAuth::Token(sc::drop_token(secret, &loc)) },
-                Ask::DropTokens(tokens) => {
-                    let Some(token) = tokens.get(&Id(loc)) else { continue };
-                    Request::Drop { loc, reply: reply.public(), auth: DropAuth::Token(*token) }
-                }
-                Ask::DropKey(secret) => {
-                    let kp = hoi_crypto::Keypair::from_secret(secret);
-                    Request::Drop { loc, reply: reply.public(), auth: DropAuth::Signed { key: kp.public().0, sig: kp.sign(&sc::drop_statement(&loc)).0 } }
-                }
+            let request = match auth {
+                None => Request::Has { loc, reply: reply.public() },
+                Some(auth) => Request::Drop { loc, reply: reply.public(), auth },
             };
             let Ok(env) = envelope::seal_request(&holder.0, &xk, &request) else { continue };
             sent.push((index, forwarder, reply, loc, env, holder));
         }
-        let asked: BTreeSet<u8> = sent.iter().map(|s| s.0).collect();
+        let sent_indexes: BTreeSet<u8> = sent.iter().map(|s| s.0).collect();
+        let asked = if dropping { requested } else { sent_indexes.clone() };
         let holders = sent.iter().map(|s| (s.0, s.5)).collect();
-        let (kind, op) = match ask {
-            Ask::Has => (Kind::Had, PieceOp::Has),
-            _ => (Kind::Dropped, PieceOp::Drop),
-        };
-        self.scatter.ops.insert(id, Op::Probe(Box::new(ProbeOp { asked, holders, answers: BTreeMap::new(), fkey })));
+        let (kind, op) = if dropping { (Kind::Dropped, PieceOp::Drop) } else { (Kind::Had, PieceOp::Has) };
+        let answers = asked.difference(&sent_indexes).map(|&i| (i, (None, 0))).collect();
+        let drops = dropping.then(|| asked.difference(&sent_indexes).map(|&i| (i, DropOutcome::Queued)).collect());
+        self.scatter.ops.insert(id, Op::Probe(Box::new(ProbeOp { asked, holders, answers, fkey, drops, durable })));
         let mut shorter = false;
         for (index, forwarder, reply, loc, env, holder) in sent {
             let rid = self.next_rid();
-            let wrapped = if matches!(ask, Ask::Has) {
+            let wrapped = if !dropping {
                 None
             } else {
                 hops.iter().find(|h| h.peer == forwarder).and_then(|exit| {
@@ -1892,7 +1998,7 @@ impl Node {
             let (via, message) = if let Some((entry, exit, env)) = wrapped {
                 (entry, Msg::Piece { op: PieceOp::Wrap, rid, to: Some(exit), env })
             } else {
-                shorter |= !matches!(ask, Ask::Has);
+                shorter |= dropping;
                 (forwarder.clone(), Msg::Piece { op, rid, to: Some(holder), env })
             };
             self.scatter
@@ -1911,8 +2017,27 @@ impl Node {
     fn check_probe(&mut self, op: u64) {
         let Some(Op::Probe(pr)) = self.scatter.ops.get(&op) else { return };
         if pr.asked.iter().all(|i| pr.answers.contains_key(i)) {
-            let results = pr.answers.iter().map(|(&index, &(kept, place))| ProbeResult { index, kept, place }).collect();
-            self.finish(op, ScatterOutcome::Probed(results));
+            let outcome = if let Some(drops) = &pr.drops {
+                ScatterOutcome::Dropped(drops.iter().map(|(&index, &outcome)| DropResult { index, outcome }).collect())
+            } else {
+                ScatterOutcome::Probed(pr.answers.iter().map(|(&index, &(kept, place))| ProbeResult { index, kept, place }).collect())
+            };
+            self.finish(op, outcome);
+        }
+    }
+
+    /// Indexes actually handed to the outgoing queue, so durable progress does not report
+    /// an unsent target as submitted while other holders' replies are still pending.
+    pub(crate) fn scatter_submitted_indexes(&self, op: u64) -> BTreeSet<u8> {
+        match self.scatter.ops.get(&op) {
+            Some(Op::Probe(probe)) => {
+                probe.asked.iter().filter(|index| probe.drops.as_ref().is_some_and(|drops| drops.get(index) != Some(&DropOutcome::Queued))).copied().collect()
+            }
+            Some(Op::Done(outcome)) => match outcome.as_ref() {
+                ScatterOutcome::Dropped(results) => results.iter().filter(|r| r.outcome != DropOutcome::Queued).map(|r| r.index).collect(),
+                _ => BTreeSet::new(),
+            },
+            _ => BTreeSet::new(),
         }
     }
 
@@ -1936,11 +2061,47 @@ impl Node {
         }
     }
 
+    /// Every locator a placement may have stored, including failed and unfinished work.
+    pub(crate) fn scatter_placement(&self, op: u64) -> Option<Manifest> {
+        match self.scatter.ops.get(&op) {
+            Some(Op::Store(st)) => {
+                let mut manifest = st.manifest.clone();
+                manifest.keys = manifest.holders.iter().map(|h| st.paths.holders.get(h).map(|k| k.0)).collect::<Option<Vec<_>>>().unwrap_or_default();
+                Some(manifest)
+            }
+            Some(Op::Done(outcome)) => match &**outcome {
+                ScatterOutcome::Stored(manifest) => Some(manifest.clone()),
+                _ => self.scatter.placements.get(&op).cloned(),
+            },
+            _ => self.scatter.placements.get(&op).cloned(),
+        }
+    }
+
+    /// Snapshot before cancellation: requests already sent can still put bytes on a holder.
+    /// The caller must persist their deletion targets before invoking this (RFC-0001).
+    pub(crate) fn cancel_scatter_operation(&mut self, op: u64) -> Option<Manifest> {
+        let manifest = self.scatter_placement(op);
+        self.drop_op(op);
+        manifest
+    }
+
+    fn discard_scatter_messages(&mut self, pending: &BTreeSet<(String, u32)>) {
+        self.outbox.retain(|(peer, bytes)| !matches!(Msg::decode(bytes), Ok(Msg::Piece { rid, .. }) if pending.contains(&(peer.clone(), rid))));
+    }
+
+    fn discard_pending_scatter(&mut self, op: u64) {
+        let pending = self.scatter.pending.iter().filter(|(_, p)| p.op == op && p.mail.is_none()).map(|(key, _)| key.clone()).collect();
+        self.discard_scatter_messages(&pending);
+        self.scatter.pending.retain(|_, p| p.op != op || p.mail.is_some());
+    }
+
     /// Lets an operation go, with whatever of it is still waiting for answers.
     pub(crate) fn drop_op(&mut self, op: u64) {
         self.scatter.ops.remove(&op);
+        self.scatter.placements.remove(&op);
         self.scatter.jobs.remove(&op);
-        self.scatter.pending.retain(|_, p| p.op != op || p.mail.is_some());
+        self.scatter.repair.rebuilt.remove(&op);
+        self.discard_pending_scatter(op);
     }
 
     /// Whether an operation finished and waits to be taken.
@@ -1949,6 +2110,9 @@ impl Node {
     }
 
     pub(crate) fn take_outcome(&mut self, op: u64) -> ScatterOutcome {
+        if self.op_done(op) {
+            self.scatter.placements.remove(&op);
+        }
         match self.scatter.ops.get(&op) {
             Some(Op::Done(_)) => match self.scatter.ops.remove(&op) {
                 Some(Op::Done(o)) => *o,
@@ -1969,6 +2133,7 @@ impl Node {
         let overdue: Vec<(String, u32)> = self.scatter.pending.iter().filter(|(_, p)| now >= p.sent_at + ANSWER_TIMEOUT).map(|(k, _)| k.clone()).collect();
         for key in overdue {
             let Some(p) = self.scatter.pending.remove(&key) else { continue };
+            self.discard_scatter_messages(&BTreeSet::from([key]));
             if let Some(request) = p.mail {
                 self.on_mail_answer(request, None);
                 continue;
@@ -1986,6 +2151,9 @@ impl Node {
                 Some(Op::Probe(pr)) => {
                     let place = p.via.as_ref().and_then(|v| pr.fkey.get(v)).copied().unwrap_or(0);
                     pr.answers.insert(p.index, (None, place));
+                    if let Some(drops) = pr.drops.as_mut() {
+                        drops.insert(p.index, DropOutcome::Unreachable);
+                    }
                     self.check_probe(p.op);
                 }
                 _ => {}
@@ -1993,6 +2161,7 @@ impl Node {
         }
         self.mailbox_tick();
         self.keep_tick();
+        self.deletion_tick();
         self.open_tick();
         self.roster_tick();
         self.inject_tick();

@@ -89,7 +89,8 @@ fn author_deletion_uses_three_hops_and_fallback_is_disclosed() {
         let op = m.n("a").scatter_drop(&man, &crate::scatter::Ask::DropToken(secret)).unwrap();
         let outcome = m.wait("a", op, 120);
         assert!(
-            matches!(outcome, crate::scatter::ScatterOutcome::Probed(ref rows) if rows.len() == man.hashes.len() && rows.iter().all(|r| r.kept == Some(false))),
+            matches!(outcome, crate::scatter::ScatterOutcome::Dropped(ref rows) if rows.len() == man.hashes.len()
+                && rows.iter().all(|r| r.outcome == crate::scatter::DropOutcome::LegacyRemoval)),
             "{outcome:?}"
         );
         let sent: Vec<_> = m.log.iter().filter(|(from, _, msg)| from == "a" && matches!(msg, Msg::Piece { .. })).collect();
@@ -310,22 +311,24 @@ fn home_phone() -> (Mesh, String) {
 }
 
 #[test]
-fn a_home_node_injects_what_its_phone_posts() {
+fn a_home_node_injects_whole_posts_until_placement_authority_is_recoverable() {
     let (mut m, c) = home_phone();
     let p = post(m.n("phone"), &c, "from the phone, through the home node");
     let pid = Id::from_hex(&p.id).unwrap();
     assert!(until(&mut m, 600, |m| m.n("b").post(&p.id).is_ok()), "b has the phone's post");
     m.run(60);
-    let pointers = m.n("phone").scatter.saved.own_pointers.get(&pid).cloned().expect("the home placed pieces and the phone signed pointers");
-    assert!(!pointers.is_empty());
-    assert!(!m.n("phone").scatter.saved.whole.contains(&pid));
-    assert!(m.log.iter().any(|(f, _, msg)| f == "phone" && matches!(msg, Msg::HomeScatter { reply: false, .. })), "placement used the paired home link");
-    assert!(m.log.iter().any(|(f, _, msg)| f == "home" && matches!(msg, Msg::Piece { op: PieceOp::Inject, .. })), "the home injected the pointers");
+    assert!(!m.n("phone").scatter.saved.own_pointers.contains_key(&pid));
+    assert!(m.n("phone").scatter.saved.whole.contains(&pid));
+    assert!(
+        !m.log.iter().any(|(f, _, msg)| f == "phone"
+            && matches!(msg, Msg::HomeScatter { reply: false, payload, .. }
+                if serde_json::from_slice::<serde_json::Value>(payload).unwrap()["type"] == "Store")),
+        "new clients never delegate placement without recoverable deletion authority"
+    );
+    assert!(m.log.iter().any(|(f, _, msg)| f == "home" && matches!(msg, Msg::Piece { op: PieceOp::Inject, .. })), "the home injected the whole post");
     assert!(!m.n("phone").post(&p.id).unwrap().checks.address_hidden, "the home knows its sender");
-    assert_eq!(m.n("phone").post(&p.id).unwrap().checks.home_delivery.as_deref(), Some("pieces-injected"));
-    for f in ["f0", "f1", "f2"] {
-        assert!(m.n(f).store.get(&pid).is_none(), "the forwarders never received the whole post");
-    }
+    assert_eq!(m.n("phone").post(&p.id).unwrap().checks.home_delivery.as_deref(), Some("whole-injected"));
+    assert!(m.log.iter().any(|(f, _, msg)| f == "phone" && carried(msg).contains(&pid)), "the phone used whole-record delivery to its home");
 }
 
 #[test]
@@ -420,26 +423,29 @@ fn revoked_devices_receive_no_new_deletion_capability() {
 }
 
 #[test]
-fn home_placement_timeout_falls_back_and_receipts_never_claim_privacy_from_home() {
+fn home_delivery_waits_for_reconnection_and_receipts_never_claim_privacy_from_home() {
     let (mut m, c) = home_phone();
-    let p = post(m.n("phone"), &c, "home goes away during placement");
+    m.hang_up("phone", "home");
+    let p = post(m.n("phone"), &c, "home goes away during delivery");
     m.t.fetch_add(5, Ordering::SeqCst);
     m.n("phone").scatter_tick();
-    assert_eq!(m.n("phone").post(&p.id).unwrap().checks.home_delivery.as_deref(), Some("placing"));
-    m.cut.insert("home".into());
+    assert_eq!(m.n("phone").post(&p.id).unwrap().checks.home_delivery.as_deref(), Some("whole-pending"));
     m.run(130);
     assert!(m.n("phone").scatter.saved.whole.contains(&Id::from_hex(&p.id).unwrap()));
     assert!(!m.n("phone").post(&p.id).unwrap().checks.address_hidden);
-    m.cut.remove("home");
+    m.n("phone").net_connect("home", Role::Home);
+    m.n("home").net_connect("phone", Role::Client);
+    m.pump();
     m.run(180);
+    assert!(m.n("b").post(&p.id).is_ok());
+    assert_eq!(m.n("phone").post(&p.id).unwrap().checks.home_delivery.as_deref(), Some("whole-injected"));
     assert!(!m.n("phone").post(&p.id).unwrap().checks.address_hidden);
 }
 
 #[test]
-fn home_placement_ignores_strangers_and_releases_a_wait_after_an_invalid_reply() {
+fn legacy_home_placement_ignores_strangers_and_releases_a_wait_after_an_invalid_reply() {
     let (mut m, c) = home_phone();
-    m.n("phone").scatter.placing = Some(Id::from_hex(&c).unwrap());
-    let op = m.n("phone").scatter_store(b"authenticated response", 10, T0 + 30 * DAY).unwrap();
+    let op = m.n("phone").legacy_home_store("home", Id::from_hex(&c).unwrap(), b"authenticated response", 10, T0 + 30 * DAY).unwrap();
     let rid = m
         .n("phone")
         .take_outbox()
@@ -454,4 +460,53 @@ fn home_placement_ignores_strangers_and_releases_a_wait_after_an_invalid_reply()
     assert!(!m.n("phone").op_done(op));
     m.n("phone").on_home_scatter("home", rid, true, bad);
     assert!(matches!(m.wait("phone", op, 1), crate::scatter::ScatterOutcome::Failed(_)));
+}
+
+#[test]
+fn legacy_home_placement_still_returns_a_verified_manifest() {
+    let (mut m, c) = home_phone();
+    let content = b"legacy placement response";
+    let op = m.n("phone").legacy_home_store("home", Id::from_hex(&c).unwrap(), content, 10, T0 + 30 * DAY).unwrap();
+    let manifest = match m.wait("phone", op, 120) {
+        crate::scatter::ScatterOutcome::Stored(manifest) => manifest,
+        other => panic!("legacy placement failed: {other:?}"),
+    };
+    assert!(m.n("phone").scatter.saved.drop_caps.contains_key(&crate::drop_share::cap_id(&manifest)));
+    let op = m.n("b").scatter_load(&manifest).unwrap();
+    assert!(matches!(m.wait("b", op, 120), crate::scatter::ScatterOutcome::Loaded(bytes) if bytes == content));
+}
+
+#[test]
+fn deleting_during_a_legacy_home_placement_is_retryable_before_any_mutation() {
+    let (mut m, c) = home_phone();
+    let p = post(m.n("phone"), &c, "awaiting legacy placement authority");
+    let target = Id::from_hex(&p.id).unwrap();
+    let community = Id::from_hex(&c).unwrap();
+    let phone = m.n("phone");
+    let content = b"[]".to_vec();
+    let op = phone.legacy_home_store("home", community, &content, 10, T0 + 30 * DAY).unwrap();
+    let batch = phone.scatter.repair.outgoing.keys().next_back().map_or(0, |batch| batch + 1);
+    phone.scatter.jobs.insert(op, crate::keep::Job::Outgoing { batch });
+    phone.scatter.repair.outgoing.insert(
+        batch,
+        crate::keep::Outgoing {
+            community,
+            parts: BTreeMap::from([(op, content)]),
+            carries: BTreeMap::from([(op, (vec![target], None))]),
+            stored: BTreeMap::new(),
+            cancelled: Default::default(),
+            failed: false,
+            records: vec![target],
+            media: Vec::new(),
+        },
+    );
+    let before = phone.deletions.saved.jobs.len();
+    assert_eq!(phone.delete_own(&p.id).unwrap_err().code, "deletion-pending");
+    assert!(phone.store.contains(&target));
+    assert!(!phone.state.skeletons.contains_key(&target));
+    assert_eq!(phone.deletions.saved.jobs.len(), before);
+    assert!(phone.deletion_for_target(target).is_none());
+    assert!(phone.scatter.repair.outgoing[&batch].cancelled.is_empty());
+    assert!(phone.deletion_home_placement_pending(target));
+    assert!(!phone.op_done(op));
 }

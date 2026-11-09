@@ -73,6 +73,61 @@ fn an_open_community_s_posts_go_in_pieces_and_carriers_hold_only_pointers() {
 }
 
 #[test]
+fn a_pointer_only_copy_persists_author_deletion_before_the_body_arrives() {
+    let mut m = mesh(3, 14);
+    let c = open_community(&mut m, &[]);
+    let community = Id::from_hex(&c).unwrap();
+    m.n("a").commit().unwrap();
+    let loaded = m.n("a").persist_mut().load().unwrap();
+    let disk = Mem::default();
+    {
+        let mut saved = disk.0.lock().unwrap();
+        for wire in loaded.records {
+            let (_, id) = hoi_types::Wire::decode(&wire).unwrap();
+            saved.0.insert(id, wire);
+        }
+        saved.1.extend(loaded.blobs);
+    }
+    // This device has the same identity and community, but receives only the pointer.
+    let mut reader = node("desktop", &m.t, &disk);
+    let p = post(m.n("a"), &c, "deleted before its body arrives");
+    let target = Id::from_hex(&p.id).unwrap();
+    let whole = m.n("a").store.get(&target).unwrap().wire.clone();
+    let expires_at = m.n("a").store.get(&target).unwrap().record.expires_at;
+    assert!(until(&mut m, 600, |m| {
+        m.n("a").store.of_kind(&community, Kind::Pointer).any(|s| matches!(&s.record.body, Body::Pointer { record, media: None, .. } if *record == target))
+    }));
+    let pointer = m
+        .n("a")
+        .store
+        .of_kind(&community, Kind::Pointer)
+        .find(|s| matches!(&s.record.body, Body::Pointer { record, media: None, .. } if *record == target))
+        .unwrap()
+        .wire
+        .clone();
+    reader.ingest(&pointer, &Source::Import).unwrap();
+    assert!(reader.scatter.standins.contains_key(&target));
+    assert!(!reader.store.contains(&target));
+
+    m.n("a").delete_own(&p.id).unwrap();
+    let deletion = m.n("a").store.of_kind(&community, Kind::Delete).find(|s| s.record.parent == Some(target)).unwrap().wire.clone();
+    let accepted = reader.ingest(&deletion, &Source::Import).unwrap();
+    reader.commit().unwrap();
+    assert_eq!(reader.state.skeletons[&target].expires_at, expires_at, "suppression lasts through the pointer's target horizon");
+    assert!(reader.deletion_progress().iter().any(|p| p.target == target.hex() && p.local_removed));
+    assert!(matches!(reader.ingest(&whole, &Source::Import), Err(hoi_validate::Reject::Tombstoned)));
+    drop(reader);
+
+    let mut reopened = node("desktop", &m.t, &disk);
+    assert!(reopened.store.contains(&accepted.id), "the signed deletion remains valid without its target body");
+    assert!(reopened.deletion_progress().iter().any(|p| p.target == target.hex() && p.local_removed));
+    for source in [Source::Import, Source::Pieces] {
+        assert!(matches!(reopened.ingest(&whole, &source), Err(hoi_validate::Reject::Tombstoned)));
+    }
+    assert!(!reopened.store.contains(&target), "neither a late whole copy nor a delayed rebuild resurrects the post");
+}
+
+#[test]
 fn with_too_few_places_a_post_goes_whole() {
     let mut m = mesh(1, 0);
     join(&mut m, "a", "198.51.100.10:7843", &[0]);

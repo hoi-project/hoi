@@ -171,12 +171,146 @@ fn holders_keep_only_stamped_pieces_and_drop_only_for_their_creator() {
     assert_eq!(ask(&mut a, &mut h, &drop(signed), &reply, 8), Some(Reply::Dropped(Dropped::Refused)), "a drop key the piece wasn't stored with");
     assert_eq!(ask(&mut a, &mut h, &drop(DropAuth::Token(token)), &reply, 9), Some(Reply::Dropped(Dropped::Dropped)));
     assert_eq!(ask(&mut a, &mut h, &get(loc), &reply, 10), Some(Reply::Got(None)));
-    assert_eq!(ask(&mut a, &mut h, &drop(DropAuth::Token(token)), &reply, 11), Some(Reply::Dropped(Dropped::Unknown)));
+    assert_eq!(ask(&mut a, &mut h, &drop(DropAuth::Token(token)), &reply, 11), Some(Reply::Dropped(Dropped::Dropped)));
     // an envelope sealed to another key gets no answer at all
     let other = XKey::generate().unwrap();
     let env = envelope::seal_request(&endpoint.0, &other.public(), &get(loc)).unwrap();
     h.nodes[0].net_receive("a", &Msg::Piece { op: PieceOp::Get, rid: 12, to: None, env }.encode());
     assert!(h.nodes[0].take_outbox().is_empty());
+}
+
+#[test]
+fn an_authorized_drop_refuses_replay_through_the_original_expiry_day() {
+    let t = Arc::new(AtomicU64::new(T0));
+    let mut h = holders(&t, 1);
+    let (mut a, a_ep) = device(&t, "192.0.2.10:7843");
+    link(&mut a, "a", &a_ep, "192.0.2.10:7843", &mut h, 0);
+    pump(&mut [("a", &mut a)], &mut h, &[]);
+    let endpoint = Id::from_hex(&h.endpoints[0]).unwrap();
+    let reply = XKey::generate().unwrap();
+    let loc = [21; 32];
+    let token = sc::drop_token(&[22; 32], &loc);
+    let day = (T0 / DAY) as u32 + 1;
+    let put = Request::Put {
+        loc,
+        reply: reply.public(),
+        expiry_day: day,
+        drop_hash: sc::drop_hash(&token),
+        drop_key_id: [0; 16],
+        stamp: sc::mine_stamp(&endpoint.0, &loc, 300, day),
+        piece: vec![23; 300],
+    };
+    let drop = Request::Drop { loc, reply: reply.public(), auth: DropAuth::Token(token) };
+    assert_eq!(ask(&mut a, &mut h, &put, &reply, 1), Some(Reply::Stored(Stored::Ok)));
+    assert_eq!(ask(&mut a, &mut h, &drop, &reply, 2), Some(Reply::Dropped(Dropped::Dropped)));
+    assert_eq!(ask(&mut a, &mut h, &put, &reply, 3), Some(Reply::Stored(Stored::Refused)), "a valid stamp cannot revive a dropped locator");
+    assert_eq!(ask(&mut a, &mut h, &drop, &reply, 4), Some(Reply::Dropped(Dropped::Dropped)), "authenticated retries are idempotent");
+    let forged = Request::Drop { loc, reply: reply.public(), auth: DropAuth::Token([0; 32]) };
+    assert_eq!(ask(&mut a, &mut h, &forged, &reply, 5), Some(Reply::Dropped(Dropped::Refused)));
+    t.store(u64::from(day) * DAY, Ordering::SeqCst);
+    assert_eq!(ask(&mut a, &mut h, &put, &reply, 6), Some(Reply::Stored(Stored::Refused)), "the expiry day is inclusive");
+    t.store(u64::from(day + 1) * DAY, Ordering::SeqCst);
+    assert_eq!(ask(&mut a, &mut h, &drop, &reply, 7), Some(Reply::Dropped(Dropped::Unknown)), "expiry is not an acknowledgement");
+}
+
+#[test]
+fn forwarded_drop_results_distinguish_durability_unknown_refusal_and_silence() {
+    use crate::scatter::{DropOutcome, DropResult, ScatterOutcome};
+    use hoi_store::pieces::{PieceMeta, SqlitePieces};
+    let mut m = super::forward::mesh(2, 2);
+    let path = std::env::temp_dir().join(format!("hoi-drop-results-{}.db", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    m.n("h0").set_piece_store(Some(Box::new(SqlitePieces::open(&path, 1 << 20).unwrap())));
+    m.pump();
+    super::forward::join(&mut m, "a", "192.0.2.10:7843", &[0, 1]);
+    let (durable, legacy) = (Id::from_hex(&m.eps["h0"]).unwrap(), Id::from_hex(&m.eps["h1"]).unwrap());
+    assert!(m.n("a").scatter.keys[&durable].drop_journal.is_some(), "signed capability survives forwarding");
+    assert!(m.n("a").scatter.keys[&legacy].drop_journal.is_none());
+    let today = (m.t.load(Ordering::SeqCst) / DAY) as u32;
+    let token = [42; 32];
+    let meta = PieceMeta { expiry_day: today + 1, drop_hash: sc::drop_hash(&token), drop_key_id: [0; 16] };
+    for name in ["h0", "h1"] {
+        m.n(name).scatter.pieces.as_mut().unwrap().put(&[41; 32], meta, &[43; 300], today).unwrap();
+    }
+    for (holder, loc, credential, expected) in [
+        (Id([99; 32]), Id([41; 32]), token, DropOutcome::Queued),
+        (durable, Id([44; 32]), token, DropOutcome::Unknown),
+        (durable, Id([41; 32]), [0; 32], DropOutcome::Refused),
+        (legacy, Id([41; 32]), token, DropOutcome::LegacyRemoval),
+        (durable, Id([41; 32]), token, DropOutcome::Acknowledged),
+        (durable, Id([41; 32]), token, DropOutcome::Acknowledged),
+    ] {
+        let op = m.n("a").scatter_drop_targets(&[(holder, loc, credential)]).unwrap();
+        assert_eq!(m.wait("a", op, 120), ScatterOutcome::Dropped(vec![DropResult { index: 0, outcome: expected }]));
+    }
+    m.cut.insert("h0".into());
+    let op = m.n("a").scatter_drop_targets(&[(durable, Id([41; 32]), token)]).unwrap();
+    assert_eq!(m.wait("a", op, 120), ScatterOutcome::Dropped(vec![DropResult { index: 0, outcome: DropOutcome::Unreachable }]));
+    drop(m);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn a_forwarder_cannot_upgrade_a_legacy_holder_to_durable_deletion() {
+    let mut m = super::forward::mesh(2, 1);
+    super::forward::join(&mut m, "a", "192.0.2.10:7843", &[0, 1]);
+    let endpoint = Id::from_hex(&m.eps["h0"]).unwrap();
+    let mut key = m.n("a").scatter.keys[&endpoint];
+    key.drop_journal = Some(key.sig);
+    m.n("a").note_vouches("f0", vec![hoi_sync::Vouch { endpoint, up: 100, days: 30, key: Some(key), routes: Vec::new() }]);
+    assert!(m.n("a").scatter.keys[&endpoint].drop_journal.is_none(), "a valid holder-key signature does not assert the capability");
+    assert!(m.n("h0").holder_hello().unwrap().drop_journal.is_none(), "volatile holders never advertise durability");
+}
+
+#[test]
+fn delayed_drop_replies_cannot_acknowledge_a_new_attempt() {
+    use crate::scatter::{DropOutcome, DropResult, ScatterOutcome};
+    use hoi_store::pieces::PieceMeta;
+    let mut m = super::forward::mesh(2, 1);
+    super::forward::join(&mut m, "a", "192.0.2.10:7843", &[0, 1]);
+    let holder = Id::from_hex(&m.eps["h0"]).unwrap();
+    let today = (m.t.load(Ordering::SeqCst) / DAY) as u32;
+    let token = [52; 32];
+    let meta = PieceMeta { expiry_day: today + 1, drop_hash: sc::drop_hash(&token), drop_key_id: [0; 16] };
+    m.n("h0").scatter.pieces.as_mut().unwrap().put(&[51; 32], meta, &[53; 300], today).unwrap();
+    let target = [(holder, Id([51; 32]), token)];
+    let first = m.n("a").scatter_drop_targets(&target).unwrap();
+    let expected = |outcome| ScatterOutcome::Dropped(vec![DropResult { index: 0, outcome }]);
+    assert_eq!(m.wait("a", first, 120), expected(DropOutcome::LegacyRemoval));
+    let old = m
+        .log
+        .iter()
+        .rev()
+        .find_map(|(_, to, msg)| match msg {
+            Msg::Piece { op: PieceOp::Dropped, env, .. } if to == "a" => Some(env.clone()),
+            _ => None,
+        })
+        .unwrap();
+    let before: std::collections::BTreeSet<_> = m.n("a").scatter.pending.keys().cloned().collect();
+    let second = m.n("a").scatter_drop_targets(&target).unwrap();
+    let (peer, rid) = m.n("a").scatter.pending.keys().find(|key| !before.contains(*key)).cloned().unwrap();
+    let replay = Msg::Piece { op: PieceOp::Dropped, rid, to: None, env: old }.encode();
+    m.n("a").net_receive(&peer, &replay);
+    m.n("a").net_receive(&peer, &replay);
+    assert_eq!(m.n("a").take_outcome(second), expected(DropOutcome::Unreachable), "the attempt's one-time reply key rejects a delayed envelope");
+    m.pump();
+    let third = m.n("a").scatter_drop_targets(&target).unwrap();
+    assert_eq!(m.wait("a", third, 120), expected(DropOutcome::LegacyRemoval), "a fresh authenticated retry still works");
+}
+
+#[test]
+fn failed_placement_cancellation_keeps_targets_and_discards_unsent_puts() {
+    let mut m = super::forward::mesh(3, 14);
+    super::forward::join(&mut m, "a", "192.0.2.10:7843", &[0, 1, 2]);
+    let op = m.n("a").scatter_store(b"interrupted placement", 10, T0 + 30 * DAY).unwrap();
+    assert!(m.n("a").outbox.iter().any(|(_, bytes)| matches!(Msg::decode(bytes), Ok(Msg::Piece { .. }))));
+    for peer in ["f0", "f1", "f2"] {
+        m.n("a").net_disconnect(peer);
+    }
+    assert!(m.n("a").op_done(op));
+    let manifest = m.n("a").cancel_scatter_operation(op).expect("failed placement retains possibly stored locators");
+    assert!(!manifest.holders.is_empty());
+    assert!(m.n("a").outbox.iter().all(|(_, bytes)| !matches!(Msg::decode(bytes), Ok(Msg::Piece { .. }))), "failed/cancelled work sends no queued puts");
 }
 
 #[test]

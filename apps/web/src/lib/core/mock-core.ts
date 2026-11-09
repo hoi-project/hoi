@@ -37,6 +37,7 @@ import type {
   LinkWarmth,
   CoreEvent,
   DeviceInfo,
+  DeletionProgress,
   FeedQuery,
   FlagView,
   Hex,
@@ -254,6 +255,7 @@ export function createMockCore(): HoiCore {
   const wiki = new Map<Hex, Map<string, { text: string; at: Unix; editors: Hex[]; edits: number }>>();
   const communities = new Map<Hex, MCommunity>();
   const posts = new Map<Hex, MPost>();
+  const deletions = new Map<Hex, DeletionProgress>();
   const comments = new Map<Hex, MComment>();
   const ledgerEntries = new Map<Hex, MEntry>();
   const proposals = new Map<string, MProposal>();
@@ -2220,8 +2222,15 @@ export function createMockCore(): HoiCore {
       if (rec.author !== me) throw err('not-allowed', 'Only the author can delete this.');
       rec.removed = { by: null, reason: 'deleted by the author', at: now() };
       rec.text = '';
+      deletions.set(id, {
+        id, target: id, localRemoved: true, recordSubmitted: false,
+        queued: 0, submitted: 0, acknowledged: 0, legacyRemoval: 0, unknown: 0,
+        refused: 0, unreachable: 0, expired: 0, outstanding: 0, coverageGaps: 0,
+        expiresAt: rec.expiresAt, requiresLocalState: true, inventoryComplete: false,
+      });
       changed(r.community.id);
     },
+    async deletionProgress() { return [...deletions.values()].map(p => ({ ...p })); },
     async vote(target, value) {
       meKey();
       const r = getRecord(target);
@@ -2598,6 +2607,7 @@ export function createMockCore(): HoiCore {
       people.clear();
       communities.clear();
       posts.clear();
+      deletions.clear();
       comments.clear();
       ledgerEntries.clear();
       proposals.clear();

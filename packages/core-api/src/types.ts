@@ -12,6 +12,27 @@ export type Hex = string;
 export type Did = string; // did:key:z6Mk…
 export type Unix = number; // seconds, UTC
 
+/** Observations of known deletion targets, never proof of complete inventory or erasure. */
+export interface DeletionProgress {
+  id: Hex;
+  target: Hex;
+  localRemoved: boolean;
+  recordSubmitted: boolean;
+  queued: number;
+  submitted: number;
+  acknowledged: number;
+  legacyRemoval: number;
+  unknown: number;
+  refused: number;
+  unreachable: number;
+  expired: number;
+  outstanding: number;
+  coverageGaps: number;
+  expiresAt: Unix;
+  requiresLocalState: boolean;
+  inventoryComplete: boolean;
+}
+
 export type CommunityColor = 'mint' | 'sky' | 'lilac' | 'peach' | 'sun' | 'coral';
 export const COMMUNITY_COLORS: CommunityColor[] = ['mint', 'sky', 'lilac', 'peach', 'sun', 'coral'];
 export type AvatarColor = 'mint' | 'sky' | 'lilac' | 'peach' | 'sun';
@@ -1269,7 +1290,8 @@ export type CoreEvent =
 
 export type ErrorCode =
   | 'no-identity' | 'not-found' | 'not-allowed' | 'rate-limited' | 'invalid'
-  | 'bad-invite' | 'bad-passphrase' | 'expired' | 'banned' | 'too-big' | 'offline' | 'storage-incompatible' | 'internal';
+  | 'bad-invite' | 'bad-passphrase' | 'expired' | 'banned' | 'too-big' | 'offline' | 'storage-incompatible'
+  | 'deletion-full' | 'deletion-pending' | 'internal';
 
 export class HoiError extends Error {
   constructor(public code: ErrorCode, message: string) {
@@ -1516,6 +1538,7 @@ export interface HoiCore {
   reply(parent: Hex, text: string): Promise<CommentView>;
   edit(id: Hex, text: string, title?: string): Promise<void>;
   deleteOwn(id: Hex): Promise<void>;
+  deletionProgress(): Promise<DeletionProgress[]>;
   vote(target: Hex, value: -1 | 0 | 1): Promise<number>;
   /** Signed flag for the mods (a `report` record). reason: 'spam' | 'rule:<n>' | 'illegal' */
   flag(target: Hex, reason: string): Promise<void>;

@@ -8,6 +8,7 @@ pub mod bind;
 pub mod blobs;
 mod blocklists;
 pub mod carry;
+mod deletion;
 mod directory;
 pub mod dispatch;
 mod drop_share;
