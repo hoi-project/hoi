@@ -38,13 +38,14 @@ export function describeFlow({ visibility, journey = null, topology, discovery =
         evidence: stored ? copies.map(({ object, upload }) => `${object.alias}: PUT HTTP ${upload.status}; receipt matches ${object.size} bytes; stored bytes equal the sender’s complete bytes.`) : ['No matching upload receipt and stored copy have been captured for this step.'], transport: 'Local HTTP',
         ...(stored ? { bytes: copies.reduce((size, { object }) => size + object.size, 0), sameBytes: true } : {}) });
     }
-    const downloadService = journey?.downloads?.[0]?.service || 'relay-a';
-    const downloaded = reached(journey, 'download') && objects.length > 0 && objects.every(object => journey?.downloads?.some(copy => copy.service === downloadService && copy.objectId === object.id && copy.sha256 === object.id && copy.identical && copy.status === 200 && copy.readProofUsed));
+    const downloads = journey?.downloads || [];
+    const downloadService = downloads[0]?.service || 'relay-a';
+    const downloaded = reached(journey, 'download') && objects.length > 0 && objects.every(object => downloads.some(copy => copy.service === downloadService && copy.objectId === object.id && copy.sha256 === object.id && copy.identical && copy.status === 200 && copy.readProofUsed));
     flow.edges.push({ id: `${downloadService}-${receiver}-download`, from: downloadService, to: receiver, kind: 'delivery', stage: 'download', status: downloaded ? 'observed' : 'pending',
       label: 'Download encrypted copy', input: aliases.map(alias => `${alias} stored copy`), action: `${labels[receiver]} asks the core for a signed read proof, then requests the selected bytes.`,
       output: downloaded ? aliases.map(alias => `${alias} downloaded`) : [], artifactIds: aliases, transport: 'Local HTTP',
-      evidence: downloaded ? journey.downloads.map(copy => `${copy.objectAlias}: GET HTTP ${copy.status}; ${copy.size} bytes; complete bytes and SHA-256 match the sender. Read proof used; its value is not exported.`) : ['No selected ciphertext has been downloaded in this step.'],
-      ...(downloaded ? { bytes: journey.downloads.reduce((sum, copy) => sum + copy.size, 0), sameBytes: true } : {}) });
+      evidence: downloaded ? downloads.map(copy => `${copy.objectAlias}: GET HTTP ${copy.status}; ${copy.size} bytes; complete bytes and SHA-256 match the sender. Read proof used; its value is not exported.`) : ['No selected ciphertext has been downloaded in this step.'],
+      ...(downloaded ? { bytes: downloads.reduce((sum, copy) => sum + copy.size, 0), sameBytes: true } : {}) });
   } else {
     for (const lookup of discovery.slice(0, 2)) {
       const item = { id: lookup.id, actor: lookup.actor, source: 'The production registry client’s nodesFor lookup during setup.', selected: lookup.selected, available: lookup.available, status: 'observed',

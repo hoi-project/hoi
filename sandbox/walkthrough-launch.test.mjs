@@ -1,7 +1,26 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { main, walkthroughCommand } from './walkthrough-launch.mjs';
+import { dockerExecutable, main, walkthroughCommand } from './walkthrough-launch.mjs';
+
+test('walkthrough resolves Docker from fixed installation paths without searching PATH', () => {
+  const checked = [];
+  assert.equal(dockerExecutable({ platform: 'linux', env: { PATH: '/untrusted/bin' }, exists: candidate => {
+    checked.push(candidate); return candidate === '/usr/local/bin/docker';
+  } }), '/usr/local/bin/docker');
+  assert.deepEqual(checked, ['/usr/bin/docker', '/usr/local/bin/docker']);
+  assert.equal(dockerExecutable({ platform: 'darwin', env: {}, exists: () => true }), '/Applications/Docker.app/Contents/Resources/bin/docker');
+  assert.equal(dockerExecutable({ platform: 'win32', env: {}, exists: () => true }), 'C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe');
+  assert.throws(() => dockerExecutable({ platform: 'linux', env: { PATH: '/untrusted/bin' }, exists: () => false }), /Install Docker/);
+});
+
+test('a custom Docker installation requires an explicit existing absolute path', () => {
+  assert.equal(dockerExecutable({ platform: 'linux', env: { HOI_DOCKER_BIN: '/opt/docker/bin/docker' }, exists: () => true }), '/opt/docker/bin/docker');
+  for (const path of ['docker', './docker', 'bin/docker']) {
+    assert.throws(() => dockerExecutable({ platform: 'linux', env: { HOI_DOCKER_BIN: path }, exists: () => true }), /absolute path/);
+  }
+  assert.throws(() => dockerExecutable({ platform: 'linux', env: { HOI_DOCKER_BIN: '/missing/docker' }, exists: () => false }), /absolute path/);
+});
 
 test('walkthrough startup cannot build, pull, or launch an AI worker', async () => {
   const calls = [];
@@ -20,7 +39,8 @@ test('only the fixed observation gateway joins ingress; protocol processes stay 
   const gateway = compose.match(/^  gateway:\r?\n([\s\S]*?)(?=^networks:)/m)?.[1];
   assert.ok(protocol && gateway, 'the protocol and ingress services remain separate');
   assert.match(protocol, /^    networks: \[walkthrough\]$/m);
-  assert.doesNotMatch(protocol, /^    ports:|ingress|network_mode:/m);
+  assert.doesNotMatch(protocol, /^    ports:/m);
+  assert.doesNotMatch(protocol, /ingress|network_mode:/);
   assert.match(gateway, /^    networks: \[ingress, walkthrough\]$/m);
   assert.match(gateway, /command: \["node", "sandbox\/walkthrough-gateway\.mjs"\]/);
   assert.match(compose, /^networks:\r?\n  ingress:\r?\n  walkthrough:\r?\n    internal: true/m);

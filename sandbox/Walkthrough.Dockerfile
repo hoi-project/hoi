@@ -12,7 +12,7 @@ RUN wasm-bindgen --target web --out-dir /wasm --out-name hoi_wasm target/wasm32-
 FROM node:25-bookworm-slim@sha256:81db02c4b671288a03915da9534dbd54f96d0e7c24d80ccc54f5b36b2e684370
 WORKDIR /srv
 # Node 25 no longer bundles Corepack; install the workspace's pinned package manager.
-RUN npm install --global pnpm@10.28.0
+RUN npm install --global --ignore-scripts pnpm@10.28.0
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json publication.json release.json ./
 COPY apps ./apps
 COPY packages ./packages

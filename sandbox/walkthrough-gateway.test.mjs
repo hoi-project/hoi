@@ -14,8 +14,8 @@ async function close(server) {
 
 async function fixture(t, handler) {
   const upstream = createServer(handler);
-  const destination = await listen(upstream);
-  const gateway = createWalkthroughGateway({ upstream: destination, port: 7080 });
+  await listen(upstream);
+  const gateway = createWalkthroughGateway({ upstreamHost: '127.0.0.1', upstreamPort: upstream.address().port, port: 7080 });
   const address = await listen(gateway);
   t.after(async () => { await close(gateway); await close(upstream); });
   const options = (path, extra = {}) => ({ hostname: '127.0.0.1', port: gateway.address().port, path,
@@ -57,6 +57,44 @@ test('gateway rejects foreign hosts, origins and absolute request targets before
   assert.deepEqual(seen, ['/api/state', '/api/state', '/api/state']);
 });
 
+test('gateway upstream configuration permits only the internal service and loopback', () => {
+  for (const upstreamHost of ['example.com', 'walkthrough.example.com', '127.0.0.1.example.com']) {
+    assert.throws(() => createWalkthroughGateway({ upstreamHost }), /local walkthrough upstream/);
+  }
+  for (const upstreamPort of [0, -1, 65536, '7080']) {
+    assert.throws(() => createWalkthroughGateway({ upstreamPort }), /local walkthrough upstream/);
+  }
+});
+
+test('gateway rejects unknown routes and strips unrelated query data from fixed routes', async t => {
+  const seen = [];
+  const { call } = await fixture(t, (request, response) => { seen.push(request.url); response.end('local'); });
+  for (const path of ['/unknown', '/%2f%2fexample.com/', '/api/state/../publish', '/__proto__']) {
+    assert.equal((await call(path)).status, 403, path);
+  }
+  assert.equal((await call('/api/state?target=https://example.com')).status, 200);
+  assert.equal((await call('/api/screenshot/alice?visibility=private&capture=123')).status, 200);
+  assert.deepEqual(seen, ['/api/state', '/api/screenshot/alice?visibility=private']);
+});
+
+test('gateway never forwards upstream redirects or arbitrary response header names', async t => {
+  const { call } = await fixture(t, (_request, response) => {
+    response.writeHead(302, {
+      Location: 'https://example.com/', Refresh: '0; url=https://example.com/',
+      constructor: 'polluted', prototype: 'polluted', 'x-arbitrary': 'untrusted',
+      'Content-Type': 'application/json',
+    });
+    response.end('{"local":true}');
+  });
+  const result = await call('/api/state');
+  for (const name of ['location', 'refresh', 'constructor', 'prototype', 'x-arbitrary']) {
+    assert.equal(Object.hasOwn(result.headers, name), false, name);
+  }
+  assert.equal(result.headers['content-type'], 'application/json');
+  assert.equal(result.headers['cache-control'], 'no-store');
+  assert.equal(result.headers['x-content-type-options'], 'nosniff');
+});
+
 test('encoded URLs and forwarding headers cannot change the fixed destination', async t => {
   const seen = [];
   const { call } = await fixture(t, async (request, response) => {
@@ -73,9 +111,9 @@ test('encoded URLs and forwarding headers cannot change the fixed destination', 
   }, body: '{"title":"Local sample"}' });
   assert.equal(result.status, 201);
   assert.deepEqual(JSON.parse(result.body), { stored: true });
-  assert.deepEqual(seen, [{ path, host: 'localhost:7080', method: 'POST', body: '{"title":"Local sample"}', authorization: undefined, upgrade: undefined }]);
-  assert.equal((await call('/%2f%2fexample.com/')).status, 201);
-  assert.equal(seen[1].path, '/%2f%2fexample.com/');
+  assert.deepEqual(seen, [{ path: '/api/publish', host: 'localhost:7080', method: 'POST', body: '{"title":"Local sample"}', authorization: undefined, upgrade: undefined }]);
+  assert.equal((await call('/%2f%2fexample.com/')).status, 403);
+  assert.equal(seen.length, 1, 'encoded routes never reach the upstream');
 });
 
 test('gateway streams binary request and response data before the upload finishes', async t => {
@@ -89,7 +127,8 @@ test('gateway streams binary request and response data before the upload finishe
   await new Promise((resolve, reject) => {
     const request = httpRequest(options('/api/publish', { method: 'POST', headers: { Origin: 'http://localhost:7080', 'Content-Type': 'application/octet-stream' } }), response => {
       assert.equal(response.statusCode, 207);
-      assert.equal(response.headers['x-local-evidence'], 'streamed');
+      assert.equal(response.headers['content-type'], 'application/octet-stream');
+      assert.equal(response.headers['x-local-evidence'], undefined, 'only required response headers are forwarded');
       const chunks = [];
       let completedUpload = false;
       response.on('data', chunk => {
@@ -121,13 +160,13 @@ test('an unavailable upstream returns a bounded local error without its address'
 
 test('an interrupted upstream response terminates the downstream and keeps the gateway alive', async t => {
   const { options, call } = await fixture(t, (request, response) => {
-    if (request.url !== '/interrupted') { response.end('still ready'); return; }
+    if (request.url !== '/api/screenshot/alice') { response.end('still ready'); return; }
     response.writeHead(200, { 'Content-Type': 'image/png', 'Content-Length': '1000' });
     response.write(Buffer.from([137, 80, 78, 71]));
     setImmediate(() => response.destroy());
   });
   await new Promise((resolve, reject) => {
-    const request = httpRequest(options('/interrupted'), response => {
+    const request = httpRequest(options('/api/screenshot/alice'), response => {
       response.resume();
       response.on('aborted', resolve);
       response.on('error', error => error.code === 'ECONNRESET' ? resolve() : reject(error));
