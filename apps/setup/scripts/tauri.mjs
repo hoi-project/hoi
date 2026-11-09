@@ -3,9 +3,12 @@
 // A preview version is built for Windows without the .msi, which takes numeric versions only.
 import { readFileSync } from 'node:fs';
 import { run } from '@tauri-apps/cli';
-import { windowsBundles } from '../../../scripts/tauri-bundles.mjs';
+import { linuxBundles, windowsBundles } from '../../../scripts/tauri-bundles.mjs';
+import { clearEmptyAppleSigningEnv } from '../../../scripts/tauri-signing.mjs';
 
 const { version } = JSON.parse(readFileSync(new URL('../src-tauri/tauri.conf.json', import.meta.url), 'utf8'));
-const { args, note } = windowsBundles(process.argv.slice(2), version);
-if (note) console.error(note);
-await run(args, 'pnpm tauri');
+const windows = windowsBundles(process.argv.slice(2), version);
+const linux = linuxBundles(windows.args, version);
+for (const note of [windows.note, linux.note]) if (note) console.error(note);
+clearEmptyAppleSigningEnv();
+await run(linux.args, 'pnpm tauri');

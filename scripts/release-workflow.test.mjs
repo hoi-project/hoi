@@ -89,7 +89,7 @@ test('draft creation and recovery avoid target permissions and preserve source p
   const mock = `gh() {
   printf '%s\\n' "$*" >> calls
   case "$1 $2" in
-    'release view') [ "$EXISTING" = true ] || return 1; echo https://api.github.com/repos/example/hoi/releases/123 ;;
+    'release view') return 1 ;; # Pending drafts cannot be found by tag.
     'release create') echo https://github.com/example/hoi/releases/tag/untagged-example ;;
     'api --method')
       case "$*" in *target_commitish=*) echo 'gh: Resource not accessible by integration (HTTP 403)' >&2; return 1 ;; esac
@@ -99,7 +99,11 @@ test('draft creation and recovery avoid target permissions and preserve source p
     'api repos/example/hoi/commits/'*) printf '%s\\n' "$REMOTE_SHA" ;;
     'api https://api.github.com/repos/example/hoi/releases/123')
       printf '123\\t%s\\t%s\\t%s\\t%s\\n' "$DRAFT" "$EXISTING_PRERELEASE" "$ASSETS" "$BODY64" ;;
-    'api repos/example/hoi/releases?per_page=100') echo null ;;
+    'api --paginate')
+      [ "$LOOKUP_FAIL" != true ] || return 1
+      if [ "$EXISTING" = true ]; then echo https://api.github.com/repos/example/hoi/releases/123; fi
+      if [ "$DUPLICATE" = true ]; then echo https://api.github.com/repos/example/hoi/releases/456; fi
+      ;;
     *) return 99 ;;
   esac
 }
@@ -123,7 +127,8 @@ test('draft creation and recovery avoid target permissions and preserve source p
   assert.match(created.calls, /api --method POST .*tag_name=v1\.0\.0-preview\.2/);
   assert.match(created.calls, new RegExp(`<!-- hoi-release-source: ${sha} -->`));
   assert.doesNotMatch(created.calls, /target_commitish/);
-  assert.doesNotMatch(created.calls, /releases\?per_page/);
+  assert.match(created.calls, /releases\?per_page/);
+  assert.doesNotMatch(created.calls, /release view/);
   const boundBody = `Release notes.\n\n<!-- hoi-release-source: ${sha} -->`;
   for (const body of ['', 'Release notes.\nKeep this text.']) {
     const recovered = run({ EXISTING: 'true', BODY64: Buffer.from(body).toString('base64') });
@@ -145,6 +150,7 @@ test('draft creation and recovery avoid target permissions and preserve source p
   assert.doesNotMatch(reclassified.calls, /target_commitish/);
   for (const patch of [
     { REMOTE_SHA: 'b'.repeat(40) }, { API_FAIL: 'true' }, { RESPONSE_ID: 'null' },
+    { LOOKUP_FAIL: 'true' }, { EXISTING: 'true', DUPLICATE: 'true' },
     { EXISTING: 'true', DRAFT: 'false' },
     { EXISTING: 'true', ASSETS: '1' },
     { EXISTING: 'true', BODY64: Buffer.from(`<!-- hoi-release-source: ${'b'.repeat(40)} -->`).toString('base64') },

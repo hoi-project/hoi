@@ -45,6 +45,40 @@ export function windowsBundles(args, version, platform = process.platform) {
   };
 }
 
+/**
+ * Tauri 2.12.4 passes the app version unchanged to RPM and has no RPM version override.
+ * RPM rejects hyphens, including SemVer prereleases. Keep the app's exact version for
+ * update verification and build the Debian/AppImage downloads for those releases.
+ */
+export function linuxBundles(args, version, platform = process.platform) {
+  const separator = args.indexOf('--');
+  const cli = separator < 0 ? args : args.slice(0, separator);
+  if (!['build', 'bundle'].includes(cli[0]) || !version.includes('-') || cli.includes('--no-bundle')) return { args, note: null };
+  const target = targetIn(cli);
+  if (!(target ? target.includes('linux') : platform === 'linux')) return { args, note: null };
+  const selected = [];
+  let explicit = false;
+  for (let i = 1; i < cli.length; i++) {
+    if (cli[i] === '--bundles' || cli[i] === '-b') {
+      explicit = true;
+      // Tauri accepts both space-separated and comma-separated bundle lists.
+      while (cli[i + 1] && !cli[i + 1].startsWith('-')) selected.push(...cli[++i].split(','));
+    } else if (cli[i].startsWith('--bundles=') || cli[i].startsWith('-b')) {
+      explicit = true;
+      selected.push(...cli[i].replace(/^(?:--bundles=|-b=?)/, '').split(','));
+      while (cli[i + 1] && !cli[i + 1].startsWith('-')) selected.push(...cli[++i].split(','));
+    }
+  }
+  if (selected.includes('rpm')) {
+    throw new Error(`RPM cannot package version ${version}: Tauri passes the SemVer hyphen unchanged. Use --bundles deb,appimage or a stable version.`);
+  }
+  if (explicit) return { args, note: null };
+  return {
+    args: [...cli, '--bundles', 'deb,appimage', ...(separator < 0 ? [] : args.slice(separator))],
+    note: `tauri build: RPM cannot package version ${version}; building Debian and AppImage bundles with the full release version.`,
+  };
+}
+
 // What `tauri build` leaves for people to download, found the same way by scripts/release-local.mjs
 // (a flat release folder) and scripts/build-all.mjs (builds/, a folder per tool).
 

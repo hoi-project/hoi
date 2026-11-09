@@ -335,7 +335,7 @@ jobs:
           # Immutable releases also protect against publication racing this update.
           test "$(gh api "repos/$GH_REPO/immutable-releases" --jq .enabled)" = true ||
             { echo "Enable immutable releases before advancing release tags." >&2; exit 1; }
-          releases="$(gh api --paginate "repos/$GH_REPO/releases?per_page=100" --jq ".[] | select(.tag_name == \"$TAG\") | .draft")"
+          releases="$(gh api --paginate "repos/$GH_REPO/releases?per_page=100" --jq ".[] | select(.tag_name == \"$TAG\" or (.draft and (.tag_name | startswith(\"untagged-\")) and .name == \"hoi $TAG\")) | .draft")"
           case "$releases" in
             '') ;;
             true) echo "Discard the existing draft for $TAG before retrying with a different commit." >&2; exit 1 ;;
@@ -362,7 +362,11 @@ jobs:
           fi
           test "$(gh api "repos/$GH_REPO/commits/$TAG" --jq .sha)" = "$SOURCE_SHA" ||
             { echo "Tag $TAG does not point to the validated commit." >&2; exit 1; }
-          if release_url="$(gh release view "$TAG" --json apiUrl --jq .apiUrl)"; then
+          # Pending drafts may expose an untagged-* placeholder instead of the selected tag.
+          # List first: lookup errors must not be mistaken for an absent release.
+          release_url="$(gh api --paginate "repos/$GH_REPO/releases?per_page=100" --jq ".[] | select(.tag_name == \"$TAG\" or (.draft and (.tag_name | startswith(\"untagged-\")) and .name == \"hoi $TAG\")) | .url")"
+          [[ "$release_url" != *$'\n'* ]] || { echo "Multiple releases match $TAG. Inspect them before retrying." >&2; exit 1; }
+          if [ -n "$release_url" ]; then
             test -z "$PREVIOUS_SHA" || { echo "A release for $TAG appeared during the tag update. Inspect it before retrying." >&2; exit 1; }
             metadata="$(gh api "$release_url" --jq '[.id, .draft, .prerelease, (.assets | length), ((.body // "") | @base64)] | @tsv')"
             read -r id draft prerelease assets body64 <<< "$metadata"
@@ -557,6 +561,8 @@ jobs:
     needs: [plan, draft]
     env:
       TAG: ${{ needs.plan.outputs.tag }}
+      RELEASE_ID: ${{ needs.draft.outputs.id }}
+      SOURCE_SHA: ${{ needs.plan.outputs.sha }}
     if: always() && !cancelled() && needs.draft.result == 'success'
     permissions:
       contents: write
@@ -580,6 +586,17 @@ jobs:
         with:
           ref: ${{ needs.plan.outputs.sha }}
           persist-credentials: false
+      - name: Check out draft asset tooling from the selected workflow revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: release-tools
+          sparse-checkout: scripts/release-assets.mjs
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           toolchain: "1.97.0"
@@ -598,13 +615,15 @@ jobs:
             exe=hoi-node
             case "$target" in *windows*) exe=hoi-node.exe ;; esac
             tar -C "core/target/$target/release" -czf "hoi-node_${v}_${target}.tar.gz" "$exe"
-            gh release upload "$TAG" "hoi-node_${v}_${target}.tar.gz" "hoi-node_${v}_${target}.digests.json" --clobber
+            node release-tools/scripts/release-assets.mjs upload "hoi-node_${v}_${target}.tar.gz" "hoi-node_${v}_${target}.digests.json"
           done
 
   manifest:
-    needs: [plan, desktop, setup, node]
+    needs: [plan, draft, desktop, setup, node]
     env:
       TAG: ${{ needs.plan.outputs.tag }}
+      RELEASE_ID: ${{ needs.draft.outputs.id }}
+      SOURCE_SHA: ${{ needs.plan.outputs.sha }}
     environment: release
     permissions:
       contents: write
@@ -622,8 +641,16 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
+      - name: Check out draft asset tooling from the selected workflow revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: release-tools
+          sparse-checkout: scripts/release-assets.mjs
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
       - name: Download release assets
-        run: mkdir -p out && gh release download "$TAG" --dir out --skip-existing
+        run: node release-tools/scripts/release-assets.mjs download out
         env:
           GH_TOKEN: ${{ github.token }}
       # The installers of this tag join the files, so a folder of the release's files installs as it
@@ -655,6 +682,6 @@ jobs:
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: "out/*"
-      - run: gh release upload "$TAG" manifest.json manifest.json.minisig out/install.sh out/install.ps1 --clobber
+      - run: node release-tools/scripts/release-assets.mjs upload manifest.json manifest.json.minisig out/install.sh out/install.ps1
         env:
           GH_TOKEN: ${{ github.token }}

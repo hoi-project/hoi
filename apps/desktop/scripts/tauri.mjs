@@ -3,8 +3,9 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { run } from '@tauri-apps/cli';
 import { relayUrls } from '../../../scripts/relay-config.mjs';
-import { windowsBundles } from '../../../scripts/tauri-bundles.mjs';
+import { linuxBundles, windowsBundles } from '../../../scripts/tauri-bundles.mjs';
 import { loadPublication } from '../../../scripts/publication.mjs';
+import { clearEmptyAppleSigningEnv } from '../../../scripts/tauri-signing.mjs';
 
 export function registryOverride(base, configured) {
   if (!configured) return null;
@@ -33,7 +34,9 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   }
   if (override && ['dev', 'build'].includes(args[0])) args.push('--config', JSON.stringify(override));
   // A preview version is built for Windows without the .msi, which takes numeric versions only.
-  const bundles = windowsBundles(args, base.version);
-  if (bundles.note) console.error(bundles.note);
-  await run(bundles.args, 'pnpm tauri');
+  const windows = windowsBundles(args, base.version);
+  const linux = linuxBundles(windows.args, base.version);
+  for (const note of [windows.note, linux.note]) if (note) console.error(note);
+  clearEmptyAppleSigningEnv();
+  await run(linux.args, 'pnpm tauri');
 }
