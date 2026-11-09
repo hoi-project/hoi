@@ -187,6 +187,10 @@ impl Node {
             "reply" => ok(self.reply(&a.str(0, "parent")?, &a.str(1, "text")?)?),
             "edit" => ok(self.edit(&a.str(0, "id")?, &a.str(1, "text")?, a.opt_str(2).as_deref())?),
             "deleteOwn" => ok(self.delete_own(&a.str(0, "id")?)?),
+            "deletionProgress" => {
+                self.commit()?;
+                ok(self.deletion_progress())
+            }
             "vote" => ok(self.vote(&a.str(0, "target")?, a.get(1, "value")?)?),
             "flag" => ok(self.flag(&a.str(0, "target")?, &a.str(1, "reason")?)?),
             "save" => ok(self.save(&a.str(0, "id")?, a.get(1, "on")?)?),

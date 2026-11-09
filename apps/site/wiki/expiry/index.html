@@ -171,11 +171,14 @@ pub struct Skeleton {
     <h2>Deletes by the author</h2>
     <p>An author can end their own post or comment early with a record of kind <code>delete</code>: an empty body whose <code>parent</code> is the target.</p>
     <ul>
-      <li><b>Only the author.</b> Nodes take a delete only for a post or comment they hold, in the same community, by the same root (<code>only the author can edit or delete</code>). Any of the author's devices can sign it.</li>
+      <li><b>Only the author.</b> Nodes apply a delete only to a post or comment in the same community, by the same root (<code>only the author can edit or delete</code>). A deletion arriving before its target waits in bounded pending storage; it cannot suppress the target until ownership is checked. Any of the author's devices can sign it.</li>
       <li><b>At once.</b> There is nothing to contest: as soon as a node takes the delete it skeletonizes the target with the reason <code>deleted by the author</code> and no remover.</li>
       <li><b>Small and cheap.</b> 512 bytes at most, stamped at <code>pow_bits − 8</code>, sharing a rate budget with edits: 30 an hour, 100 a day.</li>
       <li><b>As long as the target.</b> The delete record expires when the target would have, so it travels to devices that still hold the target for as long as that matters.</li>
     </ul>
+    <h3 id="deletion-progress">Progress survives restart</h3>
+    <p>The <a href="{{REPO_URL}}/blob/main/core/crates/hoi-core/src/deletion.rs">core</a> retains a deletion job before sending requests: the signed delete, known piece locations and only the capabilities needed to remove them. Failed saves remain retryable. The <code>deletionProgress</code> API distinguishes local removal, record submission, queued and submitted work, durable holder acknowledgements, legacy removal observations, unknown/refused/unreachable targets and expiry. Missing capabilities or unknown generations remain gaps; a timeout is never proof that bytes are gone.</p>
+    <p>A holder that acknowledges durable deletion has removed the payload and saved a marker that refuses replay through the original inclusive UTC expiry day. A holder that has not heard the drop may still serve its old piece. The requesting device must keep the local state needed for retries and dissemination; all known targets acknowledging does not prove that every target was discovered. This is bounded eventual deletion, and it cannot erase recipients' copies, exports or an operator's private backups. See <a href="/wiki/scatter/#wired-deletion">scattered delivery</a>.</p>
     <h3 id="dropped">Records dropped without a tombstone</h3>
     <p>Some records are replaced, not removed, and go without a trace (<code>drop_record</code>): an older vouch or review by the same person for the same target (answers to a proposal aside, which are all kept), an older trust statement, tally or blocklist by the same person in the same community, and a device's older roster. Their ids are marked deleted until they would have expired, so they aren't fetched again. A root that burns itself takes everything it signed with it, on every device.</p>
   </section>

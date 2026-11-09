@@ -38,14 +38,19 @@ pub(crate) struct Runtime {
     failed_at: Option<u64>,
 }
 impl Node {
-    pub(crate) fn scattering_home(&self, c: Id) -> Option<String> {
-        if (!self.state.settings.less_data && self.can_scatter_local(c))
-            || self.is_private_community(&c)
-            || self.scatter.home_scatter.failed_at.is_some_and(|at| self.now() < at + 600)
-        {
-            return None;
-        }
-        self.peers.iter().find(|(_, p)| p.said_hello && p.home && p.features.contains("scatter-store")).map(|(p, _)| p.clone())
+    pub(crate) fn scattering_home(&self, _c: Id) -> Option<String> {
+        // RFC-0001 requires deletion authority to survive an origin restart. Legacy home
+        // placement has no durable request identity or result recovery: a lost Stored reply
+        // loses every locator and token. Until that protocol exists, originate locally or
+        // use whole-record delivery. Keep the legacy receiver for existing clients.
+        None
+    }
+    pub(crate) fn deletion_home_placement_pending(&self, target: Id) -> bool {
+        self.scatter.home_scatter.asked.values().any(|(_, waiting)| {
+            let Waiting::Store { op, .. } = waiting else { return false };
+            let Some(crate::keep::Job::Outgoing { batch }) = self.scatter.jobs.get(op) else { return false };
+            self.scatter.repair.outgoing.get(batch).and_then(|out| out.carries.get(op)).is_some_and(|(records, _)| records.contains(&target))
+        })
     }
     fn home_packet(&mut self, peer: &str, rid: u32, reply: bool, packet: Packet) {
         if let Ok(payload) = serde_json::to_vec(&packet) {
@@ -53,17 +58,25 @@ impl Node {
         }
     }
     pub(crate) fn store_at_home(&mut self, content: &[u8], level: u8, expires: u64) -> R<u64> {
+        let c = self.scatter.placing.ok_or_else(|| ApiError::invalid("Missing community."))?;
+        let home = self.scattering_home(c).ok_or_else(|| ApiError::invalid("Home unavailable."))?;
+        self.start_home_store(&home, c, content, level, expires)
+    }
+    fn start_home_store(&mut self, home: &str, c: Id, content: &[u8], level: u8, expires: u64) -> R<u64> {
         self.check_room(expires)?;
         if content.len() > hoi_sync::MAX_REBUILT {
             return Err(ApiError::invalid("This object is too large."));
         }
-        let c = self.scatter.placing.ok_or_else(|| ApiError::invalid("Missing community."))?;
-        let home = self.scattering_home(c).ok_or_else(|| ApiError::invalid("Home unavailable."))?;
         let op = self.scatter_wait_op();
         let rid = self.next_rid();
-        self.scatter.home_scatter.asked.insert((home.clone(), rid), (self.now(), Waiting::Store { op, content: content.to_vec(), level, expires }));
-        self.home_packet(&home, rid, false, Packet::Store { community: c, content: b64(content), level, expires });
+        self.scatter.home_scatter.asked.insert((home.into(), rid), (self.now(), Waiting::Store { op, content: content.to_vec(), level, expires }));
+        self.home_packet(home, rid, false, Packet::Store { community: c, content: b64(content), level, expires });
         Ok(op)
+    }
+    /// Exercise compatibility with a request already submitted by a legacy client.
+    #[cfg(test)]
+    pub(crate) fn legacy_home_store(&mut self, home: &str, c: Id, content: &[u8], level: u8, expires: u64) -> R<u64> {
+        self.start_home_store(home, c, content, level, expires)
     }
     pub(crate) fn on_home_scatter(&mut self, peer: &str, rid: u32, reply: bool, bytes: &[u8]) {
         let Some(p) = self.peers.get(peer).filter(|p| p.said_hello && if reply { p.home } else { p.client }) else { return };

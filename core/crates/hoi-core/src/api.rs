@@ -1832,6 +1832,12 @@ impl Node {
     pub fn delete_own(&mut self, id: &str) -> R<()> {
         let me = self.need_me()?;
         let pid = parse_id(id)?;
+        if self.deletion_for_target(pid).is_some_and(|job| self.deletions.saved.jobs[&job].author == me.root) {
+            return Ok(());
+        }
+        if self.deletion_home_placement_pending(pid) {
+            return Err(ApiError::new("deletion-pending", "A placement still needs its deletion authority. Retry when the placement finishes."));
+        }
         let p = self.store.get(&pid).ok_or_else(|| ApiError::not_found("post or comment"))?;
         if p.author_root != me.root {
             return Err(ApiError::not_allowed("Only the author can delete."));
@@ -1847,6 +1853,7 @@ impl Node {
             body: Body::Delete,
             nonce: 0,
         };
+        self.deletion_admission(&r)?;
         self.publish(r)?;
         Ok(())
     }
@@ -2367,6 +2374,7 @@ impl Node {
         let mime = self
             .store
             .media_users(&h)
+            .filter(|s| !self.deletion_restore_quarantined(s.record.community))
             .find_map(|s| match &s.record.body {
                 Body::Post { media, .. } => media.iter().find(|m| m.hash == h).map(|m| m.mime.clone()),
                 _ => None,

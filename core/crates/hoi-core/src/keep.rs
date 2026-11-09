@@ -59,6 +59,8 @@ pub const REGEN_APART: u64 = DAY;
 pub const HOT: u32 = 16;
 /// Objects kept track of at most; the oldest are let go first.
 const MAX_KEPT: usize = 4096;
+/// Failed placements retained per object. Stop further repairs instead of losing their authority.
+const MAX_CLEANUP_GENS: usize = 16;
 /// Operations one tick starts at most.
 const PER_TICK: usize = 4;
 /// How far in the future a pointer's time may be.
@@ -131,6 +133,9 @@ pub(crate) struct Kept {
     /// The newest generation last, and the one before it: the fallback while the newest does
     /// not rebuild here, and what a competing new generation is checked against.
     pub gens: Vec<Gen>,
+    /// Unadvertised placements that may have left pieces behind. Never fetched or repaired;
+    /// retained only so a later deletion can recover every known locator and its authority.
+    pub cleanup_gens: Vec<Gen>,
     pub expires_at: u64,
     /// The first time this device heard of it.
     pub since: u64,
@@ -236,6 +241,7 @@ pub(crate) enum Job {
     ForDevice {
         peer: String,
         rid: u32,
+        object: Id,
     },
 }
 
@@ -248,6 +254,8 @@ pub(crate) struct Outgoing {
     /// Operation → the posts it carries and the media item it is part of.
     pub carries: BTreeMap<u64, (Vec<Id>, Option<Id>)>,
     pub stored: BTreeMap<u64, Manifest>,
+    /// Parts suppressed by an accepted deletion while their puts were in flight.
+    pub cancelled: BTreeSet<u64>,
     pub failed: bool,
     pub records: Vec<Id>,
     pub media: Vec<(Id, usize)>,
@@ -311,12 +319,19 @@ impl Node {
             return refuse("This post is spread thinner than any level allows.");
         }
         let object = Id(m.object);
+        // RFC-0001: a delayed pointer may add cleanup work, never revive an accepted deletion.
+        if self.deletion_object_suppressed(object) {
+            self.queue_late_deletion_generation(community, &m, from)?;
+            return Ok(false);
+        }
         let fresh = Gen { manifest: b64(&m.encode()), made_at: pointer.made_at, confirmed: from.is_none(), from };
         let Some(kept) = self.scatter.saved.kept.get_mut(&object) else {
             if self.scatter.saved.kept.len() >= MAX_KEPT {
-                let oldest = self.scatter.saved.kept.iter().min_by_key(|(_, k)| k.expires_at).map(|(id, _)| *id);
+                let oldest = self.scatter.saved.kept.iter().filter(|(_, k)| k.cleanup_gens.is_empty()).min_by_key(|(_, k)| k.expires_at).map(|(id, _)| *id);
                 if let Some(o) = oldest {
                     self.scatter.saved.kept.remove(&o);
+                } else {
+                    return Err(ApiError::new("scatter-busy", "Stored cleanup work is full. Try again after it expires."));
                 }
             }
             let every = probe_every(0);
@@ -401,12 +416,16 @@ impl Node {
     /// and repairs. A few at a time.
     pub(crate) fn keep_tick(&mut self) {
         self.forget_expired();
-        self.retry_scattered();
         self.tend_drop_keys();
         // removals that ripened since: what they removed is let go now, not at the next view
         self.settle_dirty();
-        self.let_go_of_gone();
+        self.suppress_deleted_scatter();
+        self.retry_scattered();
         self.drops_due();
+        let completed: Vec<_> = self.scatter.jobs.keys().copied().filter(|op| self.op_done(*op)).collect();
+        for op in completed {
+            self.job_done(op);
+        }
         let now = self.now();
         let durable = self.can_relay();
         let mut started = 0;
@@ -419,6 +438,9 @@ impl Node {
                 continue;
             }
             let Some(k) = self.scatter.saved.kept.get(&object) else { continue };
+            if self.carried_deleted(k) || self.deletion_object_suppressed(object) || self.deletion_restore_quarantined(k.community) {
+                continue;
+            }
             let Some(newest) = k.newest() else { continue };
             let Some(target) = k.to_load() else { continue };
             let generation = newest.generation;
@@ -483,11 +505,37 @@ impl Node {
 
     /// An operation finished: what it was for goes on.
     pub(crate) fn job_done(&mut self, op: u64) {
+        if matches!(self.scatter.jobs.get(&op), Some(Job::ForDevice { object, .. }) if self.home_rebuild_blocked(*object)) {
+            self.cancel_unservable_home_rebuilds();
+            return;
+        }
+        let object = match self.scatter.jobs.get(&op) {
+            Some(
+                Job::Apply { object, .. } | Job::Probe { object, .. } | Job::Rebuild { object, .. } | Job::Place { object } | Job::ForDevice { object, .. },
+            ) => Some(*object),
+            _ => None,
+        };
+        if object.is_some_and(|object| self.scatter_object_deleted(object)) {
+            // Capture uncertain placements before consuming the result. If the journal is full,
+            // keep the operation and its metadata for another attempt without publishing it.
+            self.suppress_deleted_scatter();
+            return;
+        }
+        let community = match self.scatter.jobs.get(&op) {
+            Some(Job::Outgoing { batch }) => self.scatter.repair.outgoing.get(batch).map(|out| out.community),
+            _ => object.and_then(|object| self.scatter.saved.kept.get(&object).and_then(|k| k.community)),
+        };
+        if community.is_some() && self.deletion_restore_quarantined(community) {
+            // Restored state may predate a deletion. Keep the result without serving it until
+            // supported catch-up finishes; keep_tick resumes these completed jobs afterwards.
+            return;
+        }
+        let placement = self.scatter_placement(op);
         let Some(job) = self.scatter.jobs.remove(&op) else { return };
         let outcome = self.take_outcome(op);
         let rebuilt = self.scatter.repair.rebuilt.remove(&op);
         match job {
-            Job::Outgoing { batch } => self.outgoing_done(batch, op, outcome),
+            Job::Outgoing { batch } => self.outgoing_done(batch, op, outcome, placement),
             Job::Dropped => {}
             Job::DropCheck { community, manifest } => {
                 // a holder's "no": someone ahead dropped it; anything else, and it goes now
@@ -497,7 +545,7 @@ impl Node {
                 }
             }
             Job::StoreForDevice { peer, rid } => self.stored_for_home_device(&peer, rid, outcome),
-            Job::ForDevice { peer, rid } => self.rebuilt_for(&peer, rid, outcome),
+            Job::ForDevice { peer, rid, object } => self.rebuilt_for(&peer, rid, object, outcome),
             Job::Apply { object, generation } => {
                 self.scatter.repair.busy.remove(&object);
                 self.applied(object, generation, outcome);
@@ -529,6 +577,8 @@ impl Node {
                 self.scatter.repair.busy.remove(&object);
                 if let ScatterOutcome::Stored(manifest) = outcome {
                     self.publish_update(object, manifest);
+                } else if let Some(manifest) = placement {
+                    self.remember_failed_placement(object, manifest);
                 }
             }
         }
@@ -552,6 +602,10 @@ impl Node {
 
     /// The content of a generation rebuilt here, or why not.
     pub(crate) fn applied(&mut self, object: Id, generation: u8, outcome: ScatterOutcome) {
+        if self.scatter_object_deleted(object) {
+            self.suppress_deleted_scatter();
+            return;
+        }
         match outcome {
             ScatterOutcome::Loaded(content) => {
                 let Some(k) = self.scatter.saved.kept.get_mut(&object) else { return };
@@ -568,6 +622,10 @@ impl Node {
                             k.records = records;
                             k.media = media;
                         }
+                    }
+                    if self.scatter_object_deleted(object) {
+                        self.suppress_deleted_scatter();
+                        return;
                     }
                     self.apply_scattered(c, object, content);
                 }
@@ -655,9 +713,15 @@ impl Node {
     /// that keeps its content and may repair it makes the next generation from its own copy,
     /// once it seals to the very bytes the manifest names; it publishes nothing otherwise.
     fn repair_from_copy(&mut self, object: Id, was_unreadable: bool) {
+        if self.scatter_object_deleted(object) {
+            return;
+        }
         let Some(k) = self.scatter.saved.kept.get(&object) else { return };
+        if self.deletion_restore_quarantined(k.community) {
+            return;
+        }
         let Some(newest) = k.newest() else { return };
-        if k.copy_mismatch || !self.may_repair_from_copy(k) {
+        if k.copy_mismatch || k.cleanup_gens.len() >= MAX_CLEANUP_GENS || !self.may_repair_from_copy(k) {
             return;
         }
         let reachable = newest.hashes.len().saturating_sub(k.lost.len());
@@ -748,8 +812,17 @@ impl Node {
     /// Repairs a generation from its rebuilt shards: fresh indexes within the budget, else the
     /// next generation (at most one a day, unless too few pieces are left to rebuild it).
     fn repair(&mut self, object: Id, generation: u8, hot: bool, shards: Shards, sealed: Vec<u8>) {
+        if self.scatter_object_deleted(object) {
+            return;
+        }
         let now = self.now();
         let Some(k) = self.scatter.saved.kept.get(&object) else { return };
+        if self.deletion_restore_quarantined(k.community) {
+            return;
+        }
+        if k.cleanup_gens.len() >= MAX_CLEANUP_GENS {
+            return;
+        }
         let Some(newest) = k.newest() else { return };
         let Some(m) = k.gens.iter().filter_map(Gen::read).find(|m| m.generation == generation) else { return };
         if m.generation != newest.generation {
@@ -810,10 +883,17 @@ impl Node {
 
     /// A repair or a new generation is placed: taken here, and sent to the community.
     fn publish_update(&mut self, object: Id, manifest: Manifest) {
+        let Some(k) = self.scatter.saved.kept.get(&object).cloned() else { return };
+        if self.scatter_object_deleted(object) {
+            let _ = self.queue_deletion_generation(&k, &manifest, true);
+            self.suppress_deleted_scatter();
+            return;
+        }
         let now = self.now();
         let pointer = Pointer { made_at: now, manifest };
         let community = self.scatter.saved.kept.get(&object).and_then(|k| k.community);
         if self.take_pointer(community, pointer.clone(), None, false).is_err() {
+            self.remember_failed_placement(object, pointer.manifest);
             return;
         }
         if let Some(k) = self.scatter.saved.kept.get_mut(&object) {
@@ -825,12 +905,46 @@ impl Node {
         }
     }
 
+    fn remember_failed_placement(&mut self, object: Id, manifest: Manifest) {
+        let now = self.now();
+        let Some(k) = self.scatter.saved.kept.get_mut(&object) else { return };
+        let encoded = b64(&manifest.encode());
+        if k.cleanup_gens.iter().any(|g| g.manifest == encoded) {
+            return;
+        }
+        // One placement per object is active at a time; admission stops at this bound before
+        // another can start. Never evict a failed placement that can still hold valid pieces.
+        k.cleanup_gens.push(Gen { manifest: encoded, made_at: now, confirmed: false, from: None });
+        self.scatter.dirty = true;
+    }
+
+    fn remember_outgoing_placement(&mut self, community: Id, records: &[Id], media: Option<Id>, manifest: Manifest) {
+        let object = Id(manifest.object);
+        self.scatter.saved.kept.entry(object).or_insert(Kept {
+            community: Some(community),
+            records: records.to_vec(),
+            media,
+            mine: true,
+            expires_at: manifest.expires_at,
+            ..Default::default()
+        });
+        self.remember_failed_placement(object, manifest);
+    }
+
     // ------------------------------------------------------------------ a private group's payloads
 
     /// Starts keeping a group's outgoing payloads in pieces, one object per content (a JSON
     /// array of payloads). False when this device cannot scatter now: the caller sends them
     /// whole.
     pub(crate) fn scatter_outgoing(&mut self, c: Id, parts: Vec<OutPart>, records: Vec<Id>, media: Vec<(Id, usize)>, expires_at: u64) -> bool {
+        if self.deletion_restore_quarantined(Some(c)) {
+            // Do not trigger the caller's whole-content fallback while catch-up is incomplete.
+            return true;
+        }
+        let inflight: usize = self.scatter.repair.outgoing.values().map(|out| out.parts.len()).sum();
+        if self.scatter.saved.kept.len().saturating_add(inflight).saturating_add(parts.len()) > MAX_KEPT {
+            return false;
+        }
         if self.scattering_home(c).is_some() {
             for id in &records {
                 self.scatter.saved.home_delivery.insert(*id, "placing".into());
@@ -864,7 +978,10 @@ impl Node {
         self.scatter.repair.inflight_records.entry(c).or_default().extend(records.iter().copied());
         self.scatter.repair.inflight_media.entry(c).or_default().extend(media.iter().map(|(h, _)| *h));
         let ops: Vec<u64> = contents.keys().copied().collect();
-        self.scatter.repair.outgoing.insert(batch, Outgoing { community: c, parts: contents, carries, stored: BTreeMap::new(), failed: false, records, media });
+        self.scatter.repair.outgoing.insert(
+            batch,
+            Outgoing { community: c, parts: contents, carries, stored: BTreeMap::new(), cancelled: BTreeSet::new(), failed: false, records, media },
+        );
         for op in ops {
             self.scatter.jobs.insert(op, Job::Outgoing { batch });
             if self.op_done(op) {
@@ -874,7 +991,37 @@ impl Node {
         true
     }
 
-    fn outgoing_done(&mut self, batch: u64, op: u64, outcome: ScatterOutcome) {
+    fn outgoing_done(&mut self, batch: u64, op: u64, outcome: ScatterOutcome, placement: Option<Manifest>) {
+        if let Some(out) = self.scatter.repair.outgoing.get(&batch)
+            && let Some((records, media)) = out.carries.get(&op)
+        {
+            let k = Kept { community: Some(out.community), records: records.clone(), media: *media, mine: true, ..Default::default() };
+            if self.carried_deleted(&k) {
+                if placement.is_none() {
+                    self.deletion_placement_gap(&k, None);
+                }
+                if let Some(manifest) = placement.as_ref()
+                    && self.release_generation(&k, manifest, true).is_err()
+                {
+                    // Preserve the cleanup target if capacity is temporarily unavailable.
+                    if let Some(out) = self.scatter.repair.outgoing.get_mut(&batch) {
+                        out.stored.insert(op, manifest.clone());
+                    }
+                    return;
+                }
+                if let Some(out) = self.scatter.repair.outgoing.get_mut(&batch) {
+                    out.cancelled.insert(op);
+                    out.stored.remove(&op);
+                }
+                self.finish_outgoing(batch);
+                return;
+            }
+            if !matches!(&outcome, ScatterOutcome::Stored(_))
+                && let Some(manifest) = placement.as_ref()
+            {
+                self.remember_outgoing_placement(k.community.expect("outgoing community"), &k.records, k.media, manifest.clone());
+            }
+        }
         let Some(out) = self.scatter.repair.outgoing.get_mut(&batch) else { return };
         match outcome {
             ScatterOutcome::Stored(m) => {
@@ -882,15 +1029,27 @@ impl Node {
             }
             _ => out.failed = true,
         }
-        if out.stored.len() + usize::from(out.failed) < out.parts.len() && !out.failed {
+        self.finish_outgoing(batch);
+    }
+
+    fn finish_outgoing(&mut self, batch: u64) {
+        let Some(out) = self.scatter.repair.outgoing.get(&batch) else { return };
+        if !out.failed && out.stored.len() + out.cancelled.len() < out.parts.len() {
             return;
         }
-        if !out.failed && out.stored.len() < out.parts.len() {
-            return;
+        let mut out = self.scatter.repair.outgoing.remove(&batch).expect("present");
+        if out.failed {
+            for (op, (records, media)) in &out.carries {
+                if out.cancelled.contains(op) {
+                    continue;
+                }
+                if let Some(manifest) = out.stored.get(op).cloned().or_else(|| self.scatter_placement(*op)) {
+                    self.remember_outgoing_placement(out.community, records, *media, manifest);
+                }
+            }
         }
-        let out = self.scatter.repair.outgoing.remove(&batch).expect("present");
         // the other parts still running are let go
-        for other in out.parts.keys().filter(|o| !out.stored.contains_key(o) && **o != op) {
+        for other in out.parts.keys().filter(|o| !out.stored.contains_key(o) && !out.cancelled.contains(o)) {
             self.scatter.jobs.remove(other);
             self.drop_op(*other);
         }
@@ -903,6 +1062,15 @@ impl Node {
             for (h, _) in &out.media {
                 set.remove(h);
             }
+        }
+        // RFC-0001: neither successful pointers nor whole-content fallback may republish a
+        // deleted part. Other records and independent objects in the same batch still finish.
+        out.parts.retain(|op, _| !out.cancelled.contains(op));
+        out.carries.retain(|op, _| !out.cancelled.contains(op));
+        out.records.retain(|id| !self.record_deleted(id));
+        out.media.retain(|(hash, _)| out.carries.values().any(|(_, media)| *media == Some(*hash)));
+        if out.parts.is_empty() {
+            return;
         }
         if out.failed {
             if self.is_private_community(&out.community) {
@@ -944,6 +1112,9 @@ impl Node {
     }
 
     fn apply_scattered(&mut self, c: Id, object: Id, content: Vec<u8>) {
+        if self.scatter_object_deleted(object) {
+            return;
+        }
         if let Err(e) = self.apply_content(c, object, &content)
             && e.code == "private-pending"
             && self.scatter.repair.retry.len() < MAX_RETRY
@@ -959,7 +1130,7 @@ impl Node {
         }
         let now = self.now();
         for (c, object, content, until) in std::mem::take(&mut self.scatter.repair.retry) {
-            if now >= until {
+            if now >= until || self.scatter_object_deleted(object) {
                 continue;
             }
             if let Err(e) = self.apply_content(c, object, &content)
@@ -1143,6 +1314,89 @@ impl Node {
         records && media
     }
 
+    fn record_deleted(&self, id: &Id) -> bool {
+        self.store.is_deleted(id) || self.state.skeletons.contains_key(id)
+    }
+
+    /// Missing content is not evidence of deletion. These records have passed authorization
+    /// and remain suppressed even while a fetch or repair still owns the object's operation.
+    fn carried_deleted(&self, k: &Kept) -> bool {
+        !k.records.is_empty() && k.records.iter().all(|id| self.record_deleted(id))
+    }
+
+    pub(crate) fn scatter_object_deleted(&self, object: Id) -> bool {
+        self.deletion_object_suppressed(object) || self.scatter.saved.kept.get(&object).is_some_and(|k| self.carried_deleted(k))
+    }
+
+    /// Extra locators that must fit before accepting an author deletion. Existing generations
+    /// are counted by the journal; this accounts for repairs and first placements still running.
+    pub(crate) fn deletion_placement_reservation(&self, target: Id) -> usize {
+        let objects: BTreeSet<_> =
+            self.scatter.saved.kept.iter().filter(|(_, k)| k.records.contains(&target) || k.claim.is_some_and(|c| c.0 == target)).map(|(id, _)| *id).collect();
+        let repair: usize = self
+            .scatter
+            .jobs
+            .iter()
+            .filter(|(_, job)| matches!(job, Job::Place { object } if objects.contains(object)))
+            .filter_map(|(op, _)| self.scatter_placement(*op))
+            .map(|m| m.holders.len())
+            .sum();
+        let outgoing: usize = self
+            .scatter
+            .repair
+            .outgoing
+            .values()
+            .flat_map(|out| out.carries.iter().filter(|(_, (records, _))| records.contains(&target)).map(move |(op, _)| (out, *op)))
+            .map(|(out, op)| self.scatter_placement(op).or_else(|| out.stored.get(&op).cloned()).map_or(hoi_types::scatter::MAX_M, |m| m.holders.len()))
+            .sum();
+        repair.saturating_add(outgoing)
+    }
+
+    /// RFC-0001: called as soon as an accepted deletion is applied, as well as before each tick.
+    pub(crate) fn suppress_deleted_scatter(&mut self) {
+        self.cancel_unservable_home_rebuilds();
+        self.let_go_of_gone();
+        let parts: Vec<_> = self
+            .scatter
+            .repair
+            .outgoing
+            .iter()
+            .flat_map(|(batch, out)| {
+                out.carries.iter().filter(|(op, _)| !out.cancelled.contains(op)).map(|(op, (records, media))| {
+                    (*batch, *op, Kept { community: Some(out.community), records: records.clone(), media: *media, mine: true, ..Default::default() })
+                })
+            })
+            .collect();
+        let mut finished = BTreeSet::new();
+        for (batch, op, k) in parts {
+            if !self.carried_deleted(&k) {
+                continue;
+            }
+            let placement = self.scatter_placement(op).or_else(|| self.scatter.repair.outgoing.get(&batch)?.stored.get(&op).cloned());
+            // A home node may still be placing this object. Its actual result and capabilities
+            // must arrive before we can account for those locators; completion is suppressed too.
+            let Some(manifest) = placement else {
+                self.deletion_placement_gap(&k, None);
+                continue;
+            };
+            if self.release_generation(&k, &manifest, true).is_err() {
+                continue;
+            }
+            self.cancel_scatter_operation(op);
+            if let Some(out) = self.scatter.repair.outgoing.get_mut(&batch) {
+                out.cancelled.insert(op);
+                out.stored.remove(&op);
+            }
+            finished.insert(batch);
+        }
+        for batch in finished {
+            self.finish_outgoing(batch);
+        }
+        let deleted: BTreeSet<_> =
+            self.scatter.repair.retry.iter().filter(|(_, object, _, _)| self.scatter_object_deleted(*object)).map(|(_, object, _, _)| *object).collect();
+        self.scatter.repair.retry.retain(|(_, object, _, _)| !deleted.contains(object));
+    }
+
     /// Whether a post the object carries was removed by the community (not only deleted).
     fn removed_by_community(&self, k: &Kept) -> bool {
         let Some(c) = k.community.and_then(|c| self.communities.get(&c)) else { return false };
@@ -1155,11 +1409,32 @@ impl Node {
     /// first at once, each next one after an hour more, and only if the pieces are still there.
     /// Nobody repairs them any more.
     fn let_go_of_gone(&mut self) {
-        let gone: Vec<Id> =
-            self.scatter.saved.kept.iter().filter(|(id, k)| !self.scatter.repair.busy.contains(id) && self.carried_gone(k)).map(|(id, _)| *id).collect();
-        let now = self.now();
+        let gone: Vec<Id> = self.scatter.saved.kept.iter().filter(|(_, k)| self.carried_deleted(k) || self.carried_gone(k)).map(|(id, _)| *id).collect();
         for object in gone {
-            let Some(k) = self.scatter.saved.kept.remove(&object) else { continue };
+            let Some(k) = self.scatter.saved.kept.get(&object).cloned() else { continue };
+            let ops: Vec<_> = self
+                .scatter
+                .jobs
+                .iter()
+                .filter(|(_, job)| {
+                    matches!(job,
+                    Job::Apply { object: id, .. } | Job::Probe { object: id, .. } | Job::Rebuild { object: id, .. } | Job::Place { object: id }
+                    if *id == object)
+                })
+                .map(|(op, _)| *op)
+                .collect();
+            let generations: Vec<_> = k.gens.iter().chain(&k.cleanup_gens).filter_map(|g| g.read().map(|m| (m, g.from.is_none()))).collect();
+            let placements: Vec<_> = ops.iter().filter_map(|op| self.scatter_placement(*op).map(|m| (m, true))).collect();
+            if generations.iter().chain(&placements).any(|(m, local)| self.release_generation(&k, m, *local).is_err()) {
+                continue;
+            }
+            // Capture every possibly stored locator before cancelling its puts or discarding
+            // the only manifest that identifies them. A failed capture keeps retryable state.
+            for op in ops {
+                self.cancel_scatter_operation(op);
+            }
+            self.scatter.repair.busy.remove(&object);
+            self.scatter.saved.kept.remove(&object);
             self.scatter.dirty = true;
             // a media item other posts still use goes again for them, in an object of their own
             if let (Some(c), Some(h)) = (k.community, k.media)
@@ -1168,39 +1443,46 @@ impl Node {
             {
                 self.private_resend_media(c, h);
             }
-            let removed = self.removed_by_community(&k);
-            let line = k.community.filter(|c| removed && !self.held_drop_keys(*c).is_empty()).and_then(|c| Some((c, self.drop_rank(c)?)));
-            let secret = self.drop_secret();
-            for g in &k.gens {
-                let Some(m) = g.read() else { continue };
-                if let Some((c, rank)) = line {
-                    let at = now + rank as u64 * crate::private::TURN;
-                    if rank > 0 || !self.drop_with_keys(c, &m) {
-                        if self.scatter.saved.due_drops.len() >= MAX_DUE_DROPS {
-                            self.scatter.saved.due_drops.remove(0);
-                        }
-                        self.scatter.saved.due_drops.push(DueDrop { community: c, manifest: g.manifest.clone(), at, check: rank > 0 });
+        }
+    }
+
+    fn release_generation(&mut self, k: &Kept, m: &Manifest, locally_created: bool) -> R<()> {
+        if self.queue_deletion_generation(k, m, locally_created)? {
+            return Ok(());
+        }
+        let removed = self.removed_by_community(k);
+        let line = k.community.filter(|c| removed && !self.held_drop_keys(*c).is_empty()).and_then(|c| Some((c, self.drop_rank(c)?)));
+        if let Some((c, rank)) = line {
+            if rank > 0 || !self.drop_with_keys(c, m) {
+                let manifest = b64(&m.encode());
+                if !self.scatter.saved.due_drops.iter().any(|d| d.community == c && d.manifest == manifest) {
+                    if self.scatter.saved.due_drops.len() >= MAX_DUE_DROPS {
+                        return Err(ApiError::new("deletion-full", "Deletion work is full. Try again after pending work finishes."));
                     }
-                    continue;
-                }
-                let ask = if let Some(cap) = self.scatter.saved.drop_caps.get(&crate::drop_share::cap_id(&m)) {
-                    crate::scatter::Ask::DropTokens(cap.tokens.clone())
-                } else if let (None, Some(secret)) = (g.from, secret) {
-                    crate::scatter::Ask::DropToken(secret)
-                } else {
-                    continue;
-                };
-                if self.drop_at_home(&m, &ask) {
-                    continue;
-                }
-                if let Ok(op) = self.scatter_drop(&m, &ask) {
-                    self.scatter.jobs.insert(op, Job::Dropped);
-                    if self.op_done(op) {
-                        self.job_done(op);
-                    }
+                    let at = self.now() + rank as u64 * crate::private::TURN;
+                    self.scatter.saved.due_drops.push(DueDrop { community: c, manifest, at, check: rank > 0 });
+                    self.scatter.dirty = true;
                 }
             }
+            return Ok(());
         }
+        let ask = if let Some(cap) = self.scatter.saved.drop_caps.get(&crate::drop_share::cap_id(m)) {
+            crate::scatter::Ask::DropTokens(cap.tokens.clone())
+        } else if let (true, Some(secret)) = (locally_created, self.drop_secret()) {
+            crate::scatter::Ask::DropToken(secret)
+        } else {
+            return Ok(());
+        };
+        if self.drop_at_home(m, &ask) {
+            return Ok(());
+        }
+        if let Ok(op) = self.scatter_drop(m, &ask) {
+            self.scatter.jobs.insert(op, Job::Dropped);
+            if self.op_done(op) {
+                self.job_done(op);
+            }
+        }
+        Ok(())
     }
 
     /// Whether this device could keep something in pieces now: enough places, and forwarders

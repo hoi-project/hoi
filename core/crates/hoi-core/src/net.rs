@@ -766,6 +766,11 @@ impl Node {
             hoi_sync::FEATURE_DIRECTORY.to_string(),
             hoi_sync::FEATURE_RANGE.to_string(),
         ];
+        if self.scatter.pieces.as_ref().is_some_and(|store| store.durable_drops()) {
+            // Keep the capability inside the existing 16-feature limit. It is also signed
+            // in the holder key so a forwarding peer cannot upgrade a legacy holder.
+            fx.insert(0, hoi_sync::FEATURE_DROP_JOURNAL.to_string());
+        }
         let plan = self.plan();
         if hoi_crypto::scatter::size::size(10, 0, plan.places() as u32)
             .is_some_and(|s| plan.forwarder_places() >= 2 && plan.forwarder_places() * (s.k - 1) >= s.n)
@@ -796,6 +801,11 @@ impl Node {
         }
         if self.takes_direct() {
             fx.push(hoi_sync::FEATURE_DIRECT.to_string());
+        }
+        if fx.len() > hoi_sync::SEND_FEATURES {
+            // Placement offload is optional; preserve protocol and durability features when
+            // a holder offers every service understood by older 16-feature readers.
+            fx.retain(|feature| feature != "scatter-store");
         }
         debug_assert!(fx.len() <= hoi_sync::SEND_FEATURES);
         fx.truncate(hoi_sync::SEND_FEATURES);
@@ -1090,6 +1100,11 @@ impl Node {
     }
 
     pub fn take_outbox(&mut self) -> Vec<(String, Vec<u8>)> {
+        // RFC-0001: network deletion cannot outrun its recoverable authority and targets.
+        if self.deletions.dirty && self.commit().is_err() {
+            return Vec::new();
+        }
+        self.filter_rebuilt_outbox();
         std::mem::take(&mut self.outbox)
     }
 

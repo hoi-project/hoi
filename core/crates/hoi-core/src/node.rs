@@ -209,6 +209,7 @@ pub struct Node {
     pub(crate) private: crate::private::PrivateState,
     /// Scattered delivery: pieces held for others, and operations in flight (crate::scatter).
     pub(crate) scatter: crate::scatter::ScatterState,
+    pub(crate) deletions: crate::deletion::State,
     pub(crate) store: Store,
     pub(crate) communities: HashMap<Id, Community>,
     pub(crate) state: LocalState,
@@ -413,6 +414,27 @@ pub(crate) fn media_key(h: &Id) -> String {
 }
 
 impl Node {
+    /// Opens a supported snapshot restore. Public content stays quarantined during catch-up;
+    /// private cached content is discarded and its group stays quarantined until a fresh join.
+    /// Catch-up is not proof of global freshness during a partition (RFC-0001).
+    pub fn open_restored(persist: Box<dyn Persist>, platform: &str, web_base: &str, clock: Clock) -> Result<Node, ApiError> {
+        let mut node = Self::open(persist, platform, web_base, clock)?;
+        let now = node.now();
+        let communities: Vec<Id> = node.state.joined.keys().copied().collect();
+        for community in communities {
+            node.deletions.saved.restored.insert(community, now);
+            node.state.sync_completed.remove(&community);
+            if node.is_private_community(&community) {
+                node.private_discard_snapshot_content(community)?;
+            }
+        }
+        node.deletions.dirty = true;
+        node.mark_state();
+        node.outbox.clear();
+        node.commit()?;
+        Ok(node)
+    }
+
     /// Opens a node over `persist`, replaying everything stored there.
     pub fn open(mut persist: Box<dyn Persist>, platform: &str, web_base: &str, clock: Clock) -> Result<Node, ApiError> {
         let loaded = persist.load().map_err(|e| ApiError::new("internal", format!("storage: {e}")))?;
@@ -437,6 +459,7 @@ impl Node {
         let mut node = Node {
             private: crate::private::PrivateState::default(),
             scatter: Default::default(),
+            deletions: Default::default(),
             store: Store::new(),
             communities: HashMap::new(),
             state: LocalState::default(),
@@ -541,6 +564,9 @@ impl Node {
                 crate::scatter::BLOB => {
                     node.scatter.saved = serde_json::from_slice(v).unwrap_or_default();
                     node.scatter.in_pieces = node.scatter.saved.kept.values().filter(|k| k.open).flat_map(|k| k.records.iter().copied()).collect();
+                }
+                crate::deletion::BLOB => {
+                    node.deletions.saved = crate::deletion::Journal::decode(v).ok_or_else(|| incompatible("deletion journal"))?;
                 }
                 "keys" => {
                     let mut s: Secrets = serde_json::from_slice(v).map_err(|_| incompatible("keys"))?;
@@ -736,6 +762,15 @@ impl Node {
             self.changes.push(Change::Blob { key: crate::scatter::BLOB.into(), value: Some(v) });
             self.scatter.dirty = false;
         }
+        if self.deletions.dirty {
+            // Retrying a failed write keeps only the latest journal snapshot, while all
+            // record and suppression changes remain in the same atomic transaction.
+            self.changes.retain(|c| !matches!(c, Change::Blob { key, .. } if key == crate::deletion::BLOB));
+            self.changes.push(Change::Blob {
+                key: crate::deletion::BLOB.into(),
+                value: Some(serde_json::to_vec(&self.deletions.saved).map_err(|_| ApiError::new("internal", "Deletion work could not be saved."))?),
+            });
+        }
         if self.state_dirty {
             let v = serde_json::to_vec(&self.state).map_err(|e| ApiError::new("internal", e.to_string()))?;
             self.changes.push(Change::Blob { key: "state".into(), value: Some(v) });
@@ -763,6 +798,8 @@ impl Node {
             self.persist.apply(&self.changes).map_err(|e| ApiError::new("internal", format!("storage: {e}")))?;
             self.changes.clear();
         }
+        self.deletions.dirty = false;
+        self.deletions.published = self.current_deletion_progress();
         if !self.changed.is_empty() {
             let cs = std::mem::take(&mut self.changed).into_iter().map(|c| c.hex()).collect();
             self.events.push(Event::Changed { communities: cs });
@@ -785,6 +822,7 @@ impl Node {
     }
 
     pub(crate) fn wipe_all(&mut self) -> Result<(), ApiError> {
+        self.deletions = Default::default();
         self.private.wipe();
         self.store.clear();
         self.communities.clear();
@@ -1180,6 +1218,13 @@ impl Node {
             return Err(e);
         }
 
+        if matches!(r.body, Body::Delete) {
+            if r.parent.is_some_and(|p| !self.store.contains(&p) && !self.state.skeletons.contains_key(&p) && !self.scatter.standins.contains_key(&p)) {
+                self.defer_author_deletion(id, bytes, matches!(src, Source::PrivateRelay | Source::Pieces)).map_err(|e| Reject::NotAllowed(e.message))?;
+                return Err(Reject::NotAllowed("Deletion is waiting for its target.".into()));
+            }
+            self.deletion_admission(r).map_err(|e| Reject::NotAllowed(e.message))?;
+        }
         self.semantic(r, &id, root, src)?;
         self.check_public_join(r)?;
         let superseded = match self.superseded(r, &id, root) {
@@ -1258,10 +1303,16 @@ impl Node {
             && self.open_scattered_at(c, record.created_at)
             && !self.can_scatter(c)
         {
+            if self.state.home.is_some() {
+                self.scatter.saved.home_delivery.insert(id, "pending".into());
+            }
             self.scatter.saved.whole.insert(id);
             self.scatter.dirty = true;
         }
         self.after_accept(&record, id, root, src);
+        if matches!(kind, Kind::Post | Kind::Comment) {
+            self.apply_pending_deletions(id);
+        }
         if kind == Kind::Community {
             self.complete_public_join(record.author);
         }
@@ -1517,6 +1568,20 @@ impl Node {
                 }
             }
             Body::Edit { .. } | Body::Delete => {
+                // A persisted skeleton retains the original author after the payload is gone;
+                // this keeps an already validated deletion available across restart (RFC-0001).
+                let known = known.or_else(|| {
+                    if !matches!(r.body, Body::Delete) {
+                        return None;
+                    }
+                    let sk = r.parent.and_then(|p| self.state.skeletons.get(&p))?;
+                    let kind = match sk.kind.as_str() {
+                        "post" => Kind::Post,
+                        "comment" => Kind::Comment,
+                        _ => return None,
+                    };
+                    Some((kind, Some(sk.community), sk.author))
+                });
                 let (kind, community, author) = known.ok_or_else(|| Reject::NotAllowed("change to something we don't have".into()))?;
                 if author != root || !matches!(kind, Kind::Post | Kind::Comment) || community != r.community {
                     return Err(Reject::NotAllowed("only the author can edit or delete".into()));
@@ -1729,8 +1794,10 @@ impl Node {
                 }
             }
             Body::Delete => {
+                self.capture_author_deletion(_id, r, root);
                 if let Some(p) = r.parent {
                     self.skeletonize(&p, None, "deleted by the author".into(), r.created_at, None);
+                    self.suppress_deleted_scatter();
                 }
             }
             Body::Ledger(l) if matches!(l.action, hoi_types::LedgerAction::Rules | hoi_types::LedgerAction::Limits) && matches!(src, Source::Peer { .. }) => {
@@ -1982,12 +2049,15 @@ impl Node {
 
     /// Deletes a record's body for good, keeping where it was and why (the Poof box).
     pub(crate) fn skeletonize(&mut self, id: &Id, by: Option<Id>, reason: String, at: u64, ledger: Option<Id>) {
-        let Some(s) = self.store.remove(id) else { return };
-        let r = &s.record;
-        if let Some(c) = r.community {
-            self.state.skeletons.insert(
-                *id,
-                Skeleton {
+        let edits: Vec<Id> = self.store.children(id).filter(|s| matches!(s.record.body, Body::Edit { .. })).map(|s| s.id).collect();
+        let (skeleton, expires_at, media) = if let Some(s) = self.store.remove(id) {
+            let r = &s.record;
+            let media: Vec<Id> = match &r.body {
+                Body::Post { media, .. } => media.iter().map(|m| m.hash).collect(),
+                _ => Vec::new(),
+            };
+            (
+                r.community.map(|c| Skeleton {
                     community: c,
                     parent: r.parent,
                     author: s.author_root,
@@ -1998,14 +2068,66 @@ impl Node {
                     reason,
                     at,
                     ledger,
-                },
-            );
+                }),
+                r.expires_at,
+                media,
+            )
+        } else {
+            // A carrier can validate a deletion from a signed pointer before receiving the
+            // target body. Persist that suppression too, so a delayed whole copy stays gone.
+            if self.state.skeletons.contains_key(id) {
+                return;
+            }
+            let Some(standin) = self.scatter.standins.get(id) else { return };
+            let times = self
+                .store
+                .of_kind(&standin.community, Kind::Pointer)
+                .filter(|s| s.author_root == standin.root && matches!(&s.record.body, Body::Pointer { record, of, .. } if record == id && *of == standin.kind))
+                .map(|s| (s.record.created_at, s.record.expires_at))
+                .reduce(|(created, expires), (c, e)| (created.min(c), expires.max(e)));
+            let Some((created_at, expires_at)) = times else { return };
+            let expires_at = self.deletion_for_target(*id).map(|job| self.deletions.saved.jobs[&job].expires_at).unwrap_or(0).max(expires_at);
+            (
+                Some(Skeleton {
+                    community: standin.community,
+                    parent: None,
+                    author: standin.root,
+                    kind: standin.kind.as_str().into(),
+                    created_at,
+                    expires_at,
+                    by,
+                    reason,
+                    at,
+                    ledger,
+                }),
+                expires_at,
+                Vec::new(),
+            )
+        };
+        if let Some(skeleton) = skeleton {
+            let c = skeleton.community;
+            self.state.skeletons.insert(*id, skeleton);
             self.mark_changed(c);
             self.dirty.insert(c);
         }
-        self.store.mark_deleted(*id, r.expires_at);
+        self.store.mark_deleted(*id, expires_at);
         self.state.saved.remove(id);
         self.changes.push(Change::Delete { id: *id });
+        for edit in edits {
+            self.drop_record(&edit);
+        }
+        for hash in media {
+            if self.store.media_users(&hash).next().is_none() {
+                if self.store.remove_blob(&hash) {
+                    self.changes.push(Change::Blob { key: media_key(&hash), value: None });
+                }
+                self.media_wanted.remove(&hash);
+                if self.scatter.saved.open_partial.remove(&hash).is_some() {
+                    self.scatter.dirty = true;
+                }
+                self.private_forget_partial(hash);
+            }
+        }
         self.mark_state();
     }
 
@@ -2127,7 +2249,9 @@ impl Node {
     /// Whether a record counts here: not held back, its author not blocked. A record kept in
     /// pieces counts, but is never offered whole ([`Node::forwardable`]).
     pub(crate) fn usable(&self, s: &Stored) -> bool {
-        self.held(s).is_none() && !s.record.community.and_then(|c| self.communities.get(&c)).is_some_and(|st| st.standing.blocked(&s.author_root))
+        !(self.deletion_restore_quarantined(s.record.community) && matches!(s.record.kind(), Kind::Post | Kind::Comment | Kind::Edit | Kind::Pointer))
+            && self.held(s).is_none()
+            && !s.record.community.and_then(|c| self.communities.get(&c)).is_some_and(|st| st.standing.blocked(&s.author_root))
     }
 
     /// Private markers remain authoritative even while group keys are unavailable.

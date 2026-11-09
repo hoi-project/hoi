@@ -502,6 +502,59 @@ pointer records again, so a new generation it refused for coming within a day co
   and encrypted messages of private communities for other people's devices, and hands them back
   when asked. It cannot read them. Each is deleted when it expires, after 400 days at most."
 
+**Durable author work (RFC-0001).** Deletion is bounded and eventual: rejection is guaranteed
+after a compliant holder learns the authorized drop, not before an uninformed holder rejoins.
+Expiry is the outer validity boundary. Neither a successful sync nor a chosen number of peers
+proves that every deletion has arrived.
+
+The requesting device captures known generations and per-locator capabilities before discarding
+manifests, and persists its deletion journal with local suppression and the signed delete before
+dispatch. Restart resumes the same work. Scheduling is bounded; transient failures back off,
+and queue exhaustion refuses new work without evicting unfinished targets. Missing capabilities
+and unknown generations remain explicit coverage gaps. The journal keeps object IDs for late
+repair, routing targets and expiry days for retry, tokens for authorization, and per-target
+outcomes/attempt times for progress; it does not retain deleted content or its decryption key.
+
+Progress separates local removal, signed-record submission, queued/submitted targets, durable
+acknowledgements, legacy removal observations, unknown/refused/unreachable targets and expiry.
+Only a matching sealed reply from a holder with a verified, unexpired `drop-journal` capability
+counts as a durable acknowledgement. The holder signs the capability with its endpoint key;
+vouches preserve that signature (PROTOCOL §21.1). An old holder's success is a legacy observation.
+Timeout, unknown and expiry are never evidence of erasure; even every known holder's
+acknowledgement does not prove complete inventory or delivery of the delete to every member.
+
+New clients do not start legacy home-delegated placements, whose format cannot recover the
+origin's placement correlation and deletion authority after restart. They scatter locally when
+eligible or use the existing whole-record fallback. Legacy receivers remain compatible. A local
+delete waits retryably while an existing legacy delegated placement is unresolved, before any
+irreversible mutation; unresolved legacy inventory is not silently counted as deleted.
+
+Holders commit payload removal and `{loc, expiry_day, drop_hash, drop_key_id}` in one durable
+transaction before acknowledging. The locator blocks replay; the original day limits retention;
+the hash and key ID allow authenticated duplicate requests without retaining raw tokens or
+signatures. The existing correlation between pieces using the same drop-key ID remains.
+Get/has report absence, and puts at that locator are refused through its inclusive
+expiry day. Invalid drops create no marker; unknown locators remain unknown. Admitted pieces
+reserve marker slots, and live markers are never evicted for new data. Repeated drops never
+extend them. The original stored day matters because scatter placement rounds expiry upward.
+
+Accepted deletion cancels unsent repair and suppresses fetched/placed results already in flight.
+Known late placements enter the same cleanup work instead of publishing replacement content.
+Valid moderator removal retains its separate authorization; unrelated live posts and their own
+media objects are preserved. On restart, persisted deletion state is loaded before network work.
+Supported holder restoration uses `SqlitePieces::restore`, discarding stale payloads while
+keeping available markers; turning holding off also preserves live markers. Neither direct disk
+rollback nor a malicious operator's private copy is covered. The holder schema migrates legacy
+payloads without inventing acknowledgements and prevents old software reopening it without
+marker enforcement; details are in PROTOCOL §21.1.
+
+The Rust `Node::open_restored` member-snapshot API quarantines public content during ordinary
+catch-up. Private snapshot content and its queued ciphertext/repair cache are discarded before
+serving, while deletion work survives. Private output remains quarantined until an accepted
+fresh join; an active restored MLS group has no general reset/rejoin path. Recover on a fresh
+device with an authorized private join in that case. The applications do not expose a full
+database snapshot import flow; identity-key recovery is separate (PROTOCOL §21.1).
+
 ### 5.12 The home node as the person's own end
 A paired home node is the person's device. It may fetch and rebuild for its own phone and browser,
 and hand them rebuilt posts over the pairing link, which cuts a phone's data and links to one.

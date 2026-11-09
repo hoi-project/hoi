@@ -72,6 +72,8 @@ pub const MAX_ROUTES: usize = 8;
 /// is in use).
 pub const MAX_FEATURES: usize = 16;
 pub const SEND_FEATURES: usize = 16;
+/// Holder commits authenticated drop markers before acknowledging removal (RFC-0001).
+pub const FEATURE_DROP_JOURNAL: &str = "drop-journal";
 /// The sender answers `find`: which nodes carry a community, from what it knows and, for a node
 /// that runs one, from the DHT among public nodes.
 pub const FEATURE_FIND: &str = "find";
@@ -158,6 +160,8 @@ pub struct HolderKey {
     /// `r`, optional: binds the certificate the holder serves WebRTC with to its endpoint, so a
     /// browser, which sees no endpoint on a WebRTC link, can check the key (older peers ignore it).
     pub rtc: Option<RtcBinding>,
+    /// `dj`, optional: endpoint signature over `drop_journal_statement`, retained in vouches.
+    pub drop_journal: Option<[u8; 64]>,
 }
 
 /// A holder's endpoint and the SHA-256 of its WebRTC certificate, signed by the endpoint key
@@ -651,7 +655,11 @@ fn holder_from(value: Option<Value>) -> Result<Option<HolderKey>, TypesError> {
     };
     // Lenient: a binding this release can't read is no binding, not a refused hello.
     let rtc = rtc_binding_from(m.remove("r"));
-    Ok(Some(HolderKey { xk, expires_at, sig, rtc }))
+    let drop_journal = match m.remove("dj") {
+        Some(Value::B(b)) => b.try_into().ok(),
+        _ => None,
+    };
+    Ok(Some(HolderKey { xk, expires_at, sig, rtc, drop_journal }))
 }
 
 fn hints_from(value: Option<Value>) -> Result<Vec<Hints>, TypesError> {
@@ -745,6 +753,9 @@ impl Msg {
                     if let Some(r) = &h.rtc {
                         k.push(("r", Value::map([("e", Value::B(r.endpoint.0.to_vec())), ("c", Value::B(r.cert.to_vec())), ("s", Value::B(r.sig.to_vec()))])));
                     }
+                    if let Some(proof) = h.drop_journal {
+                        k.push(("dj", Value::B(proof.to_vec())));
+                    }
                     e.push(("sk", Value::map(k)));
                 }
                 if *forwards {
@@ -826,10 +837,11 @@ impl Msg {
                                     let mut f =
                                         vec![("e", Value::B(v.endpoint.0.to_vec())), ("u", Value::U(v.up.min(100) as u64)), ("d", Value::U(v.days as u64))];
                                     if let Some(k) = &v.key {
-                                        f.push((
-                                            "k",
-                                            Value::map([("k", Value::B(k.xk.to_vec())), ("e", Value::U(k.expires_at)), ("s", Value::B(k.sig.to_vec()))]),
-                                        ));
+                                        let mut key = vec![("k", Value::B(k.xk.to_vec())), ("e", Value::U(k.expires_at)), ("s", Value::B(k.sig.to_vec()))];
+                                        if let Some(proof) = k.drop_journal {
+                                            key.push(("dj", Value::B(proof.to_vec())));
+                                        }
+                                        f.push(("k", Value::map(key)));
                                     }
                                     if !v.routes.is_empty() {
                                         f.push(("r", Value::A(v.routes.iter().take(MAX_VOUCH_ROUTES).map(|r| t(r)).collect())));
@@ -1328,7 +1340,7 @@ mod tests {
                     endpoint: Id([6; 32]),
                     up: 97,
                     days: 12,
-                    key: Some(HolderKey { xk: [7; 32], expires_at: 1_800_000_000, sig: [9; 64], rtc: None }),
+                    key: Some(HolderKey { xk: [7; 32], expires_at: 1_800_000_000, sig: [9; 64], rtc: None, drop_journal: Some([10; 64]) }),
                     routes: vec![format!("{}@203.0.113.9:7843", Id([6; 32]).hex())],
                 }],
             },
@@ -1622,7 +1634,7 @@ mod tests {
     #[test]
     fn holder_keys_travel_in_hellos_and_older_peers_ignore_them() {
         let mut h = bare();
-        let key = HolderKey { xk: [7; 32], expires_at: 1_800_000_000, sig: [9; 64], rtc: None };
+        let key = HolderKey { xk: [7; 32], expires_at: 1_800_000_000, sig: [9; 64], rtc: None, drop_journal: Some([10; 64]) };
         if let Msg::Hello { holder, .. } = &mut h {
             *holder = Some(key);
         }
@@ -1641,7 +1653,7 @@ mod tests {
             Value::map([("k", Value::B(vec![7; 32])), ("e", Value::U(1_800_000_000)), ("s", Value::B(vec![9; 64])), ("r", Value::B(vec![1]))]),
         ));
         match Msg::decode(&Value::map(e).encode()).unwrap() {
-            Msg::Hello { holder, .. } => assert_eq!(holder, Some(key)),
+            Msg::Hello { holder, .. } => assert_eq!(holder, Some(HolderKey { drop_journal: None, ..key })),
             other => panic!("{other:?}"),
         }
         // the key rides in its own field, so a hello without it decodes as before

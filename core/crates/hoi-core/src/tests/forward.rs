@@ -618,6 +618,210 @@ fn a_deleted_post_is_let_go_and_its_author_drops_its_pieces() {
     assert_eq!(kept_pieces(&mut m, &man), 0, "every piece is dropped");
 }
 
+#[test]
+fn deletion_cancels_a_busy_rebuild_before_its_replies_arrive() {
+    let mut m = mesh(3, 14);
+    let c = group(&mut m);
+    let p = post(m.n("b"), &c, "deleted while rebuilding");
+    m.run(120);
+    let pid = Id::from_hex(&p.id).unwrap();
+    let (object, manifest) =
+        m.n("b").scatter.saved.kept.iter().find(|(_, k)| k.records == vec![pid]).map(|(object, k)| (*object, k.newest().unwrap())).unwrap();
+    let now = m.n("b").now();
+    m.n("b").scatter.saved.kept.get_mut(&object).unwrap().repair_at = Some(now);
+    m.n("b").keep_tick();
+    assert!(m.n("b").scatter.jobs.values().any(|job| matches!(job, crate::keep::Job::Rebuild { object: id, .. } if *id == object)));
+
+    // Nothing is pumped between starting repair and deletion: its answers are still in flight.
+    m.n("b").delete_own(&p.id).unwrap();
+    m.n("b").keep_tick();
+    assert!(!m.n("b").scatter.saved.kept.contains_key(&object), "deletion does not wait for a busy repair");
+    assert!(!m.n("b").scatter.jobs.values().any(|job| matches!(job,
+        crate::keep::Job::Rebuild { object: id, .. } | crate::keep::Job::Place { object: id } if *id == object
+    )));
+
+    m.run(180);
+    assert!(!m.n("b").scatter.saved.kept.contains_key(&object), "delayed repair replies cannot restore the object");
+    assert_eq!(kept_pieces(&mut m, &manifest), 0);
+}
+
+#[test]
+fn deletion_drops_an_inflight_repair_generation_without_publishing_it() {
+    let mut m = mesh(3, 40);
+    let c = group(&mut m);
+    let p = post(m.n("b"), &c, "deleted during placement");
+    let other = post(m.n("a"), &c, "another author's post stays");
+    m.run(120);
+    let pid = Id::from_hex(&p.id).unwrap();
+    let manifest = m.n("b").scatter.saved.kept.values().find(|k| k.records == vec![pid]).unwrap().newest().unwrap();
+    let object = Id(manifest.object);
+    let load = m.n("b").scatter_load(&manifest).unwrap();
+    let ScatterOutcome::Loaded(content) = m.wait("b", load, 120) else { panic!("the original generation rebuilds") };
+    let (_, sealed) = sc::seal_object(&content, &manifest.object, &manifest.key).unwrap();
+    let op = m.n("b").start_generation(&manifest, &sealed, 1, 10, 0).unwrap();
+    m.n("b").scatter.jobs.insert(op, crate::keep::Job::Place { object });
+    let placed = m.n("b").scatter_placement(op).expect("a live placement has a cleanup snapshot");
+
+    // Let the puts reach their holders, but delay every acknowledgement to the repairer.
+    let mut delayed = Vec::new();
+    for _ in 0..5 {
+        let names: Vec<_> = m.nodes.keys().cloned().collect();
+        for from in names {
+            for (to, bytes) in m.n(&from).take_outbox() {
+                if matches!(Msg::decode(&bytes), Ok(Msg::Piece { op: PieceOp::Stored, .. })) {
+                    delayed.push((from.clone(), to, bytes));
+                } else if m.nodes.contains_key(&to) {
+                    m.n(&to).net_receive(&from, &bytes);
+                }
+            }
+        }
+    }
+    assert!(!delayed.is_empty(), "some repair puts reached holders before deletion");
+    assert!(kept_pieces(&mut m, &placed) > 0);
+
+    m.n("b").delete_own(&p.id).unwrap();
+    m.n("b").keep_tick();
+    assert!(!m.n("b").scatter.saved.kept.contains_key(&object));
+    assert!(!m.n("b").scatter.jobs.contains_key(&op));
+    for (from, to, bytes) in delayed {
+        m.n(&to).net_receive(&from, &bytes);
+    }
+    m.run(180);
+
+    assert!(!m.n("b").scatter.saved.kept.contains_key(&object), "late placement replies never publish a repair update");
+    assert_eq!(kept_pieces(&mut m, &manifest), 0, "the original generation is dropped");
+    assert_eq!(kept_pieces(&mut m, &placed), 0, "already placed orphan pieces are journalled and dropped");
+    assert_eq!(m.n("b").post(&other.id).unwrap().summary.title, "another author's post stays");
+}
+
+#[test]
+fn deletion_cancels_unsent_first_placement_and_its_whole_content_fallback() {
+    let mut m = mesh(3, 14);
+    let c = group(&mut m);
+    let ca = Id::from_hex(&c).unwrap();
+    let p = post(m.n("b"), &c, "deleted before its pieces leave");
+    let pid = Id::from_hex(&p.id).unwrap();
+    let record = m.n("b").store.get(&pid).unwrap().clone();
+    let content = crate::private::records_content(ca, &record.wire);
+    assert!(m.n("b").scatter_outgoing(
+        ca,
+        vec![crate::keep::OutPart { content, records: vec![pid], media: None }],
+        vec![pid],
+        Vec::new(),
+        record.record.expires_at,
+    ));
+    assert!(m.n("b").scatter.repair.outgoing.values().any(|out| out.records.contains(&pid)));
+
+    m.n("b").delete_own(&p.id).unwrap();
+    m.n("b").keep_tick();
+    assert!(!m.n("b").scatter.repair.outgoing.values().any(|out| out.records.contains(&pid)));
+    assert!(
+        !m.n("b").take_outbox().iter().any(|(_, bytes)| matches!(Msg::decode(bytes), Ok(Msg::Piece { op: PieceOp::Put, .. }))),
+        "a cancelled first placement never releases its queued puts"
+    );
+    m.run(180);
+    assert!(!m.n("b").scatter.saved.kept.values().any(|k| k.records.contains(&pid)));
+    assert!(!m.n("a").store.contains(&pid), "the deleted post is not sent whole after cancellation");
+}
+
+#[test]
+fn a_failed_repair_keeps_orphan_authority_for_a_later_deletion() {
+    let mut m = mesh(3, 40);
+    let c = group(&mut m);
+    let p = post(m.n("b"), &c, "deleted after an interrupted repair");
+    m.run(120);
+    let pid = Id::from_hex(&p.id).unwrap();
+    let manifest = m.n("b").scatter.saved.kept.values().find(|k| k.records == vec![pid]).unwrap().newest().unwrap();
+    let object = Id(manifest.object);
+    let load = m.n("b").scatter_load(&manifest).unwrap();
+    let ScatterOutcome::Loaded(content) = m.wait("b", load, 120) else { panic!("the original generation rebuilds") };
+    let (_, sealed) = sc::seal_object(&content, &manifest.object, &manifest.key).unwrap();
+    let op = m.n("b").start_generation(&manifest, &sealed, 1, 10, 0).unwrap();
+    m.n("b").scatter.jobs.insert(op, crate::keep::Job::Place { object });
+    let placed = m.n("b").scatter_placement(op).unwrap();
+    // Deliver the puts but lose the answers, then disconnect before retries can finish.
+    for _ in 0..5 {
+        let names: Vec<_> = m.nodes.keys().cloned().collect();
+        for from in names {
+            for (to, bytes) in m.n(&from).take_outbox() {
+                if !matches!(Msg::decode(&bytes), Ok(Msg::Piece { op: PieceOp::Stored, .. })) && m.nodes.contains_key(&to) {
+                    m.n(&to).net_receive(&from, &bytes);
+                }
+            }
+        }
+    }
+    assert!(kept_pieces(&mut m, &placed) > 0);
+    for f in ["f0", "f1", "f2"] {
+        m.hang_up("b", f);
+    }
+    m.run(300);
+    assert!(!m.n("b").scatter.jobs.contains_key(&op));
+    let kept = &m.n("b").scatter.saved.kept[&object];
+    assert!(!kept.cleanup_gens.is_empty(), "a failed placement retains its orphan locators");
+    assert_eq!(kept.newest().unwrap().generation, 0, "the failed generation never becomes repair input");
+
+    m.n("b").delete_own(&p.id).unwrap();
+    m.n("b").commit().unwrap();
+    for f in ["f0", "f1", "f2"] {
+        m.dial("b", f);
+    }
+    m.pump();
+    m.run(300);
+    assert_eq!(kept_pieces(&mut m, &manifest), 0);
+    assert_eq!(kept_pieces(&mut m, &placed), 0, "later deletion also removes the failed repair's pieces");
+}
+
+#[test]
+fn offline_author_deletion_resumes_all_known_targets_after_restart_and_reconnect() {
+    let mut m = mesh(3, 14);
+    let c = group(&mut m);
+    let p = post(m.n("b"), &c, "deleted offline and resumed after restart");
+    m.run(120);
+    let pid = Id::from_hex(&p.id).unwrap();
+    let manifest = m.n("b").scatter.saved.kept.values().find(|k| k.records == vec![pid]).unwrap().newest().unwrap();
+    m.cut.insert("b".into());
+    m.n("b").delete_own(&p.id).unwrap();
+    m.n("b").commit().unwrap();
+    let job = m.n("b").deletion_for_target(pid).unwrap();
+    let targets: BTreeSet<_> = m.n("b").deletions.saved.jobs[&job].targets.keys().copied().collect();
+    assert_eq!(targets.len(), manifest.holders.len());
+    assert!(m.n("b").deletions.saved.jobs[&job].targets.values().all(|target| target.token.is_some()));
+    assert_eq!(kept_pieces(&mut m, &manifest), manifest.holders.len(), "offline deletion has not reached any holder");
+
+    // Reopen exactly the committed storage. Connections, operation IDs and queued messages
+    // disappear with the old process; only the persisted job can drive the later drops.
+    let loaded = m.n("b").persist_mut().load().unwrap();
+    let disk = Mem::default();
+    {
+        let mut saved = disk.0.lock().unwrap();
+        for wire in loaded.records {
+            let (_, id) = hoi_types::Wire::decode(&wire).unwrap();
+            saved.0.insert(id, wire);
+        }
+        saved.1.extend(loaded.blobs);
+    }
+    let clock = m.t.clone();
+    let restored = Node::open(Box::new(disk), "desktop", "https://example.com/", Box::new(move || clock.load(Ordering::SeqCst))).unwrap();
+    m.add("b", restored, "192.0.2.20:7843");
+    assert_eq!(m.n("b").deletions.saved.jobs[&job].targets.keys().copied().collect::<BTreeSet<_>>(), targets);
+    assert!(m.n("b").deletions.saved.jobs[&job].targets.values().all(|target| target.token.is_some()));
+    assert!(!m.n("b").store.contains(&pid));
+    m.cut.remove("b");
+    for f in ["f0", "f1", "f2"] {
+        m.dial("b", f);
+    }
+    m.pump();
+    m.run(600);
+    m.n("b").commit().unwrap();
+
+    assert_eq!(kept_pieces(&mut m, &manifest), 0);
+    let progress = m.n("b").deletion_progress().into_iter().find(|p| p.target == pid.hex()).unwrap();
+    assert!(progress.local_removed);
+    assert_eq!(progress.acknowledged, 0, "in-memory holders do not promise durable markers");
+    assert_eq!(progress.legacy_removal as usize, manifest.holders.len());
+    assert!(progress.requires_local_state, "legacy removal and record dissemination still require retained state");
+}
+
 /// How many of a generation's pieces its holders still keep.
 pub(crate) fn kept_pieces(m: &mut Mesh, man: &Manifest) -> usize {
     let today = (m.t.load(Ordering::SeqCst) / DAY) as u32;
@@ -735,6 +939,98 @@ fn browser_with_home(m: &mut Mesh) {
         m.dial("phone", &format!("f{f}"));
     }
     m.pump();
+}
+
+fn home_rebuild_fixture() -> (Mesh, Manifest, Vec<u8>, Id, Id) {
+    let mut m = mesh(3, 14);
+    join(&mut m, "a", "198.51.100.10:7843", &[0, 1, 2]);
+    let content = b"a home rebuild must respect local suppression".to_vec();
+    let op = m.n("a").scatter_store(&content, 10, T0 + 30 * DAY).unwrap();
+    let manifest = stored(m.wait("a", op, 60));
+    browser_with_home(&mut m);
+    let home = m.n("home");
+    let c = home.create_community(draft("home rebuild garden")).unwrap().id;
+    let target = Id::from_hex(&post(home, &c, "locally known object").id).unwrap();
+    let community = Id::from_hex(&c).unwrap();
+    home.scatter.saved.kept.insert(
+        Id(manifest.object),
+        crate::keep::Kept {
+            community: Some(community),
+            records: vec![target],
+            expires_at: manifest.expires_at,
+            gens: vec![crate::keep::Gen { manifest: hoi_types::uri::b64(&manifest.encode()), made_at: T0, confirmed: true, from: Some(Id::ZERO) }],
+            ..Default::default()
+        },
+    );
+    home.outbox.clear();
+    (m, manifest, content, community, target)
+}
+
+#[test]
+fn home_rebuilds_stop_after_deletion_even_with_delayed_pieces_or_a_queued_reply() {
+    let (mut m, manifest, content, _, target) = home_rebuild_fixture();
+    let object = Id(manifest.object);
+    let home = m.n("home");
+    home.on_rebuild("phone", 70, &manifest.encode());
+    assert!(home.scatter.jobs.values().any(|job| matches!(job, crate::keep::Job::ForDevice { rid: 70, .. })));
+    let sent = home.take_outbox();
+    assert!(sent.iter().any(|(_, bytes)| matches!(Msg::decode(bytes), Ok(Msg::Piece { op: PieceOp::Get, .. }))));
+    home.rebuilt_for("phone", 71, object, ScatterOutcome::Loaded(content));
+    // A reused request id must not relabel the earlier queued object's content.
+    home.rebuilt_for("phone", 71, Id([92; 32]), ScatterOutcome::Loaded(b"another result".to_vec()));
+    home.delete_own(&target.hex()).unwrap();
+    assert!(!home.scatter.jobs.values().any(|job| matches!(job, crate::keep::Job::ForDevice { rid: 70, .. })));
+    assert!(!home.scatter.saved.kept.contains_key(&object));
+    home.on_rebuild("phone", 72, &manifest.encode());
+    let replies = home.take_outbox();
+    for rid in [70, 71, 72] {
+        assert!(
+            replies.iter().any(|(peer, bytes)| peer == "phone" && matches!(Msg::decode(bytes), Ok(Msg::Rebuilt { rid: got, content: None }) if got == rid))
+        );
+    }
+    assert!(!replies.iter().any(|(_, bytes)| matches!(Msg::decode(bytes), Ok(Msg::Rebuilt { content: Some(_), .. }))));
+    // Requests released before deletion may still return valid pieces afterwards.
+    m.log.clear();
+    for (peer, bytes) in sent {
+        m.n(&peer).net_receive("home", &bytes);
+    }
+    m.pump();
+    assert!(!m.log.iter().any(|(from, _, msg)| from == "home" && matches!(msg, Msg::Rebuilt { content: Some(_), .. })));
+}
+
+#[test]
+fn restored_home_rebuilds_wait_for_catch_up_including_unknown_object_communities() {
+    let (mut m, manifest, content, community, _) = home_rebuild_fixture();
+    let object = Id(manifest.object);
+    let home = m.n("home");
+    home.on_rebuild("phone", 80, &manifest.encode());
+    home.rebuilt_for("phone", 81, object, ScatterOutcome::Loaded(content.clone()));
+    home.deletions.saved.restored.insert(community, home.now());
+    home.deletions.dirty = true;
+    home.suppress_deleted_scatter();
+    assert!(!home.scatter.jobs.values().any(|job| matches!(job, crate::keep::Job::ForDevice { rid: 80, .. })));
+    home.on_rebuild("phone", 82, &manifest.encode());
+    let mut unknown = manifest.clone();
+    unknown.object = [91; 32];
+    home.on_rebuild("phone", 83, &unknown.encode());
+    let replies = home.take_outbox();
+    for rid in [80, 81, 82, 83] {
+        assert!(
+            replies.iter().any(|(peer, bytes)| peer == "phone" && matches!(Msg::decode(bytes), Ok(Msg::Rebuilt { rid: got, content: None }) if got == rid))
+        );
+    }
+    assert!(
+        !replies.iter().any(|(_, bytes)| matches!(Msg::decode(bytes), Ok(Msg::Piece { op: PieceOp::Get, .. }) | Ok(Msg::Rebuilt { content: Some(_), .. })))
+    );
+    home.deletion_private_caught_up(community);
+    home.on_rebuild("phone", 84, &manifest.encode());
+    m.log.clear();
+    m.pump();
+    assert!(
+        m.log
+            .iter()
+            .any(|(from, to, msg)| from == "home" && to == "phone" && matches!(msg, Msg::Rebuilt { rid: 84, content: Some(bytes) } if *bytes == content))
+    );
 }
 
 #[test]

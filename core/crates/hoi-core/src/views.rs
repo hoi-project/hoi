@@ -241,7 +241,9 @@ impl Node {
 
     /// Whether a record is shown here: visible author, and not held unless it's mine.
     pub(crate) fn shown(&self, s: &Stored, c: &Community) -> bool {
-        self.visible_author(&s.author_root, c) && (self.held(s).is_none() || Some(s.author_root) == self.me_root())
+        !self.deletion_restore_quarantined(s.record.community)
+            && self.visible_author(&s.author_root, c)
+            && (self.held(s).is_none() || Some(s.author_root) == self.me_root())
     }
 
     pub(crate) fn media_views(&self, s: &Stored) -> Vec<MediaView> {

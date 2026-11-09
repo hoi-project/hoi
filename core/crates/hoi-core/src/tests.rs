@@ -63,6 +63,11 @@ mod public_join;
 #[path = "tests/storage_compatibility.rs"]
 mod storage_compatibility;
 
+#[path = "tests/deletion.rs"]
+mod deletion;
+#[path = "tests/drop_share.rs"]
+mod drop_share;
+
 #[path = "tests/private_isolation.rs"]
 mod private_isolation;
 

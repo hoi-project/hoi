@@ -438,8 +438,9 @@ pub async fn dial(shared: Arc<Shared>, url: String, keep_going: Arc<dyn Fn() -> 
 
 /// Keeps mailboxes and pieces for others as the person's setting says (`hold_pieces_gb`, the
 /// desktop's switch under *Be a public node*): a store of its own at `path`, beside the database,
-/// opened with that budget and reopened when it changes. Off, the store is closed and its file
-/// deleted, so what this computer kept for others goes with it. Returns whether it holds now.
+/// opened with that budget and reopened when it changes. Off, payloads are removed and the store
+/// is closed; authorized-drop markers remain so re-enabling cannot replay acknowledged drops.
+/// Returns whether it holds now.
 /// `hoi-node` uses `--hold-pieces` instead and never calls this.
 pub fn sync_piece_store(shared: &Shared, path: &std::path::Path) -> Result<bool, String> {
     shared.with(|n| {
@@ -456,14 +457,10 @@ pub fn sync_piece_store(shared: &Shared, path: &std::path::Path) -> Result<bool,
             n.set_piece_store(None);
         }
         if want == 0 {
-            for suffix in ["", "-wal", "-shm", "-journal"] {
-                let mut file = path.as_os_str().to_owned();
-                file.push(suffix);
-                match std::fs::remove_file(&file) {
-                    Ok(()) => {}
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(e) => return Err(format!("Could not delete what this computer kept for others: {e}")),
-                }
+            if path.exists() {
+                // RFC-0001: turning storage off must not discard unexpired drop markers.
+                let mut store = hoi_store::pieces::SqlitePieces::restore(path, 0)?;
+                hoi_store::pieces::PieceStore::sweep(&mut store, (n.now() / 86_400) as u32)?;
             }
             return Ok(false);
         }
@@ -497,6 +494,7 @@ pub fn spawn_sweeper(shared: Arc<Shared>) -> tokio::task::JoinHandle<()> {
 mod tests {
     use super::*;
     use hoi_core::dto::{CommunityDraft, LimitsPatch, PostDraft};
+    use hoi_store::pieces::{PieceMeta, PieceStore, PutOutcome, SqlitePieces};
 
     #[test]
     fn a_desktop_keeps_mailboxes_for_others_only_while_its_owner_says_so() {
@@ -516,6 +514,14 @@ mod tests {
         set(hoi_core::dto::SettingsPatch { public_node: Some(true), ..Default::default() }).unwrap();
         assert_eq!(shared.with(|n| n.settings().hold_pieces_gb), 0.0, "turned off above, it stays off");
         set(hoi_core::dto::SettingsPatch { public_node: Some(true), hold_pieces_gb: Some(2.0), ..Default::default() }).unwrap();
+        let day = (hoi_core::system_clock()() / 86_400) as u32;
+        let meta = PieceMeta { expiry_day: day + 100, drop_hash: [1; 32], drop_key_id: [2; 16] };
+        {
+            let mut store = SqlitePieces::open(&path, 2_000_000_000).unwrap();
+            store.put(&[1; 32], meta, &[7; 100], day).unwrap();
+            store.mark_dropped(&[1; 32], day).unwrap();
+            store.put(&[2; 32], meta, &[8; 100], day).unwrap();
+        }
         assert!(sync_piece_store(&shared, &path).unwrap());
         assert!(path.exists());
         assert_eq!(shared.with(|n| n.stats().held_budget), 2_000_000_000);
@@ -527,11 +533,16 @@ mod tests {
         assert!(set(hoi_core::dto::SettingsPatch { hold_pieces_gb: Some(0.1), ..Default::default() }).is_err());
         let web = Shared::new(node("web"), Box::new(|_| {}));
         assert!(web.with(|n| n.set_settings(&hoi_core::dto::SettingsPatch { hold_pieces_gb: Some(2.0), ..Default::default() })).is_err());
-        // no longer a public node: off, and what it kept is deleted
+        // no longer a public node: off, payloads gone, the marker database retained
         set(hoi_core::dto::SettingsPatch { public_node: Some(false), ..Default::default() }).unwrap();
         assert!(!sync_piece_store(&shared, &path).unwrap());
         assert!(!shared.with(|n| n.holds_pieces()));
-        assert!(!path.exists());
+        assert!(path.exists());
+        {
+            let mut store = SqlitePieces::open(&path, 2_000_000_000).unwrap();
+            assert_eq!(store.get(&[2; 32], day).unwrap(), None, "turning holding off removes payloads");
+            assert_eq!(store.put(&[1; 32], meta, &[7; 100], day).unwrap(), PutOutcome::Dropped, "reopening keeps acknowledged drops suppressed");
+        }
         std::fs::remove_dir_all(dir).unwrap();
     }
 

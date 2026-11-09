@@ -705,7 +705,7 @@ expiry 7 days past the period's end, and open envelopes to the previous key unti
 *Messages:* `piece { o: op, r: rid, e: envelope, to? }`, `op` one of the eight envelope kinds,
 `rid` a u32 the answer repeats so the asker can pair it with its one-time key, `to` the holder's
 endpoint when the peer only forwards (S3; holders ignore such requests until then), `e` at most
-1 MiB + 1 KiB. Decoders now read up to 16 `fx` names; senders still send at most 8.
+1 MiB + 1 KiB. Decoders read and senders send at most 16 `fx` names.
 *Stamps:* `BLAKE3-derive-key("hoi scatter stamp v1")` over `holder[32] ‖ loc[32] ‖ u32(len) ‖
 u32(expiry day) ‖ u64(nonce)` must have `8 + ⌈log2(⌈len / 1024⌉)⌉` leading zero bits.
 *Holders* keep a piece under its locator with its expiry day, drop hash and drop key id; refuse
@@ -983,3 +983,100 @@ identity and blessings go first hand only to their own devices (paired clients, 
 and travel to others as what injected records carry, except a moderator's blessing for an open
 community's line, injected through that community; a home node injects its paired devices' new
 records as its own.
+
+### 21.1 Durable author deletion (RFC-0001)
+
+The contract is bounded, eventual deletion. A holder MUST reject replay after it has accepted
+an authorized drop, through the piece's original inclusive UTC expiry day. A holder that has
+not learned a deletion may still serve its existing piece. Catch-up with an uninformed peer
+does not prove freshness; there is no lease, global deletion ledger or promise of rejection
+throughout a partition. Expired signed content remains invalid after markers are collected.
+
+**Capability.** A file-backed holder with durable marker storage advertises `drop-journal` in
+Hello `fx`. Its holder key `sk` additionally carries optional `dj: bytes64`, the endpoint key's
+Ed25519 signature over:
+
+```
+"hoi/scatter-xk/1\n" ‖ endpoint[32] ‖ xk[32] ‖ u64(expires_at) ‖ 0x00 ‖ "drop-journal"
+```
+
+The expiry is big-endian, as in the ordinary holder-key statement. The ordinary `sk.s` signature
+is still required. Vouches preserve `dj` in `nodes.h[].k`, so a requester can verify the holder's
+own capability through forwarders. A missing, malformed or invalid `dj` establishes no durable
+capability; an ordinary holder-key signature, a forwarder's feature list and a release version
+cannot replace it. The proof must be unexpired when the request is sent. In-memory holders do
+not advertise this durability. Existing drop authentication and envelope layouts are unchanged.
+
+**Holder transaction.** After verifying the existing creator token or moderator signature,
+replace the payload with a marker atomically, and reply `dropped: 0` only after the write
+succeeds. The marker retains exactly these fields:
+
+| Field | Reason |
+| --- | --- |
+| `loc` | Refuse another put at the same locator |
+| `expiry_day` | Bound retention to the original piece's inclusive UTC day |
+| `drop_hash` | Authenticate repeated creator drops without retaining the token |
+| `drop_key_id` | Authenticate repeated moderator drops without retaining their signatures |
+
+No author/community identifier, content, raw token or signature is added to holder storage.
+Retaining `drop_key_id` preserves the existing correlation between pieces stored with that key.
+An authenticated repeat answers `dropped: 0` without extending retention; invalid authority
+answers `refused`. Neither a piece nor an unexpired marker means `unknown`, not durable erasure.
+Marked locators answer absence to `get`/`has`, and every put at them answers `refused`. Remove a
+marker only when `today > expiry_day`; use the stored day, not a record's second-level expiry.
+Reserve marker capacity when admitting pieces and never evict unexpired markers to admit more.
+
+**Progress and retries.** The requester commits the deletion record, local suppression and its
+known holder targets/capabilities before dispatch. It preserves unfinished work across restart
+and retries transient failures with bounded backoff under the existing routing rules. A full
+journal rejects new work rather than evicting unfinished jobs. Missing authority or unknown
+generations remain coverage gaps. Acknowledgement means a matching one-time-key reply to a
+request sent to a holder with a verified durable capability; an older holder's `dropped: 0`
+means legacy removal observed. `Unknown`, refused, unreachable and expired are distinct outcomes;
+timeout and expiry never prove erasure. Duplicate requests/replies cannot inflate counts.
+Local removal, record submission and holder acknowledgements are separate. Home-node submission
+does not transfer the originating device's responsibility or prove per-holder completion.
+
+New clients do not initiate legacy home-delegated scatter placements: that request format does
+not preserve origin correlation and deletion authority across an originating-device restart.
+They use local scatter when eligible, otherwise the existing whole-record delivery fallback.
+Legacy receivers and reply verification remain supported. While an already started legacy
+delegated placement is unresolved, a local author-delete request fails retryably before mutation
+rather than claim recoverable deletion; unknown legacy inventory remains an explicit gap.
+
+Deletion suppresses queued and in-flight repair. Already dispatched placements are retained as
+cleanup targets; their completion must not publish a replacement for deleted content. Other
+authors' live content and shared media referenced by it remain available. A deletion received
+before its target is bounded pending work, applied only after normal ownership validation.
+
+**Local storage compatibility.** The versioned client journal uses the existing persistence and
+vault boundary. It retains the signed deletion, target/author/community and expiry for
+dissemination and ownership; object IDs and coverage gaps for late repair; holder/locator/expiry
+and per-locator tokens for authorized retry; outcomes, attempt/retry times and publication state
+for progress. Tokens are discarded after acknowledgement or expiry. It retains no deleted body
+or object decryption key. Existing stores migrate without inventing prior acknowledgements.
+
+The SQLite holder schema uses `user_version = 1`, `held_pieces` and `dropped_pieces`, with
+`synchronous = FULL`. An incompatible sentinel at the former `pieces` table makes older
+implementations fail initialization rather than ignore markers. Unknown newer versions are
+refused. Turning holding off removes payloads while preserving unexpired markers. A supported
+holder snapshot restore uses `SqlitePieces::restore`: it discards all restored payloads before
+serving and preserves available markers. Direct disk rollback outside that path is outside the
+guarantee. Recipients, backups and malicious operators can retain copies; these acknowledgements
+are neither portable erasure receipts nor proof of physical erasure.
+
+Full member snapshots use the Rust `Node::open_restored` API. Public content is quarantined
+until ordinary synchronization applies the deletions available from that peer; this is not a
+global freshness proof. Private snapshots discard cached posts, comments, edits, pointers,
+associated repair manifests/capabilities, partial media and queued encrypted content before
+serving. Media with surviving references is retained, as are signed deletions, their jobs,
+skeletons and identity/membership records. Any still-unrecorded deletion authority must enter
+its job before cache disposal; insufficient capacity or unresolved shared references refuse
+restoration without discarding that authority. Cache disposal creates no author tombstones, so
+fresh authenticated delivery can recover still-valid content. Private output stays quarantined
+until an accepted fresh authenticated join; a bootstrap alone is not historical catch-up.
+An already active restored MLS membership has no general reset/rejoin operation, so it remains
+quarantined. Usable recovery in that case requires a fresh device and an authorized private join.
+These are Rust snapshot-restoration APIs, not a shipped backup import UI or command. Key-file
+import and recovery-line restoration are separate identity recovery paths and contain no MLS
+snapshot state. Ordinary restarts continue to use `Node::open` and retain their caches.
