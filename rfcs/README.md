@@ -47,3 +47,4 @@ merged.
 | [0003](0003-safe-local-cleanup.md)    | Safe local cleanup | proposed |
 | [0004](0004-holder-privacy-validation.md) | Holder privacy validation | proposed |
 | [0005](0005-scatter-failure-validation.md) | Scatter failure validation | proposed |
+| [0006](0006-node-verification.md)    | Node declarations and verification | proposed |
