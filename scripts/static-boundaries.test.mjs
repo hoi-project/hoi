@@ -1,7 +1,68 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import hardening from '../packages/vite-plugin-hardening/index.js';
 const read = path => readFileSync(new URL('../' + path, import.meta.url), 'utf8');
+
+function hardenedPage(source, options = {}) {
+  const bundle = { 'index.html': { type: 'asset', source } };
+  hardening({ sri: false, ...options }).generateBundle.handler({}, bundle);
+  return bundle['index.html'].source;
+}
+
+test('CSP documentation and examples never suppress the production policy', () => {
+  for (const example of [
+    '<p>Content-Security-Policy keeps the website safe.</p>',
+    '<code>&lt;meta http-equiv="Content-Security-Policy"&gt;</code>',
+    '<!-- <meta http-equiv="Content-Security-Policy" content="default-src *"> -->',
+  ]) {
+    const html = hardenedPage(`<html><head><title>CSP</title></head><body>${example}</body></html>`);
+    assert.match(html, /<head>\s*<meta http-equiv="Content-Security-Policy" content="default-src 'self';/);
+  }
+  for (const example of [
+    '<meta name="description" content="An http-equiv=\'Content-Security-Policy\' example">',
+    '<!-- <meta http-equiv="Content-Security-Policy"> -->',
+    '<script>const example = \'<meta http-equiv="Content-Security-Policy">\';</script>',
+    '<style>/* <meta http-equiv="Content-Security-Policy"> */</style>',
+    '<title><meta http-equiv="Content-Security-Policy"></title>',
+    '<template><template></template><meta http-equiv="Content-Security-Policy"></template>',
+  ]) {
+    assert.match(hardenedPage(`<html><head>${example}</head><body></body></html>`), /<head>\s*<meta http-equiv="Content-Security-Policy" content="default-src 'self';/);
+  }
+  assert.match(hardenedPage('<html><head data-theme="dark"></head><body></body></html>'), /<head data-theme="dark">\s*<meta http-equiv="Content-Security-Policy"/);
+});
+
+test('CSP detection never joins separate HTML fragments into a policy tag', () => {
+  for (const separator of ['<!-- example -->', '<script></script>', '<style></style>', '<title></title>']) {
+    const fragment = `<me${separator}ta http-equiv="Content-Security-Policy">`;
+    assert.match(hardenedPage(`<html><head>${fragment}</head><body></body></html>`), /<head>\s*<meta http-equiv="Content-Security-Policy" content="default-src 'self';/);
+  }
+});
+
+test('unclosed comments and raw-text elements cannot supply a policy meta', () => {
+  for (const opening of ['<!--', '<script>', '<style>', '<title>']) {
+    const html = `<html><head>${opening}<meta http-equiv="Content-Security-Policy"></head><body></body></html>`;
+    assert.match(hardenedPage(html), /<head>\s*<meta http-equiv="Content-Security-Policy" content="default-src 'self';/);
+  }
+});
+
+test('hardening preserves an existing policy meta in the head, including HTML attribute variants', () => {
+  for (const meta of [
+    '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'">',
+    "<META content=\"default-src 'none'\" HTTP-EQUIV = 'content-security-policy'>",
+    '<meta http-equiv=Content-Security-Policy content="default-src \'none\'">',
+  ]) {
+    const html = `<html><head>${meta}</head><body></body></html>`;
+    assert.equal(hardenedPage(html), html);
+  }
+  const html = '<html><head></head><body>Content-Security-Policy</body></html>';
+  assert.equal(hardenedPage(html, { csp: false }), html);
+});
+
+test('CSP detection does not treat head boundaries inside attributes as markup', () => {
+  const html = '<html><head><meta name="description" content="A </head> example"><meta http-equiv="Content-Security-Policy" content="default-src \'none\'"></head><body></body></html>';
+  assert.equal(hardenedPage(html), html);
+});
 
 test('static deployment cannot start a registry, relay or peer', () => {
   const workflow = read('.github/workflows/website.yml').replace(/^\s*#.*$/gm, '');

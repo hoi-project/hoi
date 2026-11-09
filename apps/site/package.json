@@ -9,7 +9,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "check": "tsc -p tsconfig.json",
-    "test:e2e": "node scripts/e2e.mjs"
+    "test:e2e": "node scripts/e2e.mjs",
+    "test:e2e:csp": "node scripts/e2e-csp.mjs"
   },
   "dependencies": {
     "@hoi/tokens": "workspace:*",

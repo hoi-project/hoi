@@ -13,19 +13,13 @@ import { fileURLToPath } from 'node:url';
 const any = (paths, patterns) => paths.some((path) => patterns.some((pattern) => pattern.test(path)));
 const RUST = [/^core\//, /^vendor\//, /^\.github\/workflows\/ci\.yml$/, /^scripts\/ci-changes\.mjs$/];
 const WEB = [/^apps\//, /^packages\//, /^design\/tokens\//, /^vendor\//, /^package\.json$/, /^pnpm-(lock|workspace)\.yaml$/, /^release\.json$/, /^publication\.json$/, /^\.github\/workflows\/ci\.yml$/, /^scripts\/ci-changes\.mjs$/];
-const SCRIPTS = [/\.(m?js|ts|svelte)$/];
 const DEPS = [/(^|\/)Cargo\.(toml|lock)$/, /(^|\/)deny\.toml$/, /^core\/supply-chain\//, /^vendor\//, /^package\.json$/, /(^|\/)package\.json$/, /^pnpm-(lock|workspace)\.yaml$/, /^scripts\/check-dependency-security/, /^\.github\/workflows\/security\.yml$/];
 const WORKFLOWS = [/^\.github\//];
 
 /** The job switches for a list of changed paths, or `null` (run everything). */
 export function classify(paths) {
-  if (paths === null) return { rust: true, web: true, deps: true, workflows: true, codeql: ['actions', 'javascript-typescript', 'rust'] };
-  const result = { rust: any(paths, RUST), web: any(paths, WEB), deps: any(paths, DEPS), workflows: any(paths, WORKFLOWS) };
-  const codeql = [];
-  if (result.workflows) codeql.push('actions');
-  if (result.web || any(paths, SCRIPTS)) codeql.push('javascript-typescript');
-  if (result.rust) codeql.push('rust');
-  return { ...result, codeql };
+  if (paths === null) return { rust: true, web: true, deps: true, workflows: true };
+  return { rust: any(paths, RUST), web: any(paths, WEB), deps: any(paths, DEPS), workflows: any(paths, WORKFLOWS) };
 }
 
 function git(...args) {
@@ -49,7 +43,7 @@ export function changedPaths(env = process.env) {
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const paths = changedPaths();
   const result = classify(paths);
-  const lines = Object.entries(result).map(([key, value]) => `${key}=${Array.isArray(value) ? JSON.stringify(value) : value}`);
+  const lines = Object.entries(result).map(([key, value]) => `${key}=${value}`);
   if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `${lines.join('\n')}\n`);
   console.log(paths === null ? 'Checking everything (no comparable base).' : `${paths.length} changed path(s).`);
   console.log(lines.join('\n'));

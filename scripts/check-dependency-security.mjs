@@ -18,6 +18,13 @@ export function dependencySecurityErrors(lock, label = 'Cargo.lock') {
       errors.push(`${label}: crypto-bigint ${entry.version} fails RUSTSEC-2026-0387; require >=0.7.6 without a prerelease.`);
     }
   }
+  // rusqlite's bundled feature ships this SQLite source in the node and desktop app.
+  for (const entry of packages.filter((entry) => entry.name === 'libsqlite3-sys')) {
+    const version = /^(\d+)\.(\d+)\.(\d+)$/.exec(entry.version ?? '');
+    if (!version || (Number(version[1]) === 0 && Number(version[2]) < 39)) {
+      errors.push(`${label}: libsqlite3-sys ${entry.version} fails RUSTSEC-2026-0459; require >=0.39.0 without a prerelease.`);
+    }
+  }
   if (packages.some((entry) => entry.name === 'proc-macro-error2')) errors.push(`${label}: proc-macro-error2 reintroduces RUSTSEC-2026-0173.`);
   if (packages.some((entry) => entry.name === 'async-executor' && entry.version === '1.14.0')) {
     errors.push(`${label}: async-executor 1.14.0 was yanked for a use-after-free; require the fixed 1.14.1 release or newer.`);
