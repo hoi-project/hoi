@@ -1,6 +1,6 @@
 {
   "name": "@hoi/desktop",
-  "version": "1.0.0-preview.2",
+  "version": "1.0.0-preview.3",
   "private": true,
   "type": "module",
   "description": "hoi desktop companion: the web UI in a Tauri 2 shell with the native core. Full peer and home node for your phone and browser.",

@@ -16,6 +16,7 @@ on:
         default: "Current version"
         options:
           - "Current version"
+          - v1.0.0-preview.3
           - v1.0.0-preview.2
           - v1.0.0-preview.1
       action:

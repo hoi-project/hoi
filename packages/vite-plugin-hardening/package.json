@@ -1,6 +1,6 @@
 {
   "name": "@hoi/vite-plugin-hardening",
-  "version": "1.0.0-preview.2",
+  "version": "1.0.0-preview.3",
   "private": true,
   "type": "module",
   "description": "Build-time CSP meta tag and Subresource Integrity for hoi's static sites (TECHNICAL.md §11).",

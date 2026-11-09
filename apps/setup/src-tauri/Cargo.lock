@@ -1907,7 +1907,7 @@ dependencies = [
 
 [[package]]
 name = "hoi-setup"
-version = "1.0.0-preview.2"
+version = "1.0.0-preview.3"
 dependencies = [
  "hoi-setup-engine",
  "serde",
@@ -1921,7 +1921,7 @@ dependencies = [
 
 [[package]]
 name = "hoi-setup-engine"
-version = "1.0.0-preview.2"
+version = "1.0.0-preview.3"
 dependencies = [
  "russh",
  "serde",
