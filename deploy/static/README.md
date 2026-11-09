@@ -46,8 +46,17 @@ COOP), for hosts that read that file (Netlify and similar).
    site and app. Long tests belong to major releases; see [CI](../../docs/CI.md).
    The workflow builds with no registry and no relay, whatever other variables say.
 
-GitHub Pages sends no custom headers, so `frame-ancestors`, `nosniff` and COOP are not
-enforced there; the CSP and the referrer policy are, from the pages themselves.
+Publishing a draft GitHub Release also starts **Website**. It downloads `manifest.json`
+and `manifest.json.minisig` from the newest published release (including prereleases,
+excluding drafts), verifies them against `manifestKey` with `scripts/release-site-list.mjs`,
+and includes both in one Pages deployment under `/releases/`. Binaries stay on GitHub
+Releases by default; see [Build and sign](../../docs/RELEASES.md#build-and-sign).
+The checked-in `publication.json` serves this metadata at `https://hoi.sh/releases`, on
+the website's own origin, so website requests for it need no CORS configuration.
+
+GitHub Pages ignores `_headers` and does not support custom response headers, so
+`frame-ancestors`, `nosniff` and COOP are not enforced there; the CSP and the referrer policy
+are, from the pages themselves.
 
 **Search engines.** The website is meant to be found, preview or not: every page names its
 canonical address, `robots.txt` allows everything and points at `sitemap.xml`, which lists the
@@ -56,8 +65,13 @@ copy lives on another domain. A preview app keeps itself out of search results w
 `<meta>` (and `X-Robots-Tag` in `_headers`). The link preview image is `apps/site/public/og.png`;
 `node apps/site/scripts/og-image.mjs` redraws it.
 
-**Anywhere else.** Upload `dist/` as it is. Serve `install.sh` and `install.ps1` as plain text
-and don't cache them, and don't cache `/release.json` or `/releases/`.
+**Anywhere else.** Upload `dist/` as it is. For hosts that honor `_headers`, the generated
+rules use `Cache-Control: no-store` for `/release.json`, `no-cache` (revalidate before reuse)
+for `/releases/*` and the installers, and `public, max-age=31536000, immutable` for hashed
+`/assets/*`. The installers are served as plain text. Configure equivalent rules if your
+host does not read `_headers`; these rules do not apply on GitHub Pages. If you host release
+metadata on a different origin from the consuming app or website, that metadata host must
+allow those origins through CORS; see [Configure publication](../../docs/RELEASES.md#configure-publication).
 
 ## Nothing to configure
 
