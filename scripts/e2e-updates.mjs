@@ -4,18 +4,13 @@ import { createRequire } from 'node:module';
 import { mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { chromium } from 'playwright';
-import { createServer } from '../apps/web/node_modules/vite/dist/node/index.js';
+import { startComponentServer } from './e2e-component-server.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 const axe = createRequire(import.meta.url).resolve('axe-core/axe.min.js');
 const shots = resolve(root, 'test-results/49-updates');
 mkdirSync(shots, { recursive: true });
-const server = await createServer({ root: resolve(root, 'apps/web'), logLevel: 'error', server: { host: '127.0.0.1', port: 0, hmr: false }, plugins: [{
-  name: 'updates-test-page',
-  configureServer(server) {
-    server.middlewares.use('/updates-test', async (_req, res) => {
-      res.setHeader('Content-Type', 'text/html');
-      res.end(await server.transformIndexHtml('/updates-test', `<!doctype html><html lang="en"><title>Update controls</title>
+const { server, origin } = await startComponentServer('/updates-test', `<!doctype html><html lang="en"><title>Update controls</title>
         <main class="gutter"><h1>Device settings</h1><div id="component"></div></main>
         <script type="module">
           import { mount } from 'svelte';
@@ -28,12 +23,7 @@ const server = await createServer({ root: resolve(root, 'apps/web'), logLevel: '
           PUBLICATION.downloads = '';
           window.testUpdates.sw = sw;
           mount(Updates, { target: document.querySelector('#component') });
-        </script></html>`));
-    });
-  },
-}] });
-await server.listen();
-const origin = `http://127.0.0.1:${server.httpServer.address().port}`;
+        </script></html>`);
 let browser;
 const errors = [];
 try {
@@ -43,16 +33,19 @@ try {
     await context.addInitScript(({ desktop }) => {
       const state = window.testUpdates = { result: 'current', failDownload: false, calls: [], pending: null };
       if (!desktop) return;
+      const pendingCommand = () => new Promise(resolve => {
+        state.pending = () => { state.pending = null; resolve(); };
+      });
       window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener() {} };
       window.__TAURI_INTERNALS__ = { transformCallback: () => 42, invoke: async command => {
         state.calls.push(command);
         if (command.startsWith('plugin:event|')) return 1;
         if (command === 'hoi_update_check') {
-          await new Promise(resolve => { state.pending = resolve; });
+          await pendingCommand();
           return { state: state.result, version: '2.0.0', message: 'Release information is ready.' };
         }
         if (command === 'hoi_update_download') {
-          await new Promise(resolve => { state.pending = resolve; });
+          await pendingCommand();
           if (state.failDownload) throw 'The update signature did not verify.';
           return;
         }
@@ -60,6 +53,11 @@ try {
       } };
     }, { desktop });
     const page = await context.newPage();
+    const completeCommand = async () => {
+      // Rendering the busy label can precede the native invocation's async import.
+      await page.waitForFunction(() => window.testUpdates.pending !== null);
+      await page.evaluate(() => window.testUpdates.pending());
+    };
     page.on('pageerror', error => errors.push(error.message));
     await page.route('**/*', route => new URL(route.request().url()).origin === origin ? route.continue() : route.abort());
     await page.goto(`${origin}/updates-test`);
@@ -98,13 +96,13 @@ try {
       await status.getByText('Checking for updates…', { exact: true }).waitFor();
       assert.equal(await check.isDisabled(), true);
       await layout();
-      await page.evaluate(() => window.testUpdates.pending());
+      await completeCommand();
       await status.getByText(/This app is up to date/).waitFor();
       await layout();
       await page.evaluate(() => window.testUpdates.result = 'available');
       await check.click();
       await status.getByText('Checking for updates…', { exact: true }).waitFor();
-      await page.evaluate(() => window.testUpdates.pending());
+      await completeCommand();
       const download = panel.getByRole('button', { name: 'Download and verify 2.0.0', exact: true });
       await download.waitFor();
       await layout();
@@ -112,15 +110,13 @@ try {
       await download.click();
       await panel.getByRole('progressbar', { name: 'Update download' }).waitFor();
       await layout();
-      await page.waitForFunction(() => window.testUpdates.calls.includes('hoi_update_download'));
-      await page.evaluate(() => window.testUpdates.pending());
+      await completeCommand();
       await panel.getByRole('alert').filter({ hasText: 'signature did not verify' }).waitFor();
       await layout();
       assert.equal(await panel.getByRole('button', { name: 'Install and restart' }).count(), 0);
-      await page.evaluate(() => { window.testUpdates.failDownload = false; window.testUpdates.pending = null; });
+      await page.evaluate(() => window.testUpdates.failDownload = false);
       await download.click();
-      await page.waitForFunction(() => window.testUpdates.pending !== null);
-      await page.evaluate(() => window.testUpdates.pending());
+      await completeCommand();
       await panel.getByRole('button', { name: 'Install and restart' }).waitFor();
       await layout();
       assert.equal(await page.evaluate(() => window.testUpdates.calls.includes('hoi_update_install')), false, 'verified downloads never install automatically');

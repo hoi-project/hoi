@@ -3,16 +3,11 @@ import assert from 'node:assert/strict';
 import { mkdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { chromium } from 'playwright';
-import { createServer } from '../apps/web/node_modules/vite/dist/node/index.js';
+import { startComponentServer } from './e2e-component-server.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 process.env.VITE_HOI_BACKEND = 'mock';
-const server = await createServer({ root: resolve(root, 'apps/web'), logLevel: 'error', server: { host: '127.0.0.1', port: 0, hmr: false }, plugins: [{
-  name: 'browser-address-test-page',
-  configureServer(server) {
-    server.middlewares.use('/browser-address-test', async (_req, res) => {
-      res.setHeader('Content-Type', 'text/html');
-      res.end(await server.transformIndexHtml('/browser-address-test', `<!doctype html><html lang="en"><title>Connection address test</title>
+const { server, origin } = await startComponentServer('/browser-address-test', `<!doctype html><html lang="en"><title>Connection address test</title>
         <main id="fixture" class="gutter"></main>
         <script type="module">
           import { mount } from 'svelte';
@@ -28,12 +23,7 @@ const server = await createServer({ root: resolve(root, 'apps/web'), logLevel: '
           app.net = { ...app.net, connections: [], peers: 0 };
           window.addressFixture = { app };
           mount(You, { target: document.querySelector('#fixture') });
-        </script></html>`));
-    });
-  },
-}] });
-await server.listen();
-const origin = `http://127.0.0.1:${server.httpServer.address().port}`;
+        </script></html>`);
 let browser;
 const errors = [];
 const externalRequests = [];
