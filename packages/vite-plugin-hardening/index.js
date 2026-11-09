@@ -11,6 +11,26 @@ export function cspString(directives) {
     .join('; ');
 }
 
+function hasCspMeta(html) {
+  // Documentation, comments and script strings can mention CSP without enforcing one.
+  const markup = html.replace(/<!--[\s\S]*?-->|<(script|style|title)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, '');
+  const head = markup.match(/<head\b[^>]*>([\s\S]*?)<\/head\s*>/i)?.[1] ?? '';
+  let templateDepth = 0;
+  for (const [tag, closing, tagName] of head.matchAll(/<(\/?)([a-z][\w:-]*)\b(?:[^"'<>]|"[^"]*"|'[^']*')*>/gi)) {
+    if (tagName.toLowerCase() === 'template') {
+      templateDepth = Math.max(0, templateDepth + (closing ? -1 : 1));
+      continue;
+    }
+    if (closing || templateDepth || tagName.toLowerCase() !== 'meta') continue;
+    // Consume complete attribute values so a quoted example isn't mistaken for http-equiv.
+    for (const [, name, doubleQuoted, singleQuoted, unquoted] of tag.matchAll(/\s([^\s=<>/"']+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g)) {
+      const value = doubleQuoted ?? singleQuoted ?? unquoted ?? '';
+      if (name.toLowerCase() === 'http-equiv' && value.toLowerCase() === 'content-security-policy') return true;
+    }
+  }
+  return false;
+}
+
 /**
  * @param {{ csp?: Record<string, string[]> | false, sri?: boolean }} [opts]
  * @returns {import('vite').Plugin}
@@ -48,8 +68,8 @@ export default function hardening(opts = {}) {
       for (const [fileName, item] of Object.entries(bundle)) {
         if (item.type !== 'asset' || !fileName.endsWith('.html')) continue;
         let html = typeof item.source === 'string' ? item.source : Buffer.from(item.source).toString('utf8');
-        if (csp && !html.includes('Content-Security-Policy')) {
-          html = html.replace(/<head>/i, `<head>\n    <meta http-equiv="Content-Security-Policy" content="${csp}">`);
+        if (csp && !hasCspMeta(html)) {
+          html = html.replace(/<head\b[^>]*>/i, (head) => `${head}\n    <meta http-equiv="Content-Security-Policy" content="${csp}">`);
         }
         if (sri) {
           html = html.replace(/<(script|link)\b([^>]*?)(\/?)>/gi, (tag, name, attrs, slash) => {
