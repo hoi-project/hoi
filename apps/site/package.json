@@ -1,6 +1,6 @@
 {
   "name": "@hoi/site",
-  "version": "1.0.0-preview.2",
+  "version": "1.0.0-preview.3",
   "private": true,
   "type": "module",
   "description": "hoi.sh, the static website: the only thing the project hosts.",

@@ -2147,7 +2147,7 @@ dependencies = [
 
 [[package]]
 name = "hoi-core"
-version = "1.0.0-preview.2"
+version = "1.0.0-preview.3"
 dependencies = [
  "blake3",
  "getrandom 0.2.17",
@@ -2176,7 +2176,7 @@ dependencies = [
 
 [[package]]
 name = "hoi-crypto"
-version = "1.0.0-preview.2"
+version = "1.0.0-preview.3"
 dependencies = [
  "argon2",
  "blake3",
@@ -2197,7 +2197,7 @@ dependencies = [
 
 [[package]]
 name = "hoi-ffi"
-version = "1.0.0-preview.2"
+version = "1.0.0-preview.3"
 dependencies = [
  "hoi-core",
  "hoi-crypto",
@@ -2211,7 +2211,7 @@ dependencies = [
 
 [[package]]
 name = "hoi-moderation"
-version = "1.0.0-preview.2"
+version = "1.0.0-preview.3"
 dependencies = [
  "hoi-crypto",
  "hoi-types",
@@ -2220,7 +2220,7 @@ dependencies = [
 
 [[package]]
 name = "hoi-net"
-version = "1.0.0-preview.2"
+version = "1.0.0-preview.3"
 dependencies = [
  "aes 0.8.4",
  "aes-gcm 0.10.3",
@@ -2256,7 +2256,7 @@ dependencies = [
 
 [[package]]
 name = "hoi-node"
-version = "1.0.0-preview.2"
+version = "1.0.0-preview.3"
 dependencies = [
  "hoi-core",
  "hoi-crypto",
@@ -2282,7 +2282,7 @@ dependencies = [
 
 [[package]]
 name = "hoi-sim"
-version = "1.0.0-preview.2"
+version = "1.0.0-preview.3"
 dependencies = [
  "futures-util",
  "hoi-core",
@@ -2301,14 +2301,14 @@ dependencies = [
 
 [[package]]
 name = "hoi-spam"
-version = "1.0.0-preview.2"
+version = "1.0.0-preview.3"
 dependencies = [
  "hoi-types",
 ]
 
 [[package]]
 name = "hoi-store"
-version = "1.0.0-preview.2"
+version = "1.0.0-preview.3"
 dependencies = [
  "hoi-crypto",
  "hoi-types",
@@ -2318,7 +2318,7 @@ dependencies = [
 
 [[package]]
 name = "hoi-sync"
-version = "1.0.0-preview.2"
+version = "1.0.0-preview.3"
 dependencies = [
  "blake3",
  "hoi-types",
@@ -2326,11 +2326,11 @@ dependencies = [
 
 [[package]]
 name = "hoi-trust"
-version = "1.0.0-preview.2"
+version = "1.0.0-preview.3"
 
 [[package]]
 name = "hoi-types"
-version = "1.0.0-preview.2"
+version = "1.0.0-preview.3"
 dependencies = [
  "base64 0.23.1",
  "blake3",
@@ -2345,7 +2345,7 @@ dependencies = [
 
 [[package]]
 name = "hoi-validate"
-version = "1.0.0-preview.2"
+version = "1.0.0-preview.3"
 dependencies = [
  "blake3",
  "hoi-crypto",
@@ -2360,7 +2360,7 @@ dependencies = [
 
 [[package]]
 name = "hoi-wasm"
-version = "1.0.0-preview.2"
+version = "1.0.0-preview.3"
 dependencies = [
  "getrandom 0.4.3",
  "hoi-core",
