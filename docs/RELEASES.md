@@ -186,8 +186,10 @@ desktop setting, and links the reused run in the summary. Missing or mismatched 
 cannot skip checks. If no matching passed run exists, choose **Build**. API or permission
 errors stop recovery rather than starting expensive suites unexpectedly.
 
-Draft creation uses the ID returned by GitHub, so a pending `untagged-...` URL does
-not require finding the new draft in a release listing. The verified tag pins the source;
+Draft creation and asset transfers use the ID returned by GitHub, so a pending
+`untagged-...` tag does not break uploads or manifest downloads. Recovery finds pending
+drafts by their release name, then checks the recorded source before reusing assets.
+The verified tag pins the source;
 a hidden note in the release body records that commit for subsequent retries. Recovery
 can bind an empty interrupted draft or reuse a draft with the same source note. It does
 not change `target_commitish`, which can require workflow permissions unavailable to
@@ -203,6 +205,13 @@ GitHub release turns into `hoi.Node.Setup_`, and `hoi-node-setup_` from local bu
 manual runs, turn off `desktop` to build only hoi-node; it leaves out the setup app too. Builds and tests are separate: even a patch needs
 to compile the requested binaries.
 
+The full SemVer version is kept in the binaries, updater metadata and release manifest.
+Prereleases such as `1.0.0-preview.2` build Linux Debian and AppImage bundles; the pinned
+Tauri bundler passes that version unchanged to RPM, which rejects the hyphen and offers
+no separate RPM version setting. An explicit `--bundles rpm` request fails before building.
+Windows prereleases with nonnumeric identifiers similarly build NSIS instead of MSI.
+Stable versions retain RPM and MSI bundles.
+
 Required secrets, in the `release` environment (deployments from `v*` tags and `main` only):
 
 - `MINISIGN_SECRET_KEY` (base64 secret-key file) and `MINISIGN_PASSWORD`.
@@ -215,7 +224,9 @@ Required secrets, in the `release` environment (deployments from `v*` tags and `
   `WINDOWS_CERTIFICATE` (base64 PFX) and `WINDOWS_CERTIFICATE_PASSWORD`.
 
 `HOI_ALLOW_UNSIGNED_INSTALLERS=true` deliberately allows unsigned installers, with
-a warning in the draft notes. The minisign manifest remains mandatory.
+a warning in the draft notes. Empty Apple credentials are omitted before invoking Tauri,
+so absent secrets do not trigger certificate import. Configured credentials still undergo
+Tauri's signing checks. The minisign manifest remains mandatory.
 
 Artifacts, SHA-256 manifest and signature are uploaded to a **draft** release.
 The preview channel sets GitHub's pre-release flag automatically, including numeric

@@ -163,6 +163,21 @@ test('invalid arguments fail before editing any file', t => {
   }
 });
 
+test('versions rejected by late release consumers fail preparation and checks without writes', t => {
+  const { base, snapshot, cli } = fixture(t);
+  const before = snapshot();
+  for (const version of [`1.0.0-${'a'.repeat(95)}`, '18446744073709551616.0.0',
+    '1.18446744073709551616.0', '1.0.18446744073709551616']) {
+    assert.throws(() => planVersion(version, {}, base), /Invalid release version/);
+    assert.throws(() => checkVersion(version, base), /Invalid release version/);
+    assert.notEqual(cli(version).status, 0);
+    assert.notEqual(cli('--check', `v${version}`).status, 0);
+    assert.deepEqual(snapshot(), before);
+  }
+  applyVersion(planVersion('1.0.0-preview.2', {}, base), base);
+  assert.equal(checkVersion('v1.0.0-preview.2', base).version, '1.0.0-preview.2');
+});
+
 test('a malformed late manifest prevents any earlier version writes', t => {
   const { base, snapshot, cli } = fixture(t);
   writeFileSync(join(base, 'apps/desktop/src-tauri/tauri.conf.json'), '{broken');
