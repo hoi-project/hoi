@@ -4,6 +4,7 @@ import '@hoi/tokens/fonts.css';
 import '@hoi/tokens/tokens.css';
 import './styles/site.css';
 import { animate, onScroll, stagger } from 'animejs';
+import { detectOS } from './platform';
 // Release notices are built into these informational pages; no background polling.
 
 export const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -29,48 +30,88 @@ export function announce(text: string): void {
   window.setTimeout(() => { if (live) live.textContent = text; }, 30);
 }
 
-function copySource(btn: HTMLElement): { text: string; node: Element | null } {
-  if (btn.dataset.copyText) return { text: btn.dataset.copyText, node: null };
-  const pre = btn.closest('.code')?.querySelector('pre') ?? null;
-  if (!pre) return { text: '', node: null };
-  // Leave out the explanatory comments (.c); copy just the commands.
-  const clone = pre.cloneNode(true) as HTMLElement;
-  clone.querySelectorAll('.c').forEach((c) => c.remove());
-  const text = (clone.textContent ?? '')
-    .split('\n')
-    .map((l) => l.trimEnd())
-    .filter((l) => l.trim() !== '')
-    .join('\n');
-  return { text, node: pre };
+// A copy counts only when the browser fires its `copy` event. Some extensions intercept copying
+// and answer as if they had copied when they did not: uBlock Origin's ClickFix filter does this
+// for any page that copies a command such as `irm … | iex`. The button copies the text it shows,
+// as the reader would by hand, so a blocker sees exactly what is copied and a blocked copy stays
+// blocked. Then the text is left selected and the button says which keys copy it.
+const COPY_KEYS = /^(macos|ios)$/.test(detectOS() ?? '') ? '\u2318C' : 'Ctrl+C';
+
+/** The text a copy button copies: its code block, or the code beside it (a checksum). */
+function copyTarget(btn: HTMLElement): HTMLElement | null {
+  return btn.closest('.code, .wk-code')?.querySelector<HTMLElement>('pre code, pre')
+    ?? btn.parentElement?.querySelector<HTMLElement>('code') ?? null;
 }
 
-async function copy(btn: HTMLElement): Promise<void> {
-  const { text, node } = copySource(btn);
-  if (!text) return;
+/** Select el's text and copy it. 'copied' only if the browser fired its copy event; 'blocked' if
+ * the copy command ran without one; 'unsupported' if the command is missing or refused. */
+function copySelection(el: HTMLElement): 'copied' | 'blocked' | 'unsupported' {
+  const sel = window.getSelection();
+  if (!sel) return 'unsupported';
+  const range = document.createRange();
+  range.selectNodeContents(el);
+  sel.removeAllRanges();
+  sel.addRange(range);
+  // Without the final line break, so a pasted command waits for Enter.
+  const text = sel.toString().replace(/\s+$/, '');
+  let copied = false;
+  const onCopy = (e: ClipboardEvent) => {
+    copied = true;
+    // Plain text, exactly what is selected: no formatting pasted into a terminal.
+    if (e.clipboardData) {
+      e.clipboardData.setData('text/plain', text);
+      e.preventDefault();
+    }
+  };
+  document.addEventListener('copy', onCopy, { capture: true });
+  let ran = false;
+  try {
+    ran = document.execCommand('copy');
+  } catch {
+    ran = false;
+  }
+  document.removeEventListener('copy', onCopy, { capture: true });
+  if (copied) return 'copied';
+  return ran ? 'blocked' : 'unsupported';
+}
+
+const timers = new WeakMap<HTMLElement, number>();
+/** Copy what btn belongs to and say how it went, on the button, beside the text and to screen readers. */
+export async function copyFrom(btn: HTMLElement): Promise<void> {
+  const target = copyTarget(btn);
+  if (!target) return;
   const label = btn.dataset.label ?? (btn.textContent || 'Copy');
   btn.dataset.label = label;
-  try {
-    await navigator.clipboard.writeText(text);
+  let result = copySelection(target);
+  if (result === 'unsupported' && navigator.clipboard?.writeText) {
+    // Only where the copy command itself is missing; it cannot confirm the copy, so it comes second.
+    result = await navigator.clipboard.writeText((target.textContent ?? '').replace(/\s+$/, '')).then(() => 'copied' as const, () => 'blocked' as const);
+  }
+  const box = btn.closest('.code, .wk-code, .sha');
+  box?.querySelector('.copy-note')?.remove();
+  if (result === 'copied') {
+    window.getSelection()?.removeAllRanges();
     btn.textContent = 'Copied';
+    btn.classList.remove('manual');
     btn.classList.add('done');
     announce('Copied to the clipboard');
-  } catch {
-    // No clipboard access (insecure context, permissions): select it so Ctrl+C / ⌘C works.
-    const target = node ?? btn.parentElement?.querySelector('code') ?? null;
-    if (target) {
-      const range = document.createRange();
-      range.selectNodeContents(target);
-      const sel = window.getSelection();
-      sel?.removeAllRanges();
-      sel?.addRange(range);
-    }
-    btn.textContent = 'Selected';
-    announce('Selected. Press Control C or Command C to copy.');
-  }
-  window.setTimeout(() => {
-    btn.textContent = label;
+  } else {
+    btn.textContent = `Press ${COPY_KEYS}`;
     btn.classList.remove('done');
-  }, 1600);
+    btn.classList.add('manual');
+    if (box) {
+      const note = document.createElement('p');
+      note.className = 'copy-note';
+      note.textContent = `Not copied: the browser or an extension blocked it. The text is selected, so press ${COPY_KEYS} to copy it.`;
+      box.appendChild(note);
+    }
+    announce(`Not copied. The text is selected: press ${COPY_KEYS === 'Ctrl+C' ? 'Control C' : 'Command C'} to copy it.`);
+  }
+  window.clearTimeout(timers.get(btn));
+  timers.set(btn, window.setTimeout(() => {
+    btn.textContent = label;
+    btn.classList.remove('done', 'manual');
+  }, result === 'copied' ? 1600 : 6000));
 }
 
 /** Wire every `[data-copy]` button under root (idempotent). */
@@ -78,7 +119,7 @@ export function wireCopyButtons(root: ParentNode = document): void {
   $$<HTMLButtonElement>('button[data-copy]', root).forEach((btn) => {
     if (btn.dataset.wired) return;
     btn.dataset.wired = '1';
-    btn.addEventListener('click', () => void copy(btn));
+    btn.addEventListener('click', () => void copyFrom(btn));
   });
 }
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Browser checks for the built site: run `pnpm --filter @hoi/site build` first, then
-//   node scripts/e2e.mjs [--shots <dir>] [--quick] [--shots-only] [--playground]
+//   node scripts/e2e.mjs [--shots <dir>] [--quick] [--shots-only] [--playground] [--download]
 // Serves dist/ with `vite preview` and loads every page at 1280×900 and 390×844, light and dark,
 // scripts on and off, with and without reduced motion (plus a 320×640 layout pass). Fails on console errors, failed requests,
 // any CSP violation, request to another origin, or horizontal overflow. Runs the home demos and the download page
@@ -473,9 +473,13 @@ async function download(browser) {
     await page.goto(ORIGIN + '/download/');
     await page.getByText('No signed release yet').first().waitFor({ timeout: 4000 }).catch(() => fail('download empty', 'no empty state'));
     if (!(await page.getByText('pnpm --filter @hoi/desktop tauri build').first().isVisible())) fail('download empty', 'build commands not shown');
+    if (!(await page.locator('#install-wait').isVisible())) fail('download empty', 'the installer does not say it needs the first signed release');
+    const releases = await page.locator('#release').getByRole('link', { name: 'Releases on GitHub' }).getAttribute('href').catch(() => null);
+    if (!releases?.endsWith('/releases')) fail('download empty', `no link to the releases page (${releases})`);
     await page.screenshot({ path: join(shotsDir, 'download-empty-mobile-dark.png'), fullPage: true });
     await ctx.close();
   }
+  await downloadCopy(browser);
   // 2. a signed release list → files, sizes, hashes, copy buttons; OS highlighted. The page trusts only
   // the key built into it, so this case builds a copy of the site with a throwaway key
   // (HOI_PUBLICATION_FILE) and serves a list signed with that key through a route.
@@ -493,6 +497,8 @@ async function download(browser) {
     const files = await page.locator('.file').count();
     if (files !== SAMPLE.releases[0].files.length) fail('download filled', `${files} file rows, expected ${SAMPLE.releases[0].files.length}`);
     if (!(await page.locator('#linux.is-you').count())) fail('download filled', 'visitor OS (Linux) not highlighted');
+    if (!(await page.locator('#release').getByRole('link', { name: 'All releases on GitHub' }).count())) fail('download filled', 'no link to every release on GitHub');
+    if (!(await page.locator('#release').getByText('signature checked').count())) fail('download filled', 'does not say the signature was checked');
     const sha = SAMPLE.releases[0].files[1].sha256;
     await page.locator('#windows .file').first().getByRole('button', { name: /Copy SHA-256/ }).click();
     const clip = await page.evaluate(() => navigator.clipboard.readText());
@@ -510,6 +516,88 @@ async function download(browser) {
     await other.close();
   } finally {
     keyed.close();
+  }
+}
+
+// Every copy button on the page copies exactly what it shows and looks the same when it did, in
+// every box and in dark mode. A copy only counts when the browser copied: an extension that
+// intercepts copying and answers as if it had (uBlock Origin's ClickFix filter does this for
+// `irm … | iex`) must leave the button saying the text is selected, not "Copied".
+const COPIES = [
+  ['Copy the macOS and Linux install command', /^curl -fsSL https?:\/\/\S+\/install\.sh \| bash$/],
+  ['Copy the Windows install command', /^irm https?:\/\/\S+\/install\.ps1 \| iex$/],
+  ['Copy the build commands', /^git clone \S+\.git\ncd hoi\npnpm install && pnpm build$/],
+  ['Copy the desktop build command', /^pnpm --filter @hoi\/desktop tauri build$/],
+];
+async function copyOn(page, name) {
+  await page.evaluate(() => navigator.clipboard.writeText('unchanged'));
+  const btn = page.getByRole('button', { name, exact: true });
+  await btn.click();
+  await page.waitForFunction((b) => b.textContent.trim() !== 'Copy', await btn.elementHandle(), { timeout: 1000 }).catch(() => {});
+  return {
+    btn,
+    label: (await btn.textContent())?.trim(),
+    clip: await page.evaluate(() => navigator.clipboard.readText()),
+    selected: await page.evaluate(() => getSelection()?.toString() ?? ''),
+    look: await btn.evaluate((b) => { const s = getComputedStyle(b); return `${s.backgroundColor} ${s.color}`; }),
+  };
+}
+async function downloadCopy(browser) {
+  const perms = { permissions: ['clipboard-read', 'clipboard-write'] };
+  for (const colorScheme of ['light', 'dark']) {
+    const where = `download copy ${colorScheme}`;
+    const ctx = await browser.newContext({ viewport: VIEWPORTS.desktop, colorScheme, ...perms });
+    const page = await ctx.newPage();
+    await watch(page, where);
+    await page.goto(ORIGIN + '/download/');
+    await page.getByText('No signed release yet').first().waitFor({ timeout: 4000 });
+    const looks = new Set();
+    for (const [name, want] of COPIES) {
+      const r = await copyOn(page, name);
+      if (!want.test(r.clip)) fail(where, `${name}: copied ${JSON.stringify(r.clip)}`);
+      if (r.label !== 'Copied') fail(where, `${name}: says "${r.label}" after copying`);
+      looks.add(r.look);
+    }
+    if (looks.size !== 1) fail(where, `copied buttons look different: ${[...looks].join(' | ')}`);
+    await ctx.close();
+  }
+  // A blocker that answers "copied" without copying anything.
+  {
+    const where = 'download copy blocked';
+    const ctx = await browser.newContext({ viewport: VIEWPORTS.mobile, ...perms });
+    await ctx.addInitScript(() => {
+      const blocked = (text) => /\biex\b/.test(String(text ?? ''));
+      const writeText = navigator.clipboard.writeText.bind(navigator.clipboard);
+      navigator.clipboard.writeText = (text) => (blocked(text) ? Promise.resolve() : writeText(text));
+      const exec = document.execCommand.bind(document);
+      document.execCommand = (cmd, ...rest) => (cmd === 'copy' && blocked(getSelection()?.toString()) ? true : exec(cmd, ...rest));
+    });
+    const page = await ctx.newPage();
+    await watch(page, where);
+    await page.goto(ORIGIN + '/download/');
+    await page.getByText('No signed release yet').first().waitFor({ timeout: 4000 });
+    const r = await copyOn(page, 'Copy the Windows install command');
+    if (r.clip !== 'unchanged') fail(where, `the clipboard changed to ${JSON.stringify(r.clip)}`);
+    if (!/^Press (Ctrl\+C|⌘C)$/.test(r.label ?? '')) fail(where, `the button says "${r.label}", not which keys copy the text`);
+    if (!COPIES[1][1].test(r.selected)) fail(where, `the command is not selected (${JSON.stringify(r.selected)})`);
+    if (!(await page.locator('#install .copy-note').isVisible())) fail(where, 'no note says the copy was blocked');
+    const ok = await copyOn(page, 'Copy the macOS and Linux install command');
+    if (!COPIES[0][1].test(ok.clip) || ok.label !== 'Copied') fail(where, 'a command the blocker allows was not copied');
+    await page.screenshot({ path: join(shotsDir, 'download-copy-blocked-mobile.png') });
+    await ctx.close();
+  }
+  // Without the copy command, the clipboard API copies instead.
+  {
+    const where = 'download copy fallback';
+    const ctx = await browser.newContext({ viewport: VIEWPORTS.desktop, ...perms });
+    await ctx.addInitScript(() => { document.execCommand = () => false; });
+    const page = await ctx.newPage();
+    await watch(page, where);
+    await page.goto(ORIGIN + '/download/');
+    await page.getByText('No signed release yet').first().waitFor({ timeout: 4000 });
+    const r = await copyOn(page, 'Copy the desktop build command');
+    if (!COPIES[3][1].test(r.clip) || r.label !== 'Copied') fail(where, `copied ${JSON.stringify(r.clip)}, says "${r.label}"`);
+    await ctx.close();
   }
 }
 
@@ -558,6 +646,8 @@ try {
   }
   if (args.includes('--playground')) {
     await playgroundPass(browser);
+  } else if (args.includes('--download')) {
+    await download(browser);
   } else if (!shotsOnly) {
     await matrix(browser);
     await wikiPass(browser);
@@ -565,7 +655,7 @@ try {
     await demos(browser);
     await download(browser);
   }
-  if (!args.includes('--playground')) await shots(browser);
+  if (!args.includes('--playground') && !args.includes('--download')) await shots(browser);
 } catch (e) {
   fail('runner', e.stack || String(e));
 } finally {

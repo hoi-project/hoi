@@ -32,7 +32,7 @@
         </tbody>
       </table>
     </div>
-    <p><code>page.ts</code> is one line, <code>import '../common'</code>: the shared chrome. <code>common.ts</code> imports the fonts, the tokens and <code>styles/site.css</code>, makes the logo's three dots bob, pops the stickers in (the first on load, the rest as they scroll into view), and wires every <code>button[data-copy]</code>. A copy button copies a code block without its <code>.c</code> comment spans and blank lines; without clipboard access it selects the text and says "Selected. Press Control C or Command C to copy." Both outcomes are announced in a polite live region. <code>public/.well-known/security.txt</code> names the repository's security advisories as the contact.</p>
+    <p><code>page.ts</code> is one line, <code>import '../common'</code>: the shared chrome. <code>common.ts</code> imports the fonts, the tokens and <code>styles/site.css</code>, makes the logo's three dots bob, pops the stickers in (the first on load, the rest as they scroll into view), and wires every <code>button[data-copy]</code>. A copy button copies the text it shows, as a reader would by hand, and counts it as copied only when the browser fires its <code>copy</code> event: an extension that blocks a copy can answer as if it had copied (uBlock Origin does for any page that copies <code>irm … | iex</code>). A blocked copy leaves the text selected, and the button says which keys copy it. Both outcomes are announced in a polite live region. <code>public/.well-known/security.txt</code> names the repository's security advisories as the contact.</p>
   </section>
 
   <section class="wk-sec" id="build">
