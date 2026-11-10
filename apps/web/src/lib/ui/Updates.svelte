@@ -1,8 +1,8 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
   import { isDesktopShell } from '../host';
-  import { PUBLICATION } from '../preview';
-  import { fetchVerifiedManifest, compareVersions } from '../../../../../scripts/release-verify.mjs';
+  import { PUBLICATION, signedManifest } from '../preview';
+  import { compareVersions } from '../../../../../scripts/release-verify.mjs';
   import { sw, checkWebUpdate, applyUpdate } from '../sw.svelte';
   import { errorText } from '../toast.svelte';
 
@@ -30,8 +30,10 @@
         await checkWebUpdate();
         if (!PUBLICATION.manifestKey || !PUBLICATION.downloads) result = { state: 'unavailable', message: 'Signed release checks are unavailable in this development build.' };
         else {
-          const m = await fetchVerifiedManifest(PUBLICATION, __HOI_VERSION__);
-          result = { state: compareVersions(m.latest, __HOI_VERSION__) > 0 ? 'available' : 'current', version: m.latest, message: m.release.notice.message };
+          const m = await signedManifest();
+          result = m
+            ? { state: compareVersions(m.latest, __HOI_VERSION__) > 0 ? 'available' : 'current', version: m.latest, message: m.release.notice.message }
+            : { state: 'unavailable', message: 'No release has been published yet.' };
         }
       }
     } catch (e) { error = `${updateError(e)} Your installed app and local data are unchanged.`; }
