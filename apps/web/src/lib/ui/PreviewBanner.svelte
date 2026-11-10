@@ -12,7 +12,7 @@
     const refresh = async () => {
       if (document.visibilityState === 'hidden') return;
       if (__HOI_DESKTOP__ || !networkConsent.accepted) return;
-      try { const next = await latestRelease(); if (active && next.revision >= (remote?.revision ?? RELEASE.revision)) remote = next; }
+      try { const next = await latestRelease(); if (active && next && next.revision >= (remote?.revision ?? RELEASE.revision)) remote = next; }
       catch { /* Keep the truthful bundled warning offline or on an invalid response. */ }
     };
     void refresh();
