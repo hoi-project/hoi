@@ -14,12 +14,18 @@
   <p class="lead">Pick your device. Every file comes with a SHA-256 checksum from the signed release list, so you can make sure it's the one we built. <a href="/verify/">How to check a download</a>.</p>
 </section>
 
+<section class="wrap" aria-label="Latest release">
+  <div class="frame status" id="release" aria-live="polite">
+    <p class="release-static">The files and their checksums come straight from the release list, <a href="{{RELEASE_MANIFEST}}">manifest.json</a>, which is signed with minisign. Every release is also on <a href="{{REPO_URL}}/releases">the repository's releases page</a>. No release yet? <a href="#build">Build it yourself</a>.</p>
+  </div>
+</section>
+
 <section class="wrap" aria-labelledby="setup-title">
   <h2 id="setup-title" class="sr-only">Setting up, in three steps</h2>
   <div class="rows setup">
-    <div class="row"><div class="row-k"><span class="num">1</span>Install the app on a computer that's often on.</div><div class="row-v"><p>It keeps your communities reachable while the computer runs, so people can join and catch up even when you're not looking. It opens as a small companion in the corner of the screen that needs no key of its own; the full app is one click away.</p></div></div>
-    <div class="row"><div class="row-k"><span class="num">2</span>Click <em>Open hoi in my browser</em>.</div><div class="row-v"><p>Your browser opens hoi and connects to the app on the same computer. Nothing to copy. Chrome may ask to let the page reach apps on this device: allow it.</p></div></div>
-    <div class="row"><div class="row-k"><span class="num">3</span>Scan the code with your phone.</div><div class="row-v"><p>The phone's camera opens hoi, connects to your computer over your Wi-Fi, encrypted, with nobody in between, and takes your key after you compare four digits on both screens.</p></div></div>
+    <div class="row"><div class="row-k"><span class="num">1</span><span>Install the app on a computer that's often on.</span></div><div class="row-v"><p>It keeps your communities reachable while the computer runs, so people can join and catch up even when you're not looking. It opens as a small companion in the corner of the screen that needs no key of its own; the full app is one click away.</p></div></div>
+    <div class="row"><div class="row-k"><span class="num">2</span><span>Click <em>Open hoi in my browser</em>.</span></div><div class="row-v"><p>Your browser opens hoi and connects to the app on the same computer. Nothing to copy. Chrome may ask to let the page reach apps on this device: allow it.</p></div></div>
+    <div class="row"><div class="row-k"><span class="num">3</span><span>Scan the code with your phone.</span></div><div class="row-v"><p>The phone's camera opens hoi, connects to your computer over your Wi-Fi, encrypted, with nobody in between, and takes your key after you compare four digits on both screens.</p></div></div>
   </div>
 </section>
 
@@ -50,6 +56,7 @@
     <h2 id="install-title">Or let one command set it up.</h2>
     <p class="lead">The installer asks what this computer should run, picks the file for it from the release list, checks its SHA-256 and installs it. Run it again to update or to change your mind; your data stays.</p>
   </div>
+  <div class="note-sun install-wait" id="install-wait" hidden><p><b>Not yet.</b> The installer needs the first signed release and stops with an error until it is out. <a href="#build">Build it yourself</a> in the meantime.</p></div>
   <div class="codes">
     <div class="code">
       <div class="code-h"><span>macOS and Linux</span><button type="button" class="copy-btn js-only" data-copy aria-label="Copy the macOS and Linux install command">Copy</button></div>
@@ -73,10 +80,6 @@
 
 <section class="wrap" aria-labelledby="dl-title">
   <h2 id="dl-title" class="sr-only">Downloads by device</h2>
-
-  <div class="frame status" id="release" aria-live="polite">
-    <p class="release-static">The files and their checksums come straight from the release list, <a href="/releases/manifest.json">manifest.json</a>, which is signed with minisign. Every release is also on <a href="{{REPO_URL}}/releases">the repository's releases page</a>. No release yet? <a href="#build">Build it yourself</a>.</p>
-  </div>
 
   <div class="dl-list">
     <article class="dl-row" id="macos" data-platform="macos" aria-labelledby="h-macos">
@@ -208,7 +211,8 @@ pnpm install &amp;&amp; pnpm build</code></pre>
 <template id="tpl-empty">
   <span class="eyebrow">pre-release</span>
   <h2>No signed release yet.</h2>
-  <p class="muted">hoi is still being built, in the open. The first signed release lands here with its files and SHA-256 checksums. Until then, build it yourself:</p>
+  <p class="muted">hoi is still being built, in the open. The first signed release shows up here with its files and SHA-256 checksums, and on GitHub. Until then, build it yourself.</p>
+  <div class="status-links"><a class="pill pill-ink pill-sm" href="#build">Build it yourself</a><a class="pill pill-sm" href="{{REPO_URL}}/releases">Releases on GitHub</a></div>
 </template>
 </main>
 

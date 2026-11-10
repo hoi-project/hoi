@@ -27,6 +27,8 @@ interface Manifest {
   latest: string | null;
   signature?: string;
   releases: Release[];
+  /** The release notice of the build that made the list (release.json). */
+  release?: { channel?: string };
 }
 
 const ARCH: Record<string, string> = { universal: 'Apple silicon + Intel', x86_64: 'x86-64', aarch64: 'ARM64' };
@@ -35,6 +37,8 @@ const PLATFORM: Record<string, string> = { macos: 'macOS', windows: 'Windows', l
 const forRow = (row: HTMLElement, f: ReleaseFile) =>
   row.dataset.platform === 'setup' ? f.product === 'setup' : f.platform === row.dataset.platform && f.product !== 'setup';
 const ALWAYS = ['macos', 'windows', 'linux']; // rows that say so when a release lacks them
+/** Every release, with its notes, also lives on the repository's releases page. */
+const RELEASES_PAGE = __HOI_PUBLICATION__.repository ? `${__HOI_PUBLICATION__.repository.replace(/\/+$/, '')}/releases` : '';
 
 /* ---------- which device is this? ---------- */
 const os = detectOS();
@@ -89,7 +93,6 @@ function fileRow(f: ReleaseFile): HTMLLIElement {
   download.setAttribute('aria-label', `Download ${f.name}`);
   const copy = el('button', { type: 'button', className: 'copy-btn', textContent: 'Copy' });
   copy.dataset.copy = '';
-  copy.dataset.copyText = f.sha256.toLowerCase();
   copy.setAttribute('aria-label', `Copy SHA-256 of ${f.name}`);
   return el('li', { className: 'file' },
     el('div', { className: 'file-top' },
@@ -109,17 +112,26 @@ function fileRow(f: ReleaseFile): HTMLLIElement {
   );
 }
 
-function showRelease(m: Manifest, r: Release, status: HTMLElement): void {
-  const bits: (Node | string)[] = [`Released ${day(r.date)}`];
+const pill = (href: string, text: string, ink = false) => el('a', { className: `pill pill-sm${ink ? ' pill-ink' : ''}`, href, textContent: text });
+
+function showRelease(m: Manifest, r: Release, list: string, status: HTMLElement): void {
   const notes = r.notes ? safeUrl(r.notes) : null;
-  if (notes) bits.push(' · ', link(notes, 'release notes'));
-  bits.push(' · ', link('/releases/manifest.json', 'manifest.json'));
-  if (isStr(m.signature)) bits.push(' and its ', link(`/releases/${encodeURIComponent(m.signature)}`, 'signature'));
-  bits.push(' · ', link('/verify/', 'how to check a download'));
+  const meta: (Node | string)[] = [];
+  if (m.release?.channel === 'preview') meta.push(el('span', { className: 'tag t-peach', textContent: 'preview' }));
+  meta.push(el('span', { textContent: `Released ${day(r.date)}` }));
+  const actions = [
+    ...(notes ? [pill(notes, 'Release notes', true)] : []),
+    ...(RELEASES_PAGE ? [pill(RELEASES_PAGE, 'All releases on GitHub')] : []),
+  ];
+  const check: (Node | string)[] = ['This page checked the list\'s signature with the key built into it: ', link(list, 'manifest.json')];
+  if (isStr(m.signature)) check.push(' and ', link(new URL(encodeURIComponent(m.signature), list).href, 'its signature'));
+  check.push(' · ', link('/verify/', 'how to check a download'));
   status.replaceChildren(
-    el('span', { className: 'eyebrow', textContent: 'latest · signed' }),
+    el('span', { className: 'eyebrow', textContent: 'latest release · signature checked' }),
     el('h2', { textContent: `hoi ${r.version}` }),
-    el('p', { className: 'muted' }, ...bits),
+    el('div', { className: 'status-meta' }, ...meta),
+    ...(actions.length ? [el('div', { className: 'status-links' }, ...actions)] : []),
+    el('p', { className: 'muted' }, ...check),
   );
 
   const files = (Array.isArray(r.files) ? r.files : []).filter(validFile);
@@ -141,16 +153,23 @@ function showRelease(m: Manifest, r: Release, status: HTMLElement): void {
 function showEmpty(status: HTMLElement): void {
   const tpl = $<HTMLTemplateElement>('#tpl-empty');
   status.replaceChildren(tpl ? tpl.content.cloneNode(true) : el('h2', { textContent: 'No signed release yet.' }));
-  // Bring the build commands up here, where they're needed now.
-  const build = $('#build');
-  const codes = build ? $('.codes', build) : null;
-  if (build && codes) {
-    status.appendChild(codes);
-    build.hidden = true;
-  }
+  // The one-command install needs a signed release list; say so where the commands are.
+  const wait = $('#install-wait');
+  if (wait) wait.hidden = false;
   $$('.files-slot').forEach((slot) => {
     slot.replaceChildren(slot.hasAttribute('data-optional') ? '' : el('p', { className: 'muted', textContent: 'Waiting for the first signed release.' }));
   });
+}
+
+function showUnverified(status: HTMLElement): void {
+  status.replaceChildren(
+    el('h2', { textContent: 'The release list could not be verified.' }),
+    el('p', { className: 'muted', textContent: 'So this page offers no downloads. Try again when connected, or get the files from GitHub and check each one yourself.' }),
+    el('div', { className: 'status-links' },
+      ...(RELEASES_PAGE ? [pill(RELEASES_PAGE, 'Releases on GitHub')] : []),
+      pill('/verify/', 'Verify a download'),
+    ),
+  );
 }
 
 /** The site's own unsigned list (apps/site/public/releases/manifest.json), served until the first
@@ -173,10 +192,10 @@ async function load(): Promise<void> {
     if (isPlaceholder(await fetchBounded(list, 1024 * 1024))) { showEmpty(status); return; }
     const m = await fetchVerifiedManifest(__HOI_PUBLICATION__);
     const r = m.latest ? m.releases.find((x) => x && x.version === m.latest) : undefined;
-    if (r && isStr(r.version)) showRelease(m, r, status);
+    if (r && isStr(r.version)) showRelease(m, r, list, status);
     else showEmpty(status);
   } catch {
-    status.replaceChildren(el('h2', { textContent: "The release list could not be verified." }), el('p', { textContent: 'No downloads are offered. Try again when connected, or follow the local verification instructions.' }), link('/verify/', 'Verify a download'));
+    showUnverified(status);
   }
 }
 

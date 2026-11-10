@@ -3,7 +3,7 @@
 import '../common';
 import '../styles/wiki.css';
 import { animate, stagger, svg, utils } from 'animejs';
-import { $, $$, announce, reduce } from '../common';
+import { $, $$, copyFrom, reduce } from '../common';
 import { highlight } from '../wiki/highlight';
 import { setupSearch } from '../wiki/search';
 import { setupAssistant } from '../wiki/assistant';
@@ -59,24 +59,7 @@ $$<HTMLElement>('.wk-code').forEach((box) => {
   if (!code) return;
   highlight(code, box.dataset.lang ?? '');
   const btn = box.querySelector<HTMLButtonElement>('.wk-copy');
-  btn?.addEventListener('click', async () => {
-    const text = (code.textContent ?? '').replace(/\n$/, '');
-    try {
-      await navigator.clipboard.writeText(text);
-      btn.textContent = 'Copied';
-      btn.classList.add('done');
-      announce('Copied to the clipboard');
-    } catch {
-      const range = document.createRange();
-      range.selectNodeContents(code);
-      const sel = window.getSelection();
-      sel?.removeAllRanges();
-      sel?.addRange(range);
-      btn.textContent = 'Selected';
-      announce('Selected. Press Control C or Command C to copy.');
-    }
-    window.setTimeout(() => { btn.textContent = 'Copy'; btn.classList.remove('done'); }, 1500);
-  });
+  btn?.addEventListener('click', () => void copyFrom(btn));
 });
 
 /* ---------- on this page: follow the reader ---------- */

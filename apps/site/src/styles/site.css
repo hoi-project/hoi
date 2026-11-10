@@ -225,7 +225,11 @@ code, .kbd { font-family: var(--mono); font-size: .86em }
 .code .c { color: var(--mute) }
 .copy-btn { display: inline-flex; align-items: center; min-height: 32px; padding: 0 12px; border-radius: 999px; border: 2px solid var(--ink); background: var(--card); color: var(--ink); font-weight: 700; font-size: 13px; white-space: nowrap }
 .copy-btn:hover { background: var(--soft) }
-.copy-btn.done { background: var(--mint); color: #1A1A1A; border-color: var(--ink) }
+/* Copied (mint) or blocked and left selected (sun): the same in every box, light or dark. */
+.copy-btn.done, .copy-btn.done:hover { background: var(--mint); color: #1A1A1A; border-color: var(--ink) }
+.copy-btn.manual, .copy-btn.manual:hover { background: var(--sun); color: #1A1A1A; border-color: var(--ink) }
+.copy-note { margin: 0; padding: 10px 16px; border-top: 2px dotted var(--line); color: var(--ink); font-size: 14px; line-height: 1.5 }
+.sha .copy-note { grid-column: 1 / -1; padding: 0 0 4px; border-top: 0 }
 @media (max-width: 820px) { .copy-btn { min-height: 44px; padding: 0 14px } }
 /* On phones, wrap long commands instead of scrolling them; the copy button copies them exactly. */
 @media (max-width: 560px) { .code pre { white-space: pre-wrap; overflow-wrap: anywhere } }
@@ -267,10 +271,9 @@ code, .kbd { font-family: var(--mono); font-size: .86em }
 /* A closing note in a frame gets the same breathing room as a status frame. */
 .frame.prose:not(.status) { padding: clamp(20px, 3vw, 28px); display: flex; flex-direction: column; gap: 14px }
 .frame.prose:not(.status) h2 { font-size: clamp(26px, 3.4vw, 36px) }
-.status .codes { max-width: 860px }
-.status .code { border: 0; background: var(--soft) }
-.status .code-h { border-bottom-color: var(--line) }
-.status .copy-btn { background: var(--card) }
+.status-links { display: flex; flex-wrap: wrap; gap: 10px }
+.status-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px }
+.install-wait { margin: 0 0 16px }
 .dl-row { display: grid; grid-template-columns: minmax(0, 230px) minmax(0, 1fr); gap: clamp(12px, 3vw, 36px); padding: 28px 0; border-top: 2px dotted var(--line) }
 .dl-list { border-bottom: 2px dotted var(--line) }
 .dl-list > .dl-row:first-child { border-top: 2px solid var(--ink) }
