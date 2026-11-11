@@ -7,6 +7,7 @@ pub mod api;
 pub mod bind;
 pub mod blobs;
 mod blocklists;
+mod bulk;
 pub mod carry;
 mod deletion;
 mod directory;

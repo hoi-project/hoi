@@ -168,7 +168,7 @@ fn target_id(holder: Id, locator: Id) -> Id {
 }
 
 impl Node {
-    fn deletion_generations(&self, target: Id) -> Vec<(Kept, Manifest, bool)> {
+    pub(crate) fn deletion_generations(&self, target: Id) -> Vec<(Kept, Manifest, bool)> {
         let mut out = Vec::new();
         for kept in self.scatter.saved.kept.values().filter(|k| k.records.contains(&target) || k.claim.is_some_and(|c| c.0 == target)) {
             let objects: BTreeSet<Id> = kept.gens.iter().chain(&kept.cleanup_gens).filter_map(|g| g.read()).map(|m| Id(m.object)).collect();

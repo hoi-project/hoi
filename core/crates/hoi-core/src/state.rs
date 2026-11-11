@@ -10,7 +10,7 @@ use crate::dto::Settings;
 
 /// Local persistence compatibility is separate from wire protocol and public index versions.
 /// Bump this before changing stored state/key shapes incompatibly; older binaries fail closed.
-pub(crate) const STORAGE_FORMAT_VERSION: u32 = 4;
+pub(crate) const STORAGE_FORMAT_VERSION: u32 = 5;
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

@@ -210,6 +210,8 @@ pub struct Node {
     /// Scattered delivery: pieces held for others, and operations in flight (crate::scatter).
     pub(crate) scatter: crate::scatter::ScatterState,
     pub(crate) deletions: crate::deletion::State,
+    /// Confirmed lists of known posts and comments to delete (crate::bulk, RFC-0002).
+    pub(crate) bulk: crate::bulk::State,
     pub(crate) store: Store,
     pub(crate) communities: HashMap<Id, Community>,
     pub(crate) state: LocalState,
@@ -460,6 +462,7 @@ impl Node {
             private: crate::private::PrivateState::default(),
             scatter: Default::default(),
             deletions: Default::default(),
+            bulk: Default::default(),
             store: Store::new(),
             communities: HashMap::new(),
             state: LocalState::default(),
@@ -567,6 +570,10 @@ impl Node {
                 }
                 crate::deletion::BLOB => {
                     node.deletions.saved = crate::deletion::Journal::decode(v).ok_or_else(|| incompatible("deletion journal"))?;
+                }
+                crate::bulk::BLOB => {
+                    node.bulk.saved = crate::bulk::Saved::decode(v).ok_or_else(|| incompatible("deletion batches"))?;
+                    node.bulk.stale = true;
                 }
                 "keys" => {
                     let mut s: Secrets = serde_json::from_slice(v).map_err(|_| incompatible("keys"))?;
@@ -771,6 +778,14 @@ impl Node {
                 value: Some(serde_json::to_vec(&self.deletions.saved).map_err(|_| ApiError::new("internal", "Deletion work could not be saved."))?),
             });
         }
+        if self.bulk.dirty {
+            // Batches are saved in the same transaction as the deletions they signed.
+            self.changes.retain(|c| !matches!(c, Change::Blob { key, .. } if key == crate::bulk::BLOB));
+            self.changes.push(Change::Blob {
+                key: crate::bulk::BLOB.into(),
+                value: Some(serde_json::to_vec(&self.bulk.saved).map_err(|_| ApiError::new("internal", "Deletion batches could not be saved."))?),
+            });
+        }
         if self.state_dirty {
             let v = serde_json::to_vec(&self.state).map_err(|e| ApiError::new("internal", e.to_string()))?;
             self.changes.push(Change::Blob { key: "state".into(), value: Some(v) });
@@ -800,6 +815,9 @@ impl Node {
         }
         self.deletions.dirty = false;
         self.deletions.published = self.current_deletion_progress();
+        if std::mem::take(&mut self.bulk.dirty) | std::mem::take(&mut self.bulk.stale) {
+            self.bulk.published = self.current_bulk_status();
+        }
         if !self.changed.is_empty() {
             let cs = std::mem::take(&mut self.changed).into_iter().map(|c| c.hex()).collect();
             self.events.push(Event::Changed { communities: cs });
@@ -823,6 +841,8 @@ impl Node {
 
     pub(crate) fn wipe_all(&mut self) -> Result<(), ApiError> {
         self.deletions = Default::default();
+        // A local wipe loses saved batches; it never reports their network deletion as done.
+        self.bulk = Default::default();
         self.private.wipe();
         self.store.clear();
         self.communities.clear();
@@ -1440,7 +1460,7 @@ impl Node {
             || self.communities.values().any(|st| st.is_owner(root) || st.is_mod(root))
     }
 
-    fn check_rate(&self, r: &Record, root: Id, c: Id) -> Result<(), Reject> {
+    pub(crate) fn check_rate(&self, r: &Record, root: Id, c: Id) -> Result<(), Reject> {
         let Some(st) = self.communities.get(&c) else { return Ok(()) };
         if st.is_owner(&root) || st.is_mod(&root) {
             return Ok(());

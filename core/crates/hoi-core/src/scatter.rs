@@ -2161,6 +2161,8 @@ impl Node {
         }
         self.mailbox_tick();
         self.keep_tick();
+        // Bulk deletion signs first, so the jobs it creates dispatch in this same tick.
+        self.bulk_deletion_tick();
         self.deletion_tick();
         self.open_tick();
         self.roster_tick();

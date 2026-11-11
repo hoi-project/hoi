@@ -63,6 +63,8 @@ mod public_join;
 #[path = "tests/storage_compatibility.rs"]
 mod storage_compatibility;
 
+#[path = "tests/bulk.rs"]
+mod bulk;
 #[path = "tests/deletion.rs"]
 mod deletion;
 #[path = "tests/drop_share.rs"]

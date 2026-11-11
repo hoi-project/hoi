@@ -38,6 +38,7 @@ import type {
   CoreEvent,
   DeviceInfo,
   DeletionProgress,
+  BulkDeletionStatus,
   FeedQuery,
   FlagView,
   Hex,
@@ -256,6 +257,7 @@ export function createMockCore(): HoiCore {
   const communities = new Map<Hex, MCommunity>();
   const posts = new Map<Hex, MPost>();
   const deletions = new Map<Hex, DeletionProgress>();
+  const bulk = new Map<Hex, BulkDeletionStatus>();
   const comments = new Map<Hex, MComment>();
   const ledgerEntries = new Map<Hex, MEntry>();
   const proposals = new Map<string, MProposal>();
@@ -942,6 +944,43 @@ export function createMockCore(): HoiCore {
     const comment = comments.get(id);
     if (comment && alive(comment)) return { comment, community: communities.get(posts.get(comment.post)!.community)! };
     throw err('not-found', "That isn't on this device. It may have faded.");
+  }
+  function authorDelete(id: Hex) {
+    const me = meKey();
+    const r = getRecord(id);
+    const rec = r.post ?? r.comment!;
+    if (rec.author !== me) throw err('not-allowed', 'Only the author can delete this.');
+    rec.removed = { by: null, reason: 'deleted by the author', at: now() };
+    rec.text = '';
+    deletions.set(id, {
+      id, target: id, localRemoved: true, recordSubmitted: false,
+      queued: 0, submitted: 0, acknowledged: 0, legacyRemoval: 0, unknown: 0,
+      refused: 0, unreachable: 0, expired: 0, outstanding: 0, coverageGaps: 0,
+      expiresAt: rec.expiresAt, requiresLocalState: true, inventoryComplete: false,
+    });
+    changed(r.community.id);
+  }
+  /** The mock's known posts and comments: everything of mine here that is not deleted yet. */
+  function bulkInventory() {
+    const me = meKey();
+    const busy = new Set([...bulk.values()].flatMap(b => b.targets.map(t => t.id)));
+    const open = (r: { id: Hex; author: Hex; expiresAt: Unix }) => r.author === me && alive(r) && !deletions.has(r.id) && !busy.has(r.id);
+    const byCommunity = new Map<Hex, { id: Hex; name: string; posts: Hex[]; comments: Hex[] }>();
+    const entry = (c: Hex) => {
+      let e = byCommunity.get(c);
+      if (!e) byCommunity.set(c, e = { id: c, name: communities.get(c)?.name ?? '', posts: [], comments: [] });
+      return e;
+    };
+    for (const p of posts.values()) if (open(p)) entry(p.community).posts.push(p.id);
+    for (const c of comments.values()) if (open(c)) entry(posts.get(c.post)!.community).comments.push(c.id);
+    const ids = [...byCommunity.values()].flatMap(c => [...c.posts, ...c.comments]).sort((a, b) => a.localeCompare(b));
+    let h = 0x811c9dc5;
+    let snapshot = '';
+    for (let round = 0; round < 8; round++) {
+      for (const ch of `${me}|${ids.join(',')}|${round}`) h = Math.imul(h ^ ch.charCodeAt(0), 0x01000193) >>> 0;
+      snapshot += h.toString(16).padStart(8, '0');
+    }
+    return { communities: [...byCommunity.values()], ids, snapshot };
   }
   function needOwner(c: MCommunity) {
     meKey();
@@ -2216,21 +2255,45 @@ export function createMockCore(): HoiCore {
     },
     async deleteOwn(id) {
       await sleep(200);
-      const me = meKey();
-      const r = getRecord(id);
-      const rec = r.post ?? r.comment!;
-      if (rec.author !== me) throw err('not-allowed', 'Only the author can delete this.');
-      rec.removed = { by: null, reason: 'deleted by the author', at: now() };
-      rec.text = '';
-      deletions.set(id, {
-        id, target: id, localRemoved: true, recordSubmitted: false,
-        queued: 0, submitted: 0, acknowledged: 0, legacyRemoval: 0, unknown: 0,
-        refused: 0, unreachable: 0, expired: 0, outstanding: 0, coverageGaps: 0,
-        expiresAt: rec.expiresAt, requiresLocalState: true, inventoryComplete: false,
-      });
-      changed(r.community.id);
+      authorDelete(id);
     },
     async deletionProgress() { return [...deletions.values()].map(p => ({ ...p })); },
+    async previewBulkDeletion() {
+      await sleep(150);
+      const inv = bulkInventory();
+      return { snapshot: inv.snapshot, communities: inv.communities, count: inv.ids.length, capabilities: 0, gaps: [], inventoryComplete: false };
+    },
+    async confirmBulkDeletion(snapshot) {
+      await sleep(200);
+      const saved = bulk.get(snapshot);
+      if (saved) return structuredClone(saved);
+      const inv = bulkInventory();
+      if (inv.snapshot !== snapshot) throw err('invalid', 'Your known posts and comments changed since the preview. Preview again.');
+      if (!inv.ids.length) throw err('invalid', 'There are no known posts or comments to delete.');
+      const status: BulkDeletionStatus = {
+        snapshot, confirmedAt: now(), cancelledAt: null, count: inv.ids.length,
+        selected: 0, queued: 0, signed: 0, failed: 0, expired: 0, cancelled: 0,
+        targets: [], gaps: [], inventoryComplete: false,
+      };
+      for (const c of inv.communities) {
+        for (const [kind, ids] of [['post', c.posts], ['comment', c.comments]] as const) {
+          for (const id of ids) {
+            authorDelete(id);
+            status.signed++;
+            status.targets.push({ id, community: c.id, kind, state: 'signed', reason: null, deletion: id, nextTry: null });
+          }
+        }
+      }
+      bulk.set(snapshot, status);
+      return structuredClone(status);
+    },
+    async cancelBulkDeletion(snapshot) {
+      const saved = bulk.get(snapshot);
+      if (!saved) throw err('not-found', "That deletion batch isn't on this device.");
+      saved.cancelledAt ??= now();
+      return structuredClone(saved);
+    },
+    async bulkDeletions() { return [...bulk.values()].map(b => structuredClone(b)); },
     async vote(target, value) {
       meKey();
       const r = getRecord(target);
@@ -2608,6 +2671,7 @@ export function createMockCore(): HoiCore {
       communities.clear();
       posts.clear();
       deletions.clear();
+      bulk.clear();
       comments.clear();
       ledgerEntries.clear();
       proposals.clear();

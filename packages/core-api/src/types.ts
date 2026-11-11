@@ -33,6 +33,68 @@ export interface DeletionProgress {
   inventoryComplete: boolean;
 }
 
+/** Why a bulk deletion cannot account for something. Gaps are never counted as deleted. */
+export type BulkDeletionGapReason =
+  | 'private-state-unavailable' | 'not-synchronized' | 'record-absent'
+  | 'capability-missing' | 'generations-unknown' | 'too-many';
+
+export interface BulkDeletionGap {
+  reason: BulkDeletionGapReason;
+  community: Hex | null;
+  target: Hex | null;
+  /** Generations for `capability-missing`, targets left out for `too-many`, else targets affected. */
+  count: number;
+}
+
+/**
+ * "Delete known posts and comments" (RFC-0002): the person's posts and comments this device
+ * holds, and what it cannot account for. Never a complete publication history.
+ */
+export interface BulkDeletionPreview {
+  /** Confirm with this; it changes whenever the list does. */
+  snapshot: Hex;
+  communities: { id: Hex; name: string; posts: Hex[]; comments: Hex[] }[];
+  count: number;
+  /** Known piece generations this device holds drop authority for. */
+  capabilities: number;
+  gaps: BulkDeletionGap[];
+  /** Always false: one device cannot prove complete publication history. */
+  inventoryComplete: boolean;
+}
+
+export type BulkDeletionState = 'selected' | 'queued' | 'signed' | 'failed' | 'expired' | 'cancelled';
+export type BulkDeletionReason =
+  | 'rate-limited' | 'awaiting-signature' | 'deletion-full' | 'placement-pending'
+  | 'record-absent' | 'not-allowed' | 'refused';
+
+export interface BulkDeletionTarget {
+  id: Hex;
+  community: Hex;
+  kind: 'post' | 'comment';
+  state: BulkDeletionState;
+  reason: BulkDeletionReason | null;
+  /** The signed deletion: its propagation is the `DeletionProgress` with this id. */
+  deletion: Hex | null;
+  nextTry: Unix | null;
+}
+
+/** A confirmed bulk deletion, as last saved. `signed` is not propagation; see `deletionProgress`. */
+export interface BulkDeletionStatus {
+  snapshot: Hex;
+  confirmedAt: Unix;
+  cancelledAt: Unix | null;
+  count: number;
+  selected: number;
+  queued: number;
+  signed: number;
+  failed: number;
+  expired: number;
+  cancelled: number;
+  targets: BulkDeletionTarget[];
+  gaps: BulkDeletionGap[];
+  inventoryComplete: boolean;
+}
+
 export type CommunityColor = 'mint' | 'sky' | 'lilac' | 'peach' | 'sun' | 'coral';
 export const COMMUNITY_COLORS: CommunityColor[] = ['mint', 'sky', 'lilac', 'peach', 'sun', 'coral'];
 export type AvatarColor = 'mint' | 'sky' | 'lilac' | 'peach' | 'sun';
@@ -1539,6 +1601,13 @@ export interface HoiCore {
   edit(id: Hex, text: string, title?: string): Promise<void>;
   deleteOwn(id: Hex): Promise<void>;
   deletionProgress(): Promise<DeletionProgress[]>;
+  /** Lists known posts and comments to delete, with gaps. Changes nothing. */
+  previewBulkDeletion(): Promise<BulkDeletionPreview>;
+  /** Saves a previewed list and starts deleting it; the same snapshot resumes it. */
+  confirmBulkDeletion(snapshot: Hex): Promise<BulkDeletionStatus>;
+  /** Stops targets without an accepted signed deletion; accepted ones continue. */
+  cancelBulkDeletion(snapshot: Hex): Promise<BulkDeletionStatus>;
+  bulkDeletions(): Promise<BulkDeletionStatus[]>;
   vote(target: Hex, value: -1 | 0 | 1): Promise<number>;
   /** Signed flag for the mods (a `report` record). reason: 'spam' | 'rule:<n>' | 'illegal' */
   flag(target: Hex, reason: string): Promise<void>;

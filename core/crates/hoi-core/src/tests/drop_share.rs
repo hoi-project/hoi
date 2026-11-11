@@ -3,7 +3,7 @@ use crate::drop_share::{Capability, cap_id};
 use hoi_crypto::scatter as sc;
 use hoi_types::scatter::{Class, Manifest};
 
-fn manifest() -> Manifest {
+pub(crate) fn manifest() -> Manifest {
     let m = Manifest {
         object: [1; 32],
         sealed: [2; 32],
@@ -25,7 +25,7 @@ fn manifest() -> Manifest {
     m
 }
 
-fn remote_cap(m: &Manifest) -> Capability {
+pub(crate) fn remote_cap(m: &Manifest) -> Capability {
     let tokens = (0..m.hashes.len())
         .map(|i| {
             let locator = sc::locator(&m.loc_secret, &m.object, m.generation, i as u8);
@@ -35,7 +35,7 @@ fn remote_cap(m: &Manifest) -> Capability {
     Capability { manifest: hoi_types::uri::b64(&m.encode()), tokens }
 }
 
-fn attach(n: &mut Node, community: &str, target: &str, m: &Manifest) {
+pub(crate) fn attach(n: &mut Node, community: &str, target: &str, m: &Manifest) {
     n.scatter.saved.kept.insert(
         Id(m.object),
         crate::keep::Kept {

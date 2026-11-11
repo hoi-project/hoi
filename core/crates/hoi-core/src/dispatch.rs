@@ -191,6 +191,13 @@ impl Node {
                 self.commit()?;
                 ok(self.deletion_progress())
             }
+            "previewBulkDeletion" => ok(self.preview_bulk_deletion()?),
+            "confirmBulkDeletion" => ok(self.confirm_bulk_deletion(&a.str(0, "snapshot")?)?),
+            "cancelBulkDeletion" => ok(self.cancel_bulk_deletion(&a.str(0, "snapshot")?)?),
+            "bulkDeletions" => {
+                self.commit()?;
+                ok(self.bulk_deletions())
+            }
             "vote" => ok(self.vote(&a.str(0, "target")?, a.get(1, "value")?)?),
             "flag" => ok(self.flag(&a.str(0, "target")?, &a.str(1, "reason")?)?),
             "save" => ok(self.save(&a.str(0, "id")?, a.get(1, "on")?)?),
