@@ -198,6 +198,11 @@ impl Node {
                 self.commit()?;
                 ok(self.bulk_deletions())
             }
+            // RFC-0003: readiness only from state storage accepted.
+            "cleanupReadiness" => {
+                self.commit()?;
+                ok(self.cleanup_readiness())
+            }
             "vote" => ok(self.vote(&a.str(0, "target")?, a.get(1, "value")?)?),
             "flag" => ok(self.flag(&a.str(0, "target")?, &a.str(1, "reason")?)?),
             "save" => ok(self.save(&a.str(0, "id")?, a.get(1, "on")?)?),
@@ -241,6 +246,7 @@ impl Node {
             "unpair" => ok(self.unpair()),
             "rotatePairing" => ok(self.rotate_pairing()?),
             "wipe" => ok(self.wipe()?),
+            "clearAfterDeletion" => ok(self.clear_after_deletion(&a.str(0, "inventory")?, &a.str(1, "deletions")?)?),
             "importBlocklist" => ok(self.import_blocklist(&a.str(0, "text")?)?),
             "sweep" => ok(self.sweep()),
 

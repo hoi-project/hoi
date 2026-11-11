@@ -38,6 +38,43 @@ describe('browser persistence', () => {
     vi.unstubAllGlobals();
   });
 
+  it('keeps a confirmed deletion list until storage takes it, and a failed clear leaves it whole', async () => {
+    vi.stubGlobal('indexedDB', indexedDB);
+    const db = await openStore('durable-bulk-clear');
+    const vault = testVault();
+    await migrate(db, await snapshot(db), vault);
+    const batches = new TextEncoder().encode(JSON.stringify({ version: 1, batches: { snapshot: { targets: ['post'] } } }));
+    let pending: Change[] = [{ op: 'blob', key: 'deletion-batches', value: batches }, { op: 'blob', key: 'state', value: new Uint8Array([1]) }];
+    const status = JSON.stringify([{ type: 'changed', communities: [] }]);
+    const node = { take_changes: () => { const changes = pending; pending = []; return changes; }, take_events: () => status };
+    const emit = vi.fn();
+    let fail = true;
+    const settle = createDurableSettler(node, async changes => {
+      if (fail) throw new Error('quota exceeded');
+      await apply(db, changes, vault);
+    }, () => {}, emit);
+    const saved = async () => Object.fromEntries(decodeSnapshot(await snapshot(db), vault).blobs)['deletion-batches'];
+
+    await expect(settle()).rejects.toThrow('quota exceeded');
+    expect(emit).not.toHaveBeenCalled();
+    expect(await saved()).toBeUndefined();
+    fail = false;
+    await settle();
+    expect(await saved()).toEqual(batches);
+    expect(emit).toHaveBeenCalledOnce();
+
+    // the clear's journal fails to save: the list stays, whole, until the same clear is retried
+    pending = [{ op: 'wipe' }, { op: 'blob', key: 'format', value: new Uint8Array([5]) }];
+    fail = true;
+    await expect(settle()).rejects.toThrow('quota exceeded');
+    expect(await saved()).toEqual(batches);
+    fail = false;
+    await settle();
+    expect(await saved()).toBeUndefined();
+    db.close();
+    vi.unstubAllGlobals();
+  });
+
   it('retries failed writes in order and sends records and events only after storage commits', async () => {
     vi.stubGlobal('indexedDB', indexedDB);
     const db = await openStore('durable-settle-retry');

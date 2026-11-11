@@ -859,8 +859,10 @@ async function handle(r: Req): Promise<unknown> {
       if (!res.directLinks) for (const id of [...directs.keys()]) dropDirect(id);
       return res;
     }
-    case 'wipe': {
-      const res = await run(() => call('wipe', []));
+    case 'wipe':
+    case 'clearAfterDeletion': {
+      // A refused clear changed nothing, so its links stay open.
+      const res = await run(() => call(r.method, r.args));
       closeAll();
       startLinks();
       return res;

@@ -200,4 +200,22 @@ describe('mock core', () => {
     const theirs = (await core.feed({ community: opsec.id, sort: 'fresh' })).find((p) => !p.mine);
     if (theirs) expect((await core.post(theirs.id)).checks.addressHidden).toBeUndefined();
   }, 15_000);
+
+  it('refuses the combined clear while deletions need this device, and a stale look after', async () => {
+    const { core, byName } = await seeded();
+    const before = await core.cleanupReadiness();
+    expect(before.ready).toBe(true);
+    const mine = await core.createPost({ community: (await byName('opsec')).id, title: 'mine', text: 'to be deleted' });
+    const listed = await core.cleanupReadiness();
+    expect(listed.unlisted).toBe(before.unlisted + 1);
+    expect(await code(core.clearAfterDeletion(before.inventory, before.deletions))).toBe('cleanup-changed');
+    const preview = await core.previewBulkDeletion();
+    expect(preview.communities.flatMap((c) => c.posts)).toContain(mine.id);
+    await core.confirmBulkDeletion(preview.snapshot);
+    const blocked = await core.cleanupReadiness();
+    expect(blocked).toMatchObject({ ready: false, unlisted: 0 });
+    expect(blocked.blocked).toEqual([{ reason: 'in-effect', count: preview.count }]);
+    expect(await code(core.clearAfterDeletion(blocked.inventory, blocked.deletions))).toBe('cleanup-blocked');
+    expect((await core.me())?.name).toBe('lena');
+  }, 15_000);
 });

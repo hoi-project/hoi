@@ -69,7 +69,7 @@ impl Step {
             Step::Cancelled => "cancelled",
         }
     }
-    fn waiting(self) -> bool {
+    pub(crate) fn waiting(self) -> bool {
         matches!(self, Step::Selected | Step::Queued)
     }
 }
@@ -357,6 +357,13 @@ impl Node {
     /// Saved batches, as last stored.
     pub fn bulk_deletions(&self) -> Vec<BulkDeletionStatus> {
         self.bulk.published.clone()
+    }
+
+    /// The snapshot a preview would show now, and how many known posts and comments it lists:
+    /// those no deletion covers yet (RFC-0003 cleanup readiness).
+    pub(crate) fn bulk_unlisted(&self, author: Id) -> (Id, u32) {
+        let inv = self.bulk_inventory(author);
+        (inv.snapshot(), inv.targets.len() as u32)
     }
 
     fn bulk_published(&self, snapshot: Id) -> R<BulkDeletionStatus> {

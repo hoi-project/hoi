@@ -28,6 +28,8 @@
   import Addresses from '../lib/ui/Addresses.svelte';
   import BrowserAddresses from '../lib/ui/BrowserAddresses.svelte';
   import NetworkMap from '../lib/ui/NetworkMap.svelte';
+  import DeleteKnown from '../lib/ui/DeleteKnown.svelte';
+  import { readinessWords } from '../lib/deletion-status';
   import { nudge } from '../lib/motion';
   import { openInBrowser } from '../lib/host';
   import { REGISTRY_URL } from '../lib/registry';
@@ -35,7 +37,8 @@
   import { routerWords, whoSees } from '../lib/public-node';
   import { to } from '../lib/router';
   import { networkConsent } from '../lib/consent.svelte';
-  import type { NoticeView } from '@hoi/core-api';
+  import type { CleanupReadiness, NoticeView } from '@hoi/core-api';
+  import { now } from '@hoi/core-api';
   import { copyText, plural } from '../lib/util';
   import { reduced } from '../lib/motion';
   import { syncStatus } from '../lib/network-status';
@@ -279,8 +282,19 @@
     } catch (e) { toastError(e); }
   }
 
+  // ---------------------------------------------------------- delete known posts, then wipe
+  let deleteOpen = $state(false);
+  /** What clearing would abandon: undefined while checking, null when this core can't say. */
+  let wipeReadiness = $state<CleanupReadiness | null | undefined>(undefined);
+  const abandons = $derived(wipeReadiness === undefined ? null : readinessWords(wipeReadiness, now(), app.platformName));
+
   // ---------------------------------------------------------- wipe
   let wipeStep = $state(0);
+  $effect(() => {
+    if (wipeStep !== 1) return;
+    wipeReadiness = undefined;
+    app.core.cleanupReadiness().then((r) => (wipeReadiness = r), () => (wipeReadiness = null));
+  });
   async function wipe() {
     busy = true;
     try {
@@ -306,10 +320,11 @@
 
 {#snippet wipeList()}
   <ul class="wipes" aria-label="What a wipe removes">
-    <li><span class="tag tag-coral">your key</span><span>{me.hasRoot ? 'root key' : 'device key'} · {me.identityBits} bits of work</span></li>
+    <li><span class="tag tag-coral">your key</span><span>{me.hasRoot ? 'root key' : 'device key'} · {me.identityBits} bits of work{me.holdsLine ? ' · your recovery line' : ''}</span></li>
     <li><span class="tag tag-sky">records</span><span><b class="num">{(app.stats?.records ?? 0).toLocaleString('en')}</b> in <b class="num">{app.stats?.communities ?? 0}</b> {app.stats?.communities === 1 ? 'community' : 'communities'} · {bytes(app.stats?.storedBytes ?? 0)}</span></li>
-    <li><span class="tag tag-lilac">media</span><span>{bytes(app.stats?.mediaBytes ?? 0)}</span></li>
+    <li><span class="tag tag-lilac">media</span><span>{bytes(app.stats?.mediaBytes ?? 0)} of pictures and files kept here</span></li>
     {#if app.privateGroups.length}<li><span class="tag tag-lilac">private</span><span><b class="num">{app.privateGroups.length}</b> private {app.privateGroups.length === 1 ? 'community' : 'communities'} and their keys</span></li>{/if}
+    <li><span class="tag tag-sun">not sent yet</span><span>unsent posts and running deletions</span></li>
     <li><span class="tag tag-mint">only yours</span><span><b class="num">{app.stats?.saved ?? 0}</b> saved {app.stats?.saved === 1 ? 'post' : 'posts'} · reading notes on <b class="num">{app.stats?.readingNotes ?? 0}</b> {app.stats?.readingNotes === 1 ? 'person' : 'people'} · trust, mutes & petnames</span></li>
     <li><span class="tag tag-line">this {app.platformName}</span><span>settings, device names{(app.stats?.blockedPictures ?? 0) ? ` · ${app.stats?.blockedPictures} blocked picture fingerprints` : ''}{net?.homeNode ? ' · home node pairing' : ''}</span></li>
   </ul>
@@ -813,9 +828,16 @@
         </div>
       </dl>
     </div>
+    {#if !me.burned && !me.replaced}
+      <div class="set">
+        <span class="l">Delete known posts and comments</span>
+        <span class="h">Asks the network to delete the posts and comments of yours that this {app.platformName} knows. Your key stays here so the work can finish.</span>
+        <span class="v"><button type="button" class="lnk" onclick={() => (deleteOpen = true)}>Review…</button></span>
+      </div>
+    {/if}
     <div class="set top">
-      <span class="l">Everything here</span>
-      <span class="h">Wipe removes all of this from this {app.platformName}. Your other devices keep theirs, and it all fades on each community's schedule anyway.</span>
+      <span class="l">Clear local data</span>
+      <span class="h">Wipe removes all of this from this {app.platformName}, and nothing from the network: what you posted fades on each community's schedule. Your other devices and exported key backups keep theirs.</span>
       <span class="v"><button type="button" class="lnk lnk-danger" onclick={() => (wipeStep = 1)}>Wipe…</button></span>
       <div class="wide">{@render wipeList()}</div>
     </div>
@@ -888,10 +910,25 @@
   </div>
 </Modal>
 
-<Modal open={wipeStep > 0} title={wipeStep === 1 ? `Wipe this ${app.platformName}?` : 'Last chance.'} onclose={() => (wipeStep = 0)}>
+<Modal bind:open={deleteOpen} title="Delete known posts and comments" wide>
+  {#if deleteOpen}<DeleteKnown ondone={() => (deleteOpen = false)} />{/if}
+</Modal>
+
+<Modal open={wipeStep > 0} title={wipeStep === 1 ? `Clear local data on this ${app.platformName}?` : 'Last chance.'} onclose={() => (wipeStep = 0)}>
   {#if wipeStep === 1}
     <p>This deletes everything below from this {app.platformName}. Communities live on with their other members.</p>
     {@render wipeList()}
+    <p class="help">Not touched: exported key backups, your other devices and copies other members keep. Posts you already sent stay on the network until they fade; to ask for their deletion first, use <b>Delete known posts and comments</b>. Deleting files doesn't guarantee the storage is physically erased. Your vault passphrase stays, so a new key here is encrypted too.</p>
+    {#if !abandons}
+      <p class="help" role="status">Checking deletion work…</p>
+    {:else if wipeReadiness === null}
+      <p class="abandons" role="alert">This {app.platformName} couldn't check for unfinished deletions. Clearing stops any that run here, and nothing reports them as done.</p>
+    {:else if !abandons.ready}
+      <div class="abandons" role="alert">
+        <p><b>Unfinished deletions stop here.</b> Clearing now abandons them, and nothing reports them as done.</p>
+        <ul>{#each abandons.lines as line (line)}<li>{line}</li>{/each}</ul>
+      </div>
+    {/if}
     <div class="btnrow">
       <button type="button" class="pill pill-danger" onclick={() => (wipeStep = 2)}>Wipe it</button>
       <button type="button" class="pill" onclick={() => (wipeStep = 0)}>Keep everything</button>
@@ -988,6 +1025,8 @@
   .wipes { list-style: none; margin: 0; padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; background: var(--soft); border-radius: var(--radius-input); font-size: 14px; font-weight: 500; }
   .wipes li { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   .wipes .tag { min-width: 96px; justify-content: center; }
+  .abandons { padding: 12px 14px; border-radius: var(--radius-input); background: var(--peach); color: var(--tagink); font-size: 14px; line-height: 1.5; display: grid; gap: 6px; }
+  .abandons ul { margin: 0; padding-left: 20px; }
   @media (max-width: 640px) {
     .jumpbtn { min-height: 40px; }
     .privacy dl div { grid-template-columns: 1fr; gap: 2px; }

@@ -95,6 +95,31 @@ export interface BulkDeletionStatus {
   inventoryComplete: boolean;
 }
 
+/** Why clearing local data now would strand deletion work (RFC-0003). */
+export type CleanupBlockReason =
+  /** Deletions of yours not signed yet: a confirmed list, or a request your computer has not signed. */
+  | 'unsigned'
+  /** Signed deletions of yours this device still shares, enforces or sends to storage holders. */
+  | 'in-effect'
+  /** Other people's deletions whose pieces only this device can drop. */
+  | 'holder-drops';
+
+/**
+ * Whether clearing this device's data now abandons any deletion work. Clearing itself is
+ * always possible (`wipe`); this only says when `clearAfterDeletion` may clear. Never proof of erasure.
+ */
+export interface CleanupReadiness {
+  ready: boolean;
+  blocked: { reason: CleanupBlockReason; count: number }[];
+  /** When the known work ends if nothing new is learned. */
+  until: Unix | null;
+  /** Known posts and comments of yours here that no deletion covers: clearing leaves them. */
+  unlisted: number;
+  /** Pass both back to `clearAfterDeletion`; any change since refuses the clear. */
+  inventory: Hex;
+  deletions: Hex;
+}
+
 export type CommunityColor = 'mint' | 'sky' | 'lilac' | 'peach' | 'sun' | 'coral';
 export const COMMUNITY_COLORS: CommunityColor[] = ['mint', 'sky', 'lilac', 'peach', 'sun', 'coral'];
 export type AvatarColor = 'mint' | 'sky' | 'lilac' | 'peach' | 'sun';
@@ -1353,7 +1378,7 @@ export type CoreEvent =
 export type ErrorCode =
   | 'no-identity' | 'not-found' | 'not-allowed' | 'rate-limited' | 'invalid'
   | 'bad-invite' | 'bad-passphrase' | 'expired' | 'banned' | 'too-big' | 'offline' | 'storage-incompatible'
-  | 'deletion-full' | 'deletion-pending' | 'internal';
+  | 'deletion-full' | 'deletion-pending' | 'cleanup-blocked' | 'cleanup-changed' | 'internal';
 
 export class HoiError extends Error {
   constructor(public code: ErrorCode, message: string) {
@@ -1681,6 +1706,12 @@ export interface HoiCore {
   /** Load fingerprints of pictures to refuse, near copies included: a PDQ hash list, one
    * 64-hex hash per line. Kept on this device only. Resolves to how many were new. */
   importBlocklist(text: string): Promise<number>;
-  /** Delete everything on this device: keys, records, settings. */
+  /** Delete everything on this device: keys, records, settings. Unfinished deletion work here
+   * is abandoned, never finished. */
   wipe(): Promise<void>;
+  /** Whether clearing now would strand deletion work (RFC-0003). */
+  cleanupReadiness(): Promise<CleanupReadiness>;
+  /** `wipe`, only while `cleanupReadiness` still says ready with these revisions; refused
+   * (`cleanup-blocked`, `cleanup-changed`) without changing anything otherwise. */
+  clearAfterDeletion(inventory: Hex, deletions: Hex): Promise<void>;
 }

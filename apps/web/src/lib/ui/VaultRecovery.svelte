@@ -39,6 +39,7 @@
       <form onsubmit={reset} aria-busy={busy}>
         <h2>Clear this device's local data</h2>
         <p>Deletes the saved key, communities, posts, private community data, settings and local passphrase here. It does not delete copies on other devices or revoke your old key. This cannot be undone.</p>
+        <p><b>It deletes nothing from the network.</b> Posts you sent stay until they fade. Deletions this device started stop unfinished: a locked vault can't be read to finish them or show what they were, and nothing reports them as done. Exported key backups and your other devices keep theirs. Deleting files doesn't guarantee the storage is physically erased.</p>
         <label class="acknowledge"><input type="checkbox" bind:checked={acknowledged} disabled={busy} /> I have a key backup or another signed-in device, or accept losing access to my old key.</label>
         <label for="vault-reset-confirm">Type RESET to continue</label>
         <input id="vault-reset-confirm" class="input" name="reset-confirmation" bind:value={confirmation} autocomplete="off" spellcheck="false" disabled={busy} />

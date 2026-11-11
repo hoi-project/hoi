@@ -90,6 +90,37 @@ pub struct BulkDeletionStatus {
     pub inventory_complete: bool,
 }
 
+/// Whether clearing this device's data now would strand deletion work (RFC-0003). Clearing
+/// itself is always possible ([`crate::Node::wipe`]); this only says when clearing *after* a
+/// network deletion abandons nothing. Never proof that anything was erased.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ffi", derive(uniffi::Record))]
+pub struct CleanupReadiness {
+    /// No saved deletion work needs this device any more.
+    pub ready: bool,
+    /// Why not: `unsigned` (deletions of yours not signed yet), `in-effect` (signed deletions of
+    /// yours that this device still shares, enforces or sends to storage holders) or
+    /// `holder-drops` (other people's deletions whose pieces only this device can drop).
+    pub blocked: Vec<CleanupBlock>,
+    /// When the known work ends if nothing new is learned. Not erasure.
+    pub until: Option<u64>,
+    /// Known posts and comments of yours here that no deletion covers: clearing leaves them.
+    pub unlisted: u32,
+    /// Pass both revisions to `clearAfterDeletion`; any change since refuses the clear.
+    pub inventory: String,
+    pub deletions: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ffi", derive(uniffi::Record))]
+pub struct CleanupBlock {
+    pub reason: String,
+    /// Deletions it concerns.
+    pub count: u32,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]

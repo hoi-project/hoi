@@ -84,6 +84,30 @@ pub(crate) struct Job {
     pub next_publication: u64,
 }
 
+impl Job {
+    /// Whether this device still has work or suppression for the job: the signed deletion is
+    /// still valid (dissemination, local suppression) or a known piece has not passed its
+    /// storage day (drops, late placements). Acknowledgements alone never end it (RFC-0001).
+    pub(crate) fn needs_local_state(&self, now: u64) -> bool {
+        self.expires_at > now || self.targets.values().any(|t| now / DAY <= t.expiry_day as u64)
+    }
+
+    /// When [`Job::needs_local_state`] ends if nothing new is learned.
+    pub(crate) fn local_state_until(&self) -> u64 {
+        self.targets.values().map(|t| (t.expiry_day as u64).saturating_add(1).saturating_mul(DAY)).fold(self.expires_at, u64::max)
+    }
+
+    /// When the last unfinished piece drop this device holds authority for lapses; `None` once
+    /// every such drop was acknowledged or its storage day passed.
+    pub(crate) fn drops_until(&self, now: u64) -> Option<u64> {
+        self.targets
+            .values()
+            .filter(|t| t.token.is_some() && !matches!(t.outcome, Outcome::Acknowledged | Outcome::Expired) && now / DAY <= t.expiry_day as u64)
+            .map(|t| (t.expiry_day as u64).saturating_add(1).saturating_mul(DAY))
+            .max()
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Pending {
@@ -438,7 +462,7 @@ impl Node {
                     outstanding: 0,
                     coverage_gaps: j.coverage_gaps.len() as u32,
                     expires_at: j.expires_at,
-                    requires_local_state: j.expires_at > now,
+                    requires_local_state: j.needs_local_state(now),
                     inventory_complete: false,
                 };
                 for t in j.targets.values() {
@@ -458,9 +482,6 @@ impl Node {
                     }
                     if !matches!(outcome, Outcome::Acknowledged | Outcome::Expired) {
                         p.outstanding += 1;
-                    }
-                    if now / DAY <= t.expiry_day as u64 {
-                        p.requires_local_state = true;
                     }
                 }
                 p

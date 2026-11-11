@@ -320,7 +320,9 @@ let feed = node.call("feed", serde_json::json!([{ "community": community_hex, "s
           <tr><td><code>unpair</code></td><td>none</td><td><code>NetStatus</code></td><td></td></tr>
           <tr><td><code>rotatePairing</code></td><td>none</td><td><code>NetStatus</code></td><td>A new pairing link; devices pair again.</td></tr>
           <tr><td><code>importBlocklist</code></td><td><code>text</code></td><td>number</td><td>PDQ hashes, one 64-hex hash per line; how many were new.</td></tr>
-          <tr><td><code>wipe</code></td><td>none</td><td><code>null</code></td><td>Everything on this device.</td></tr>
+          <tr><td><code>wipe</code></td><td>none</td><td><code>null</code></td><td>Everything on this device. Unfinished deletion work here stops.</td></tr>
+          <tr><td><code>cleanupReadiness</code></td><td>none</td><td><code>CleanupReadiness</code></td><td>Whether clearing would strand deletion work, why, and two revisions.</td></tr>
+          <tr><td><code>clearAfterDeletion</code></td><td><code>inventory</code>, <code>deletions</code></td><td><code>null</code></td><td>A <code>wipe</code> only while still ready with those revisions; else <code>cleanup-blocked</code> or <code>cleanup-changed</code>.</td></tr>
           <tr><td><code>sweep</code></td><td>none</td><td>number</td><td>Expiry and housekeeping; how many records went. Hosts also run it on a timer.</td></tr>
         </tbody>
       </table>
