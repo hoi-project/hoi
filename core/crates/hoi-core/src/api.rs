@@ -1830,10 +1830,19 @@ impl Node {
     }
 
     pub fn delete_own(&mut self, id: &str) -> R<()> {
-        let me = self.need_me()?;
+        self.need_me()?;
         let pid = parse_id(id)?;
-        if self.deletion_for_target(pid).is_some_and(|job| self.deletions.saved.jobs[&job].author == me.root) {
-            return Ok(());
+        self.author_delete(pid)?;
+        Ok(())
+    }
+
+    /// One author deletion through the ordinary validation path, or the job that already exists
+    /// for `pid`. Returns the signed deletion's id (a browser's may still wait for its
+    /// signature). Bulk deletion signs each of its targets through here (RFC-0002).
+    pub(crate) fn author_delete(&mut self, pid: Id) -> R<Id> {
+        let me = self.need_me()?;
+        if let Some(job) = self.deletion_for_target(pid).filter(|job| self.deletions.saved.jobs[job].author == me.root) {
+            return Ok(job);
         }
         if self.deletion_home_placement_pending(pid) {
             return Err(ApiError::new("deletion-pending", "A placement still needs its deletion authority. Retry when the placement finishes."));
@@ -1854,8 +1863,7 @@ impl Node {
             nonce: 0,
         };
         self.deletion_admission(&r)?;
-        self.publish(r)?;
-        Ok(())
+        self.publish(r)
     }
 
     pub fn vote(&mut self, target: &str, value: i64) -> R<i64> {

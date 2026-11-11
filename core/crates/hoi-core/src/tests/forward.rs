@@ -569,7 +569,7 @@ fn a_hot_object_is_regenerated_once_with_twice_the_pieces() {
 }
 
 /// A private group of `a` (owner) and `b` on a mesh, both reaching holders through f0–f2.
-fn group(m: &mut Mesh) -> String {
+pub(crate) fn group(m: &mut Mesh) -> String {
     join(m, "a", "198.51.100.10:7843", &[0, 1, 2]);
     join(m, "b", "192.0.2.20:7843", &[0, 1, 2]);
     let c = m.n("a").create_private_community(draft("dropping garden")).unwrap().id;

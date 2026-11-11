@@ -610,6 +610,28 @@ impl HoiNode {
         })
     }
 
+    /// The person's known posts and comments here, and what this device cannot account for.
+    pub fn preview_bulk_deletion(&self) -> R<BulkDeletionPreview> {
+        self.api(|n| n.preview_bulk_deletion())
+    }
+
+    /// Saves a previewed list and starts deleting it; the same snapshot resumes it.
+    pub fn confirm_bulk_deletion(&self, snapshot: String) -> R<BulkDeletionStatus> {
+        self.api(|n| n.confirm_bulk_deletion(&snapshot))
+    }
+
+    /// Stops targets without an accepted signed deletion; accepted ones continue.
+    pub fn cancel_bulk_deletion(&self, snapshot: String) -> R<BulkDeletionStatus> {
+        self.api(|n| n.cancel_bulk_deletion(&snapshot))
+    }
+
+    pub fn bulk_deletions(&self) -> R<Vec<BulkDeletionStatus>> {
+        self.api(|n| {
+            n.commit()?;
+            Ok(n.bulk_deletions())
+        })
+    }
+
     /// `value`: 1 up, -1 down, 0 take it back. Returns the new score.
     pub fn vote(&self, target: String, value: i32) -> R<i64> {
         self.api(|n| n.vote(&target, i64::from(value)))

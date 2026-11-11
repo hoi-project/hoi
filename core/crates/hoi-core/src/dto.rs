@@ -29,6 +29,86 @@ pub struct DeletionProgress {
     pub inventory_complete: bool,
 }
 
+/// What "Delete known posts and comments" would cover (RFC-0002): the person's posts and
+/// comments this device holds, and what it cannot account for. Never a complete history.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ffi", derive(uniffi::Record))]
+pub struct BulkDeletionPreview {
+    /// Confirm with this; it changes whenever the list does.
+    pub snapshot: String,
+    pub communities: Vec<BulkDeletionCommunity>,
+    pub count: u32,
+    /// Known piece generations of these targets this device holds drop authority for.
+    pub capabilities: u32,
+    pub gaps: Vec<BulkDeletionGap>,
+    /// Always false: a scan of one device cannot prove complete publication history.
+    pub inventory_complete: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ffi", derive(uniffi::Record))]
+pub struct BulkDeletionCommunity {
+    pub id: String,
+    pub name: String,
+    pub posts: Vec<String>,
+    pub comments: Vec<String>,
+}
+
+/// Something a bulk deletion cannot account for; never counted as deleted. `reason` is one of
+/// `private-state-unavailable`, `not-synchronized`, `record-absent`, `capability-missing`
+/// (`count` generations), `generations-unknown` or `too-many` (`count` targets left out).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ffi", derive(uniffi::Record))]
+pub struct BulkDeletionGap {
+    pub reason: String,
+    pub community: Option<String>,
+    pub target: Option<String>,
+    pub count: u32,
+}
+
+/// A confirmed bulk deletion. Target states say whether a signed deletion was accepted; how far
+/// it travelled is that deletion's own [`DeletionProgress`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ffi", derive(uniffi::Record))]
+pub struct BulkDeletionStatus {
+    pub snapshot: String,
+    pub confirmed_at: u64,
+    pub cancelled_at: Option<u64>,
+    pub count: u32,
+    pub selected: u32,
+    pub queued: u32,
+    pub signed: u32,
+    pub failed: u32,
+    pub expired: u32,
+    pub cancelled: u32,
+    pub targets: Vec<BulkDeletionTarget>,
+    pub gaps: Vec<BulkDeletionGap>,
+    pub inventory_complete: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ffi", derive(uniffi::Record))]
+pub struct BulkDeletionTarget {
+    pub id: String,
+    pub community: String,
+    /// `post` or `comment`.
+    pub kind: String,
+    /// `selected`, `queued`, `signed`, `failed`, `expired` or `cancelled`.
+    pub state: String,
+    /// Why it waits or failed: `rate-limited`, `awaiting-signature`, `deletion-full`,
+    /// `placement-pending`, `record-absent`, `not-allowed` or `refused`.
+    pub reason: Option<String>,
+    /// The signed deletion, as `DeletionProgress.id`.
+    pub deletion: Option<String>,
+    /// When a waiting target is tried next.
+    pub next_try: Option<u64>,
+}
+
 /// The trust ladder's steps and quorums (PROTOCOL.md §15, §16). Seconds for durations.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]

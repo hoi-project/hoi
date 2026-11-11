@@ -1080,3 +1080,44 @@ quarantined. Usable recovery in that case requires a fresh device and an authori
 These are Rust snapshot-restoration APIs, not a shipped backup import UI or command. Key-file
 import and recovery-line restoration are separate identity recovery paths and contain no MLS
 snapshot state. Ordinary restarts continue to use `Node::open` and retain their caches.
+
+### 21.2 Deleting known posts and comments (RFC-0002)
+
+Bulk deletion is a client procedure over §21.1. It adds no record kind, wire field, envelope or
+cryptography; each target receives its own ordinary `delete` record, validated and propagated as
+any other.
+
+**Inventory.** A preview selects live posts and comments held on this device whose resolved
+author root (after delegation, revocation and rotation validation) is the person's. Display
+names and possession of an old signing key select nothing; edits follow their parent and are not
+targets; other authors' replies, posts and media are never targets. Pointer-only entries stay
+unresolved until the record itself is held. Alongside the targets by community, a preview reports
+the known piece generations with drop authority on this device and these gaps:
+`private-state-unavailable` (no usable group state), `not-synchronized` (never caught up with a
+peer, or a quarantined snapshot), `record-absent` (pointer only), `capability-missing` (count of
+generations without authority), `generations-unknown` (kept in pieces with no known generation)
+and `too-many` (targets beyond one batch). `inventoryComplete` is always false: a local scan does
+not prove complete publication history.
+
+**Confirmation.** The snapshot ID is BLAKE3 over `"hoi bulk author deletion snapshot v1"`, the
+person's id and the sorted target ids. Confirming recomputes the inventory and refuses a changed
+list; the confirmed list never expands. Confirming a saved ID again resumes it without signing a
+second deletion for any target.
+
+**Execution.** Before each signature the client rechecks that the target is held, unexpired and
+the person's, then signs through the ordinary author-delete path with the current time. Rate
+windows (§9.1) and owner/moderator exemptions apply per record; a rate-limited target waits for
+its window and is never backdated. A browser that signs through its computer keeps a few
+requests outstanding and asks again only after a request lapses. Cancellation stops targets that
+have no accepted signed deletion; accepted deletions and their §21.1 jobs continue. Target states
+(selected, queued, signed, failed, expired, cancelled) are separate from §21.1 progress; signed
+is not propagation.
+
+**Local storage.** Batches are a versioned blob in the existing encrypted client storage, saved
+in the same transaction as the deletions they sign and read only from storage that commit
+accepted. Client storage format 5 adds it; older software refuses that storage instead of
+abandoning a batch, and format-4 stores open with no batches. A batch whose targets do not match
+its snapshot ID, or of an unknown version, refuses to open. The inventory links an author to
+communities and records: it is never logged or sent, and holders continue to receive locators
+and drop authority only. A local wipe discards batches without reporting their work as finished;
+identity recovery re-establishes signing authority but no batch, inventory or capability.

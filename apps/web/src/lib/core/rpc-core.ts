@@ -298,6 +298,10 @@ export function createRpcCore(t: Transport, stamper: Stamper, looker?: ComposeLo
       await c('deleteOwn', id);
     },
     deletionProgress: () => c('deletionProgress'),
+    previewBulkDeletion: () => c('previewBulkDeletion'),
+    confirmBulkDeletion: (snapshot) => c('confirmBulkDeletion', snapshot),
+    cancelBulkDeletion: (snapshot) => c('cancelBulkDeletion', snapshot),
+    bulkDeletions: () => c('bulkDeletions'),
     vote: (target, value) => c('vote', target, value),
     flag: async (target, reason) => {
       await c('flag', target, reason);

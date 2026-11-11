@@ -103,6 +103,16 @@ impl Node {
         self.remote.pending.contains_key(id)
     }
 
+    /// Whether `id` still waits for its signature: asked within the last [`PENDING_TTL`].
+    pub(crate) fn signing_pending(&self, id: &Id, now: u64) -> bool {
+        self.remote.pending.get(id).is_some_and(|(_, at)| *at + PENDING_TTL > now)
+    }
+
+    /// Records this browser asked to have signed within the last [`PENDING_TTL`].
+    pub(crate) fn signing_outstanding(&self, now: u64) -> usize {
+        self.remote.pending.values().filter(|(_, at)| *at + PENDING_TTL > now).count()
+    }
+
     /// On the computer: a browser asks for a signature.
     pub(crate) fn on_sign_request(&mut self, peer: &str, secret: &[u8], device: Id, rec: &[u8]) {
         if !self.remote.keys.contains_key(&device) {
