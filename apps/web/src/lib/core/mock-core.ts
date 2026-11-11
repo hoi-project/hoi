@@ -973,7 +973,7 @@ export function createMockCore(): HoiCore {
     };
     for (const p of posts.values()) if (open(p)) entry(p.community).posts.push(p.id);
     for (const c of comments.values()) if (open(c)) entry(posts.get(c.post)!.community).comments.push(c.id);
-    const ids = [...byCommunity.values()].flatMap(c => [...c.posts, ...c.comments]).sort();
+    const ids = [...byCommunity.values()].flatMap(c => [...c.posts, ...c.comments]).sort((a, b) => a.localeCompare(b));
     let h = 0x811c9dc5;
     let snapshot = '';
     for (let round = 0; round < 8; round++) {
