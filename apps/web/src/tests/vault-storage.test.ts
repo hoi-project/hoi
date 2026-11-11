@@ -96,6 +96,36 @@ describe('encrypted browser storage', () => {
     db.close();
   });
 
+  it('clears deletion work with a wipe but keeps the vault; a locked reset removes the vault too; neither leaves the hoi database', async () => {
+    const other = await openIdb('another-app');
+    await seed(other);
+    const untouched = await snapshot(other);
+    const db = await openIdb();
+    const vault = testVault();
+    const work: Snapshot = {
+      records: legacy.records,
+      blobs: [...legacy.blobs, ['deletion-journal', bytes('{"version":1,"jobs":{}}')], ['deletion-batches', bytes('{"version":1,"batches":{}}')]],
+    };
+    await migrate(db, work, vault);
+    // An ordinary wipe (`wipe` or `clearAfterDeletion`): the core's journal, as it sends it.
+    await apply(db, [{ op: 'wipe' }, { op: 'blob', key: 'format', value: bytes('{"version":5}') }], vault);
+    const wiped = await snapshot(db);
+    expect(wiped.records).toEqual([]);
+    expect(vaultHeader(wiped)).toEqual(vault.header());
+    expect(Object.fromEntries(decodeSnapshot(wiped, vault).blobs)).toEqual({ format: bytes('{"version":5}') });
+    expect(wiped.blobs.map(([key]) => key)).toEqual(['format', 'v:format', 'vault', 'vault-manifest']);
+    db.close();
+    // Locked recovery cannot read the vault; it removes it, so the next start sets up again.
+    await resetStore('hoi', 'RESET');
+    const fresh = await openIdb();
+    const reset = await snapshot(fresh);
+    expect(reset).toEqual({ records: [], blobs: [] });
+    expect(vaultHeader(reset)).toBeNull();
+    fresh.close();
+    expect(await snapshot(other)).toEqual(untouched);
+    other.close();
+  });
+
   it('requires exact confirmation to reset a locked store, including damaged metadata', async () => {
     const db = await openIdb();
     await migrate(db, legacy, testVault());

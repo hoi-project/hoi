@@ -39,6 +39,7 @@ import type {
   DeviceInfo,
   DeletionProgress,
   BulkDeletionStatus,
+  CleanupReadiness,
   FeedQuery,
   FlagView,
   Hex,
@@ -981,6 +982,34 @@ export function createMockCore(): HoiCore {
       snapshot += h.toString(16).padStart(8, '0');
     }
     return { communities: [...byCommunity.values()], ids, snapshot };
+  }
+  /** RFC-0003 in the mock: deletions here stay in effect until their target's lifetime ends. */
+  function cleanupReadiness(): CleanupReadiness {
+    const t = now();
+    const inEffect = [...deletions.values()].filter(d => d.requiresLocalState && d.expiresAt > t);
+    const unsigned = [...bulk.values()].flatMap(b => b.targets).filter(x => x.state === 'selected' || x.state === 'queued');
+    const blocked: CleanupReadiness['blocked'] = [];
+    if (unsigned.length) blocked.push({ reason: 'unsigned', count: unsigned.length });
+    if (inEffect.length) blocked.push({ reason: 'in-effect', count: inEffect.length });
+    const until = Math.max(0, ...inEffect.map(d => d.expiresAt));
+    const inv = identity ? bulkInventory() : { ids: [], snapshot: '' };
+    const revision = (text: string) => {
+      let h = 0x811c9dc5;
+      let out = '';
+      for (let round = 0; round < 8; round++) {
+        for (const ch of `${text}|${round}`) h = Math.imul(h ^ ch.charCodeAt(0), 0x01000193) >>> 0;
+        out += h.toString(16).padStart(8, '0');
+      }
+      return out;
+    };
+    return {
+      ready: blocked.length === 0,
+      blocked,
+      until: until || null,
+      unlisted: inv.ids.length,
+      inventory: revision(`${inv.snapshot}|${[...bulk.values()].map(b => b.snapshot + b.targets.map(x => x.state).join()).join()}`),
+      deletions: revision([...deletions.values()].map(d => `${d.id}:${d.requiresLocalState && d.expiresAt > t}`).join()),
+    };
   }
   function needOwner(c: MCommunity) {
     meKey();
@@ -2684,6 +2713,17 @@ export function createMockCore(): HoiCore {
       if (peerTimer) clearInterval(peerTimer);
       peerTimer = null;
       emit({ type: 'net', status: { ...net } });
+    },
+    async cleanupReadiness() {
+      await sleep(80);
+      return cleanupReadiness();
+    },
+    async clearAfterDeletion(inventory, deletions) {
+      await sleep(120);
+      const r = cleanupReadiness();
+      if (!r.ready) throw err('cleanup-blocked', 'Deletion work still needs this device. Nothing was cleared.');
+      if (r.inventory !== inventory || r.deletions !== deletions) throw err('cleanup-changed', 'Your posts or deletions changed since you checked. Nothing was cleared; check again.');
+      await core.wipe();
     },
   };
 

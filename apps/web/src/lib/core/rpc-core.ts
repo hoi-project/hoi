@@ -351,5 +351,9 @@ export function createRpcCore(t: Transport, stamper: Stamper, looker?: ComposeLo
     wipe: async () => {
       await c('wipe');
     },
+    cleanupReadiness: () => c('cleanupReadiness'),
+    clearAfterDeletion: async (inventory, deletions) => {
+      await c('clearAfterDeletion', inventory, deletions);
+    },
   };
 }

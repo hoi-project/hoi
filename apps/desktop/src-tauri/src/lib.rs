@@ -287,6 +287,14 @@ mod vault_lock_tests {
     }
 
     #[test]
+    fn the_guarded_clear_restarts_transports_like_a_wipe() {
+        assert!(clears_local_data("wipe") && clears_local_data("clearAfterDeletion"));
+        for other in ["cleanupReadiness", "deletionProgress", "setSettings", "pair", "unpair"] {
+            assert!(!clears_local_data(other), "{other}");
+        }
+    }
+
+    #[test]
     fn locked_recovery_requires_confirmation_and_only_removes_hoi_storage() {
         let directory = std::env::temp_dir().join(format!("hoi-recovery-{}", hoi_types::hex_encode(&hoi_crypto::random_bytes::<16>().unwrap())));
         std::fs::create_dir(&directory).unwrap();
@@ -344,6 +352,12 @@ mod vault_lock_tests {
     }
 }
 
+/// Calls that clear this computer's data: the transports, forwards and home link restart
+/// around them. `clearAfterDeletion` is `wipe` guarded by the core's cleanup readiness (RFC-0003).
+fn clears_local_data(method: &str) -> bool {
+    matches!(method, "wipe" | "clearAfterDeletion")
+}
+
 fn err(e: hoi_core::ApiError) -> Value {
     json!({ "code": e.code, "message": e.message })
 }
@@ -366,13 +380,14 @@ async fn hoi_call(app: AppHandle, hoi: State<'_, Hoi>, method: String, args: Val
         sync_forwarding(&hoi, Some(args.get(0).and_then(Value::as_bool).unwrap_or(false))).await;
         return serde_json::to_value(hoi.shared.with(|n| n.net_status())).map_err(internal);
     }
-    if method == "wipe" {
+    let clearing = clears_local_data(&method);
+    if clearing {
         // The router's forwards point at ports about to close.
         stop_forwarding(&hoi).await;
     }
     // Stop the transports before erasing their identities. Serialize with startup so an
     // endpoint can never publish its old address back into a freshly wiped node.
-    let mut transports = if method == "wipe" { Some((hoi.p2p.lock().await, hoi.rtc.lock().await)) } else { None };
+    let mut transports = if clearing { Some((hoi.p2p.lock().await, hoi.rtc.lock().await)) } else { None };
     if let Some((p2p, rtc)) = transports.as_mut() {
         if let Some(handle) = p2p.take() {
             handle.shutdown().await;
@@ -384,7 +399,7 @@ async fn hoi_call(app: AppHandle, hoi: State<'_, Hoi>, method: String, args: Val
     let out = hoi
         .shared
         .with(|n| {
-            let serving = if method == "wipe" { n.net_status().serving.map(|s| s.url) } else { None };
+            let serving = if clearing { n.net_status().serving.map(|s| s.url) } else { None };
             let result = n.call(&method, args)?;
             if let Some(url) = serving {
                 n.set_serving(Some(&url))?;
@@ -409,11 +424,11 @@ async fn hoi_call(app: AppHandle, hoi: State<'_, Hoi>, method: String, args: Val
         // "Only through my VPN" may have changed: the transports follow at once.
         follow_vpn(&hoi, &app).await;
     }
-    if matches!(method.as_str(), "setSettings" | "wipe") {
+    if clearing || method == "setSettings" {
         sync_forwarding(&hoi, None).await;
         sync_pieces(&app, &hoi.shared);
     }
-    if matches!(method.as_str(), "pair" | "unpair" | "wipe") {
+    if clearing || matches!(method.as_str(), "pair" | "unpair") {
         restart_home_link(&hoi);
     }
     out

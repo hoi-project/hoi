@@ -371,9 +371,33 @@ impl HoiNode {
     }
 
     /// Deletes everything on this phone: keys (from the [`KeyStore`] too), records, settings.
+    /// Deletion work still on this phone is abandoned, never finished (RFC-0003).
     pub fn wipe(&self) -> R<()> {
         self.stop_home_link();
         self.api(|n| n.wipe())?;
+        self.events.forget_sync();
+        Ok(())
+    }
+
+    /// Whether clearing this phone now would strand deletion work (RFC-0003).
+    pub fn cleanup_readiness(&self) -> R<CleanupReadiness> {
+        self.api(|n| {
+            n.commit()?;
+            Ok(n.cleanup_readiness())
+        })
+    }
+
+    /// Clears this phone like [`Self::wipe`], only while `cleanup_readiness` still says ready
+    /// with these revisions. A refused clear changes nothing and restarts a running home link.
+    pub fn clear_after_deletion(&self, inventory: String, deletions: String) -> R<()> {
+        let was_running = lock(&self.link).is_running();
+        self.stop_home_link();
+        if let Err(e) = self.api(|n| n.clear_after_deletion(&inventory, &deletions)) {
+            if was_running {
+                self.start_home_link();
+            }
+            return Err(e);
+        }
         self.events.forget_sync();
         Ok(())
     }

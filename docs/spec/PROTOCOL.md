@@ -1121,3 +1121,31 @@ its snapshot ID, or of an unknown version, refuses to open. The inventory links 
 communities and records: it is never logged or sent, and holders continue to receive locators
 and drop authority only. A local wipe discards batches without reporting their work as finished;
 identity recovery re-establishes signing authority but no batch, inventory or capability.
+
+### 21.3 Clearing local data after deletion (RFC-0003)
+
+Clearing local data is a client procedure. It adds no record kind, wire field, envelope,
+cryptography or stored state, and it sends nothing.
+
+**Local clearing.** An ordinary wipe, or recovery from a locked vault, is always allowed. It
+abandons the device's §21.1 jobs and §21.2 batches: their remaining work stops and is never
+reported as finished. Locked recovery cannot read the vault, so it cannot list that work either.
+Neither sends a deletion, burns the identity or reaches other devices, exported backups or
+copies other members keep, and neither guarantees physical storage erasure. An ordinary wipe
+keeps the vault's encryption; locked recovery removes the vault.
+
+**Readiness.** `cleanupReadiness` reports, for the whole installation and only from state that
+storage accepted, whether clearing would strand deletion work. It is blocked while a deletion of
+the person's is not yet signed (a waiting batch target, or a request a browser's computer has
+not signed), while a signed deletion of theirs still needs local state under §21.1 (until its
+record's validity and its pieces' storage days end; acknowledgements alone never end it), and
+while the device holds drop authority for an unfinished piece of another author's deleted post.
+It also counts known posts and comments that no deletion covers, and gives two revisions:
+BLAKE3 over `"hoi cleanup inventory revision v1"`, the current preview snapshot and every saved
+batch target's state, and over `"hoi cleanup deletion revision v1"`, every job and pending
+remote deletion with whether it blocks.
+
+**Guarded clearing.** `clearAfterDeletion(inventory, deletions)` commits, recomputes readiness
+and both revisions under the same serialization as deletion work, and wipes only if the result
+is ready and both revisions match. Otherwise it fails with `cleanup-blocked` or
+`cleanup-changed` and changes nothing. A core without these calls cannot authorize it.

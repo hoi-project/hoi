@@ -184,6 +184,36 @@ fn a_fresh_database_never_inherits_identity_and_wipe_keeps_storage_encrypted() {
 }
 
 #[test]
+fn the_guarded_clear_keeps_unfinished_deletions_and_their_encrypted_storage() {
+    let dir = temp_dir();
+    let keys = Arc::new(MemKeys::default());
+    let seen = Arc::new(Seen::default());
+    let node = open(&dir, &keys, &seen);
+    node.create_identity("mira".into()).unwrap();
+    let c = node.create_community(draft("garden")).unwrap();
+    let p = node.create_post(post(&c.id, "deleted from the network")).unwrap();
+    let before = node.cleanup_readiness().unwrap();
+    assert!(before.ready && before.unlisted == 1);
+    node.delete_own(p.id).unwrap();
+    let after = node.cleanup_readiness().unwrap();
+    assert!(!after.ready && after.blocked.iter().any(|b| b.reason == "in-effect"));
+    for (inventory, deletions) in [(after.inventory.clone(), after.deletions.clone()), (before.inventory, before.deletions)] {
+        assert!(matches!(node.clear_after_deletion(inventory, deletions), Err(HoiError::Api { code, .. }) if code == "cleanup-blocked"));
+    }
+    assert!(node.me().is_some(), "a refused clear keeps the identity");
+    drop(node);
+    let node = open(&dir, &keys, &seen);
+    assert!(node.me().is_some());
+    assert_eq!(node.cleanup_readiness().unwrap().deletions, after.deletions, "the deletion work survives a restart");
+    // a local clear abandons it, and storage stays encrypted
+    node.wipe().unwrap();
+    assert!(keys.has_keys());
+    assert!(node.me().is_none() && node.deletion_progress().unwrap().is_empty());
+    drop(node);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn json_calls_and_errors() {
     let dir = temp_dir();
     let keys = Arc::new(MemKeys::default());

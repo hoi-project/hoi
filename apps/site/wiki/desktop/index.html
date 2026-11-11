@@ -95,9 +95,9 @@ tauri-core.ts --> Screen: the result; events to subscribers
     <ul>
       <li><code>vpnInterfaces</code> is answered by the shell itself: <code>hoi_net::vpn::interfaces()</code> as <code>{name, label, tunnel, addresses}</code>, the choices for "Only through my VPN".</li>
       <li><code>previewPublicNode</code> is answered by the shell too: the core doesn't talk to routers. It starts or ends asking the router which address it would forward, without publishing it, and returns the net status.</li>
-      <li><code>wipe</code> first removes the router's forwards, then shuts down the iroh endpoint and WebRTC before the core erases their identities, keeps the serving URL, closes every <code>client-</code> link and starts fresh transports. The transport locks are held through the wipe so an endpoint can't publish its old address into the wiped node.</li>
+      <li><code>wipe</code> and <code>clearAfterDeletion</code> first remove the router's forwards, then shut down the iroh endpoint and WebRTC before the core erases their identities, keep the serving URL, close every <code>client-</code> link and start fresh transports. The transport locks are held through the wipe so an endpoint can't publish its old address into the wiped node.</li>
       <li><code>setSettings</code> is followed by <code>follow_vpn</code> (the transports follow "Only through my VPN" at once), <code>sync_forwarding</code> and <code>sync_pieces</code>.</li>
-      <li><code>pair</code>, <code>unpair</code> and <code>wipe</code> restart the link to this computer's own home node, if it is paired with one.</li>
+      <li><code>pair</code>, <code>unpair</code>, <code>wipe</code> and <code>clearAfterDeletion</code> restart the link to this computer's own home node, if it is paired with one.</li>
     </ul>
   </section>
 

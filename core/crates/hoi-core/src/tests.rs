@@ -65,6 +65,8 @@ mod storage_compatibility;
 
 #[path = "tests/bulk.rs"]
 mod bulk;
+#[path = "tests/cleanup.rs"]
+mod cleanup;
 #[path = "tests/deletion.rs"]
 mod deletion;
 #[path = "tests/drop_share.rs"]
