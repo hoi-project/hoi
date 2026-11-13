@@ -68,12 +68,24 @@ impl Node {
         // a host that told us nothing about the channel checks nothing (the native test dialer)
         let Some(channel) = p.meta.rtc.clone() else { return true };
         let Some(key) = p.node_key else { return false };
+        let held = p.held_hello.is_some();
         if !hoi_crypto::verify(&key, statement(&channel, &key).as_bytes(), &hoi_types::Sig(sig)) {
+            // A node a person's device read and accepted, that then cannot show it holds the key
+            // its hello, notice and declaration name: someone else's words on this channel
+            // (RFC-0006 §4, crate::assurance).
+            if held {
+                self.block_peer(peer, "It could not prove it holds the key its hello names.");
+            }
             return false;
         }
-        if let Some(p) = self.peers.get_mut(peer) {
+        let held = self.peers.get_mut(peer).and_then(|p| {
             p.bound = true;
+            p.held_hello.take()
+        });
+        // the hello this device kept is read again, now bound, and its own hello follows
+        match held {
+            Some(hello) => self.net_receive(peer, &hello),
+            None => true,
         }
-        true
     }
 }

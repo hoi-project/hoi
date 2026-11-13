@@ -2088,7 +2088,14 @@ impl Node {
         const MAX_HOLD_GB: f64 = 100.0;
         let native = matches!(self.platform.as_str(), "desktop" | "node");
         let was_public = self.accepts_carry();
+        let was_strict = self.strict();
         let s = &mut self.state.settings;
+        if let Some(x) = &p.assurance {
+            if !matches!(x.as_str(), crate::assurance::DECLARED | crate::assurance::VERIFIED) {
+                return Err(ApiError::invalid("Rely on declared or verified nodes."));
+            }
+            s.assurance = x.clone();
+        }
         if let Some(x) = p.relay {
             s.relay = x && native;
             // A public node serves strangers: without relaying it serves nobody.
@@ -2190,6 +2197,12 @@ impl Node {
             self.signals.tried.clear();
             self.signals.due.clear();
         }
+        if was_strict != self.strict() {
+            self.apply_assurance();
+            self.settle_dirty();
+        }
+        // relaying and its cap are part of what a public node declares
+        self.redeclare();
         Ok(self.state.settings.clone())
     }
 

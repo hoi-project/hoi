@@ -36,6 +36,7 @@
           <tr><td><a href="#scatter"><code>scatter.json</code></a></td><td>sizing, Reed–Solomon, a sealed object, pieces, drops, envelopes, manifest, pointer</td><td>generator</td><td><code>scatter_vectors_hold</code></td></tr>
           <tr><td><a href="#node-announcement"><code>node-announcement.json</code></a></td><td>a public node's signed announcement to one registry</td><td>generator</td><td>hoi-core, hoi-node and the registry Worker's tests</td></tr>
           <tr><td><a href="#node-notice"><code>node-notice.json</code></a></td><td>an operator notice: canonical bytes, hash, signature, link, hello, text</td><td>generator</td><td><code>operator_notices_hash_sign_and_travel_as_committed</code>; the app's <code>notice.test.ts</code></td></tr>
+          <tr><td><a href="#node-declaration"><code>node-declaration.json</code></a></td><td>the same node's configuration declaration: canonical bytes, hash, signature, hello, sections</td><td>generator</td><td><code>node_declarations_hash_sign_and_travel_as_committed</code></td></tr>
           <tr><td><a href="#shamir"><code>shamir.json</code></a></td><td>a 3-of-5 split from fixed coefficients</td><td>committed</td><td><code>the_shared_vectors</code> (hoi-crypto)</td></tr>
           <tr><td><a href="#name-log"><code>name-log.json</code></a></td><td>the registry's name log: leaves, roots, proofs, a signed head</td><td>committed</td><td><code>the_tree_matches_the_shared_vectors</code> (hoi-node)</td></tr>
           <tr><td><a href="#community-registration"><code>community-registration.json</code></a></td><td>a v1 name claim's statement and signature</td><td>committed; rebuilt by a test</td><td>hoi-core, hoi-node, the Node registry and its conformance suite</td></tr>
@@ -101,6 +102,7 @@ node ../scripts/test-core-wasi.mjs                       # the same, in wasm32-w
           <tr><td><code>threshold_entry_cosigns_verify</code></td><td>the <code>proposal_id</code>; two cosignatures, both valid over it</td></tr>
           <tr><td><code>warmth_reads_the_same_everywhere</code></td><td>at least 10 cases and 7 link sets, every output field equal</td></tr>
           <tr><td><code>operator_notices_hash_sign_and_travel_as_committed</code></td><td>the canonical bytes both ways, the hash, the signature, the masked link, the legacy link, the hello, the text</td></tr>
+          <tr><td><code>node_declarations_hash_sign_and_travel_as_committed</code></td><td>the canonical bytes both ways, the hash, the notice and endpoint it names, the signature, the hello's <code>dc</code>, the sections</td></tr>
           <tr><td><code>carry_messages_decode_as_committed</code></td><td>the four messages decode to what they say; the genesis inside verifies</td></tr>
           <tr><td><code>salted_hellos_match_only_known_keys</code></td><td>a stranger hears no name or credential; only a known key is found by its hash; a device hears everything in the clear</td></tr>
           <tr><td><code>encoded_and_legacy_invites_keep_the_same_verified_genesis</code></td><td>all six invite spellings parse to one invite; the routed one masks its addresses</td></tr>
@@ -397,6 +399,17 @@ y | 32 B | lilac | 8 | the polynomial evaluated at x, one byte per secret byte
       <dt>pieces<small>object</small></dt><dd>The same notice from a node that keeps encrypted pieces for others (<code>hoi-node --hold-pieces</code>): <code>s: true</code> added and a fixed sentence shown. Older readers ignore the key; the hash covers it.</dd>
     </dl>
     <p>The app's <code>notice.test.ts</code> checks that its TypeScript writes the same canonical bytes and the same text, sections and pieces sentence as the Rust core. Clients show the notice before they say anything of their own (<a href="/wiki/hoi-node/">hoi-node</a>).</p>
+    <h3 id="node-declaration">node-declaration.json</h3>
+    <p>The same node's configuration declaration (RFC-0006, PROTOCOL.md §14.7): what its software says about how it runs, written by the node from its configuration, never by the operator. Its own key signs it, so it shows what the software claims, not that it runs.</p>
+    <dl class="wk-defs">
+      <dt>seed, endpoint<small>hex</small></dt><dd>The node key, <code>4e</code> × 32, as in <code>node-notice.json</code>.</dd>
+      <dt>notice_hash<small>32 bytes</small></dt><dd>The hash of <code>node-notice.json</code>'s notice: the declaration names the notice it goes with.</dd>
+      <dt>canonical<small>DAG-CBOR</small></dt><dd><code>NodeDeclaration::canonical</code>: <code>v</code>, endpoint <code>e</code>, notice hash <code>nh</code>, software <code>s</code> {<code>n</code> name, <code>v</code> version, <code>d</code> BLAKE3 of the program}, relay bytes a day <code>r</code>, carry <code>c</code> {<code>p</code> policy, <code>n</code> communities, <code>b</code> bytes}, piece bytes <code>h</code>, forwards <code>f</code>. Absent roles are left out.</dd>
+      <dt>hash<small>32 bytes</small></dt><dd>BLAKE3 of the canonical bytes: what a person's answer names.</dd>
+      <dt>statement, signature<small>text, 64 bytes</small></dt><dd><code>"hoi node declaration v1\n&lt;endpoint hex&gt;\n&lt;hash hex&gt;"</code>, signed with Ed25519 by the endpoint key.</dd>
+      <dt>hello<small>hex</small></dt><dd>The node's hello with the notice (<code>nh</code>, <code>nt</code>) and the declaration beside it (<code>dc</code> {<code>d</code>, <code>s</code>}).</dd>
+      <dt>sections<small>array</small></dt><dd>What clients show after the notice: Software, Roles and limits, and What was checked, which says that nothing was.</dd>
+    </dl>
     <h3 id="name-log">name-log.json</h3>
     <p>The registry's public log of names: every owner-signed claim it retained, in order, hashed into an RFC 6962 Merkle tree whose head the registry signs with its own Ed25519 log key. <code>registry/log.mjs</code> and hoi-node's <code>registry/log.rs</code> compute the same entries, tree and answers.</p>
     <div class="wk-table" tabindex="0" role="region" aria-label="name-log.json keys">

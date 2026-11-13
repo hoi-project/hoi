@@ -1,6 +1,7 @@
 //! hoi-types: records, ids, canonical encoding and URIs. Pure, no I/O (CONTRIBUTING.md).
 
 pub mod cbor;
+pub mod declaration;
 pub mod did;
 pub mod id;
 pub mod notice;
@@ -8,6 +9,7 @@ pub mod record;
 pub mod scatter;
 pub mod uri;
 
+pub use declaration::NodeDeclaration;
 pub use did::{did_key, parse_did_key, parse_key};
 pub use id::{Id, Sig, hex_decode, hex_encode};
 pub use notice::NodeNotice;

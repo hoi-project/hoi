@@ -188,6 +188,7 @@ fn a_home_node_keeps_a_bounded_set_of_device_credentials() {
             link_key: None,
             notice_hash: None,
             notice: None,
+            declaration: None,
             holder: None,
             forwards: false,
             rebuilds: false,

@@ -238,6 +238,35 @@ fn operator_notices_hash_sign_and_travel_as_committed() {
 }
 
 #[test]
+fn node_declarations_hash_sign_and_travel_as_committed() {
+    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(vectors().join("node-declaration.json")).unwrap()).unwrap();
+    let notice: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(vectors().join("node-notice.json")).unwrap()).unwrap();
+    let canonical = unhex(v["canonical"].as_str().unwrap());
+    let d = hoi_types::NodeDeclaration::from_canonical(&canonical).unwrap();
+    assert_eq!(d.canonical(), canonical, "one configuration, one canonical form");
+    assert!(d.validate().is_empty() && !d.unknown);
+    let hash = hoi_types::Id::from_hex(v["hash"].as_str().unwrap()).unwrap();
+    assert_eq!((d.hash(), hoi_types::notice::hash_of(&canonical)), (hash, hash));
+    // it names the node and the notice it goes with
+    assert_eq!(d.notice.hex(), notice["hash"].as_str().unwrap());
+    assert_eq!(d.notice.hex(), v["notice_hash"].as_str().unwrap());
+    let seed: [u8; 32] = unhex(v["seed"].as_str().unwrap()).try_into().unwrap();
+    let node = hoi_crypto::Keypair::from_secret(&seed);
+    assert_eq!((d.endpoint, node.public().hex()), (node.public(), v["endpoint"].as_str().unwrap().to_string()));
+    let statement = v["statement"].as_str().unwrap();
+    assert_eq!(statement, hoi_types::declaration::statement(&node.public(), &hash));
+    assert!(statement.starts_with("hoi node declaration v1\n"));
+    let sig = hoi_types::Sig(unhex(v["signature"].as_str().unwrap()).try_into().unwrap());
+    assert!(hoi_crypto::verify(&node.public(), statement.as_bytes(), &sig));
+    let hoi_sync::Msg::Hello { notice_hash, declaration: Some(sent), .. } = hoi_sync::Msg::decode(&unhex(v["hello"].as_str().unwrap())).unwrap() else {
+        panic!("a hello with a declaration")
+    };
+    assert_eq!((notice_hash, sent.bytes.as_slice(), sent.sig), (Some(d.notice), canonical.as_slice(), sig.0));
+    let sections: Vec<serde_json::Value> = d.sections().into_iter().map(|s| serde_json::json!({ "title": s.title, "text": s.text })).collect();
+    assert_eq!(serde_json::Value::Array(sections), v["sections"]);
+}
+
+#[test]
 fn carry_messages_decode_as_committed() {
     let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(vectors().join("carry.json")).unwrap()).unwrap();
     let community = hoi_types::Id::from_hex(v["community"].as_str().unwrap()).unwrap();

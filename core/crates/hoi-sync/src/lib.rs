@@ -164,6 +164,15 @@ pub struct HolderKey {
     pub drop_journal: Option<[u8; 64]>,
 }
 
+/// A node's configuration declaration as it travels in a hello (`dc`): the canonical bytes of a
+/// `hoi_types::NodeDeclaration` and the endpoint key's signature over
+/// `hoi_types::declaration::statement` (RFC-0006).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SignedDeclaration {
+    pub bytes: Vec<u8>,
+    pub sig: [u8; 64],
+}
+
 /// A holder's endpoint and the SHA-256 of its WebRTC certificate, signed by the endpoint key
 /// over `hoi_crypto::envelope::rtc_statement`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -395,6 +404,9 @@ pub enum Msg {
         /// before it says anything of its own.
         notice_hash: Option<Id>,
         notice: Option<Vec<u8>>,
+        /// `dc`, with a notice: the node's configuration declaration (RFC-0006), signed by its
+        /// endpoint key. A client shows it with the notice; older peers ignore it.
+        declaration: Option<SignedDeclaration>,
         /// From a node that holds pieces for scattered delivery: its signed holder key.
         holder: Option<HolderKey>,
         /// `fw`: the sender passes `piece` requests on to the holders it can reach (SCATTER.md
@@ -636,6 +648,22 @@ fn texts_from(value: Option<Value>, max: usize, length: usize) -> Result<Vec<Str
 }
 
 /// A hello's holder key; a malformed one refuses the hello rather than being half read.
+fn declaration_from(value: Option<Value>) -> Result<Option<SignedDeclaration>, TypesError> {
+    let Some(value) = value else { return Ok(None) };
+    let bad = || TypesError::Field("invalid or oversized declaration".into());
+    let Value::M(entries) = value else { return Err(bad()) };
+    let mut m: std::collections::BTreeMap<String, Value> = entries.into_iter().collect();
+    let bytes = match m.remove("d") {
+        Some(Value::B(b)) if b.len() <= hoi_types::declaration::MAX_DECLARATION_WIRE => b,
+        _ => return Err(bad()),
+    };
+    let sig = match m.remove("s") {
+        Some(Value::B(b)) => b.try_into().map_err(|_| bad())?,
+        _ => return Err(bad()),
+    };
+    Ok(Some(SignedDeclaration { bytes, sig }))
+}
+
 fn holder_from(value: Option<Value>) -> Result<Option<HolderKey>, TypesError> {
     let Some(value) = value else { return Ok(None) };
     let Value::M(entries) = value else { return Err(TypesError::Field("invalid holder key".into())) };
@@ -715,6 +743,7 @@ impl Msg {
                 link_key,
                 notice_hash,
                 notice,
+                declaration,
                 holder,
                 forwards,
                 rebuilds,
@@ -747,6 +776,9 @@ impl Msg {
                 }
                 if let Some(n) = notice {
                     e.push(("nt", Value::B(n.clone())));
+                }
+                if let Some(d) = declaration {
+                    e.push(("dc", Value::map([("d", Value::B(d.bytes.clone())), ("s", Value::B(d.sig.to_vec()))])));
                 }
                 if let Some(h) = holder {
                     let mut k = vec![("k", Value::B(h.xk.to_vec())), ("e", Value::U(h.expires_at)), ("s", Value::B(h.sig.to_vec()))];
@@ -966,6 +998,7 @@ impl Msg {
                         Some(Value::B(b)) if b.len() <= hoi_types::notice::MAX_NOTICE_WIRE => Some(b),
                         _ => return Err(TypesError::Field("invalid or oversized notice".into())),
                     },
+                    declaration: declaration_from(m.remove("dc"))?,
                     holder: holder_from(m.remove("sk"))?,
                     forwards: matches!(m.remove("fw"), Some(Value::Bool(true))),
                     rebuilds: matches!(m.remove("rb"), Some(Value::Bool(true))),
@@ -1237,6 +1270,7 @@ mod tests {
             link_key: None,
             notice_hash: None,
             notice: None,
+            declaration: None,
             holder: None,
             forwards: false,
             rebuilds: false,
@@ -1262,6 +1296,7 @@ mod tests {
                 link_key: Some([9; 32]),
                 notice_hash: None,
                 notice: None,
+                declaration: None,
                 holder: None,
                 forwards: false,
                 rebuilds: false,
@@ -1282,6 +1317,7 @@ mod tests {
                 link_key: None,
                 notice_hash: None,
                 notice: None,
+                declaration: None,
                 holder: None,
                 forwards: false,
                 rebuilds: false,
@@ -1704,6 +1740,23 @@ mod tests {
             Msg::Hello { forwards, .. } => assert!(!forwards),
             _ => unreachable!(),
         }
+    }
+
+    #[test]
+    fn a_declaration_travels_beside_the_notice_and_is_bounded() {
+        let mut h = bare();
+        let d = SignedDeclaration { bytes: vec![7; 40], sig: [9; 64] };
+        if let Msg::Hello { declaration, .. } = &mut h {
+            *declaration = Some(d.clone());
+        }
+        match Msg::decode(&h.encode()).unwrap() {
+            Msg::Hello { declaration, .. } => assert_eq!(declaration, Some(d)),
+            _ => unreachable!(),
+        }
+        if let Msg::Hello { declaration, .. } = &mut h {
+            *declaration = Some(SignedDeclaration { bytes: vec![0; hoi_types::declaration::MAX_DECLARATION_WIRE + 1], sig: [9; 64] });
+        }
+        assert!(Msg::decode(&h.encode()).is_err(), "an oversized declaration is the sender's fault");
     }
 
     #[test]

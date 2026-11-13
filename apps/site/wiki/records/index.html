@@ -279,7 +279,7 @@ pub fn key_is_strong(pk: &amp;Id) -&gt; bool {
     VerifyingKey::from_bytes(pk.as_bytes()).is_ok_and(|vk| !vk.is_weak())
 }</code></pre></div>
     <h3 id="sig-messages">Everything that is signed</h3>
-    <p>Four messages are signed in the record layer. Each is either a 32-byte BLAKE3 hash or, for notices, a short fixed text, so a signature made for one purpose can't be replayed as another.</p>
+    <p>Five messages are signed in the record layer. Each is either a 32-byte BLAKE3 hash or, for notices and declarations, a short fixed text, so a signature made for one purpose can't be replayed as another.</p>
     <div class="wk-table" tabindex="0" role="region" aria-label="Signed messages">
       <table>
         <thead><tr><th>Signature</th><th>Signed by</th><th>Message</th><th>Code</th></tr></thead>
@@ -288,6 +288,7 @@ pub fn key_is_strong(pk: &amp;Id) -&gt; bool {
           <tr><td>a delegation's <code>root_sig</code></td><td>the root key</td><td><code>delegation_statement(root, device, scope, expires_at)</code>: BLAKE3 of a canonical map</td><td><code>hoi_crypto::bless</code></td></tr>
           <tr><td>a ledger <code>cosign</code> entry</td><td>each cosigning owner</td><td><code>Record::proposal_id()</code>: the id of the record with <code>body.cosign</code> removed, <code>nonce</code> 0 and <code>author</code> 32 zero bytes</td><td><code>owner_action</code>, <code>cosign</code> in hoi-core</td></tr>
           <tr><td>an operator notice in a node link</td><td>the node's endpoint key</td><td>UTF-8 text <code>hoi node notice v1\n&lt;endpoint hex&gt;\n&lt;notice hash hex&gt;</code>, no trailing newline</td><td><code>notice::statement</code></td></tr>
+          <tr><td>a node's configuration declaration in a hello</td><td>the node's endpoint key</td><td>UTF-8 text <code>hoi node declaration v1\n&lt;endpoint hex&gt;\n&lt;declaration hash hex&gt;</code>, no trailing newline</td><td><code>declaration::statement</code></td></tr>
         </tbody>
       </table>
     </div>

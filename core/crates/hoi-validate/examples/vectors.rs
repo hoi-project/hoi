@@ -329,6 +329,7 @@ fn scatter_vectors() -> Value {
         link_key: None,
         notice_hash: None,
         notice: None,
+        declaration: None,
         holder: Some(holder_key),
         forwards: false,
         rebuilds: false,
@@ -660,6 +661,7 @@ fn main() {
         link_key: None,
         notice_hash: None,
         notice: None,
+        declaration: None,
         holder: None,
         forwards: false,
         rebuilds: false,
@@ -735,6 +737,7 @@ fn main() {
         link_key: None,
         notice_hash: None,
         notice: None,
+        declaration: None,
         holder: None,
         forwards: false,
         rebuilds: false,
@@ -766,6 +769,7 @@ fn main() {
             link_key: None,
             notice_hash: None,
             notice: None,
+            declaration: None,
             holder: None,
             forwards: false,
             rebuilds: false,
@@ -788,6 +792,7 @@ fn main() {
             link_key: Some([0x4c; 32]),
             notice_hash: None,
             notice: None,
+            declaration: None,
             holder: None,
             forwards: false,
             rebuilds: false,
@@ -1047,6 +1052,7 @@ fn main() {
             link_key: None,
             notice_hash: Some(hash),
             notice: Some(canonical.clone()),
+            declaration: None,
             holder: None,
             forwards: false,
             rebuilds: false,
@@ -1079,9 +1085,70 @@ fn main() {
         })
     };
 
+    // ---------------------------------------------------------------- configuration declarations (PROTOCOL.md §14.7, RFC-0006)
+    // The same node's declaration beside that notice: canonical bytes, hash, the statement its
+    // endpoint key signs, and a hello that carries notice and declaration together.
+    let node_declaration = {
+        let node = Keypair::from_secret(&[0x4e; 32]);
+        let notice_canonical = hoi_types::Id::from_hex(node_notice["hash"].as_str().expect("the notice vector's hash")).expect("a hash");
+        let notice_bytes = hoi_types::hex_decode(node_notice["canonical"].as_str().expect("the notice vector's bytes")).expect("hex");
+        let declaration = hoi_types::NodeDeclaration {
+            v: hoi_types::declaration::DECLARATION_VERSION,
+            endpoint: node.public(),
+            notice: notice_canonical,
+            software: hoi_types::declaration::Software { name: "hoi-node".into(), version: "1.0.0".into(), digest: Some(hoi_types::Id([0x5d; 32])) },
+            relay: Some(5_000_000_000),
+            carry: Some(hoi_types::declaration::Carry { policy: "any".into(), communities: 256, bytes: 2 << 30 }),
+            pieces: Some(2_000_000_000),
+            forwards: true,
+            home: false,
+            unknown: false,
+        };
+        assert!(declaration.validate().is_empty());
+        let canonical = declaration.canonical();
+        let hash = declaration.hash();
+        let statement = hoi_types::declaration::statement(&node.public(), &hash);
+        let signature = node.sign(statement.as_bytes());
+        let hello = hoi_sync::Msg::Hello {
+            v: hoi_sync::SYNC_VERSION,
+            node: node.public(),
+            name: None,
+            token: None,
+            communities: vec![],
+            salt: Some([0x5a; 16]),
+            hashed: vec![],
+            serves: false,
+            hints: vec![],
+            routes: vec![format!("{}@203.0.113.9:7843", node.public().hex())],
+            features: vec![hoi_sync::FEATURE_CARRY.into(), hoi_sync::FEATURE_NODES.into()],
+            pairing: None,
+            link_key: None,
+            notice_hash: Some(notice_canonical),
+            notice: Some(notice_bytes),
+            declaration: Some(hoi_sync::SignedDeclaration { bytes: canonical.clone(), sig: signature.0 }),
+            holder: None,
+            forwards: true,
+            rebuilds: false,
+        };
+        let sections: Vec<Value> = declaration.sections().into_iter().map(|s| json!({ "title": s.title, "text": s.text })).collect();
+        json!({
+            "note": "A node's configuration declaration (RFC-0006): what its software says about how it runs, beside the operator's notice, generated from its effective configuration. `canonical` is hoi_types::NodeDeclaration::canonical (DAG-CBOR: `v`, endpoint `e`, notice hash `nh`, software `s` {name `n`, version `v`, BLAKE3 of the program `d`?}, relay bytes a day `r`?, carry `c` {policy `p`, communities `n`, bytes `b`}?, piece bytes `h`?, forwards `f`?, serves its own devices `m`?), hashed with BLAKE3 into `hash`; the endpoint key's Ed25519 signature over `statement` travels with it in the hello as `dc` {`d`: canonical, `s`: signature}. A client checks endpoint, notice and signature, shows `sections` after the notice, and binds the person's answer to `hash`. The signature is the node's own: it shows what the software claims, never that it runs.",
+            "seed": hex_encode(&node.secret()),
+            "endpoint": node.public().hex(),
+            "notice_hash": notice_canonical.hex(),
+            "canonical": hex_encode(&canonical),
+            "hash": hash.hex(),
+            "statement": statement,
+            "signature": hex_encode(&signature.0),
+            "hello": hex_encode(&hello.encode()),
+            "sections": sections,
+        })
+    };
+
     let files = [
         ("node-announcement.json", announcement),
         ("node-notice.json", node_notice),
+        ("node-declaration.json", node_declaration),
         (
             "hello-hints.json",
             json!({ "msg": hex_encode(&hello_hints.encode()), "note": "Optional hello routing extension, accepted only on paired home-node links (a home node's own once it delivered records)." }),

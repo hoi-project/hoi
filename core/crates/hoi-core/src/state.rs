@@ -238,6 +238,26 @@ pub struct NoticeRecord {
     pub accepted: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub declined: Option<u64>,
+    /// The node's configuration declaration that came with the notice (RFC-0006), canonical
+    /// bytes, base64url; none when it declared none. An answer holds for this exact pair.
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "crate::notice::b64opt")]
+    pub declaration: Option<Vec<u8>>,
+}
+
+/// A node this device stopped using because what it showed of itself did not verify (RFC-0006
+/// §4): kept across restarts until the person reconsiders. It names what the connection
+/// proved (the endpoint key, the certificates its routes pin), never a person.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeBlock {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<Id>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub certs: Vec<String>,
+    pub reason: String,
+    pub at: u64,
+    /// Where it was met (an address), for the person's orientation; never sent anywhere.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
 }
 
 /// Public connection hints from an explicitly accepted invite, a paired device or a home node
@@ -324,6 +344,9 @@ pub struct LocalState {
     /// saved state while empty, so a store that never met one still opens in older software.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub notices: BTreeMap<Id, NoticeRecord>,
+    /// Nodes blocked after a failed check, oldest first (crate::assurance). Left out while empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub node_blocks: Vec<NodeBlock>,
     /// Bytes exchanged with other people's devices today: (UTC day, bytes), for the relay cap.
     pub relay_day: (u64, u64),
     /// Native nodes start with relaying on once (opt-out, TECHNICAL.md §4); this records that.

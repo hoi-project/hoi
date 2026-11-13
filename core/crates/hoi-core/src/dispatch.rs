@@ -116,6 +116,8 @@ impl Node {
             "acceptNotice" => ok(self.accept_notice(&a.str(0, "node")?, &a.str(1, "hash")?)?),
             "declineNotice" => ok(self.decline_notice(&a.str(0, "node")?)?),
             "forgetNotice" => ok(self.forget_notice(&a.str(0, "node")?)?),
+            "nodeBlocks" => ok(self.node_blocks()),
+            "unblockNode" => ok(self.unblock_node(&a.str(0, "key")?)?),
             "publicJoin" => ok(self.public_join(&a.str(0, "community")?, &a.get::<Vec<String>>(1, "peers")?, a.opt_str(2).as_deref())?),
             "publicJoinStatus" => ok(self.public_join_status(&a.str(0, "community")?)?),
             "communityRegistration" => ok(self.community_registration(&a.str(0, "id")?)?),

@@ -220,6 +220,10 @@ export function createRpcCore(t: Transport, stamper: Stamper, looker?: ComposeLo
     forgetNotice: async (node) => {
       await c('forgetNotice', node);
     },
+    nodeBlocks: () => c('nodeBlocks'),
+    unblockNode: async (key) => {
+      await c('unblockNode', key);
+    },
     communityRegistration: (id) => c('communityRegistration', id),
     communityPublication: (id) => c('communityPublication', id),
     publicJoin: (id, peers, name) => c('publicJoin', id, peers, name),

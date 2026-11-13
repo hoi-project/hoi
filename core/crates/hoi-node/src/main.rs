@@ -147,6 +147,9 @@ struct Args {
     notice: Option<PathBuf>,
     /// Gigabytes of encrypted pieces to hold for scattered delivery, or none.
     hold_pieces_gb: Option<f64>,
+    /// Which nodes this one relies on (RFC-0006): `declared` or `verified`. The operator's
+    /// explicit policy, since a headless node asks nobody.
+    assurance: Option<String>,
     registry: Option<RegistryArgs>,
 }
 
@@ -191,6 +194,13 @@ Operator notice (a public node tells people who runs it before it serves them):
                            stranger and, signed, in DIR/node-link, so it is read before anyone
                            connects; read again when the file changes; its hash goes to
                            DIR/notice-hash. A public node without one says so when it starts.
+                           Beside it the node sends a configuration declaration it writes
+                           itself: this program's version and build, its roles and their
+                           limits, signed by its key. It is what the node says, not a proof.
+  --assurance POLICY       which nodes this one relies on: declared (the default: on what they
+                           say) or verified (only nodes whose software was verified; no node can
+                           be in this version, so it dials and greets none and only serves those
+                           that connect to it)
 
 Finding others (no node or registry is built in):
   --node LINK              a public node to look at first: its link (hoi://node?… or …#/node?…),
@@ -315,6 +325,7 @@ fn args() -> Args {
         nodes: Vec::new(),
         notice: None,
         hold_pieces_gb: None,
+        assurance: None,
         registry: None,
     };
     let mut registry = RegistryArgs {
@@ -355,6 +366,12 @@ fn args() -> Args {
                 a.nodes.push(value);
             }
             "--notice" => a.notice = Some(it.next().map(PathBuf::from).unwrap_or_else(|| usage())),
+            "--assurance" => {
+                a.assurance = Some(it.next().filter(|s| matches!(s.as_str(), "declared" | "verified")).unwrap_or_else(|| {
+                    eprintln!("hoi-node: --assurance is declared or verified");
+                    usage()
+                }))
+            }
             "--port-mapping" => a.port_mapping = Some(true),
             "--no-port-mapping" => a.port_mapping = Some(false),
             "--daily-cap-gb" => {
@@ -591,6 +608,16 @@ async fn main() {
     if node.set_refused(&a.refuse).is_err() {
         eprintln!("hoi-node: --refuse needs community keys");
         std::process::exit(1);
+    }
+    if let Some(policy) = &a.assurance {
+        let _ = node.set_settings(&hoi_core::dto::SettingsPatch { assurance: Some(policy.clone()), ..Default::default() });
+    }
+    // What its declaration names (RFC-0006): this program, by version and by the BLAKE3 of its
+    // file as started. Read from disk, so a replaced file is seen at the next start; a program
+    // that changed itself in memory is not, which is why the declaration is no proof.
+    let digest = std::env::current_exe().and_then(std::fs::read).ok().map(|bytes| hoi_types::notice::hash_of(&bytes).hex());
+    if node.set_software("hoi-node", env!("CARGO_PKG_VERSION"), digest.as_deref()).is_err() {
+        eprintln!("hoi-node: cannot name this program in its declaration");
     }
     let mut notice_hash = None;
     if let Some(path) = &a.notice {
@@ -847,6 +874,9 @@ async fn main() {
         (Some(path), Some(hash)) => {
             let byline = shared.with(|n| n.operator_notice().map(hoi_types::NodeNotice::byline).unwrap_or_default());
             println!("operator notice: {byline} · {} · hash in {} (re-read when {} changes)", &hash[..12], notice_hash_file.display(), path.display());
+            if let Some(d) = shared.with(|n| n.operator_declaration_hash()) {
+                println!("configuration declaration: hoi-node {} · {} · sent with the notice, signed by this node's key", env!("CARGO_PKG_VERSION"), &d[..12]);
+            }
             Some(tokio::spawn(refresh_notice(shared.clone(), path.clone(), notice_hash_file, hash)))
         }
         _ => {

@@ -231,6 +231,17 @@ impl HoiNode {
         self.api(|n| n.forget_notice(&node))
     }
 
+    /// Nodes this device blocked after what they showed of themselves failed a check (RFC-0006);
+    /// a `nodeBlocked` event announces a new one.
+    pub fn node_blocks(&self) -> Vec<NodeBlockView> {
+        self.read(|n| n.node_blocks())
+    }
+
+    /// The person reconsiders a block (by its `key`): the node may be dialed and asked about again.
+    pub fn unblock_node(&self, key: String) -> R<()> {
+        self.api(|n| n.unblock_node(&key))
+    }
+
     /// What a node link (`hoi://node?…`, scanned or pasted) says before anything is dialed: where
     /// it points and the operator's notice in it, verified against the node it names.
     pub fn preview_node_link(&self, link: String) -> R<NodeLinkPreview> {
