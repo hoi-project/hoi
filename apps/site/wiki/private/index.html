@@ -426,7 +426,7 @@ Removed device .. Other members: cannot derive room <i>e</i>+1 or open its objec
         <tbody>
           <tr><td>Members of the current epoch</td><td>Every record and attachment, the member list (device and person keys), the mailboxes and the room.</td><td>Messages of epochs before they joined; members resend the live history into their epoch instead.</td></tr>
           <tr><td>A removed device</td><td>What it received while a member, which it can keep.</td><td>The next room, anything sent after its removal, later members.</td></tr>
-          <tr><td>Mailbox holders</td><td>Sealed objects of padded sizes under random locators, their expiry days and stamps, and the address of the link a request came over (a forwarder's, where one is used).</td><td>The community key, the room, the MLS header, member keys, content, which locators belong to one group.</td></tr>
+          <tr><td>Mailbox and piece holders</td><td>Sealed objects of padded sizes under random locators, their expiry days and stamps, the group's drop key id on its pieces, request times, and the address of the link a request came over (a forwarder's, where one is used). See <a href="#holders">What a holder sees</a>.</td><td>The community key, the room, the MLS header, member keys, content, which community or person a slot or piece belongs to.</td></tr>
           <tr><td>An encrypted relay's operator</td><td>One room key per epoch, padded sizes, object counts per room, upload and read times, expiry, and the network address and timing of each request.</td><td>The community key, member keys, MLS headers, content. Rooms of one group share no identifier, though uploads from the same addresses, and the number of objects resent after a commit, can hint at a group.</td></tr>
           <tr><td>Network observers</td><td>Addresses, timing and sizes of encrypted links (<a href="/wiki/transports/">Transports</a>).</td><td>Anything inside them.</td></tr>
           <tr><td>Someone with the community key, or an invitation meant for another device</td><td>Nothing: the room derives from the epoch secret, and a Welcome opens only with the key package's private keys.</td><td>Any room or object.</td></tr>
@@ -434,6 +434,33 @@ Removed device .. Other members: cannot derive room <i>e</i>+1 or open its objec
       </table>
     </div>
     <p>The end-to-end browser test <code>scripts/e2e-private-relay.mjs</code> checks this against a real relay: stored bodies contain no title, text, community name, attachment bytes, community key or device key; an unrelated device cannot open an intercepted invitation, decrypt a message or sign a read.</p>
+  </section>
+
+  <section class="wk-sec" id="holders">
+    <h2>What a holder sees</h2>
+    <p>A group's mailbox slots and its posts' pieces are kept by public nodes that hold pieces for anyone (<a href="/wiki/scatter/#holders">Scattered delivery</a>). A holder has its own transport and envelope keys and nothing of the group's: no membership, MLS state, community secret or object key. It cannot read a post or an attachment, and nothing it is sent or keeps names a community or an author. It does see metadata, and some of it can be linked:</p>
+    <div class="wk-table" tabindex="0" role="region" aria-label="What a holder sees">
+      <table>
+        <thead><tr><th>What</th><th>What a holder sees</th></tr></thead>
+        <tbody>
+          <tr><td>Sizes</td><td>A slot is an MLS message padded to at least 4 KiB with at most four significant bits; a bell ring is 32 random bytes; a piece has its size class's piece length, which says roughly how large the object is. Requests other than puts are 256 bytes and short answers 64; a <code>got</code> is as long as the asker asked for, whether or not the piece is there.</td></tr>
+          <tr><td>Timing</td><td>When each put, probe and fetch arrives, and how often a locator is asked for. Writes followed by bell rings, and probes every 5 seconds to 2 minutes, show that a group is active. After a commit, members write the new epoch's first slots and send the live history again: a burst that hints at a membership change.</td></tr>
+          <tr><td>Addresses</td><td>The address of the link each request came over: a forwarder's where one is used, otherwise the member's own. A mailbox no forwarder reaches, or a forwarder that also holds pieces, sees the members linked to it.</td></tr>
+          <tr><td>Expiry</td><td>Each piece's last day and the day it was last asked for. Slots are kept at most 30 days, bell rings 2, a private group's pieces 30 (<code>RETENTION</code>), and no piece more than 400 (<code>MAX_TTL_DAYS</code>).</td></tr>
+          <tr><td>Deletion metadata</td><td>A drop hash, which no two locators share, and a drop key id. Every piece of one group carries the group's drop key id, so a holder can tell which of its pieces belong to the same group, and count them, without learning which group it is; a new drop key starts a new id. Slots, bell rings and invitations carry none. A drop by the drop key shows the key's public half and a signature.</td></tr>
+          <tr><td>Locators</td><td>32 bytes derived from secrets only members have: a slot's from the epoch's slot key, a piece's from its manifest. Asking for a community key, post id or object id finds nothing, and no request lists what a holder keeps: <code>has</code> answers presence and length, <code>get</code> the piece or nothing.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 id="holders-epochs">Epochs, history and removal</h3>
+    <p>Every commit starts an epoch with a new slot key, so a holder sees new locators that share nothing with the last epoch's. A newcomer reads posts made before it joined because members send the live history into the new epoch (<a href="#epochs-resend">What goes again after a commit</a>); posts go again as new objects, under new keys and locators. Removal protects what comes after it, not what came before: a removed device keeps the posts and attachments it read and the manifests it was given, and holders check no membership, so it can fetch those pieces until they expire or are dropped. Nothing it keeps derives a later epoch's slots or opens a later post.</p>
+    <h3 id="holders-limits">Limits</h3>
+    <ul>
+      <li>Public communities stay publicly readable: anyone who joins one, a holder's operator included, opens its pointers and rebuilds its posts (<a href="/wiki/scatter/#wired-open">Open communities</a>).</li>
+      <li>A holder's operator who is, or becomes, a member of a group derives the same locators and learns its drop key id: they can recognise that group's slots and pieces among those they keep, and read them.</li>
+      <li>The tests below check what holders are sent and keep in one network of test nodes. They are evidence, not a proof of anonymity.</li>
+    </ul>
+    <p><code>tests/holder_privacy.rs</code> runs a group through three forwarders and fourteen holders that keep their pieces in SQLite. The reader gets the post and its photo. Every request a holder is sent opens with the holder's own keys and carries only its operation's fields, none of them a known identifier; answer keys are used once and a drop hash names one locator; since the post, every locator is a slot or a piece only members derive; answers have the sizes above. Each holder's file, reopened, keeps exactly the rows it was sent, and the reader rebuilds the post from it. Known locators answer presence or the piece, unknown ones nothing at the same size, a community key or post id among them. Distinctive titles, text, names and attachment bytes, the community key, post id and person keys, the object, slot and device secrets and the drop key's secret appear in no message to a holder and in no file it keeps. A second test removes a member: slot locators change, the removed device keeps what it read and can still fetch the pieces it was told about, a newcomer reads the older post, and nothing new reaches the old epoch's slots. <code>hoi-store</code>'s <code>pieces.rs</code> pins the columns a reopened file holds.</p>
   </section>
 
   <section class="wk-sec" id="vendor">
@@ -494,10 +521,11 @@ Removed device .. Other members: cannot derive room <i>e</i>+1 or open its objec
         <thead><tr><th>Where</th><th>What it covers</th></tr></thead>
         <tbody>
           <tr><td><code>tests/private_mls.rs</code></td><td>A round trip with a photo, tampering and replay; an invitation bound to its request; removal revoking future access; state and an identical outbox surviving a restart; a removed member rejoining; the owner unable to leave.</td></tr>
+          <tr><td><code>tests/holder_privacy.rs</code></td><td>What holders that are not members are sent and keep for a post with a photo: every request opened and checked field by field, answer sizes, every row of each reopened SQLite file, known and unknown locators; after a removal, new slot locators, what the removed device keeps, and history for a newcomer (<a href="#holders">What a holder sees</a>).</td></tr>
           <tr><td><code>private.rs</code> (<code>mod adversarial</code>)</td><td>A non-owner's commit refused with the epoch unchanged; a claimed owner root without its blessing; requests without every capability; rooms following epochs for newcomers and not for removed devices; padding bounds and seal round trips; reads signed once per allowed target; renewals after expiry; revoked and restricted owner devices; resending only what went in the ended epoch.</td></tr>
           <tr><td><code>relay_v2_shared_vector</code></td><td>Room, object and read signatures from the secret <code>[7; 32]</code>, checked by the relay's own tests too.</td></tr>
           <tr><td><code>scripts/e2e-private-relay.mjs</code></td><td>Real browsers, the WASM core and IndexedDB through a local relay: membership, sealed padded objects, a PNG attachment, tamper and replay refusal, reload, removal and rejoin, and the rendered forms.</td></tr>
-          <tr><td><code>scripts/e2e-mailboxes.mjs</code></td><td>Two real <code>hoi-node</code> holders and two browsers: mailboxes chosen with no relay, invitation, posts both ways.</td></tr>
+          <tr><td><code>scripts/e2e-mailboxes.mjs</code></td><td>Two real <code>hoi-node</code> holders and two browsers: mailboxes chosen with no relay, invitation, posts both ways; the holders' piece files, read directly, hold none of the posts' words, the community's name or key, or a person's or device's key.</td></tr>
         </tbody>
       </table>
     </div>

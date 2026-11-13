@@ -10,7 +10,8 @@
 //   kim (browser, no node link): asks to join; mira's invitation carries the mailboxes; kim's
 //     browser links to them by itself, reads mira's post, and mira reads kim's reply
 //   the holders: keep only sealed objects (`hoi-node admin pieces` counts them) and say so in
-//     their notices
+//     their notices; their piece files hold no title, text, community name or key, and no
+//     person or device key (core/crates/hoi-core/src/tests/holder_privacy.rs checks every row)
 //
 // Needs: `pnpm core:wasm` and `cargo build -p hoi-node` (in core/), and a non-link-local IPv4
 // address on this machine besides loopback. Vite serves the app with no registry and no relay.
@@ -18,7 +19,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
 import { createSocket } from 'node:dgram';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { networkInterfaces, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -273,6 +274,26 @@ try {
     assert.match(totals, /none readable here/);
   }
   console.log('✓ each holder keeps the sealed messages, counted by hoi-node admin pieces, none readable there');
+  // What the holders' files hold, read directly (RFC-0004): none of what the posts said, the
+  // community's name or key, or either person's or device's key, as text or as bytes. The
+  // write-ahead log is read too: a running node may not have moved its latest writes yet.
+  const selves = await Promise.all([['mira', mira], ['kim', kim]].map(async ([name, page]) => [name, await call(page, 'me')]));
+  const keys = [['the community key', community.id], ...selves.flatMap(([name, me]) => [[`${name}'s person key`, me.rootKey], [`${name}'s device key`, me.device]])];
+  const words = ['Only kim and I read this', 'Kept in mailboxes that cannot read it.', 'Read you', 'Back through the same mailboxes.', 'mailbox-test'];
+  const sentinels = [
+    ...words.map((w) => [`"${w}"`, Buffer.from(w)]),
+    ...keys.flatMap(([what, hex]) => [[`${what} as hex`, Buffer.from(hex)], [what, Buffer.from(hex, 'hex')]]),
+  ];
+  for (const h of [one, two]) {
+    const files = ['pieces.db', 'pieces.db-wal'].filter((f) => existsSync(join(h.data, f)));
+    if (!files.includes('pieces.db')) fail(`${h.name} has no pieces.db to read`);
+    for (const file of files) {
+      const bytes = readFileSync(join(h.data, file));
+      const found = sentinels.find(([, s]) => bytes.includes(s));
+      if (found) fail(`${h.name}'s ${file} holds ${found[0]}`);
+    }
+  }
+  console.log("✓ neither holder's piece file holds a post's words, the community's name or key, or a person's or device's key");
   const notices = await call(mira, 'nodeNotices');
   const saying = notices.filter((n) => n.sections.some((s) => s.title === 'Encrypted pieces' && /private communities/.test(s.text)));
   assert.equal(saying.length, 2, "both holders' notices say they keep private communities' messages for others");
