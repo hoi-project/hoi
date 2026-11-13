@@ -1821,8 +1821,10 @@ impl Node {
             }
         } else if !self.scatter.pending.values().any(|p| p.op == op && p.mail.is_none()) {
             // k pieces whose holders all answered, none matching the manifest: the manifest
-            // is not of these pieces
-            ScatterOutcome::Failed(if ld.bad >= k { MISMATCH } else { TOO_FEW_ONLINE }.into())
+            // is not of these pieces (SCATTER.md §5.10). Once any piece matched, the hashes are
+            // the generation's own and the rest is holders' faults: too few, tried again later,
+            // so faulty holders never drop an honest generation or refuse its sender (RFC-0005).
+            ScatterOutcome::Failed(if ld.bad >= k && ld.got.is_empty() { MISMATCH } else { TOO_FEW_ONLINE }.into())
         } else {
             return;
         };
