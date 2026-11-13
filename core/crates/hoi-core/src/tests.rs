@@ -100,6 +100,9 @@ mod members_only;
 #[path = "tests/open.rs"]
 mod open;
 
+#[path = "tests/holder_faults.rs"]
+mod holder_faults;
+
 #[path = "tests/address.rs"]
 mod address;
 
