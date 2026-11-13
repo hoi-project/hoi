@@ -78,6 +78,9 @@ mod private_isolation;
 #[path = "tests/private_mls.rs"]
 mod private_mls;
 
+#[path = "tests/holder_privacy.rs"]
+mod holder_privacy;
+
 #[path = "tests/profile.rs"]
 mod profile;
 mod profile_color;

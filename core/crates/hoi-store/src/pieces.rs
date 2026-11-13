@@ -640,6 +640,51 @@ mod tests {
 
     #[cfg(feature = "sqlite")]
     #[test]
+    fn a_reopened_piece_file_keeps_only_locators_days_drop_metadata_and_opaque_bytes() {
+        // RFC-0004: what a holder retains, column by column. A sender, community, author or key
+        // stored here would move the holder's privacy boundary.
+        let path = std::env::temp_dir().join(format!("hoi-piece-columns-{}", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        {
+            let mut s = SqlitePieces::open(&path, 10_000).unwrap();
+            s.put(&[1; 32], meta(20_100), &[7; 100], 20_000).unwrap();
+            s.put(&[2; 32], meta(20_100), &[8; 100], 20_000).unwrap();
+            assert!(s.mark_dropped(&[2; 32], 20_000).unwrap());
+        }
+        let s = SqlitePieces::open(&path, 10_000).unwrap();
+        let names = |sql: &str| -> Vec<String> { s.conn.prepare(sql).unwrap().query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect() };
+        assert_eq!(names("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name"), ["dropped_pieces", "held_pieces", "pieces"]);
+        assert_eq!(names("SELECT name FROM pragma_table_info('held_pieces')"), ["loc", "expiry_day", "touched_day", "drop_hash", "drop_key_id", "bytes"]);
+        assert_eq!(names("SELECT name FROM pragma_table_info('dropped_pieces')"), ["loc", "expiry_day", "drop_hash", "drop_key_id"]);
+        assert_eq!(names("SELECT name FROM pragma_table_info('pieces')"), ["requires_drop_journal"]);
+        let sentinel_rows: i64 = s.conn.query_row("SELECT COUNT(*) FROM pieces", [], |r| r.get(0)).unwrap();
+        assert_eq!(sentinel_rows, 0, "the table that stops older releases holds nothing");
+        type Held = (Vec<u8>, i64, i64, Vec<u8>, Vec<u8>, Vec<u8>);
+        type Marker = (Vec<u8>, i64, Vec<u8>, Vec<u8>);
+        let held: Vec<Held> = s
+            .conn
+            .prepare("SELECT * FROM held_pieces")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(held, [(vec![1; 32], 20_100, 20_000, vec![1; 32], vec![2; 16], vec![7; 100])]);
+        let dropped: Vec<Marker> = s
+            .conn
+            .prepare("SELECT * FROM dropped_pieces")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(dropped, [(vec![2; 32], 20_100, vec![1; 32], vec![2; 16])], "a drop marker keeps no payload");
+        drop(s);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[test]
     fn sqlite_drop_acknowledgements_require_full_durability() {
         let s = SqlitePieces::memory(1000).unwrap();
         let synchronous: i64 = s.conn.query_row("PRAGMA synchronous", [], |r| r.get(0)).unwrap();
