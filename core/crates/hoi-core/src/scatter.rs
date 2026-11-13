@@ -355,7 +355,7 @@ pub(crate) fn route_place(route: &str) -> Spot {
 
 pub(crate) const MISMATCH: &str = "These pieces do not make the post they were said to be.";
 const FEW_PATHS: &str = "Too few independent places to send pieces through are connected right now. It stays as it is for now.";
-const TOO_FEW_ONLINE: &str = "Too few places are online for this post right now. It is still kept; try again later.";
+pub(crate) const TOO_FEW_ONLINE: &str = "Too few places are online for this post right now. It is still kept; try again later.";
 
 /// What an object can use now (`Node::plan`).
 pub(crate) struct Plan {

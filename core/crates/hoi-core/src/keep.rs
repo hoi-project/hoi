@@ -46,7 +46,7 @@ use crate::scatter::{ProbeResult, ScatterOutcome, uniform};
 const HOUR: u64 = 3600;
 const DAY: u64 = 86_400;
 /// How often an object is probed: young ones every six hours, older ones less often.
-const PROBE_YOUNG: u64 = 6 * HOUR;
+pub(crate) const PROBE_YOUNG: u64 = 6 * HOUR;
 const PROBE_MONTH: u64 = DAY;
 const PROBE_OLD: u64 = 3 * DAY;
 /// Two failed probes this far apart, through forwarders in different places, lose an index.
@@ -66,7 +66,7 @@ const PER_TICK: usize = 4;
 /// How far in the future a pointer's time may be.
 const SKEW: u64 = 600;
 /// A failed fetch of content is tried again after this long.
-const APPLY_AGAIN: u64 = 300;
+pub(crate) const APPLY_AGAIN: u64 = 300;
 /// Content that came before what it belongs to is tried again for this long.
 const RETRY_FOR: u64 = 3600;
 const MAX_RETRY: usize = 64;

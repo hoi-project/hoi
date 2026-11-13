@@ -23,11 +23,21 @@ pub(crate) struct Mesh {
     pub(crate) cut: BTreeSet<String>,
     /// Every message delivered: (from, to, decoded).
     pub(crate) log: Vec<(String, String, Msg)>,
+    /// Every message that went nowhere because either side was cut: (from, to, decoded).
+    pub(crate) lost: Vec<(String, String, Msg)>,
 }
 
 impl Mesh {
     pub(crate) fn new() -> Mesh {
-        Mesh { t: Arc::new(AtomicU64::new(T0)), nodes: BTreeMap::new(), eps: BTreeMap::new(), addrs: BTreeMap::new(), cut: BTreeSet::new(), log: Vec::new() }
+        Mesh {
+            t: Arc::new(AtomicU64::new(T0)),
+            nodes: BTreeMap::new(),
+            eps: BTreeMap::new(),
+            addrs: BTreeMap::new(),
+            cut: BTreeSet::new(),
+            log: Vec::new(),
+            lost: Vec::new(),
+        }
     }
 
     pub(crate) fn add(&mut self, name: &str, mut n: Node, addr: &str) {
@@ -80,7 +90,13 @@ impl Mesh {
             for from in &names {
                 let out = self.nodes.get_mut(from).unwrap().take_outbox();
                 for (to, m) in out {
-                    if self.cut.contains(from) || self.cut.contains(&to) || !self.nodes.contains_key(&to) {
+                    if self.cut.contains(from) || self.cut.contains(&to) {
+                        if let Ok(msg) = Msg::decode(&m) {
+                            self.lost.push((from.clone(), to, msg));
+                        }
+                        continue;
+                    }
+                    if !self.nodes.contains_key(&to) {
                         continue;
                     }
                     quiet = false;
@@ -160,7 +176,7 @@ pub(crate) fn join(m: &mut Mesh, device: &str, addr: &str, forwarders: &[usize])
     m.pump();
 }
 
-fn stored(o: ScatterOutcome) -> Manifest {
+pub(crate) fn stored(o: ScatterOutcome) -> Manifest {
     match o {
         ScatterOutcome::Stored(m) => m,
         other => panic!("not stored: {other:?}"),
@@ -169,7 +185,7 @@ fn stored(o: ScatterOutcome) -> Manifest {
 
 /// Distinct (generation, index) pairs of an object that went through each forwarder, as the
 /// requests it passed show: the holder named and the order are all a forwarder sees.
-fn passed_through(m: &Mesh, op: PieceOp) -> BTreeMap<String, usize> {
+pub(crate) fn passed_through(m: &Mesh, op: PieceOp) -> BTreeMap<String, usize> {
     let mut out = BTreeMap::new();
     for (from, to, msg) in &m.log {
         if let Msg::Piece { op: o, to: Some(_), .. } = msg
@@ -371,7 +387,7 @@ fn a_put_that_went_nowhere_tries_another_forwarder_before_a_fresh_index() {
 }
 
 /// A pointer for an object stored by `a` (taken there, as its author).
-fn kept(m: &mut Mesh, content: &[u8]) -> Manifest {
+pub(crate) fn kept(m: &mut Mesh, content: &[u8]) -> Manifest {
     let op = m.n("a").scatter_store(content, 10, T0 + 300 * DAY).unwrap();
     let man = stored(m.wait("a", op, 60));
     let now = m.n("a").now();
@@ -380,7 +396,7 @@ fn kept(m: &mut Mesh, content: &[u8]) -> Manifest {
 }
 
 /// Holders of `man` among the mesh's nodes, by name.
-fn holders_of(m: &Mesh, man: &Manifest) -> Vec<String> {
+pub(crate) fn holders_of(m: &Mesh, man: &Manifest) -> Vec<String> {
     man.holders.iter().filter_map(|e| m.eps.iter().find(|(_, x)| **x == e.hex()).map(|(n, _)| n.clone())).collect()
 }
 

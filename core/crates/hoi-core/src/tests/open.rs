@@ -10,7 +10,7 @@ use hoi_types::scatter::Manifest;
 const DAY: u64 = 86_400;
 
 /// Runs half a minute at a time until `done`, at most `secs`.
-fn until(m: &mut Mesh, secs: u64, done: impl Fn(&mut Mesh) -> bool) -> bool {
+pub(crate) fn until(m: &mut Mesh, secs: u64, done: impl Fn(&mut Mesh) -> bool) -> bool {
     for _ in 0..secs.div_ceil(30) {
         if done(m) {
             return true;
@@ -22,7 +22,7 @@ fn until(m: &mut Mesh, secs: u64, done: impl Fn(&mut Mesh) -> bool) -> bool {
 
 /// `a` makes an open community (in pieces by default) and every named device joins it by
 /// invite; all reach holders through the same forwarders, which carry the community.
-fn open_community(m: &mut Mesh, names: &[(&str, &str)]) -> String {
+pub(crate) fn open_community(m: &mut Mesh, names: &[(&str, &str)]) -> String {
     join(m, "a", "198.51.100.10:7843", &[0, 1, 2]);
     let c = m.n("a").create_community(draft("an open garden")).unwrap().id;
     let uri = m.n("a").invite(&c).unwrap().uri;
@@ -35,7 +35,7 @@ fn open_community(m: &mut Mesh, names: &[(&str, &str)]) -> String {
 }
 
 /// The newest generation of the object holding `record`, as `name` keeps it.
-fn generation_of(m: &mut Mesh, name: &str, record: &str) -> Option<Manifest> {
+pub(crate) fn generation_of(m: &mut Mesh, name: &str, record: &str) -> Option<Manifest> {
     let id = Id::from_hex(record).unwrap();
     m.n(name).scatter.saved.kept.values().find(|k| k.records == vec![id] && k.media.is_none()).and_then(|k| k.newest())
 }
