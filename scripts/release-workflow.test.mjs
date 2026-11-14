@@ -360,6 +360,15 @@ test('the Pages build starts without restoring dependency caches', () => {
   assert.doesNotMatch(build, /cache: pnpm|uses: Swatinem\/rust-cache@/);
 });
 
+test('release jobs that check out a resolved commit start without restoring dependency caches', () => {
+  for (const [workflow, name] of [['release-checks', 'checks'], ['release', 'security'], ['release', 'npm-audit']]) {
+    const body = job(workflow, name);
+    assert.match(body, /uses: actions\/setup-node@/, `${workflow}: ${name}`);
+    assert.match(body, /^          package-manager-cache: false$/m, `${workflow}: ${name}`);
+    assert.doesNotMatch(body, /cache: pnpm|uses: Swatinem\/rust-cache@/, `${workflow}: ${name}`);
+  }
+});
+
 test('release workflow version checks run without installed dependencies', async t => {
   const base = mkdtempSync(join(tmpdir(), 'hoi-release-workflow-'));
   t.after(() => rmSync(base, { recursive: true, force: true }));
