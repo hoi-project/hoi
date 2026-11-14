@@ -25,6 +25,17 @@ export interface SyncHandle {
 /** Opens (creating) one file of a store. */
 export type OpenFile = (name: string) => Promise<SyncHandle>;
 
+/** A handle the browser closed: from then on every call on it throws this. */
+export const handleClosed = (e: unknown) => (e as DOMException)?.name === 'InvalidStateError';
+
+/** The browser closed a store's files, and they could not be opened again as the store left them. */
+export class StoreLost extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = 'StoreLost';
+  }
+}
+
 const MAGIC = 0x464f4948; // "HOIF", little-endian
 const HEAD = 12;
 const FILES = ['log-a', 'log-b'] as const;
@@ -191,6 +202,9 @@ function readLog(h: SyncHandle): Log | null {
   return generation < 0 ? null : { generation, frames, end: at };
 }
 
+/** The file that holds the store: the one whose first frame is valid and has the higher generation. */
+const newest = (logs: (Log | null)[]): 0 | 1 => (!logs[1] ? 0 : !logs[0] ? 1 : logs[1].generation > logs[0].generation ? 1 : 0);
+
 /** Empty, or a first frame that runs past the end of the file: a first write that never finished. */
 function unfinished(h: SyncHandle): boolean {
   const size = h.getSize();
@@ -226,14 +240,28 @@ function replay(frames: Change[][], into: State = { records: new Map(), blobs: n
 
 const recordSize = (r: StoredRecord) => r.wire.length + 64;
 
+/** Closes handles that may be closed already. */
+function release(handles: SyncHandle[]) {
+  for (const h of handles) {
+    try {
+      h.close();
+    } catch {
+      // already closed
+    }
+  }
+}
+
 /** One store's log. Only the worker that holds the store's lock opens it (core.worker.ts). */
 export class LogStore {
   readonly kind = 'opfs';
   private state: State;
   /** Bytes of what is live, roughly: compaction starts once the log is three times as big. */
   private live = 0;
+  /** Set by `close()`: files that finish opening again after it are not kept (`reacquire`). */
+  private closed = false;
 
   private constructor(
+    private readonly openFile: OpenFile,
     private handles: [SyncHandle, SyncHandle],
     private active: 0 | 1,
     private generation: number,
@@ -249,7 +277,7 @@ export class LogStore {
     const handles = [await openFile(FILES[0]), await openFile(FILES[1])] as [SyncHandle, SyncHandle];
     try {
       const logs = handles.map(readLog);
-      const pick: 0 | 1 = !logs[1] ? 0 : !logs[0] ? 1 : logs[1].generation > logs[0].generation ? 1 : 0;
+      const pick = newest(logs);
       const log = logs[pick];
       if (!log) {
         // Nothing whole in either: a store never written, or whose first write was cut short.
@@ -259,18 +287,52 @@ export class LogStore {
           h.truncate(0);
           h.flush();
         }
-        return new LogStore(handles, 0, 1, 0, replay([]));
+        return new LogStore(openFile, handles, 0, 1, 0, replay([]));
       }
       if (handles[pick].getSize() !== log.end) {
         // a write that was cut short
         handles[pick].truncate(log.end);
         handles[pick].flush();
       }
-      return new LogStore(handles, pick, log.generation, log.end, replay(log.frames));
+      return new LogStore(openFile, handles, pick, log.generation, log.end, replay(log.frames));
     } catch (e) {
       for (const h of handles) h.close();
       throw e;
     }
+  }
+
+  /**
+   * Opens both files again after the browser closed their handles behind the store's back
+   * (Firefox closes all of a site's handles when its storage is cleared or reset). The new
+   * handles are kept only if the files still end where this store left them: the same file,
+   * generation and size. Otherwise a write would land on data this store does not know, so it
+   * lets them go and throws `StoreLost`; only reloading can open what is there now.
+   */
+  async reacquire(): Promise<void> {
+    const handles: SyncHandle[] = [];
+    let kept = false;
+    try {
+      for (const name of FILES) handles.push(await this.openFile(name));
+      // Locked, or taken over by another tab, while the files were opening: they are not ours.
+      if (this.closed) throw new StoreLost('It was closed.');
+      if (!this.leftAsItWas(handles)) throw new StoreLost('Its files changed while they were closed.');
+      kept = true;
+    } catch (e) {
+      throw e instanceof StoreLost ? e : new StoreLost('Its files could not be opened again.', { cause: e });
+    } finally {
+      if (!kept) release(handles);
+    }
+    release(this.handles);
+    this.handles = handles as [SyncHandle, SyncHandle];
+  }
+
+  /** Whether opening `handles` as a store would give this one. */
+  private leftAsItWas(handles: SyncHandle[]): boolean {
+    const logs = handles.map(readLog);
+    const at = newest(logs);
+    const log = logs[at];
+    if (!log) return this.size === 0 && handles.every((h) => h.getSize() === 0);
+    return at === this.active && log.generation === this.generation && log.end === this.size && handles[at].getSize() === this.size;
   }
 
   /** Everything stored, keys in order, as IndexedDB lists them. */
@@ -336,13 +398,8 @@ export class LogStore {
   }
 
   close(): void {
-    for (const h of this.handles) {
-      try {
-        h.close();
-      } catch {
-        // already closed
-      }
-    }
+    this.closed = true;
+    release(this.handles);
   }
 }
 
