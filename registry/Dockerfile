@@ -2,7 +2,8 @@ FROM node:24-slim@sha256:01d566e8d94d8c619591d78652babfccd3c6992a3dffa9ed5ab39e1
 WORKDIR /app
 COPY --chown=node:node release.json ./release.json
 COPY --chown=node:node scripts/release-config.mjs scripts/release-schema.mjs ./scripts/
-COPY --chown=node:node registry/server.mjs registry/protocol.mjs registry/store.mjs registry/admin.mjs ./registry/
+COPY --chown=node:node registry/server.mjs registry/protocol.mjs registry/store.mjs registry/log.mjs registry/admin.mjs ./registry/
+COPY --chown=node:node registry/public/log.js ./registry/public/
 RUN mkdir -p /data && chown node:node /data
 USER node
 # Set HOI_REGISTRY_URL to the public https:// URL carriers announce to; without it, a registry
