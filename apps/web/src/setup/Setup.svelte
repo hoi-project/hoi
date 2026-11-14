@@ -263,12 +263,18 @@
     if (picked) keyPath = picked;
   }
 
-  /** Uploads the kit (configuration, notice, installer) to a private folder on the server. */
-  async function uploadKit(): Promise<string> {
-    if (!bridge || !session) throw new Error('not connected');
+  /** Makes a folder only the signed-in user can open; every upload that root later copies goes in here, never to a fixed name under /tmp. */
+  async function privateDir(): Promise<string> {
     const made = await run('umask 077 && mktemp -d /tmp/hoi-setup.XXXXXXXX', false);
     const dir = remoteDirIn(made.text);
     if (!dir) throw new Error(`the server made no upload folder: ${made.text.trim()}`);
+    return dir;
+  }
+
+  /** Uploads the kit (configuration, notice, installer) to a private folder on the server. */
+  async function uploadKit(): Promise<string> {
+    if (!bridge || !session) throw new Error('not connected');
+    const dir = await privateDir();
     for (const f of kitFiles(opts, installerText, INSTALLER_URL)) {
       log.push({ run: 'up', stream: 'cmd', text: `upload ${f.name} → ${dir}/${f.name}` });
       await bridge.upload(session, `${dir}/${f.name}`, f.text, f.mode === 0o755 ? '0755' : '0644');
@@ -462,8 +468,9 @@
     try {
       const n: NodeNotice = { ...manageNotice, retentionDays: manageNotice.ipLogging ? Number.parseInt(manageRetention, 10) || 0 : 0, country: manageNotice.country.trim().toUpperCase(), updated: isoDate(new Date()) };
       const text = noticeJson(n);
-      await bridge.upload(session, '/tmp/hoi-notice.json', text, '0644');
-      const r = await run(asRoot(target.user, 'install -m 0644 /tmp/hoi-notice.json /etc/hoi-node/notice.json && rm -f /tmp/hoi-notice.json'), true, sudoAnswer());
+      const dir = await privateDir();
+      await bridge.upload(session, `/hoi-notice.json`, text, '0644');
+      const r = await run(asRoot(target.user, `install -m 0644 ${dir}/hoi-notice.json /etc/hoi-node/notice.json && rm -rf ${dir}`), true, sudoAnswer());
       if (r.code !== 0) throw new Error('the notice could not be written on the server');
       current = { ...current, notice: text };
       profiles = await bridge.saveProfile(current);
@@ -481,8 +488,9 @@
     busy = 'retention';
     error = '';
     try {
-      await bridge.upload(session, '/tmp/hoi-journald.conf', retentionDropIn(days), '0644');
-      const r = await run(asRoot(target.user, 'mkdir -p /etc/systemd/journald.conf.d && install -m 0644 /tmp/hoi-journald.conf /etc/systemd/journald.conf.d/hoi.conf && rm -f /tmp/hoi-journald.conf && systemctl restart systemd-journald'), true, sudoAnswer());
+      const dir = await privateDir();
+      await bridge.upload(session, `/hoi-journald.conf`, retentionDropIn(days), '0644');
+      const r = await run(asRoot(target.user, `mkdir -p /etc/systemd/journald.conf.d && install -m 0644 ${dir}/hoi-journald.conf /etc/systemd/journald.conf.d/hoi.conf && rm -rf ${dir} && systemctl restart systemd-journald`), true, sudoAnswer());
       if (r.code !== 0) throw new Error('journald did not take the retention');
       status = `The server keeps its logs ${days} days at most now.`;
     } catch (e) {
@@ -503,9 +511,7 @@
     busy = 'update';
     error = '';
     try {
-      const made = await run('umask 077 && mktemp -d /tmp/hoi-setup.XXXXXXXX', false);
-      const dir = remoteDirIn(made.text);
-      if (!dir) throw new Error('no upload folder');
+      const dir = await privateDir();
       const confName = `hoi-${hostOf(current.name)}.conf`;
       await bridge.upload(session, `${dir}/${confName}`, unixLines(configuration ?? current.config), '0644');
       await bridge.upload(session, `${dir}/hoi-${hostOf(current.name)}.notice.json`, unixLines(current.notice), '0644');
@@ -534,9 +540,7 @@
     busy = 'uninstall';
     error = '';
     try {
-      const made = await run('umask 077 && mktemp -d /tmp/hoi-setup.XXXXXXXX', false);
-      const dir = remoteDirIn(made.text);
-      if (!dir) throw new Error('no upload folder');
+      const dir = await privateDir();
       await bridge.upload(session, `${dir}/install.sh`, installerText, '0755');
       const r = await run(`cd ${dir} && bash ./install.sh uninstall --yes`, true, sudoAnswer());
       if (r.code !== 0) throw new Error(`the uninstall stopped (exit ${r.code})`);
