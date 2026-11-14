@@ -23,6 +23,8 @@ const TARGET_NAMES: Record<string, string> = {
 };
 
 const esc = (s: string) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+/** The value when it is an http or https URL, else null: the only links the page or the BOM may carry. */
+const httpUrl = (u: string | null | undefined): string | null => (typeof u === 'string' && /^https?:\/\//i.test(u.trim()) ? u.trim() : null);
 const idOf = (k: string) => 'pkg-' + k.replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-|-$/g, '').toLowerCase();
 
 function load(repo: string): Sbom {
@@ -115,7 +117,7 @@ export function renderSbom(repoRoot: string, repoUrl: string): string {
       ? `<a href="${repoUrl}/tree/main/${esc(p.local)}">${esc(p.name)}</a><span class="sb-dir">first-party</span>`
       : `<a href="${registryUrl(p)}" rel="noopener">${esc(p.name)}</a>${p.vendored ? `<span class="sb-dir patch">vendored</span>` : ''}`;
     const links = [
-      p.repository ? `<a href="${esc(p.repository)}" rel="noopener">source</a>` : '',
+      httpUrl(p.repository) ? `<a href="${esc(httpUrl(p.repository)!)}" rel="noopener">source</a>` : '',
       p.eco === 'cargo' && !p.local ? `<a href="https://docs.rs/${p.name}/${p.version}" rel="noopener">docs</a>` : '',
       p.vendored ? `<a href="${repoUrl}/tree/main/${esc(p.vendored)}">patch</a>` : '',
     ].filter(Boolean).join(' ');
@@ -151,7 +153,8 @@ export function renderSbom(repoRoot: string, repoUrl: string): string {
 
 function otherTable(p: Program, repoUrl: string): string {
   const rows = p.other.map((o) => {
-    const name = o.url || o.upstream ? `<a href="${esc(o.url ?? o.upstream ?? '')}" rel="noopener">${esc(o.name)}</a>` : esc(o.name);
+    const link = httpUrl(o.url) ?? httpUrl(o.upstream);
+    const name = link ? `<a href="${esc(link)}" rel="noopener">${esc(o.name)}</a>` : esc(o.name);
     const kind = { 'github-action': 'GitHub Action', 'cargo-tool': 'cargo install', tool: 'toolchain', docker: 'container image', maven: o.bom ? 'Maven (BOM)' : 'Maven', 'gradle-plugin': 'Gradle plugin', swift: 'Swift package', cargo: 'crate', npm: 'npm' }[o.eco] ?? o.eco;
     const pin = o.sha ? `<code>${o.sha.slice(0, 12)}</code>` : o.digest ? `<code>${esc(o.digest.slice(0, 19))}…</code>` : o.path ? `<a href="${repoUrl}/tree/main/${esc(o.path)}"><code>${esc(o.path)}</code></a>` : '';
     const note = o.description ? esc(o.description) : o.file ? `<code>${esc(o.file)}</code>` : o.license ? esc(o.license) : '';
@@ -171,7 +174,7 @@ function cyclonedx(repo: string, version: string, repoUrl: string): string {
     if (p.checksum) hashes.push({ alg: 'SHA-256', content: p.checksum });
     if (p.integrity?.startsWith('sha512-')) hashes.push({ alg: 'SHA-512', content: Buffer.from(p.integrity.slice(7), 'base64').toString('hex') });
     const refs = [] as { type: string; url: string }[];
-    if (p.repository) refs.push({ type: 'vcs', url: p.repository });
+    if (httpUrl(p.repository)) refs.push({ type: 'vcs', url: httpUrl(p.repository)! });
     if (!p.local) refs.push({ type: 'distribution', url: registryUrl(p) });
     const lic = p.license && !/see license file/.test(p.license) ? [{ expression: p.license.replace(/\//g, ' OR ') }] : undefined;
     return {
