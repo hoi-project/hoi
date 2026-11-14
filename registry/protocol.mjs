@@ -156,10 +156,17 @@ export function publicIp(ip) {
   const groups = ipv6Groups(ip);
   if (!groups) return false;
   const [g0, g1, g2, g3, g4, g5, g6, g7] = groups;
+  const embedded = (hi, lo) => publicIp(`${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`);
   if (g0 === 0 && g1 === 0 && g2 === 0 && g3 === 0 && g4 === 0) {
-    if (g5 === 0xffff) return publicIp(`${g6 >> 8}.${g6 & 255}.${g7 >> 8}.${g7 & 255}`); // IPv4-mapped
     if (g5 === 0 && g6 === 0 && (g7 === 0 || g7 === 1)) return false; // unspecified, loopback
+    if (g5 === 0xffff || g5 === 0) return embedded(g6, g7); // IPv4-mapped, IPv4-compatible
   }
+  if (g0 === 0x64 && g1 === 0xff9b) {
+    if (g2 === 1) return false; // local-use NAT64 (RFC 8215)
+    if (g2 === 0 && g3 === 0 && g4 === 0 && g5 === 0) return embedded(g6, g7); // NAT64 (RFC 6052)
+  }
+  if (g0 === 0x2002) return embedded(g1, g2); // 6to4
+  if ((g0 & 0xffc0) === 0xfec0) return false; // site-local, deprecated
   if ((g0 & 0xfe00) === 0xfc00) return false; // unique local fc00::/7
   if ((g0 & 0xffc0) === 0xfe80) return false; // link-local
   if ((g0 & 0xff00) === 0xff00) return false; // multicast
