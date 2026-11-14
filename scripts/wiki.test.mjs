@@ -1,13 +1,15 @@
 // The wiki, its SBOM and the network playground: what can be checked without a browser.
 // (The pages themselves: apps/site/scripts/wiki-check.mjs; in a browser: apps/site/scripts/e2e.mjs.)
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { test } from 'node:test';
 import { renderBytes, renderSeq } from '../apps/site/plugins/wiki-blocks.ts';
 import { headingsOf, loadWiki, textOf } from '../apps/site/plugins/wiki.ts';
 import { blake3, hex, leadingZeroBits } from '../apps/site/src/wiki/blake3.ts';
-import { check, parseCargoLock, parseYaml } from '../apps/site/scripts/sbom.mjs';
+import { renderSbom } from '../apps/site/plugins/sbom.ts';
+import { check, httpUrl, parseCargoLock, parseYaml } from '../apps/site/scripts/sbom.mjs';
 import { SCENARIOS, FOR_DEVICE, DEVICES } from '../apps/site/src/playground/scenarios.ts';
 import { buildWorld, YOU_AT } from '../apps/site/src/playground/world.ts';
 
@@ -93,5 +95,33 @@ test('every playground scenario names devices that exist and code that exists', 
         }
       }
     }
+  }
+});
+
+test('the SBOM page links only http and https sources', () => {
+  assert.equal(httpUrl('https://example.com/repo'), 'https://example.com/repo');
+  assert.equal(httpUrl('javascript:alert(1)'), null);
+  assert.equal(httpUrl('data:text/html,x'), null);
+  assert.equal(httpUrl(undefined), null);
+  const dir = mkdtempSync(resolve(tmpdir(), 'hoi-sbom-'));
+  try {
+    mkdirSync(resolve(dir, 'apps/site/wiki/sbom'), { recursive: true });
+    const pkg = (name, repository) => ({ eco: 'npm', name, version: '1.0.0', license: 'MIT', description: '', repository });
+    const head = { id: 'website', title: 'Website', ships: true, wiki: '/wiki/', summary: 'Fixture.', lock: null, targets: null, importers: ['.'] };
+    const entry = (k) => ({ k, kind: 'run', direct: true });
+    writeFileSync(resolve(dir, 'apps/site/wiki/sbom/sbom.json'), JSON.stringify({
+      lockfiles: {},
+      programs: [{ head, cargo: [], npm: [entry('npm:good@1.0.0'), entry('npm:bad@1.0.0'), entry('npm:data@1.0.0')], other: [] }],
+      packages: {
+        'npm:good@1.0.0': pkg('good', 'https://example.com/good'),
+        'npm:bad@1.0.0': pkg('bad', 'javascript:alert(1)'),
+        'npm:data@1.0.0': pkg('data', ' DATA:text/html,x'),
+      },
+    }));
+    const html = renderSbom(dir, 'https://example.com/repo');
+    assert.ok(html.includes('href="https://example.com/good" rel="noopener">source'));
+    assert.doesNotMatch(html, /href="\s*(javascript|data):/i);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });

@@ -278,8 +278,13 @@ function npmMeta(name, version) {
   return {
     license: typeof j.license === 'string' ? j.license : j.license?.type ?? (Array.isArray(j.licenses) ? j.licenses.map((l) => l.type).join(' OR ') : ''),
     description: j.description ?? '',
-    repository: normalizeRepo(repoUrl) ?? j.homepage ?? null,
+    repository: normalizeRepo(repoUrl) ?? httpUrl(j.homepage),
   };
+}
+
+/** A link the SBOM page may show: an http or https URL, nothing else (never javascript: or data:). */
+export function httpUrl(u) {
+  return typeof u === 'string' && /^https?:\/\//i.test(u.trim()) ? u.trim() : null;
 }
 
 function normalizeRepo(u) {
@@ -305,7 +310,7 @@ function regenerate() {
       const vendoredPath = p.source ? null : relative(repo, dirname(p.manifest_path));
       packages[cargoKey(p.name, p.version)] ??= {
         eco: 'cargo', name: p.name, version: p.version, license: clean(p.license) || (p.license_file ? 'see license file' : ''),
-        description: clean(p.description), repository: normalizeRepo(p.repository) ?? p.homepage ?? null,
+        description: clean(p.description), repository: normalizeRepo(p.repository) ?? httpUrl(p.homepage),
         checksum: cargo[lock].find((x) => x.name === p.name && x.version === p.version)?.checksum ?? null,
         vendored: vendoredPath && vendoredPath.startsWith('vendor/') ? vendoredPath : null,
         local: vendoredPath && !vendoredPath.startsWith('vendor/') ? vendoredPath : null,
