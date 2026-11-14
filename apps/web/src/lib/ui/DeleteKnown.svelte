@@ -1,14 +1,16 @@
 <script lang="ts">
-  // "Delete known posts and comments" (RFC-0002) and clearing afterwards (RFC-0003). The core
-  // keeps and resumes every list: this screen only reads its status and starts what the person
-  // confirms. Reopening it never starts a second list, and closing it cancels nothing.
+  // "Delete known posts and comments" (RFC-0002), deletions made one at a time (RFC-0001) and
+  // clearing afterwards (RFC-0003). The core keeps and resumes every list: this screen only
+  // reads its status and starts what the person confirms. Reopening it never starts a second
+  // list, and closing it cancels nothing.
   import type { BulkDeletionPreview, BulkDeletionStatus, CleanupReadiness, DeletionProgress } from '@hoi/core-api';
   import { now } from '@hoi/core-api';
   import { onMount } from 'svelte';
   import { app } from '../app.svelte';
   import { router } from '../router.svelte';
+  import { to } from '../router';
   import { errorText, toast } from '../toast.svelte';
-  import { batchLines, gapLines, readinessWords, summarize } from '../deletion-status';
+  import { batchLines, deletionLines, deletionName, gapLines, readinessWords, singleDeletions, summarize } from '../deletion-status';
   import { plural } from '../util';
 
   let { ondone }: { ondone: () => void } = $props();
@@ -25,6 +27,8 @@
 
   const device = $derived(app.platformName);
   const started = $derived(batches.length > 0 || progress.length > 0);
+  const singles = $derived(singleDeletions(batches, progress));
+  const names = $derived(new Map(app.communities.map((c) => [c.id, c.name])));
   const words = $derived(readinessWords(readiness, now(), device));
   const day = (t: number) => new Date(t * 1000).toLocaleDateString('en', { day: 'numeric', month: 'short', year: 'numeric' });
 
@@ -127,6 +131,18 @@
         {/if}
       </section>
     {/each}
+    {#if singles.length}
+      <section class="batch" aria-labelledby="dk-single">
+        <h3 id="dk-single">Deleted one at a time</h3>
+        {#each singles as d (d.id)}
+          {@const name = deletionName(d, d.community ? names.get(d.community) : undefined)}
+          <div class="one">
+            <h4>{#if d.post}<a class="textlink" href={to.post(d.post)} onclick={ondone}>{name}</a>{:else}{name}{/if}</h4>
+            <ul>{#each deletionLines(d, device) as line (line)}<li>{line}</li>{/each}</ul>
+          </div>
+        {/each}
+      </section>
+    {/if}
     {#if started}
       <section class="after" aria-labelledby="dk-after">
         <h3 id="dk-after">Clear this {device} afterwards</h3>
@@ -197,5 +213,7 @@
   .gap { color: var(--mute); }
   .batch, .after { border: 1px solid var(--line); border-radius: var(--radius-input); padding: 14px; display: grid; gap: 10px; justify-items: start; }
   .communities li { overflow-wrap: anywhere; }
+  .one { display: grid; gap: 6px; }
+  h4 { margin: 0; font-size: 14px; font-weight: 700; overflow-wrap: anywhere; }
   .error { border-radius: 10px; background: var(--peach); color: var(--ink); padding: 12px; }
 </style>

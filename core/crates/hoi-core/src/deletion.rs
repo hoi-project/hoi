@@ -446,9 +446,18 @@ impl Node {
             .iter()
             .filter(|(_, j)| Some(j.author) == self.me_root())
             .map(|(id, j)| {
+                // A deletion that arrived before its target names nothing yet.
+                let kind = match (self.store.get(&j.target), self.state.skeletons.get(&j.target)) {
+                    (Some(s), _) => Some(s.record.kind().as_str()),
+                    (None, Some(sk)) => Some(sk.kind.as_str()),
+                    _ => None,
+                };
                 let mut p = DeletionProgress {
                     id: id.hex(),
                     target: j.target.hex(),
+                    kind: kind.filter(|k| matches!(*k, "post" | "comment")).map(str::to_string),
+                    post: self.thread_of(&j.target).map(|p| p.hex()),
+                    community: j.community.map(|c| c.hex()),
                     local_removed: self.state.skeletons.contains_key(&j.target) || self.store.is_deleted(&j.target),
                     record_submitted: j.record_submitted,
                     queued: 0,

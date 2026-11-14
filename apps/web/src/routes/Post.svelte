@@ -19,6 +19,7 @@
   import MediaList from '../lib/ui/MediaList.svelte';
   import StandingCard from '../lib/ui/StandingCard.svelte';
   import SyncNotice from '../lib/ui/SyncNotice.svelte';
+  import DeletionStatus from '../lib/ui/DeletionStatus.svelte';
 
   let { id }: { id: string } = $props();
 
@@ -121,7 +122,7 @@
         ok = await attempt(() => app.core.edit(p.id, editText, editTitle), 'Edit signed. Everyone sees the new version, marked edited.');
         break;
       case 'delete':
-        ok = await attempt(() => app.core.deleteOwn(p.id), 'Deleted. Peers drop the body and keep a tombstone.');
+        ok = await attempt(() => app.core.deleteOwn(p.id), `Deleting. Follow it under You → On this ${app.platformName}.`);
         if (ok !== undefined) router.go(to.community(p.community.id));
         break;
     }
@@ -167,6 +168,7 @@
   <div class="empty">
     <h2>That post isn't here.</h2>
     <p>{post.error} Posts fade on schedule, and your {app.platformName} only has what it synced.</p>
+    <DeletionStatus target={id} />
     <a class="pill" href="#/">Home</a>
   </div>
 {:else if !p}
@@ -197,6 +199,7 @@
             {#if p.removed.by}The receipt is in the <a class="textlink" href={to.ledger(p.community.id)}>ledger</a>. Your device tossed its copy of the text.{:else}The author signed a delete; every device that follows the rules drops the body.{/if}
           </p>
         </div>
+        {#if !p.removed.by}<div class="dswrap"><DeletionStatus target={p.id} /></div>{/if}
       {:else}
         <h1 id="p-h" class="anim">{p.title}</h1>
         {#if p.napping && !peek}
@@ -365,6 +368,7 @@
   .body p { white-space: pre-line; }
   .linkchip, .linkwrap { margin-bottom: 16px; }
   .poof.big { padding: 14px 16px; max-width: 640px; }
+  .dswrap { margin-top: 12px; }
   .napbig { border-top: 0; grid-template-columns: 52px minmax(0, 1fr); }
   .napbig b { color: var(--ink); }
   .postacts { display: flex; align-items: center; gap: 8px; margin-top: 22px; padding: 14px 0; border-top: 2px solid var(--ink); border-bottom: 2px dotted var(--line); flex-wrap: wrap; }

@@ -12,6 +12,11 @@ use serde::{Deserialize, Serialize};
 pub struct DeletionProgress {
     pub id: String,
     pub target: String,
+    /// `post` or `comment` while this device still knows the target, so the app can name it.
+    pub kind: Option<String>,
+    /// The post whose thread holds the target (the target itself for a post), while known.
+    pub post: Option<String>,
+    pub community: Option<String>,
     pub local_removed: bool,
     pub record_submitted: bool,
     pub queued: u32,
