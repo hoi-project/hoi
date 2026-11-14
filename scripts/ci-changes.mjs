@@ -11,7 +11,7 @@ import { appendFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 const any = (paths, patterns) => paths.some((path) => patterns.some((pattern) => pattern.test(path)));
-const RUST = [/^core\//, /^vendor\//, /^\.github\/workflows\/ci\.yml$/, /^scripts\/ci-changes\.mjs$/];
+const RUST = [/^core\//, /^vendor\//, /^release\.json$/, /^\.github\/workflows\/ci\.yml$/, /^scripts\/ci-changes\.mjs$/];
 const WEB = [/^apps\//, /^packages\//, /^design\/tokens\//, /^vendor\//, /^package\.json$/, /^pnpm-(lock|workspace)\.yaml$/, /^release\.json$/, /^publication\.json$/, /^\.github\/workflows\/ci\.yml$/, /^scripts\/ci-changes\.mjs$/];
 const DEPS = [/(^|\/)Cargo\.(toml|lock)$/, /(^|\/)deny\.toml$/, /^core\/supply-chain\//, /^vendor\//, /^package\.json$/, /(^|\/)package\.json$/, /^pnpm-(lock|workspace)\.yaml$/, /^scripts\/check-dependency-security/, /^\.github\/workflows\/security\.yml$/];
 const WORKFLOWS = [/^\.github\//];

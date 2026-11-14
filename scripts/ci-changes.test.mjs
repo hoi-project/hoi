@@ -24,6 +24,11 @@ test('each area selects its jobs', () => {
   assert.equal(classify(['.github/workflows/release.yml']).rust, false);
 });
 
+test('release.json is compiled into hoi-core, so it selects the Rust job', () => {
+  assert.equal(classify(['release.json']).rust, true);
+  assert.equal(classify(['release.json']).web, true);
+});
+
 test('changing CI itself runs the jobs it defines', () => {
   const ci = classify(['.github/workflows/ci.yml']);
   assert.equal(ci.rust, true);
