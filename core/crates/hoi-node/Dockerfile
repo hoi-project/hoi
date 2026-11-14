@@ -13,7 +13,7 @@
 # deploy/home/compose.yml runs a home node that is a public relay too (--public-relay).
 # The build stage is the same Debian release as the image (bookworm): a binary linked against a
 # newer C library than the image has would not start.
-FROM rust:1.98-slim-bookworm@sha256:ff521445a372125ed4f76e1453a1f8098f2d05332d1601d30db1c1f62757e730 AS build
+FROM rust:1.99-slim-bookworm@sha256:f2c004e3d2d8b547e8cf7ffbc29205385f4e71d23e53e4e383065db5e9f822cd AS build
 WORKDIR /src/core
 COPY core/ ./
 COPY vendor/ /src/vendor/
