@@ -850,7 +850,7 @@
     {#if !me.burned && !me.replaced}
       <div class="set">
         <span class="l">Delete known posts and comments</span>
-        <span class="h">Asks the network to delete the posts and comments of yours that this {app.platformName} knows. Your key stays here so the work can finish.</span>
+        <span class="h">Asks the network to delete the posts and comments of yours that this {app.platformName} knows, and shows how your deletions are going. Your key stays here so the work can finish.</span>
         <span class="v"><button type="button" class="lnk" onclick={() => (deleteOpen = true)}>Review…</button></span>
       </div>
     {/if}

@@ -1,8 +1,22 @@
-// "Delete known posts and comments" (RFC-0002) and clearing local data (RFC-0003), in the words
-// the app shows. Every line says what this device saw. None says a post is gone everywhere:
-// a holder's answer covers that holder, an end date ends storage validity, not the bytes.
+// "Delete known posts and comments" (RFC-0002), single deletions (RFC-0001) and clearing local
+// data (RFC-0003), in the words the app shows. Every line says what this device saw. None says
+// a post is gone everywhere: a holder's answer covers that holder, an end date ends storage
+// validity, not the bytes.
 import type { BulkDeletionGap, BulkDeletionReason, BulkDeletionStatus, CleanupReadiness, DeletionProgress, Unix } from '@hoi/core-api';
 import { plural } from './util';
+
+/** Storage holders, over the signed deletions this device follows. */
+export interface HolderCounts { queued: number; sent: number; acknowledged: number; legacy: number; unresolved: number; expired: number; gaps: number }
+
+function addHolders(h: HolderCounts, p: DeletionProgress) {
+  h.queued += p.queued;
+  h.sent += p.submitted;
+  h.acknowledged += p.acknowledged;
+  h.legacy += p.legacyRemoval;
+  h.unresolved += p.unknown + p.refused + p.unreachable;
+  h.expired += p.expired;
+  h.gaps += p.coverageGaps;
+}
 
 /** Where a batch's deletions are, counted from the core's own status. */
 export interface BatchSummary {
@@ -20,8 +34,7 @@ export interface BatchSummary {
   /** The post's own lifetime ended before it was signed. */
   lapsed: number;
   cancelled: number;
-  /** Storage holders, over the signed deletions this device follows. */
-  holders: { queued: number; sent: number; acknowledged: number; legacy: number; unresolved: number; expired: number; gaps: number };
+  holders: HolderCounts;
   /** Some signed deletion still needs this device. */
   needsDevice: boolean;
 }
@@ -49,13 +62,7 @@ export function summarize(batch: BulkDeletionStatus, progress: DeletionProgress[
       if (!p) { s.untracked++; continue; }
       if (p.recordSubmitted) s.submitted++;
       s.needsDevice ||= p.requiresLocalState;
-      s.holders.queued += p.queued;
-      s.holders.sent += p.submitted;
-      s.holders.acknowledged += p.acknowledged;
-      s.holders.legacy += p.legacyRemoval;
-      s.holders.unresolved += p.unknown + p.refused + p.unreachable;
-      s.holders.expired += p.expired;
-      s.holders.gaps += p.coverageGaps;
+      addHolders(s.holders, p);
     }
   }
   return s;
@@ -96,7 +103,16 @@ export function batchLines(s: BatchSummary): string[] {
     out.push(`${plural(s.signed, 'deletion')} signed. ${s.submitted.toLocaleString('en')} sent to the community${unsent ? `, ${unsent.toLocaleString('en')} not sent yet` : ''}.`);
   }
   if (s.untracked) out.push(`${plural(s.untracked, 'signed deletion')} with no progress here: how far ${s.untracked === 1 ? 'it' : 'they'} travelled is unknown.`);
-  const h = s.holders;
+  out.push(...holderLines(s.holders));
+  if (Object.keys(s.failed).length) out.push(`Not deleted: ${reasons(s.failed, FAILED)}.`);
+  if (s.lapsed) out.push(`${plural(s.lapsed, 'post')} faded before ${s.lapsed === 1 ? 'it was' : 'they were'} signed. That isn't proof ${s.lapsed === 1 ? 'it was' : 'they were'} erased.`);
+  if (s.cancelled) out.push(`${plural(s.cancelled, 'deletion')} cancelled before signing.`);
+  return out;
+}
+
+/** What storage holders said, for one deletion or a whole list. */
+export function holderLines(h: HolderCounts): string[] {
+  const out: string[] = [];
   const pending = h.queued + h.sent;
   if (pending) out.push(`${plural(pending, 'stored piece')} still to drop: ${h.sent.toLocaleString('en')} asked, ${h.queued.toLocaleString('en')} queued.`);
   if (h.unresolved) out.push(`${plural(h.unresolved, 'stored piece')} not confirmed: the holder refused, didn't answer or can't confirm. This device asks again.`);
@@ -104,10 +120,35 @@ export function batchLines(s: BatchSummary): string[] {
   if (h.acknowledged) out.push(`${plural(h.acknowledged, 'storage holder')} confirmed removing ${h.acknowledged === 1 ? 'its piece' : 'their pieces'}. Other copies aren't proven erased.`);
   if (h.expired) out.push(`${plural(h.expired, 'stored piece')} reached ${h.expired === 1 ? 'its' : 'their'} end date. Storage validity ended; erasure wasn't observed.`);
   if (h.gaps) out.push(`${plural(h.gaps, 'stored piece')} this device can't ask to drop.`);
-  if (Object.keys(s.failed).length) out.push(`Not deleted: ${reasons(s.failed, FAILED)}.`);
-  if (s.lapsed) out.push(`${plural(s.lapsed, 'post')} faded before ${s.lapsed === 1 ? 'it was' : 'they were'} signed. That isn't proof ${s.lapsed === 1 ? 'it was' : 'they were'} erased.`);
-  if (s.cancelled) out.push(`${plural(s.cancelled, 'deletion')} cancelled before signing.`);
   return out;
+}
+
+/**
+ * Deletions made one at a time, from a post or a comment: the progress no list links to. A
+ * list's targets link by the signed deletion's id (`deletion`), never by the target.
+ */
+export function singleDeletions(batches: BulkDeletionStatus[], progress: DeletionProgress[]): DeletionProgress[] {
+  const listed = new Set(batches.flatMap((b) => b.targets.map((t) => t.deletion)));
+  return progress.filter((p) => !listed.has(p.id));
+}
+
+/** 'Post in c/garden', or less when this device no longer knows. */
+export function deletionName(p: DeletionProgress, community?: string): string {
+  const what = p.kind === 'post' ? 'Post' : p.kind === 'comment' ? 'Comment' : 'Post or comment';
+  return community ? `${what} in c/${community}` : what;
+}
+
+/** One deletion's lines, in the words a list uses. Every entry is signed: the core tracks no other. */
+export function deletionLines(p: DeletionProgress, device: string): string[] {
+  const h: HolderCounts = { queued: 0, sent: 0, acknowledged: 0, legacy: 0, unresolved: 0, expired: 0, gaps: 0 };
+  addHolders(h, p);
+  return [
+    p.recordSubmitted ? 'Signed and sent to the community.' : 'Signed, not sent to the community yet.',
+    ...holderLines(h),
+    p.requiresLocalState
+      ? `Still needs this ${device}: it keeps sharing the deletion and asks storage holders to drop pieces.`
+      : `Doesn't need this ${device} any more.`,
+  ];
 }
 
 const GAPS: Record<BulkDeletionGap['reason'], (n: number) => string> = {

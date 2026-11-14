@@ -14,8 +14,14 @@ export type Unix = number; // seconds, UTC
 
 /** Observations of known deletion targets, never proof of complete inventory or erasure. */
 export interface DeletionProgress {
+  /** The signed deletion. */
   id: Hex;
   target: Hex;
+  /** While this device still knows the target; null for a deletion that arrived before it. */
+  kind: 'post' | 'comment' | null;
+  /** The post whose thread holds the target (the target itself for a post), while known. */
+  post: Hex | null;
+  community: Hex | null;
   localRemoved: boolean;
   recordSubmitted: boolean;
   queued: number;

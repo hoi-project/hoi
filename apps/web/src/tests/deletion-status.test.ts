@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { batchLines, gapLines, readinessWords, summarize, within } from '../lib/deletion-status';
+import { batchLines, deletionLines, deletionName, gapLines, readinessWords, singleDeletions, summarize, within } from '../lib/deletion-status';
 import { DAY, T, batch, community, progress, readiness, signed, target } from './fixtures/deletion';
 
 const lines = (...args: Parameters<typeof summarize>) => batchLines(summarize(...args));
@@ -72,6 +72,52 @@ describe('deleting known posts and comments, in the words the app shows', () => 
       '12 more posts than one list holds: review again after this one.',
     ]);
     expect(gapLines([])).toEqual([]);
+  });
+});
+
+describe('a post or comment deleted one at a time', () => {
+  it('lists only deletions no list links to, matching by the signed deletion, not the target', () => {
+    // target(2) is listed but unsigned: its id is progress(2)'s target, and it links no deletion.
+    const b = batch([signed(1), target(2)]);
+    const p = [progress(1), progress(2), progress(3)];
+    expect(singleDeletions([b], p).map((d) => d.id)).toEqual([p[1].id, p[2].id]);
+    expect(singleDeletions([], p)).toEqual(p);
+    expect(singleDeletions([b], [])).toEqual([]);
+  });
+
+  it('says signed, sent or not, and whether this device is still needed', () => {
+    expect(deletionLines(progress(1), 'browser')).toEqual([
+      'Signed, not sent to the community yet.',
+      'Still needs this browser: it keeps sharing the deletion and asks storage holders to drop pieces.',
+    ]);
+    expect(deletionLines(progress(1, { recordSubmitted: true, requiresLocalState: false }), 'computer')).toEqual([
+      'Signed and sent to the community.',
+      'Doesn\'t need this computer any more.',
+    ]);
+  });
+
+  it('reports holders in the words a list uses, and never calls it erased', () => {
+    const p = progress(1, { recordSubmitted: true, submitted: 1, queued: 1, acknowledged: 1, refused: 1, unknown: 1, legacyRemoval: 1, expired: 1, coverageGaps: 1, outstanding: 5 });
+    const one = deletionLines(p, 'browser');
+    expect(one).toEqual([
+      'Signed and sent to the community.',
+      '2 stored pieces still to drop: 1 asked, 1 queued.',
+      '2 stored pieces not confirmed: the holder refused, didn\'t answer or can\'t confirm. This device asks again.',
+      '1 older storage holder removed its piece but keeps no marker, so a copy could be stored there again.',
+      '1 storage holder confirmed removing its piece. Other copies aren\'t proven erased.',
+      '1 stored piece reached its end date. Storage validity ended; erasure wasn\'t observed.',
+      '1 stored piece this device can\'t ask to drop.',
+      'Still needs this browser: it keeps sharing the deletion and asks storage holders to drop pieces.',
+    ]);
+    const list = lines(batch([signed(1)]), [p]);
+    expect(one.slice(1, -1)).toEqual(list.slice(1));
+    expect(one.join(' ')).not.toMatch(/\b(all|every|everywhere|was erased|were erased)\b/i);
+  });
+
+  it('names what it deleted while this device knows', () => {
+    expect(deletionName(progress(1), 'garden')).toBe('Post in c/garden');
+    expect(deletionName(progress(1, { kind: 'comment' }), 'garden')).toBe('Comment in c/garden');
+    expect(deletionName(progress(1, { kind: null, post: null, community: null }))).toBe('Post or comment');
   });
 });
 

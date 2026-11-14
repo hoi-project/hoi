@@ -7,10 +7,13 @@ export const DAY = 86_400;
 const hex = (n: number) => n.toString(16).padStart(64, '0');
 export const community = hex(0xc0);
 
-/** One signed deletion's RFC-0001 progress: no holder targets, not sent, still in effect. */
+/**
+ * One signed deletion's RFC-0001 progress: a post, no holder targets, not sent, still in effect.
+ * Its id (the signed deletion) differs from its target, as in the core.
+ */
 export function progress(n: number, patch: Partial<DeletionProgress> = {}): DeletionProgress {
   return {
-    id: hex(0xd000 + n), target: hex(n), localRemoved: true, recordSubmitted: false,
+    id: hex(0xd000 + n), target: hex(n), kind: 'post', post: hex(n), community, localRemoved: true, recordSubmitted: false,
     queued: 0, submitted: 0, acknowledged: 0, legacyRemoval: 0, unknown: 0, refused: 0, unreachable: 0, expired: 0,
     outstanding: 0, coverageGaps: 0, expiresAt: T + 7 * DAY, requiresLocalState: true, inventoryComplete: false,
     ...patch,

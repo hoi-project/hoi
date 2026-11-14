@@ -186,6 +186,37 @@ fn deletion_removes_edits_and_preserves_other_posts() {
 }
 
 #[test]
+fn deletion_progress_names_its_target_after_restart_so_the_app_can_link_it() {
+    let t = Arc::new(AtomicU64::new(T0));
+    let memory = Mem::default();
+    let mut n = node("desktop", &t, &memory);
+    n.create_identity("Robin").unwrap();
+    let c = n.create_community(draft("garden")).unwrap().id;
+    let deleted = post(&mut n, &c, "deleted post");
+    let thread = post(&mut n, &c, "kept post");
+    let reply = n.reply(&thread.id, "deleted reply").unwrap();
+    n.commit().unwrap();
+    n.delete_own(&deleted.id).unwrap();
+    n.delete_own(&reply.id).unwrap();
+    n.commit().unwrap();
+    let named = |n: &Node| {
+        let mut out: Vec<_> = n.deletion_progress().into_iter().map(|p| (p.target, p.kind, p.post, p.community)).collect();
+        out.sort();
+        out
+    };
+    let mut want = vec![
+        (deleted.id.clone(), Some("post".to_string()), Some(deleted.id.clone()), Some(c.clone())),
+        (reply.id.clone(), Some("comment".to_string()), Some(thread.id.clone()), Some(c.clone())),
+    ];
+    want.sort();
+    assert_eq!(named(&n), want, "a post links to itself, a reply to its thread");
+    assert!(n.deletion_progress().iter().all(|p| p.id != p.target), "the progress id is the signed deletion, not its target");
+    drop(n);
+    let reopened = node("desktop", &t, &memory);
+    assert_eq!(named(&reopened), want, "names come from what the device keeps after the body is gone");
+}
+
+#[test]
 fn unavailable_early_jobs_cannot_starve_later_deletions() {
     let t = Arc::new(AtomicU64::new(T0));
     let mut n = node("desktop", &t, &Mem::default());

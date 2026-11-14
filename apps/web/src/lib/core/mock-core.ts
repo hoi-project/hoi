@@ -954,8 +954,11 @@ export function createMockCore(): HoiCore {
     if (rec.author !== me) throw err('not-allowed', 'Only the author can delete this.');
     rec.removed = { by: null, reason: 'deleted by the author', at: now() };
     rec.text = '';
+    // Keyed by target here; like the real core, the progress id is the signed deletion's own.
     deletions.set(id, {
-      id, target: id, localRemoved: true, recordSubmitted: false,
+      id: hexFrom(`deletion:${id}`), target: id,
+      kind: r.post ? 'post' : 'comment', post: r.post?.id ?? r.comment!.post, community: r.community.id,
+      localRemoved: true, recordSubmitted: false,
       queued: 0, submitted: 0, acknowledged: 0, legacyRemoval: 0, unknown: 0,
       refused: 0, unreachable: 0, expired: 0, outstanding: 0, coverageGaps: 0,
       expiresAt: rec.expiresAt, requiresLocalState: true, inventoryComplete: false,
@@ -2319,7 +2322,7 @@ export function createMockCore(): HoiCore {
           for (const id of ids) {
             authorDelete(id);
             status.signed++;
-            status.targets.push({ id, community: c.id, kind, state: 'signed', reason: null, deletion: id, nextTry: null });
+            status.targets.push({ id, community: c.id, kind, state: 'signed', reason: null, deletion: deletions.get(id)!.id, nextTry: null });
           }
         }
       }

@@ -78,7 +78,7 @@
   }
 
   async function del() {
-    await attempt(() => app.core.deleteOwn(c.id), 'Deleted. Peers drop the body and keep a tombstone.');
+    await attempt(() => app.core.deleteOwn(c.id), `Deleting. Follow it under You → On this ${app.platformName}.`);
     confirmDelete = false;
   }
 

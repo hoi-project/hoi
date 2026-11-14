@@ -1,6 +1,7 @@
 // The You screen's "Delete known posts and comments" and "Clear local data" with an offline mock
-// core: confirmation, resumed status, no second list on reopening, the clear refused while
-// deletions need this browser, and 1280/320 px layout. Run: node scripts/e2e-delete-known.mjs
+// core: deletions made one at a time, confirmation, resumed status, no second list on reopening,
+// the clear refused while deletions need this browser, and 1280/320 px layout.
+// Run: node scripts/e2e-delete-known.mjs
 import assert from 'node:assert/strict';
 import { mkdir } from 'node:fs/promises';
 import { createRequire } from 'node:module';
@@ -14,9 +15,11 @@ const shots = resolve(root, 'test-results/36-delete-known');
 process.env.VITE_HOI_BACKEND = 'mock';
 const { server, origin } = await startComponentServer('/delete-known-test', `<!doctype html><html lang="en"><title>Delete known posts test</title>
         <main id="fixture" class="gutter"></main>
+        <div id="post-fixture" class="gutter"></div>
         <script type="module">
-          import { mount } from 'svelte';
+          import { mount, unmount } from 'svelte';
           import You from '/src/routes/You.svelte';
+          import Post from '/src/routes/Post.svelte';
           import { app } from '/src/lib/app.svelte.ts';
           import '@hoi/tokens/fonts.css';
           import '@hoi/tokens/tokens.css';
@@ -26,8 +29,18 @@ const { server, origin } = await startComponentServer('/delete-known-test', `<!d
           app.refresh = async () => {};
           app.refreshWarmth = async () => {};
           const community = (await app.core.communities()).find((c) => c.joined) ?? (await app.core.communities())[0];
-          for (const title of ['First post to delete', 'Second post to delete']) await app.core.createPost({ community: community.id, title, text: 'Example text.' });
-          window.deleteFixture = { app };
+          const [first] = await Promise.all(['First post to delete', 'Second post to delete'].map((title) => app.core.createPost({ community: community.id, title, text: 'Example text.' })));
+          // deleted one at a time, before any list: a post, and a reply under a post that stays for the list
+          const alone = await app.core.createPost({ community: community.id, title: 'Deleted on its own', text: 'Example text.' });
+          const reply = await app.core.reply(first.id, 'A reply deleted on its own.');
+          await app.core.deleteOwn(alone.id);
+          await app.core.deleteOwn(reply.id);
+          let shown;
+          const mountPost = (id) => {
+            if (shown) unmount(shown);
+            shown = mount(Post, { target: document.querySelector('#post-fixture'), props: { id } });
+          };
+          window.deleteFixture = { app, mountPost, community: community.name, alone: alone.id, thread: first.id };
           mount(You, { target: document.querySelector('#fixture') });
         </script></html>`);
 let browser;
@@ -61,6 +74,22 @@ try {
   await review.focus();
   await page.keyboard.press('Enter');
   const dialog = page.getByRole('dialog', { name: 'Delete known posts and comments' });
+
+  // deletions made from a post or a comment, each linked to where it was
+  const fixture = await page.evaluate(() => { const { app: _, mountPost: __, ...rest } = window.deleteFixture; return rest; });
+  const singles = dialog.getByRole('region', { name: 'Deleted one at a time' });
+  await singles.waitFor();
+  const singleLinks = () => singles.getByRole('link').evaluateAll((links) => links.map((a) => [a.textContent, a.getAttribute('href')]));
+  const expectedSingles = [[`Post in c/${fixture.community}`, `#/p/${fixture.alone}`], [`Comment in c/${fixture.community}`, `#/p/${fixture.thread}`]];
+  assert.deepEqual((await singleLinks()).sort(), expectedSingles.sort(), 'a post links to itself, a reply to its thread');
+  const singleText = await singles.innerText();
+  assert.match(singleText, /Signed, not sent to the community yet\./, 'signed is not the same as sent');
+  assert.match(singleText, /Still needs this browser/);
+  assert.doesNotMatch(singleText, /\b(everywhere|erased|tombstone)\b/i, 'no line claims what peers did');
+  await dialog.getByRole('heading', { name: 'Clear this browser afterwards' }).waitFor();
+  assert.equal(await dialog.getByRole('button', { name: 'Clear local data…' }).count(), 0, 'single deletions block the combined clear too');
+  assert.deepEqual(await audit(dialog), [], 'single deletions are accessible');
+  await dialog.screenshot({ path: resolve(shots, 'single-1280.png') });
   await dialog.getByRole('button', { name: 'Review known posts and comments' }).click();
   await dialog.getByText('Not on this list', { exact: true }).waitFor();
   assert.match(await dialog.innerText(), /This list can't prove it's complete/, 'the preview never claims a complete history');
@@ -70,12 +99,14 @@ try {
   await dialog.getByRole('button', { name: /^Delete these \d+$/ }).click();
   assert.match(await dialog.innerText(), /There's no undo\. Your key stays on this browser until the work is done; it isn't burned\./);
   await dialog.getByRole('button', { name: 'Yes, delete them' }).click();
-  await dialog.getByRole('heading', { name: 'Clear this browser afterwards' }).waitFor();
+  // the saved list itself: single deletions already show the section below
+  await dialog.getByRole('region', { name: /^List of \d+ from / }).waitFor();
   const status = await dialog.innerText();
   assert.match(status, /deletions? signed\. 0 sent to the community/, 'signed is not the same as sent');
   assert.match(status, /still needs? this browser/, 'the core says the deletions still need this browser');
   assert.equal(await dialog.getByRole('button', { name: 'Clear local data…' }).count(), 0, 'no combined clear while work remains');
   assert.equal(await batches(), 1);
+  assert.deepEqual((await singleLinks()).sort(), expectedSingles.sort(), 'deletions in a list are not shown again as single ones');
   await dialog.screenshot({ path: resolve(shots, 'status-1280.png') });
   assert.deepEqual(await audit(dialog), [], 'the status is accessible');
 
@@ -126,10 +157,32 @@ try {
   await wipe.getByRole('button', { name: 'Keep everything' }).click();
   assert.equal(await batches(), 1, 'looking at the clear changes nothing');
 
+  // the deleted post's own page shows its deletion: the mock's "Poof." view, then the core's "not found"
+  await page.setViewportSize({ width: 1280, height: 900 });
+  const postPage = page.locator('#post-fixture');
+  const own = postPage.getByRole('region', { name: 'Your deletion' });
+  await page.evaluate((id) => window.deleteFixture.mountPost(id), fixture.alone);
+  await postPage.getByRole('heading', { name: 'Poof.' }).waitFor();
+  await own.waitFor();
+  assert.match(await own.innerText(), /Signed, not sent to the community yet\.[\s\S]*Still needs this browser/);
+  assert.equal(await own.getByRole('link', { name: 'You' }).getAttribute('href'), '#/you');
+  assert.deepEqual(await audit(postPage), [], 'the deleted post page is accessible');
+  await postPage.screenshot({ path: resolve(shots, 'post-1280.png') });
+  await page.evaluate((id) => {
+    const core = window.deleteFixture.app.core;
+    core.post = async () => { throw Object.assign(new Error('Poof. Removed by its author: deleted by the author.'), { code: 'not-found' }); };
+    window.deleteFixture.mountPost(id);
+  }, fixture.alone);
+  await postPage.getByRole('heading', { name: "That post isn't here." }).waitFor();
+  await own.waitFor();
+  assert.match(await own.innerText(), /Signed, not sent to the community yet\./, 'the core answers "not found" for a deleted post; its deletion still shows');
+  await page.setViewportSize({ width: 320, height: 900 });
+  assert.ok(await postPage.evaluate((el) => el.scrollWidth <= el.clientWidth + 1), 'the deleted post page fits 320 px');
+
   assert.deepEqual(externalRequests, [], 'nothing here makes an external request');
   assert.deepEqual(errors, []);
   await context.close();
-  console.log('PASS: delete known posts and comments (review, confirm, resumed status, no second list), the guarded and the ordinary clear, keyboard, axe on each dialog and 1280/320 px layout (offline mock core).');
+  console.log('PASS: delete known posts and comments (single deletions, their links and the deleted post page, review, confirm, resumed status, no second list), the guarded and the ordinary clear, keyboard, axe on each dialog and 1280/320 px layout (offline mock core).');
 } finally {
   await browser?.close();
   await server.close();
