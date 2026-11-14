@@ -10,6 +10,12 @@ describe('reading a pairing link', () => {
     expect(describeHome('ws://127.0.0.1:7842', 'abc@203.0.113.9:7844').scope).toBe('internet');
     expect(describeHome(null, null)).toEqual({ host: '', scope: 'none' });
   });
+  it('grades a hostname that starts like a private address as the internet', () => {
+    for (const u of ['wss://127.attacker.example/', 'wss://192.168.attacker.example/', 'wss://10.attacker.example/', 'wss://fdroid.example/', 'wss://fe80.attacker.example/']) {
+      expect(describeHome(u, null).scope).toBe('internet');
+    }
+    expect(describeHome(null, 'abc@10.attacker.example:7844').scope).toBe('internet');
+  });
   it('never lets a name stand in for the address', () => {
     expect(describeHome('wss://lena-laptop@evil.example/', null).host).toBe('evil.example');
     expect(describeHome('not a url', null)).toEqual({ host: 'not a url', scope: 'internet' });
