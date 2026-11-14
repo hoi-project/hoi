@@ -63,11 +63,14 @@ export function logSigner(secretHex) {
 
 /** The log as the API serves it, over a store with `logSize()`, `logEntries(start, end)` (rows of
  * `{ entry, withheld }`) and `logSecret()`. Leaf hashes are kept in memory as entries arrive:
- * entries never change, so the cache is never wrong, only behind. */
+ * entries never change, so the cache is never wrong, only behind. The root of the whole log is kept
+ * for the size it was computed at, so a head of an unchanged log hashes no tree nodes. */
 export function nameLog(store) {
   const signer = logSigner(store.logSecret());
   const leaves = [];
   const index = new Map();
+  let rootSize = -1;
+  let rootHex = '';
   const sync = () => {
     const size = store.logSize();
     if (leaves.length < size) {
@@ -84,7 +87,8 @@ export function nameLog(store) {
     /** A newly signed head of the whole log. */
     head(timestamp) {
       const size = sync();
-      const root = treeRoot(leaves, 0, size).toString('hex');
+      if (rootSize !== size) { rootHex = treeRoot(leaves, 0, size).toString('hex'); rootSize = size; }
+      const root = rootHex;
       return { logKey: signer.logKey, size, root, timestamp, signature: signer.sign(logHeadStatement(signer.logKey, size, root, timestamp)) };
     },
     /** Entries `start` to `end` (exclusive), at most 256: each one's leaf hash, and its text unless
