@@ -18,6 +18,23 @@ use crate::index::{self, IndexConfig};
 pub const MAX_TRACKERS: usize = 16;
 const EVERY: Duration = Duration::from_secs(60);
 
+/// Whether `url` names this machine. A community's signed limits are chosen by its owners, so a tracker
+/// there that points at loopback would make a public node send requests to services on its own host.
+fn names_this_machine(url: &str) -> bool {
+    let Some(host) = url::Url::parse(url).ok().and_then(|u| u.host().map(|h| h.to_owned())) else { return true };
+    match host {
+        url::Host::Domain(d) => d.eq_ignore_ascii_case("localhost") || d.to_ascii_lowercase().ends_with(".localhost"),
+        url::Host::Ipv4(ip) => ip.is_loopback() || ip.is_unspecified(),
+        url::Host::Ipv6(ip) => ip.is_loopback() || ip.is_unspecified(),
+    }
+}
+
+/// The trackers to announce to: what the carried communities name, minus `skip` and minus any
+/// that names this machine.
+fn announce_targets(named: Vec<String>, skip: &[String]) -> BTreeSet<String> {
+    named.into_iter().filter(|t| !skip.contains(t) && !names_this_machine(t)).collect()
+}
+
 /// Watches what the carried communities name; `skip`: registries already announced to
 /// (`--index`).
 pub fn spawn(shared: Arc<Shared>, skip: Vec<String>, carry_limit: usize) -> JoinHandle<()> {
@@ -27,7 +44,7 @@ pub fn spawn(shared: Arc<Shared>, skip: Vec<String>, carry_limit: usize) -> Join
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             tick.tick().await;
-            let want: BTreeSet<String> = shared.with(|n| n.tracker_targets(MAX_TRACKERS)).into_iter().filter(|t| !skip.contains(t)).collect();
+            let want = announce_targets(shared.with(|n| n.tracker_targets(MAX_TRACKERS)), &skip);
             running.retain(|url, task| {
                 let keep = want.contains(url);
                 if !keep {
@@ -45,4 +62,27 @@ pub fn spawn(shared: Arc<Shared>, skip: Vec<String>, carry_limit: usize) -> Join
             }
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_tracker_that_names_this_machine_is_never_announced_to() {
+        let named = [
+            "http://127.0.0.1:4100",
+            "http://localhost:4100/internal-admin",
+            "http://[::1]:4100",
+            "https://127.0.0.2",
+            "https://LOCALHOST",
+            "https://0.0.0.0",
+            "https://tracker.example",
+            "https://registry.example:8443/registry",
+        ];
+        let want = announce_targets(named.iter().map(|t| t.to_string()).collect(), &[]);
+        assert_eq!(want, BTreeSet::from(["https://tracker.example".to_string(), "https://registry.example:8443/registry".to_string()]));
+        let skipped = announce_targets(vec!["https://tracker.example".into()], &["https://tracker.example".to_string()]);
+        assert!(skipped.is_empty(), "registries already given with --index are left to that loop");
+    }
 }
