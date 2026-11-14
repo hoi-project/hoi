@@ -4,6 +4,7 @@
 
 pub mod age;
 pub mod api;
+pub mod assurance;
 pub mod bind;
 pub mod blobs;
 mod blocklists;

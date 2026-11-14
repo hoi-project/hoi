@@ -5,11 +5,11 @@ use super::*;
 use hoi_sync::Msg;
 use hoi_types::NodeNotice;
 
-fn fp(c: char) -> String {
+pub(super) fn fp(c: char) -> String {
     c.to_string().repeat(43)
 }
 
-fn notice(operator: &str) -> NodeNotice {
+pub(super) fn notice(operator: &str) -> NodeNotice {
     NodeNotice {
         operator: operator.into(),
         contact: "lena@example.org".into(),
@@ -20,7 +20,7 @@ fn notice(operator: &str) -> NodeNotice {
 }
 
 /// A native public node at `ip`, with an operator notice when `operator` is given.
-fn public(t: &Arc<AtomicU64>, memory: &Mem, ip: &str, cert: char, operator: Option<&str>) -> (Node, String) {
+pub(super) fn public(t: &Arc<AtomicU64>, memory: &Mem, ip: &str, cert: char, operator: Option<&str>) -> (Node, String) {
     let mut n = node("node", t, memory);
     n.set_node_name(Some("sleepy-walrus".into()));
     n.set_settings(&SettingsPatch { relay: Some(true), relay_notice_seen: Some(true), ..Default::default() }).unwrap();
@@ -35,7 +35,7 @@ fn public(t: &Arc<AtomicU64>, memory: &Mem, ip: &str, cert: char, operator: Opti
 }
 
 /// A browser with the consent gate on, as hoi-wasm starts one.
-fn browser(t: &Arc<AtomicU64>, memory: &Mem) -> Node {
+pub(super) fn browser(t: &Arc<AtomicU64>, memory: &Mem) -> Node {
     let mut b = node("web", t, memory);
     b.set_consent_gate(true);
     b.create_identity("mira").unwrap();
@@ -43,7 +43,7 @@ fn browser(t: &Arc<AtomicU64>, memory: &Mem) -> Node {
 }
 
 /// A browser dials `node`'s WebRTC route: the node knows it as "w", the browser knows the node as "a".
-fn dial(browser: &mut Node, node: &mut Node, route: &str) {
+pub(super) fn dial(browser: &mut Node, node: &mut Node, route: &str) {
     node.net_connect("w", Role::Peer);
     node.set_peer_meta("w", PeerMeta { transport: "webrtc".into(), incoming: true, addr: Some("198.51.100.4:50000".into()), ..Default::default() });
     browser.net_connect("a", Role::Peer);
@@ -51,7 +51,7 @@ fn dial(browser: &mut Node, node: &mut Node, route: &str) {
 }
 
 /// Pumps until nothing moves; false when the browser ended the link (then both sides forget it).
-fn pump_kept(browser: &mut Node, node: &mut Node) -> bool {
+pub(super) fn pump_kept(browser: &mut Node, node: &mut Node) -> bool {
     for _ in 0..20 {
         let to_node: Vec<Vec<u8>> = browser.take_outbox().into_iter().filter(|(p, _)| p == "a").map(|(_, m)| m).collect();
         let to_browser: Vec<Vec<u8>> = node.take_outbox().into_iter().filter(|(p, _)| p == "w").map(|(_, m)| m).collect();
@@ -74,7 +74,7 @@ fn pump_kept(browser: &mut Node, node: &mut Node) -> bool {
     true
 }
 
-fn hellos_from(n: &mut Node, to: &str) -> Vec<Msg> {
+pub(super) fn hellos_from(n: &mut Node, to: &str) -> Vec<Msg> {
     n.take_outbox().into_iter().filter(|(p, _)| p == to).filter_map(|(_, m)| Msg::decode(&m).ok()).filter(|m| matches!(m, Msg::Hello { .. })).collect()
 }
 
@@ -248,6 +248,7 @@ fn a_hello_that_lies_about_its_notice_is_the_peers_fault() {
         link_key: None,
         notice_hash: Some(Id([1; 32])),
         notice: Some(notice("Ola").canonical()),
+        declaration: None,
         holder: None,
         forwards: false,
         rebuilds: false,
@@ -295,6 +296,7 @@ fn a_desktop_does_not_redial_a_node_whose_notice_waits_or_was_declined() {
             asked: true,
             accepted: None,
             declined: None,
+            declaration: None,
         },
     );
     assert!(!dialable(&desk), "a pending notice keeps its node out of the native dial list");

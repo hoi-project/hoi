@@ -130,6 +130,7 @@ fn a_list_from_a_peer_that_dialed_in_makes_nobody_dial_anyone() {
         link_key: None,
         notice_hash: None,
         notice: None,
+        declaration: None,
         holder: None,
         forwards: false,
         rebuilds: false,

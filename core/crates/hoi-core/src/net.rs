@@ -656,10 +656,12 @@ impl Node {
         };
         // Our devices may show our pairing link to their next device, and seal `link` messages.
         let (pairing, link_key) = if role == Role::Client { (self.state.serve_token.clone(), self.link_key()) } else { (None, None) };
-        // A public node tells strangers who runs it before they say anything.
-        let (notice_hash, notice) = match &self.operator_notice {
-            Some(n) if role == Role::Peer && self.is_public_node() => (Some(n.hash), Some(n.bytes.clone())),
-            _ => (None, None),
+        // A public node tells strangers who runs it, and how it runs, before they say anything.
+        let (notice_hash, notice, declaration) = match &self.operator_notice {
+            Some(n) if role == Role::Peer && self.is_public_node() => {
+                (Some(n.hash), Some(n.bytes.clone()), self.operator_declaration.as_ref().map(crate::assurance::OperatorDeclaration::signed))
+            }
+            _ => (None, None, None),
         };
         Msg::Hello {
             v: hoi_sync::SYNC_VERSION,
@@ -691,6 +693,7 @@ impl Node {
             link_key,
             notice_hash,
             notice,
+            declaration,
             holder: self.holder_hello(),
             forwards: self.forwards_pieces(),
             rebuilds: self.rebuilds_for(peer),
@@ -957,7 +960,9 @@ impl Node {
     pub fn net_connect(&mut self, peer: &str, role: Role) {
         // Under the consent gate a stranger we dialed hears nothing until its hello said who runs
         // it; whether we dialed it is known at `set_peer_meta`, a moment later (crate::notice).
-        let awaiting = self.consent_gate && role == Role::Peer;
+        // Under `verified` (crate::assurance) the same holds for its home node: nobody this device
+        // relies on hears it before it was checked.
+        let awaiting = (self.consent_gate && role == Role::Peer) || (self.strict() && role != Role::Client);
         self.peers.insert(
             peer.to_string(),
             PeerState {
@@ -1005,6 +1010,7 @@ impl Node {
                 nodes_msgs: 0,
                 nodes_minute: 0,
                 awaiting_hello: awaiting,
+                held_hello: None,
                 operator: None,
                 scatter: Default::default(),
                 node_key: None,
@@ -1144,8 +1150,9 @@ impl Node {
             Ok(m) => m,
             Err(_) => return !self.peer_scores.penalize(peer, 5.0),
         };
-        if !said_hello && !matches!(msg, Msg::Hello { .. } | Msg::Bye { .. }) {
-            // everything starts with a hello
+        let held = self.peers.get(peer).is_some_and(|p| p.held_hello.is_some());
+        if !said_hello && !matches!(msg, Msg::Hello { .. } | Msg::Bye { .. }) && !(held && matches!(msg, Msg::Bind { .. })) {
+            // everything starts with a hello (and a held one waits for its binding)
             return false;
         }
         if said_hello && self.awaits_bind(peer) && !matches!(msg, Msg::Hello { .. } | Msg::Bind { .. } | Msg::Bye { .. }) {
@@ -1169,6 +1176,7 @@ impl Node {
                 link_key,
                 notice_hash,
                 notice,
+                declaration,
                 holder,
                 forwards,
                 rebuilds,
@@ -1188,13 +1196,39 @@ impl Node {
                     self.send_msg(peer, Msg::Bye { reason: format!("this node speaks sync version {}", hoi_sync::SYNC_VERSION) });
                     return false;
                 }
-                // A person's device reads a stranger's operator notice before it says anything:
-                // a notice not accepted yet ends the link here, to be read first.
-                if !client && self.consent_gate && self.peers.get(peer).is_some_and(|p| p.role() == Role::Peer) {
-                    match self.consent_check(peer, &node, notice_hash.as_ref(), notice.as_deref()) {
+                // Under `verified`, a node this device relies on must be verified, and none can
+                // be in this version: the link ends before this device says anything (RFC-0006 §3).
+                if !client && self.unverified_relied_on(peer) {
+                    self.stop_peer(peer);
+                    return false;
+                }
+                let stranger = !client && self.peers.get(peer).is_some_and(|p| p.role() == Role::Peer);
+                // A node blocked after a failed check hears nothing (crate::assurance).
+                if stranger && self.peer_blocked(peer) {
+                    self.stop_peer(peer);
+                    return false;
+                }
+                // A person's device reads a stranger's operator notice, and checks its declared
+                // configuration, before it says anything: a notice or configuration not accepted
+                // yet ends the link here, to be read first.
+                if stranger && self.consent_gate {
+                    match self.consent_check(peer, &node, notice_hash.as_ref(), notice.as_deref(), declaration.as_ref()) {
                         crate::notice::Consent::Proceed => {}
-                        crate::notice::Consent::Close => return false,
+                        crate::notice::Consent::Close => {
+                            self.stop_peer(peer);
+                            return false;
+                        }
                         crate::notice::Consent::Penalize => return !self.peer_scores.penalize(peer, 5.0),
+                    }
+                    // On a WebRTC link this device dialed, the node binds the channel to the key
+                    // its hello names right after it (crate::bind). Until that checked out, this
+                    // device says nothing: the hello is kept, and read again once bound.
+                    if self.awaits_bind(peer) && self.peers.get(peer).is_some_and(|p| p.awaiting_hello) {
+                        if let Some(p) = self.peers.get_mut(peer) {
+                            p.node_key = Some(node);
+                            p.held_hello = Some(bytes.to_vec());
+                        }
+                        return true;
                     }
                 }
                 // A peer cannot opt private groups back into plaintext sync by guessing IDs.
@@ -1781,6 +1815,8 @@ impl Node {
             self.state.link_key = Some(hoi_types::uri::b64(&hoi_crypto::random_bytes::<32>()?));
             self.mark_state();
         }
+        // serving its own devices is part of what a public node declares
+        self.redeclare();
         Ok(self.net_status())
     }
 
@@ -1952,6 +1988,7 @@ impl Node {
             exposure: self.exposure(),
             vpn: self.vpn_status.clone(),
             pending_notices: self.pending_notices(),
+            assurance: self.assurance_status(),
         }
     }
 }

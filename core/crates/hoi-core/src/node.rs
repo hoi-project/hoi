@@ -137,6 +137,10 @@ pub(crate) struct PeerState {
     /// A stranger this device dialed under the consent gate: our hello waits for its hello, so
     /// an operator's notice is read before this device says anything (crate::notice).
     pub awaiting_hello: bool,
+    /// Its hello, once read and accepted under the consent gate, kept until it bound the WebRTC
+    /// channel to the key the hello names: then it is read again and our hello follows
+    /// (crate::assurance).
+    pub held_hello: Option<Vec<u8>>,
     /// Who runs the peer, as its operator notice names them, as a key: nodes with the same
     /// operator count as one place in Warmth (crate::warmth). Its own word, so it only merges.
     pub operator: Option<u64>,
@@ -326,6 +330,11 @@ pub struct Node {
     pub(crate) finds: crate::find::Finds,
     /// This node's own operator notice, when the operator gave one (crate::notice).
     pub(crate) operator_notice: Option<crate::notice::OperatorNotice>,
+    /// The software this node runs, as its host says (RFC-0006): what its declaration names.
+    pub(crate) software: Option<hoi_types::declaration::Software>,
+    /// This node's configuration declaration, signed, as its hellos carry it beside the notice
+    /// (crate::notice); rebuilt when the notice, the software or a declared setting changes.
+    pub(crate) operator_declaration: Option<crate::assurance::OperatorDeclaration>,
     /// Links this device closed for a notice the person has not read yet: no refusal, no backoff.
     pub(crate) consent_closed: BTreeSet<String>,
     /// Requests accepted in the current minute and day, node-wide (crate::carry).
@@ -537,6 +546,8 @@ impl Node {
             looks: Default::default(),
             finds: Default::default(),
             operator_notice: None,
+            software: None,
+            operator_declaration: None,
             consent_closed: BTreeSet::new(),
             carry_accepted: (0, 0),
             carry_accepted_day: (0, 0),

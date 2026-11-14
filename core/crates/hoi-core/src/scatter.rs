@@ -635,6 +635,8 @@ impl Node {
         if let Some(n) = self.operator_notice().filter(|n| n.pieces != self.holds_pieces()).cloned() {
             let _ = self.set_notice(Some(n));
         }
+        // and so does its declaration, with how much it keeps (crate::assurance)
+        self.refresh_declaration();
         let peers: Vec<String> = self.peers.iter().filter(|(_, p)| p.said_hello).map(|(k, _)| k.clone()).collect();
         for p in peers {
             self.rehello(&p);

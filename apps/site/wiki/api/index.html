@@ -168,6 +168,8 @@ let feed = node.call("feed", serde_json::json!([{ "community": community_hex, "s
           <tr><td><code>acceptNotice</code></td><td><code>node</code>, <code>hash</code></td><td><code>NoticeView</code></td><td></td></tr>
           <tr><td><code>declineNotice</code></td><td><code>node</code></td><td><code>NoticeView</code></td><td></td></tr>
           <tr><td><code>forgetNotice</code></td><td><code>node</code></td><td><code>null</code></td><td></td></tr>
+          <tr><td><code>nodeBlocks</code></td><td>none</td><td><code>NodeBlockView[]</code></td><td>Nodes blocked after a failed check of their declaration or binding (RFC-0006), newest first.</td></tr>
+          <tr><td><code>unblockNode</code></td><td><code>key</code></td><td><code>null</code></td><td>The person reconsiders: the node may be dialed and asked about again.</td></tr>
           <tr><td><code>publicJoin</code></td><td><code>community</code>, <code>peers</code> (string[]), <code>name?</code></td><td><code>PublicJoinStatus</code></td><td>Fetch an open community's definition by key from chosen public nodes.</td></tr>
           <tr><td><code>publicJoinStatus</code></td><td><code>community</code></td><td><code>PublicJoinStatus</code></td><td></td></tr>
           <tr><td><code>communityRegistration</code></td><td><code>id</code></td><td><code>CommunityRegistration</code></td><td>A name-claim proof.</td></tr>

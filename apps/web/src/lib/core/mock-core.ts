@@ -320,6 +320,7 @@ export function createMockCore(): HoiCore {
       lessData: false,
       shareHolders: false,
       directLinks: false,
+      assurance: 'declared',
     };
   }
   /** The demo computer has a WireGuard tunnel next to its Wi-Fi. */
@@ -1712,7 +1713,7 @@ export function createMockCore(): HoiCore {
       await jitter();
       const n = notices.get(node);
       if (!n) throw err('not-found', 'No such notice.');
-      if (n.hash !== hash) throw err('invalid', 'The operator changed this notice since; read the new one.');
+      if (n.hash !== hash) throw err('invalid', "This node's notice or configuration changed since; read it again.");
       n.state = 'accepted';
       n.decidedAt = now();
       noticeNet();
@@ -1732,6 +1733,15 @@ export function createMockCore(): HoiCore {
       if (!notices.delete(node)) throw err('not-found', 'No such notice.');
       asked.delete(node);
       noticeNet();
+    },
+    // The mock's nodes all declare what they should: nothing is ever blocked here.
+    async nodeBlocks() {
+      await jitter();
+      return [];
+    },
+    async unblockNode() {
+      await jitter();
+      throw err('not-found', 'No such block.');
     },
     async discoverCommunities() {
       await jitter();

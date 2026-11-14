@@ -15,9 +15,14 @@
 //! The node has seen this device's address by then, as any connection shows it; the app's own
 //! Network & Safety notice says so before the first connection is ever made. What the device
 //! says of itself (its communities, hashed or named) waits for the person's answer.
+//!
+//! Beside its notice a node may send its configuration declaration (RFC-0006, crate::assurance):
+//! checked before anything else, shown after the operator's words, and part of what the person
+//! accepts. One answer holds for one notice and one declaration.
 
+use hoi_sync::SignedDeclaration;
 use hoi_types::notice::{self, MAX_NOTICE_WIRE};
-use hoi_types::{Id, NodeLink, NodeNotice, Sig};
+use hoi_types::{Id, NodeDeclaration, NodeLink, NodeNotice, Sig};
 
 use crate::Node;
 use crate::api::R;
@@ -47,6 +52,25 @@ pub(crate) enum Consent {
     Penalize,
 }
 
+/// Optional bytes as base64url in the saved state.
+pub(crate) mod b64opt {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(bytes: &Option<Vec<u8>>, s: S) -> Result<S::Ok, S::Error> {
+        match bytes {
+            Some(b) => s.serialize_some(&hoi_types::uri::b64(b)),
+            None => s.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Vec<u8>>, D::Error> {
+        match Option::<String>::deserialize(d)? {
+            Some(text) => hoi_types::uri::unb64(&text).map(Some).map_err(serde::de::Error::custom),
+            None => Ok(None),
+        }
+    }
+}
+
 /// Bytes as base64url in the saved state (a notice as JSON numbers would be four times the size).
 pub(crate) mod b64bytes {
     use serde::{Deserialize, Deserializer, Serializer};
@@ -71,15 +95,34 @@ fn state_word(r: &NoticeRecord) -> &'static str {
     }
 }
 
+/// What a person's answer names: the declaration's hash when the node sent one (it names the
+/// notice too), else the notice's.
+pub(crate) fn consent_hash(r: &NoticeRecord) -> Id {
+    r.declaration.as_deref().map(notice::hash_of).unwrap_or(r.hash)
+}
+
 fn view_of(node: &Id, r: &NoticeRecord) -> NoticeView {
     let n = NodeNotice::from_canonical(&r.notice).unwrap_or_default();
+    let declared = r.declaration.as_deref().and_then(|b| NodeDeclaration::from_canonical(b).ok().map(|d| (d, notice::hash_of(b))));
+    let mut sections: Vec<NoticeSection> = n.sections().into_iter().map(|s| NoticeSection { title: s.title, text: s.text }).collect();
+    let mut footer = format!("Notice version {}, last updated {}.", &r.hash.hex()[..12], n.updated.trim());
+    match &declared {
+        Some((d, hash)) => {
+            sections.extend(d.sections().into_iter().map(|s| NoticeSection { title: s.title, text: s.text }));
+            footer.push_str(&format!(" Configuration {}.", &hash.hex()[..12]));
+        }
+        None => sections.push(NoticeSection { title: "Configuration".into(), text: hoi_types::declaration::NOTHING_DECLARED.into() }),
+    }
     NoticeView {
         node: node.hex(),
-        hash: r.hash.hex(),
+        hash: consent_hash(r).hex(),
         state: state_word(r).into(),
+        notice_hash: r.hash.hex(),
+        declaration: declared.as_ref().map(|(_, h)| h.hex()),
+        assurance: if declared.is_some() { "declared" } else { "notice" }.into(),
         title: n.title(),
-        sections: n.sections().into_iter().map(|s| NoticeSection { title: s.title, text: s.text }).collect(),
-        footer: format!("Notice version {}, last updated {}.", &r.hash.hex()[..12], n.updated.trim()),
+        sections,
+        footer,
         name: n.node.clone(),
         operator: n.operator.clone(),
         contact: n.contact.clone(),
@@ -115,6 +158,7 @@ impl Node {
     pub fn set_notice(&mut self, notice: Option<NodeNotice>) -> R<Option<String>> {
         let Some(mut notice) = notice else {
             if self.operator_notice.take().is_some() {
+                self.refresh_declaration();
                 self.rehello_strangers();
             }
             return Ok(None);
@@ -134,6 +178,8 @@ impl Node {
         let kp = hoi_crypto::Keypair::from_secret(&self.transport_secret()?);
         let signature = Some(kp.sign(notice::statement(&kp.public(), &hash).as_bytes()));
         self.operator_notice = Some(OperatorNotice { notice, bytes, hash, signature });
+        // the declaration names the notice: a new notice, a new declaration (crate::assurance)
+        self.refresh_declaration();
         self.rehello_strangers();
         self.settle_dirty();
         Ok(Some(hash.hex()))
@@ -150,7 +196,7 @@ impl Node {
     }
 
     /// Connected strangers hear the notice as it is now: a hello replacing the last one.
-    fn rehello_strangers(&mut self) {
+    pub(crate) fn rehello_strangers(&mut self) {
         let strangers: Vec<String> =
             self.peers.iter().filter(|(_, p)| p.role() == Role::Peer && p.said_hello && !p.awaiting_hello).map(|(k, _)| k.clone()).collect();
         for peer in strangers {
@@ -158,21 +204,41 @@ impl Node {
         }
     }
 
-    /// A stranger's hello under the consent gate: what its notice means for this link.
-    pub(crate) fn consent_check(&mut self, peer: &str, node: &Id, hash: Option<&Id>, bytes: Option<&[u8]>) -> Consent {
+    /// A stranger's hello under the consent gate: what its notice and declaration mean for this
+    /// link. A declaration that fails its check blocks what the connection proved
+    /// (crate::assurance); one that changed, or disappeared, since the person's answer is a new
+    /// question, so a node cannot fall back to saying less than was accepted.
+    pub(crate) fn consent_check(&mut self, peer: &str, node: &Id, hash: Option<&Id>, bytes: Option<&[u8]>, declared: Option<&SignedDeclaration>) -> Consent {
+        // No notice: an older node or a member's device. A declaration without a notice names
+        // none, and means nothing.
         let Some(hash) = hash else { return Consent::Proceed };
         let Some(bytes) = bytes else { return Consent::Penalize };
         if bytes.len() > MAX_NOTICE_WIRE || notice::hash_of(bytes) != *hash || NodeNotice::from_canonical(bytes).is_err() {
             return Consent::Penalize;
         }
+        let declaration = match declared {
+            None => None,
+            Some(d) => {
+                let proven = self.peers.get(peer).and_then(|p| p.meta.endpoint.as_deref()).and_then(|e| Id::from_hex(e).ok());
+                match crate::assurance::check(node, proven.as_ref(), hash, d) {
+                    Ok(_) => Some(d.bytes.clone()),
+                    Err(reason) => {
+                        // RFC-0006 §4: stop, disconnect, and block for good
+                        self.block_peer(peer, reason);
+                        return Consent::Close;
+                    }
+                }
+            }
+        };
+        let same = |r: &NoticeRecord| r.hash == *hash && r.declaration == declaration;
         let now = self.now();
         match self.state.notices.get_mut(node) {
-            Some(r) if r.hash == *hash && r.accepted.is_some() => {
+            Some(r) if same(r) && r.accepted.is_some() => {
                 r.seen = now;
                 self.mark_state();
                 Consent::Proceed
             }
-            Some(r) if r.hash == *hash && r.declined.is_some() => Consent::Close,
+            Some(r) if same(r) && r.declined.is_some() => Consent::Close,
             _ => {
                 let (certs, host) = match self.peers.get(peer) {
                     Some(p) => {
@@ -190,7 +256,7 @@ impl Node {
                 };
                 self.remember_notice(
                     *node,
-                    NoticeRecord { hash: *hash, notice: bytes.to_vec(), certs, host, seen: now, asked: true, accepted: None, declined: None },
+                    NoticeRecord { hash: *hash, notice: bytes.to_vec(), certs, host, seen: now, asked: true, accepted: None, declined: None, declaration },
                 );
                 self.events.push(Event::NodeNotice { node: node.hex() });
                 self.consent_closed.insert(peer.to_string());
@@ -226,9 +292,13 @@ impl Node {
         self.consent_closed.contains(peer)
     }
 
-    /// Whether a route leads to a node whose notice waits for an answer or was declined: such a
-    /// node is not dialed on this device's own initiative.
+    /// Whether a route leads to a node whose notice waits for an answer or was declined, or that
+    /// is blocked: such a node is not dialed on this device's own initiative. Under `verified`
+    /// none is, since none can be verified in this version (crate::assurance).
     pub(crate) fn consent_blocks(&self, route: &str) -> bool {
+        if self.strict() || self.route_blocked(route) {
+            return true;
+        }
         if !self.consent_gate || self.state.notices.is_empty() {
             return false;
         }
@@ -265,8 +335,8 @@ impl Node {
         let key = Self::notice_key(node)?;
         let now = self.now();
         let Some(r) = self.state.notices.get_mut(&key) else { return Err(ApiError::not_found("notice")) };
-        if r.hash.hex() != hash {
-            return Err(ApiError::invalid("The operator changed this notice since; read the new one."));
+        if consent_hash(r).hex() != hash {
+            return Err(ApiError::invalid("This node's notice or configuration changed since; read it again."));
         }
         r.accepted = Some(now);
         r.declined = None;
@@ -340,6 +410,7 @@ impl Node {
         match Self::verified_link_notice(parsed) {
             Ok(None) => Ok(()),
             Ok(Some((endpoint, hash))) => match self.state.notices.get(&endpoint) {
+                // accepted for this notice, whatever configuration came with it then
                 Some(r) if r.hash == hash && r.accepted.is_some() => Ok(()),
                 _ => Err(ApiError::invalid("Read and accept the operator's notice first.")),
             },
@@ -373,7 +444,8 @@ impl Node {
                     let certs = certs_of(&parsed.rtc);
                     let host = Some(preview.host.clone()).filter(|h| !h.is_empty());
                     let now = self.now();
-                    self.remember_notice(endpoint, NoticeRecord { hash, notice: bytes, certs, host, seen: now, asked: false, accepted: None, declined: None });
+                    let record = NoticeRecord { hash, notice: bytes, certs, host, seen: now, asked: false, accepted: None, declined: None, declaration: None };
+                    self.remember_notice(endpoint, record);
                     self.settle_dirty();
                 }
                 preview.notice = self.state.notices.get(&endpoint).map(|r| view_of(&endpoint, r));
@@ -390,6 +462,9 @@ impl Default for NoticeView {
             node: String::new(),
             hash: String::new(),
             state: "pending".into(),
+            notice_hash: String::new(),
+            declaration: None,
+            assurance: "notice".into(),
             title: String::new(),
             sections: Vec::new(),
             footer: String::new(),

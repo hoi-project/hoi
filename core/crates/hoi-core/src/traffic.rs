@@ -118,7 +118,7 @@ impl Node {
         }
     }
 
-    fn relay_cap_bytes(&self) -> u64 {
+    pub(crate) fn relay_cap_bytes(&self) -> u64 {
         (self.state.settings.daily_cap_gb * 1e9) as u64
     }
 

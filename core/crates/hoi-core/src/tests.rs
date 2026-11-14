@@ -44,6 +44,9 @@ mod remote;
 mod nodes;
 #[path = "tests/notice.rs"]
 mod notice;
+// RFC-0006: configuration declarations, blocks and the assurance policy
+#[path = "tests/declaration.rs"]
+mod declaration;
 
 #[path = "tests/public_nodes.rs"]
 mod public_nodes;
@@ -1762,6 +1765,7 @@ fn a_fresh_home_node_steers_no_routes_until_it_delivers_records() {
         link_key: Some([3; 32]),
         notice_hash: None,
         notice: None,
+        declaration: None,
         holder: None,
         forwards: false,
         rebuilds: false,
@@ -1806,6 +1810,7 @@ fn internet_peer_cannot_claim_to_be_home_or_inject_routes() {
         link_key: None,
         notice_hash: None,
         notice: None,
+        declaration: None,
         holder: None,
         forwards: false,
         rebuilds: false,
@@ -1920,6 +1925,7 @@ fn catch_up_requests_every_id_beyond_old_five_thousand_limit() {
         link_key: None,
         notice_hash: None,
         notice: None,
+        declaration: None,
         holder: None,
         forwards: false,
         rebuilds: false,
@@ -1982,6 +1988,7 @@ fn communities_share_one_catch_up_request_budget_per_peer() {
         link_key: None,
         notice_hash: None,
         notice: None,
+        declaration: None,
         holder: None,
         forwards: false,
         rebuilds: false,
@@ -2162,6 +2169,7 @@ fn a_home_node_says_nothing_before_the_credential_and_strangers_get_no_name() {
             link_key: None,
             notice_hash: None,
             notice: None,
+            declaration: None,
             holder: None,
             forwards: false,
             rebuilds: false,
@@ -2307,6 +2315,7 @@ fn stalled_sync_watchdog_tracks_requested_records_not_unrelated_traffic() {
         link_key: None,
         notice_hash: None,
         notice: None,
+        declaration: None,
         holder: None,
         forwards: false,
         rebuilds: false,
@@ -2581,6 +2590,7 @@ fn a_stranger_cannot_ask_or_answer_for_your_devices() {
         link_key: None,
         notice_hash: None,
         notice: None,
+        declaration: None,
         holder: None,
         forwards: false,
         rebuilds: false,

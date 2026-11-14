@@ -845,8 +845,10 @@ async function handle(r: Req): Promise<unknown> {
       void maintainDiscovery();
       return result;
     }
-    case 'acceptNotice': {
-      // The person read a node's notice: dial it now, whatever wait an earlier closing left.
+    case 'acceptNotice':
+    case 'unblockNode': {
+      // The person read a node's notice, or reconsidered a block: dial it now, whatever wait an
+      // earlier closing left.
       const result = await run(() => call(r.method, r.args));
       memberRetry.clear();
       void maintainDiscovery();

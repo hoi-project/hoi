@@ -139,6 +139,7 @@ fn profile_sidecars_are_not_sent_to_legacy_peers() {
         link_key: None,
         notice_hash: None,
         notice: None,
+        declaration: None,
         holder: None,
         forwards: false,
         rebuilds: false,

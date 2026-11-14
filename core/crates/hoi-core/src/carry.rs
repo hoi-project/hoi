@@ -94,11 +94,13 @@ impl Node {
             // The hello's feature list changed: peers learn whether they may ask.
             self.announce();
         }
+        self.redeclare();
     }
 
     /// How many bytes the communities carried on request may hold together.
     pub fn set_carry_bytes(&mut self, bytes: u64) {
         self.carry_bytes = bytes.max(1);
+        self.redeclare();
     }
 
     /// Communities this node refuses to carry, whoever asks and whatever an index lists. One

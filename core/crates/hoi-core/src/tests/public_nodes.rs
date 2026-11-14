@@ -306,6 +306,7 @@ fn a_node_binds_its_webrtc_channel_to_its_key() {
         link_key: None,
         notice_hash: None,
         notice: None,
+        declaration: None,
         holder: None,
         forwards: false,
         rebuilds: false,

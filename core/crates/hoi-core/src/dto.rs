@@ -1142,6 +1142,10 @@ pub struct Settings {
     /// Browsers and phones: "Direct links with members' browsers". Off at first: the
     /// browsers linked learn each other's addresses.
     pub direct_links: bool,
+    /// Which nodes this device relies on (RFC-0006, crate::assurance): `declared`, on what they
+    /// declare and sign, or `verified`, only those whose software was verified, which no node
+    /// can be in this version. `hoi-node` sets it from `--assurance`.
+    pub assurance: String,
 }
 
 impl Default for Settings {
@@ -1169,6 +1173,7 @@ impl Default for Settings {
             less_data: false,
             share_holders: false,
             direct_links: false,
+            assurance: crate::assurance::DECLARED.into(),
         }
     }
 }
@@ -1233,6 +1238,9 @@ pub struct SettingsPatch {
     #[serde(default)]
     #[cfg_attr(feature = "ffi", uniffi(default = None))]
     pub direct_links: Option<bool>,
+    #[serde(default)]
+    #[cfg_attr(feature = "ffi", uniffi(default = None))]
+    pub assurance: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1391,6 +1399,8 @@ pub struct NetStatus {
     /// device met and will not talk to until they are read.
     #[serde(default)]
     pub pending_notices: Vec<NoticeView>,
+    /// Which nodes this device relies on, and why it uses none when that is why (crate::assurance).
+    pub assurance: AssuranceStatus,
 }
 
 /// One part of an operator's notice as people read it.
@@ -1410,10 +1420,20 @@ pub struct NoticeSection {
 pub struct NoticeView {
     /// The node's endpoint key, hex: what the decision is kept under.
     pub node: String,
-    /// BLAKE3 of the notice's canonical bytes, hex: a changed notice is a new question.
+    /// What the person accepts, hex: the configuration declaration's hash when the node sent
+    /// one, else the notice's. A changed notice or configuration is a new question.
     pub hash: String,
     /// `pending`, `accepted` or `declined`.
     pub state: String,
+    /// BLAKE3 of the notice's canonical bytes, hex.
+    pub notice_hash: String,
+    /// BLAKE3 of the node's configuration declaration (RFC-0006), hex, when it sent one. Then
+    /// `hash` is this one: the person's answer names the notice and the configuration together.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub declaration: Option<String>,
+    /// What backs what the person reads: `declared` (the node's software declared and signed its
+    /// configuration, unverified) or `notice` (the operator's words alone).
+    pub assurance: String,
     pub title: String,
     pub sections: Vec<NoticeSection>,
     pub footer: String,
@@ -1715,6 +1735,43 @@ pub enum Event {
     /// `acceptNotice` or `declineNotice`.
     #[serde(rename = "nodeNotice")]
     NodeNotice { node: String },
+    /// A node failed a check of what it showed of itself and is blocked (crate::assurance):
+    /// `nodeBlocks` lists it until `unblockNode`.
+    #[serde(rename = "nodeBlocked")]
+    NodeBlocked { key: String },
+}
+
+/// A node this device blocked (crate::assurance).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ffi", derive(uniffi::Record))]
+pub struct NodeBlockView {
+    /// What `unblockNode` takes: the endpoint key (hex), or `cert:` and a certificate fingerprint.
+    pub key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+    pub certs: Vec<String>,
+    /// What failed, in the app's words.
+    pub reason: String,
+    pub at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+}
+
+/// The assurance policy and whether it leaves this device without a node (crate::assurance).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ffi", derive(uniffi::Record))]
+pub struct AssuranceStatus {
+    /// `declared` or `verified`.
+    pub policy: String,
+    /// No node is eligible: under `verified` always in this version, under `declared` when every
+    /// node known is blocked, declined or waiting for an answer and none other is left to dial.
+    pub offline: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// Nodes blocked on this device.
+    pub blocked: u64,
 }
 
 /// Whether this person shares whom they trust in a community.

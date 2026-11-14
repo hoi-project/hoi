@@ -104,7 +104,8 @@
       <table>
         <thead><tr><th>Flag</th><th>Value</th><th>Default</th><th>Effect</th></tr></thead>
         <tbody>
-          <tr><td><code>--notice</code></td><td>file (JSON)</td><td>none</td><td>The operator's notice, checked with <code>NodeNotice::validate</code>; a bad file stops the node (exit 1). Carried in every hello to a stranger and, signed, in the node link; re-read when the file changes (polled every 30 s); its hash goes to <code>DIR/notice-hash</code>.</td></tr>
+          <tr><td><code>--notice</code></td><td>file (JSON)</td><td>none</td><td>The operator's notice, checked with <code>NodeNotice::validate</code>; a bad file stops the node (exit 1). Carried in every hello to a stranger and, signed, in the node link; re-read when the file changes (polled every 30 s); its hash goes to <code>DIR/notice-hash</code>. Beside it every hello carries the node's configuration declaration (RFC-0006): <code>hoi-node</code>, its version, the BLAKE3 of its program file as started, its roles and their limits, signed by the endpoint key and sent again when any of them changes. It is what the node says, not a proof of what runs.</td></tr>
+          <tr><td><code>--assurance</code></td><td><code>declared</code> or <code>verified</code></td><td><code>declared</code></td><td>Which nodes this one relies on, the operator's policy in place of a person's prompts. <code>declared</code>: as before, on what they say. <code>verified</code>: only nodes whose software was verified, which no node can be in this version, so the node dials and greets no stranger and no home node and only serves those that connect to it.</td></tr>
         </tbody>
       </table>
     </div>

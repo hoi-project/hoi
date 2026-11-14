@@ -19,6 +19,7 @@ fn hello(community: Id) -> Msg {
         link_key: None,
         notice_hash: None,
         notice: None,
+        declaration: None,
         holder: None,
         forwards: false,
         rebuilds: false,

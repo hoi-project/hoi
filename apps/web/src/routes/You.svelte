@@ -37,7 +37,7 @@
   import { routerWords, whoSees } from '../lib/public-node';
   import { to } from '../lib/router';
   import { networkConsent } from '../lib/consent.svelte';
-  import type { CleanupReadiness, NoticeView } from '@hoi/core-api';
+  import type { CleanupReadiness, NodeBlockView, NoticeView } from '@hoi/core-api';
   import { now } from '@hoi/core-api';
   import { copyText, plural } from '../lib/util';
   import { reduced } from '../lib/motion';
@@ -258,9 +258,12 @@
 
   // ---------------------------------------------------------- operators' notices
   let notices = $state.raw<NoticeView[]>([]);
+  let blocks = $state.raw<NodeBlockView[]>([]);
   async function loadNotices() {
     try { notices = await app.core.nodeNotices(); }
     catch { notices = []; }
+    try { blocks = await app.core.nodeBlocks(); }
+    catch { blocks = []; }
   }
   $effect(() => {
     void app.net;
@@ -279,6 +282,13 @@
       await app.core.forgetNotice(node);
       await loadNotices();
       toast('Forgotten. It asks again the next time it is reached.');
+    } catch (e) { toastError(e); }
+  }
+  async function reconsider(key: string) {
+    try {
+      await app.core.unblockNode(key);
+      await loadNotices();
+      toast('Unblocked. It is checked and asked about again the next time it is reached.');
     } catch (e) { toastError(e); }
   }
 
@@ -716,6 +726,15 @@
                 </span>
               </div>
             {/each}
+          {/if}
+          {#each blocks as b (b.key)}
+            <div class="noticerow">
+              <span class="nn"><b>{b.host || 'a node'}</b> · {b.reason} · <span class="tag tag-soft">blocked</span></span>
+              <span class="na"><button type="button" class="lnk lnk-ink" onclick={() => reconsider(b.key)}>Reconsider</button></span>
+            </div>
+          {/each}
+          {#if net?.assurance?.offline && net.assurance.reason}
+            <span class="h">{net.assurance.reason}</span>
           {/if}
         </div>
       </div>

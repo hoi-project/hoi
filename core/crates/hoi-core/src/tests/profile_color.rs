@@ -144,6 +144,7 @@ fn photo_capable_legacy_peers_receive_photos_and_posts_but_no_color_records() {
         link_key: None,
         notice_hash: None,
         notice: None,
+        declaration: None,
         holder: None,
         forwards: false,
         rebuilds: false,

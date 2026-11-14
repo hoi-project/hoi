@@ -1094,6 +1094,10 @@ export interface Settings {
    * between them directly, four links at most. Off at first: the browsers linked
    * learn each other's addresses. Absent from older cores. */
   directLinks?: boolean;
+  /** Which nodes this device relies on (RFC-0006): `declared`, on the configuration they
+   * declare and sign, or `verified`, only those whose software was verified, which no node can
+   * be in this version (the device then uses none and says so). Absent from older cores. */
+  assurance?: 'declared' | 'verified';
 }
 
 /** A network interface the person can pick as their VPN. */
@@ -1202,6 +1206,32 @@ export interface NetStatus {
   /** Operators' notices waiting for the person's answer: public nodes this device met
    * and will not talk to until they are read. Answer with acceptNotice or declineNotice. */
   pendingNotices?: NoticeView[];
+  /** Which nodes this device relies on, and why it uses none when that is why. Absent from
+   * older cores. */
+  assurance?: AssuranceStatus;
+}
+
+/** The assurance policy and whether it leaves this device without a node (RFC-0006). */
+export interface AssuranceStatus {
+  policy: 'declared' | 'verified';
+  /** No node is eligible: under `verified` always in this version; under `declared` when every
+   * node known is blocked, declined or waiting for an answer and none other is left. */
+  offline: boolean;
+  reason?: string;
+  /** Nodes blocked on this device. */
+  blocked: number;
+}
+
+/** A node this device blocked after what it showed of itself failed a check (RFC-0006). */
+export interface NodeBlockView {
+  /** What unblockNode takes: the endpoint key, or `cert:` and a certificate fingerprint. */
+  key: string;
+  endpoint?: Hex;
+  certs: string[];
+  /** What failed, in plain words. */
+  reason: string;
+  at: Unix;
+  host?: string;
 }
 
 /** One part of an operator's notice as people read it. */
@@ -1215,9 +1245,17 @@ export interface NoticeSection {
 export interface NoticeView {
   /** The node's endpoint key, hex: what the decision is kept under. */
   node: Hex;
-  /** BLAKE3 of the notice's canonical bytes, hex: a changed notice is a new question. */
+  /** What the person accepts: the configuration declaration's hash when the node sent one,
+   * else the notice's. A changed notice or configuration is a new question. */
   hash: Hex;
   state: 'pending' | 'accepted' | 'declined';
+  /** BLAKE3 of the notice's canonical bytes. Absent from older cores. */
+  noticeHash?: Hex;
+  /** BLAKE3 of the node's configuration declaration (RFC-0006), when it sent one. */
+  declaration?: Hex;
+  /** `declared`: the node's software declared and signed its configuration (unverified);
+   * `notice`: the operator's words alone. Absent from older cores. */
+  assurance?: 'declared' | 'notice';
   title: string;
   sections: NoticeSection[];
   footer: string;
@@ -1370,6 +1408,8 @@ export type CoreEvent =
   /** A public node this device met asks the person to read its operator's notice;
    * `net().pendingNotices` holds the words. */
   | { type: 'nodeNotice'; node: Hex }
+  /** A node failed a check of what it showed of itself and is blocked; `nodeBlocks()` lists it. */
+  | { type: 'nodeBlocked'; key: string }
   /** Proof-of-work for a record you are signing. estimateMs is from this device's benchmark. */
   | { type: 'stamp'; phase: 'start' | 'done'; bits: number; estimateMs: number; tookMs?: number }
   /** Something worth a toast, e.g. "Bounced 14 records from f30a·c812". */
@@ -1541,6 +1581,10 @@ export interface HoiCore {
   declineNotice(node: Hex): Promise<NoticeView>;
   /** Forgets a notice and the answer to it: the next contact asks again. */
   forgetNotice(node: Hex): Promise<void>;
+  /** Nodes this device blocked, newest first (RFC-0006). */
+  nodeBlocks(): Promise<NodeBlockView[]>;
+  /** The person reconsiders a block: the node may be dialed and asked about again. */
+  unblockNode(key: string): Promise<void>;
   communityRegistration(id: Hex): Promise<CommunityRegistration>;
   communityPublication(id: Hex): Promise<CommunityPublication>;
   /** Fetch an open community's signed definition by key from explicitly selected public nodes. */

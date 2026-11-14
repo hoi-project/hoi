@@ -164,6 +164,7 @@ fn legacy_peers_do_not_receive_catalog_messages() {
         link_key: None,
         notice_hash: None,
         notice: None,
+        declaration: None,
         holder: None,
         forwards: false,
         rebuilds: false,
