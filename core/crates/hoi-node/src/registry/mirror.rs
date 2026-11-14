@@ -54,6 +54,9 @@ struct Proof {
 
 /// Log pages read per pass: 10,240 entries; a longer log is caught up over several passes.
 const MAX_LOG_PAGES: u64 = 40;
+/// The most entries a mirror audits per registry. Every leaf is kept here until the operator runs `registry unwitness`,
+/// so a signed head claiming more is refused instead of filling the disk and memory a pass at a time.
+const MAX_AUDITED_ENTRIES: u64 = 100_000;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -106,6 +109,9 @@ async fn audit(client: &reqwest::Client, registry: &Registry, source: &str) -> R
     let head: Head = http::get_json(client, source, "/v2/log/head").await?.ok_or("it keeps no log of names")?;
     if !head_checks(&head) {
         return Err("its log head is not signed by the key it names".into());
+    }
+    if head.size > MAX_AUDITED_ENTRIES {
+        return Err(format!("its log claims {} entries, more than the {MAX_AUDITED_ENTRIES} this mirror audits", head.size));
     }
     let fault = |registry: &Registry, why: String| -> String {
         let _ = registry.store().witness_head(source, &head.log_key, head.size, &head.root, Some(&why));
@@ -367,6 +373,34 @@ mod tests {
         for dir in [source_dir, mirror_dir] {
             let _ = std::fs::remove_dir_all(dir);
         }
+    }
+
+    #[tokio::test]
+    async fn a_head_claiming_a_huge_log_is_refused_before_any_leaf_is_kept() {
+        use std::io::{Read, Write};
+        let kp = hoi_crypto::Keypair::from_secret(&[7; 32]);
+        let (log_key, root, size, timestamp) = (kp.public().hex(), "0".repeat(64), 1_000_000_000_000u64, 1u64);
+        let signature = hoi_types::hex_encode(&kp.sign(head_statement(&log_key, size, &root, timestamp).as_bytes()).0);
+        let body = json!({ "logKey": log_key, "size": size, "root": root, "timestamp": timestamp, "signature": signature }).to_string();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            // Only the head is ever asked for; a request for entries would find the connection closed.
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0u8; 2048];
+                let _ = stream.read(&mut buf);
+                let _ =
+                    write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+            }
+        });
+        let dir = temp("capped");
+        let mirror = Registry::open(&dir, &RegistryConfig::new(ReleaseSource::compiled().unwrap())).unwrap();
+        let refused = audit(&http::client().unwrap(), &mirror, &url).await.unwrap_err();
+        assert!(refused.contains("claims 1000000000000 entries"), "{refused}");
+        assert!(mirror.store().witnessed_leaves(&url).unwrap().is_empty());
+        server.join().unwrap();
+        drop(mirror);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[tokio::test]
