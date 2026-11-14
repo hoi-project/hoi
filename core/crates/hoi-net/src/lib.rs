@@ -98,6 +98,31 @@ pub fn origins_from_env() -> Vec<String> {
     std::env::var("HOI_ALLOWED_ORIGINS").map(|v| v.split(',').map(str::trim).filter(|s| !s.is_empty()).map(String::from).collect()).unwrap_or_default()
 }
 
+/// The IPv4 address an IPv6 address carries, for the forms that route to it: IPv4-mapped
+/// (`::ffff:a.b.c.d`), the deprecated IPv4-compatible form (`::a.b.c.d`), NAT64
+/// (`64:ff9b::/96`, RFC 6052) and 6to4 (`2002:a.b.c.d::/48`). A route check applies its IPv4
+/// rules to the embedded address, so a private or loopback address cannot pass in disguise.
+pub fn embedded_ipv4(v6: std::net::Ipv6Addr) -> Option<std::net::Ipv4Addr> {
+    let s = v6.segments();
+    let v4 = |hi: u16, lo: u16| std::net::Ipv4Addr::new((hi >> 8) as u8, hi as u8, (lo >> 8) as u8, lo as u8);
+    let mapped_or_compatible = s[..5] == [0; 5] && (s[5] == 0xffff || s[5] == 0);
+    let nat64 = s[0] == 0x64 && s[1] == 0xff9b && s[2..6] == [0; 4];
+    if mapped_or_compatible || nat64 {
+        Some(v4(s[6], s[7]))
+    } else if s[0] == 0x2002 {
+        Some(v4(s[1], s[2]))
+    } else {
+        None
+    }
+}
+
+/// Site-local (`fec0::/10`, deprecated) and local-use NAT64 (`64:ff9b:1::/48`, RFC 8215) addresses:
+/// both are meant for private networks and never name a public host.
+pub fn is_site_local_or_local_nat64(v6: std::net::Ipv6Addr) -> bool {
+    let s = v6.segments();
+    (s[0] & 0xffc0) == 0xfec0 || (s[0] == 0x64 && s[1] == 0xff9b && s[2] == 1)
+}
+
 /// An address other networks can reach: no loopback, private, link-local, carrier-grade NAT,
 /// documentation or multicast ranges. Reachability itself is only proven by a visitor.
 pub fn public_ip(ip: std::net::IpAddr) -> bool {
@@ -119,8 +144,11 @@ pub fn public_ip(ip: std::net::IpAddr) -> bool {
                 || a >= 240)
         }
         std::net::IpAddr::V6(v6) => {
-            if let Some(v4) = v6.to_ipv4_mapped() {
+            if let Some(v4) = embedded_ipv4(v6) {
                 return public_ip(std::net::IpAddr::V4(v4));
+            }
+            if is_site_local_or_local_nat64(v6) {
+                return false;
             }
             let documentation = v6.segments()[0] == 0x2001 && v6.segments()[1] == 0xdb8;
             !(v6.is_loopback() || v6.is_unspecified() || v6.is_multicast() || v6.is_unique_local() || v6.is_unicast_link_local() || documentation)
@@ -493,6 +521,29 @@ pub fn spawn_sweeper(shared: Arc<Shared>) -> tokio::task::JoinHandle<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn embedded_ipv4_forms_of_private_addresses_are_not_public() {
+        for hidden in [
+            "::10.0.0.1",
+            "::127.0.0.1",
+            "::192.168.1.1",
+            "64:ff9b::10.0.0.1",
+            "64:ff9b::7f00:1",
+            "64:ff9b::c0a8:101",
+            "64:ff9b:1::1",
+            "2002:0a00:0001::1",
+            "2002:7f00:0001::",
+            "2002:c0a8:0101::1",
+            "fec0::1",
+            "::ffff:10.0.0.1",
+        ] {
+            assert!(!public_ip(hidden.parse().unwrap()), "{hidden}");
+        }
+        for global in ["::93.184.216.34", "64:ff9b::93.184.216.34", "2002:5db8:d822::1", "2606:2800:220:1:248:1893:25c8:1946"] {
+            assert!(public_ip(global.parse().unwrap()), "{global}");
+        }
+    }
     use hoi_core::dto::{CommunityDraft, LimitsPatch, PostDraft};
     use hoi_store::pieces::{PieceMeta, PieceStore, PutOutcome, SqlitePieces};
 

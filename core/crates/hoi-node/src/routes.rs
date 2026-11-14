@@ -39,10 +39,15 @@ pub fn outside_visitor_networks(ip: IpAddr) -> bool {
                 || (a == 192 && b == 0 && v4.octets()[2] == 0))
         }
         IpAddr::V6(v6) => {
-            if let Some(v4) = v6.to_ipv4_mapped() {
+            if let Some(v4) = hoi_net::embedded_ipv4(v6) {
                 return outside_visitor_networks(IpAddr::V4(v4));
             }
-            !(v6.is_unspecified() || v6.is_loopback() || v6.is_unique_local() || v6.is_unicast_link_local() || v6.is_multicast())
+            !(hoi_net::is_site_local_or_local_nat64(v6)
+                || v6.is_unspecified()
+                || v6.is_loopback()
+                || v6.is_unique_local()
+                || v6.is_unicast_link_local()
+                || v6.is_multicast())
         }
     }
 }
@@ -169,7 +174,16 @@ mod tests {
     #[test]
     fn the_registry_rule_keeps_visitors_off_their_own_networks_but_allows_documentation_ranges() {
         let ok = |s: &str| outside_visitor_networks(s.parse().unwrap());
-        for public in ["93.184.216.34", "203.0.113.10", "198.18.0.1", "2606:2800:220:1:248:1893:25c8:1946", "2001:db8::1", "::ffff:93.184.216.34"] {
+        for public in [
+            "93.184.216.34",
+            "203.0.113.10",
+            "198.18.0.1",
+            "2606:2800:220:1:248:1893:25c8:1946",
+            "2001:db8::1",
+            "::ffff:93.184.216.34",
+            "64:ff9b::93.184.216.34",
+            "2002:5db8:d822::1",
+        ] {
             assert!(ok(public), "{public}");
         }
         for private in [
@@ -193,6 +207,14 @@ mod tests {
             "fe80::1",
             "ff02::1",
             "::ffff:10.0.0.1",
+            "::10.0.0.1",
+            "::127.0.0.1",
+            "64:ff9b::10.0.0.1",
+            "64:ff9b::7f00:1",
+            "64:ff9b:1::1",
+            "2002:0a00:0001::1",
+            "2002:c0a8:0101::1",
+            "fec0::1",
         ] {
             assert!(!ok(private), "{private}");
         }
