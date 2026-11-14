@@ -79,9 +79,10 @@ try {
   const fixture = await page.evaluate(() => { const { app: _, mountPost: __, ...rest } = window.deleteFixture; return rest; });
   const singles = dialog.getByRole('region', { name: 'Deleted one at a time' });
   await singles.waitFor();
-  const singleLinks = () => singles.getByRole('link').evaluateAll((links) => links.map((a) => [a.textContent, a.getAttribute('href')]));
-  const expectedSingles = [[`Post in c/${fixture.community}`, `#/p/${fixture.alone}`], [`Comment in c/${fixture.community}`, `#/p/${fixture.thread}`]];
-  assert.deepEqual((await singleLinks()).sort(), expectedSingles.sort(), 'a post links to itself, a reply to its thread');
+  const byName = ([a], [b]) => a.localeCompare(b);
+  const singleLinks = async () => (await singles.getByRole('link').evaluateAll((links) => links.map((a) => [a.textContent, a.getAttribute('href')]))).sort(byName);
+  const expectedSingles = [[`Post in c/${fixture.community}`, `#/p/${fixture.alone}`], [`Comment in c/${fixture.community}`, `#/p/${fixture.thread}`]].sort(byName);
+  assert.deepEqual(await singleLinks(), expectedSingles, 'a post links to itself, a reply to its thread');
   const singleText = await singles.innerText();
   assert.match(singleText, /Signed, not sent to the community yet\./, 'signed is not the same as sent');
   assert.match(singleText, /Still needs this browser/);
@@ -106,7 +107,7 @@ try {
   assert.match(status, /still needs? this browser/, 'the core says the deletions still need this browser');
   assert.equal(await dialog.getByRole('button', { name: 'Clear local data…' }).count(), 0, 'no combined clear while work remains');
   assert.equal(await batches(), 1);
-  assert.deepEqual((await singleLinks()).sort(), expectedSingles.sort(), 'deletions in a list are not shown again as single ones');
+  assert.deepEqual(await singleLinks(), expectedSingles, 'deletions in a list are not shown again as single ones');
   await dialog.screenshot({ path: resolve(shots, 'status-1280.png') });
   assert.deepEqual(await audit(dialog), [], 'the status is accessible');
 
