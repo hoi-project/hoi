@@ -3,7 +3,7 @@
 // Where the browser has sync access handles, the cells live in OPFS log files (opfs.ts);
 // elsewhere, and for a store that already lives there, in IndexedDB.
 
-import { LogStore, opfsHolds, opfsRoot, openOpfs, removeOpfs } from './opfs';
+import { LogStore, handleClosed, opfsHolds, opfsRoot, openOpfs, removeOpfs } from './opfs';
 
 const DB = 'hoi';
 const VERSION = 1;
@@ -210,12 +210,22 @@ export async function apply(db: Db, changes: Change[], vault: VaultCipher): Prom
   const sealedManifest = vault.seal('manifest', new TextEncoder().encode(JSON.stringify({ version: 1, cells: Object.fromEntries(manifest) })));
   if (db instanceof LogStore) {
     // one frame: the cells, then the header, guard and manifest that vouch for them
-    db.write([
+    const batch: Change[] = [
       ...sealed,
       { op: 'blob', key: 'vault', value: vault.header() },
       { op: 'blob', key: 'format', value: GUARD },
       { op: 'blob', key: 'vault-manifest', value: sealedManifest },
-    ]);
+    ];
+    try {
+      db.write(batch);
+    } catch (e) {
+      // The browser closed the files behind the store's back. `write` moves the store's size and
+      // state only after its write and flush succeed, so the same frame can go again once the
+      // files are open again as the store left them; if they are not, `reacquire` throws StoreLost.
+      if (!handleClosed(e)) throw e;
+      await db.reacquire();
+      db.write(batch);
+    }
     manifests.set(vault, manifest);
     return;
   }

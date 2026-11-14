@@ -6,6 +6,7 @@
 import init, { WasmNode, WasmVault } from './wasm/pkg/hoi_wasm.js';
 import { apply, snapshot, vaultHeader, decodeSnapshot, migrate, openStore, resetStore, saveHeader, type Change, type Db } from './idb';
 import { createDurableSettler } from './durable-settle';
+import { StoreLost } from './opfs';
 import { groupRoutes } from './rtc-link';
 
 declare const self: DedicatedWorkerGlobalScope;
@@ -222,7 +223,10 @@ async function saveChanges(store: Db, changes: Change[]) {
     if (!vault || stolen) throw new Error('This device is locked.');
     await apply(store, changes, vault);
   } catch (e) {
-    const message = 'This browser could not save changes. Sync is paused. Keep this tab open, check free storage and allow site storage; saving will retry.';
+    // Freeing space or allowing storage cannot bring back files the browser closed or removed.
+    const message = e instanceof StoreLost
+      ? 'The browser closed or removed this site’s saved data, so changes cannot be saved and sync is paused. Reload this tab.'
+      : 'This browser could not save changes. Sync is paused. Keep this tab open, check free storage and allow site storage; saving will retry.';
     if (!storageFailed) emit({ type: 'notice', text: message });
     storageFailed = true;
     throw { code: 'internal', message: `${message} ${toError(e).message}` };
