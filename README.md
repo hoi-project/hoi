@@ -4,6 +4,7 @@
 [![Security](https://github.com/hoi-project/hoi/actions/workflows/security.yml/badge.svg)](https://github.com/hoi-project/hoi/actions/workflows/security.yml)
 [![Quality gate](https://sonarcloud.io/api/project_badges/measure?project=hoi-project_hoi&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=hoi-project_hoi)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/hoi-project/hoi/badge)](https://scorecard.dev/viewer/?uri=github.com/hoi-project/hoi)
+[![OpenSSF Baseline](https://www.bestpractices.dev/projects/16704/baseline)](https://www.bestpractices.dev/projects/16704)
 
 A forum with community-held keys. Public communities are readable by anyone; private
 communities encrypt posts and media on members' devices. Clients verify signed records
