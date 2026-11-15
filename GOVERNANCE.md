@@ -18,4 +18,11 @@ maintainer, who decides what is merged and released.
 A contributor with a record of reviewed, merged work may be invited by the existing maintainers.
 Maintainers who stop participating for a year may be moved to emeritus.
 
+## Access to sensitive resources
+
+Only maintainers of the `hoi-project` organization have access to release secrets, signing
+keys, repository settings and security reports. Today that is one maintainer. Access is
+granted and removed by the existing maintainers, and a maintainer who becomes emeritus loses
+it.
+
 This document changes through a pull request that is open for comment for at least 7 days.

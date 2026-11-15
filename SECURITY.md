@@ -9,6 +9,17 @@ steps and impact. If that option is unavailable, write to
 [hello@hoi.sh](mailto:hello@hoi.sh) and never disclose details in a public issue. Do not include
 real private keys, personal data or illegal material in reports.
 
+## Response and disclosure
+
+- We reply to a report within 14 days.
+- We aim to fix a confirmed issue, or share a plan, within 120 days.
+- Please keep the details private until a fix is released or 120 days have passed,
+  whichever is first. We will agree a date with you if more time is needed.
+- After a fix, we publish a GitHub security advisory. It names the affected versions,
+  the fix, and credits the reporter if they wish.
+- Reports that are not vulnerabilities, or that concern a documented limitation without an
+  unexpected impact, are answered in the same 14 days.
+
 ## Current limitations
 
 - Recipients can retain copies after posts expire.

@@ -35,7 +35,7 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Quick checks (every release)
         run: pnpm check:quick
-      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         if: steps.tier.outputs.tier != 'patch'
         with:
           toolchain: "1.97.0"
