@@ -1,0 +1,62 @@
+# Dependencies
+
+How hoi chooses, obtains and tracks the code it depends on. The rules for contributors are in
+[CONTRIBUTING.md](../CONTRIBUTING.md) and [AGENTS.md](../AGENTS.md); the checks are described in
+[CI.md](CI.md).
+
+## Choosing a dependency
+
+- A new dependency needs a maintainer's approval first (AGENTS.md rule 9). Open an issue that
+  names the package, what it is for, its licence and why the standard library or an existing
+  dependency is not enough.
+- Prefer well-known, actively maintained packages. A name that looks like a typo of a popular
+  package is flagged, not added.
+- The licence must be one the tree already uses. `core/deny.toml` lists the allowed licences, and
+  cargo-deny fails the build on any other.
+- Keys, signatures and validation stay in the Rust core. A TypeScript dependency never handles raw
+  key material.
+
+## Obtaining and pinning
+
+- Every ecosystem has a committed lockfile: `pnpm-lock.yaml` for JavaScript and `Cargo.lock` for
+  each Rust workspace (`core/`, `apps/desktop/src-tauri/`, `apps/setup/src-tauri/`).
+- Install with `pnpm install --frozen-lockfile`, and build Rust with `--locked`, so a build never
+  resolves newer versions than the lockfile records.
+- Rust crates come from crates.io only. cargo-deny rejects other registries and unknown git
+  sources, and rejects wildcard version requirements.
+- GitHub Actions are pinned to a full commit, with the version in a comment. Docker base images
+  are pinned by digest.
+- Any lockfile change needs a regenerated software bill of materials: run `pnpm sbom`. The quick
+  checks fail without it.
+
+## Checks
+
+Pull requests, pushes to `main` and a daily run execute these (workflow `security.yml`):
+
+| Check | What it covers |
+| --- | --- |
+| cargo-deny | licences, advisories, banned and yanked crates, registries and git sources, per Cargo graph |
+| cargo-audit | RustSec advisories for each `Cargo.lock` |
+| cargo-vet | every Rust dependency has an audit, an imported audit from another organisation, or a recorded exemption in `core/supply-chain/` |
+| `pnpm audit` | npm advisories at any level |
+| Dependency review | GitHub's review of dependencies a pull request adds or changes |
+| Dependency regression gate | a fast guard against reintroducing known-bad versions (`scripts/check-dependency-security.mjs`); cargo-deny stays responsible for current advisory data |
+| zizmor and actionlint | workflows, including action pins |
+
+## Advisories
+
+A known advisory in a transitive dependency is accepted only with a written reason, in two
+places that must agree: `core/deny.toml` for cargo-deny and `osv-scanner.toml` for OSV-Scanner
+and OpenSSF Scorecard. The open ones are tracked in
+[#11](https://github.com/hoi-project/hoi/issues/11). An entry is removed when its crate leaves
+the lockfiles. A vulnerability that affects how hoi uses a crate is fixed or the crate is
+replaced; it is not added to these lists.
+
+## Updates
+
+- Dependabot opens weekly pull requests for GitHub Actions and Docker base image digests. A
+  version must be a week old before it is proposed, so a release that is pulled within days
+  never reaches a pull request.
+- npm and Cargo get Dependabot security updates only. Routine bumps are made by a maintainer on
+  purpose, because each one needs a regenerated bill of materials and, for Cargo, new audits.
+- A maintainer reviews every update like any other change, and CI runs on it.

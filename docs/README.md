@@ -4,6 +4,7 @@
   which code cites as `PROTOCOL.md §N`. Decisions are [RFCs](../rfcs/README.md).
 - [Development](DEVELOPMENT.md): prerequisites, local builds and focused checks.
 - [CI](CI.md): opt-in workflows and release test tiers.
+- [Dependencies](DEPENDENCIES.md): how dependencies are chosen, pinned, checked and updated.
 - [Releases](RELEASES.md): versioning, signed artifacts and release notices.
 - [Static hosting](../deploy/static/README.md), [installation](../deploy/install/README.md),
   [home nodes](../deploy/home/README.md) and [server nodes](../deploy/server/README.md).
