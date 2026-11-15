@@ -430,9 +430,11 @@ test('routine checks start by themselves in the public hoi-project repository, a
   assert.equal(gate('ci', 'web', outputs({ web: 'false' })), false);
   assert.equal(gate('ci', 'web', outputs({ web: 'true' })), true);
   assert.doesNotMatch(job('ci', 'quick'), /^    if:/m, 'quick checks run whenever CI runs');
-  assert.equal(gate('ci', 'sonarcloud', outputs({})), true, 'Sonar after Rust');
-  assert.equal(gate('ci', 'sonarcloud', { ...outputs({}), needs: { changes: { result: 'success' }, rust: { result: 'skipped' } } }), true, 'Sonar without Rust changes');
-  assert.equal(gate('ci', 'sonarcloud', { ...outputs({}), needs: { changes: { result: 'success' }, rust: { result: 'failure' } } }), false, 'no Sonar after failed tests');
+  const sonar = { result: 'success', outputs: { sonar: 'true' } };
+  assert.equal(gate('ci', 'sonarcloud', outputs({ sonar: 'true' })), true, 'Sonar after Rust');
+  assert.equal(gate('ci', 'sonarcloud', { ...outputs({}), needs: { changes: sonar, rust: { result: 'skipped' } } }), true, 'Sonar for web changes without Rust');
+  assert.equal(gate('ci', 'sonarcloud', { ...outputs({}), needs: { changes: sonar, rust: { result: 'failure' } } }), false, 'no Sonar after failed tests');
+  assert.equal(gate('ci', 'sonarcloud', outputs({ sonar: 'false' })), false, 'no Sonar when no analysed code changed');
   for (const name of ['rust-deps', 'vet', 'npm']) {
     assert.equal(gate('security', name, outputs({ deps: 'false' })), false, name);
     assert.equal(gate('security', name, outputs({ deps: 'true' })), true, name);

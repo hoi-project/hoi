@@ -26,8 +26,9 @@ The **Changes** job (`scripts/ci-changes.mjs`, seconds) reads the pull request's
 the push's, and switches jobs on: Rust for `core/` and `vendor/`; Web for apps, packages,
 tokens and the pnpm files; dependency audits for manifests and lockfiles; workflow linting for
 `.github/`. CodeQL always scans Rust, JavaScript/TypeScript and Actions: pull requests need the
-same analysis configurations as `main` for GitHub to compare their results. A documentation pull
-request runs the quick checks and all CodeQL languages. A job skipped by the changes filter counts
+same analysis configurations as `main` for GitHub to compare their results. SonarCloud runs when
+Rust or web code, or `sonar-project.properties`, changes. A documentation pull request runs the
+quick checks and all CodeQL languages. A job skipped by the changes filter counts
 as passed for required checks, which is why there are no
 workflow-level `paths:` filters (they would leave required checks pending). Manual and scheduled
 runs, and pushes whose base is unknown, check everything.

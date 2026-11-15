@@ -16,10 +16,16 @@ const WEB = [/^apps\//, /^packages\//, /^design\/tokens\//, /^vendor\//, /^packa
 const DEPS = [/(^|\/)Cargo\.(toml|lock)$/, /(^|\/)deny\.toml$/, /^core\/supply-chain\//, /^vendor\//, /^package\.json$/, /(^|\/)package\.json$/, /^pnpm-(lock|workspace)\.yaml$/, /^scripts\/check-dependency-security/, /^\.github\/workflows\/security\.yml$/];
 const WORKFLOWS = [/^\.github\//];
 
+// SonarCloud analyses the Rust and web code (RUST and WEB) and reads its own settings. CodeQL is not
+// gated: pull requests need every baseline configuration (scripts/release-workflow.test.mjs).
+const SONAR = [/^sonar-project\.properties$/];
+
 /** The job switches for a list of changed paths, or `null` (run everything). */
 export function classify(paths) {
-  if (paths === null) return { rust: true, web: true, deps: true, workflows: true };
-  return { rust: any(paths, RUST), web: any(paths, WEB), deps: any(paths, DEPS), workflows: any(paths, WORKFLOWS) };
+  if (paths === null) return { rust: true, web: true, deps: true, workflows: true, sonar: true };
+  const rust = any(paths, RUST);
+  const web = any(paths, WEB);
+  return { rust, web, deps: any(paths, DEPS), workflows: any(paths, WORKFLOWS), sonar: rust || web || any(paths, SONAR) };
 }
 
 function git(...args) {
