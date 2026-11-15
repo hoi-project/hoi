@@ -37,7 +37,9 @@ self.addEventListener('activate', (event) => {
 });
 
 self.addEventListener('message', (event) => {
-  if (event.data && event.data.type === 'skip-waiting') self.skipWaiting();
+  // Only a page of this app may ask the new worker to take over.
+  const fromThisApp = event.source && event.source.url && new URL(event.source.url).origin === self.location.origin;
+  if (fromThisApp && event.data && event.data.type === 'skip-waiting') self.skipWaiting();
 });
 
 self.addEventListener('fetch', (event) => {

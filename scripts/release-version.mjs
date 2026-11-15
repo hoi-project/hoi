@@ -89,16 +89,38 @@ function normalizeVersion(value) {
   return value.replace(/^v/, '');
 }
 
+/**
+ * Finds the first line equal to `header` (its own line ending ignored) and the lines below it that
+ * `belongs` accepts. Line by line on purpose: the nested-quantifier regular expressions this replaces
+ * could backtrack exponentially on a long, malformed workflow file.
+ */
+function lineBlock(text, header, belongs) {
+  const eol = /\r?\n$/;
+  const lineEnd = from => (text.indexOf('\n', from) + 1) || text.length;
+  for (let pos = 0; pos < text.length;) {
+    const next = lineEnd(pos);
+    const line = text.slice(pos, next);
+    if (line.endsWith('\n') && line.replace(eol, '') === header) {
+      let end = next;
+      while (end < text.length && belongs(text.slice(end, lineEnd(end)).replace(eol, ''))) end = lineEnd(end);
+      return { index: pos, bodyIndex: next, end };
+    }
+    pos = next;
+  }
+  return null;
+}
 /** Keep the release form's static tag choices in step with normal version preparation. */
 export function releaseTagChoices(text, version) {
   const tag = `v${normalizeVersion(version)}`;
-  const dispatch = text.match(/^  workflow_dispatch:\r?\n((?:[ \t]*\r?\n| {4,}[^\r\n]*(?:\r?\n|$))*)/m);
-  const input = dispatch?.[0].match(/^      tag:\r?\n((?: {8,}[^\r\n]*(?:\r?\n|$))*)/m);
-  const options = input?.[0].match(/^        options:\r?\n((?: {10}-[^\r\n]*(?:\r?\n|$))*)/m);
-  if (!input || !/^        type: choice\r?$/m.test(input[0]) || !options) {
+  const dispatch = lineBlock(text, '  workflow_dispatch:', line => /^[ \t]*$/.test(line) || line.startsWith('    '));
+  const dispatchText = dispatch && text.slice(dispatch.index, dispatch.end);
+  const input = dispatch && lineBlock(dispatchText, '      tag:', line => line.startsWith('        '));
+  const inputText = input && dispatchText.slice(input.index, input.end);
+  const options = input && lineBlock(inputText, '        options:', line => /^ {10}-/.test(line));
+  if (!input || !/^        type: choice\r?$/m.test(inputText) || !options) {
     throw new Error('The Release workflow must define a tag choice input before preparing a version.');
   }
-  const existing = options[1].trim().split(/\r?\n/).filter(Boolean).map(line => {
+  const existing = inputText.slice(options.bodyIndex, options.end).trim().split(/\r?\n/).filter(Boolean).map(line => {
     const value = line.trim().replace(/^-\s*/, '').replace(/^(["'])(.*)\1$/, '$2');
     if (value !== 'Current version' && value !== `v${normalizeVersion(value)}`) {
       throw new Error('The Release tag choices must contain version tags or Current version.');
@@ -109,7 +131,7 @@ export function releaseTagChoices(text, version) {
   const newline = text.includes('\r\n') ? '\r\n' : '\n';
   const choices = ['"Current version"', ...tags].map(value => `          - ${value}${newline}`).join('');
   const start = dispatch.index + input.index + options.index;
-  return text.slice(0, start) + `        options:${newline}${choices}` + text.slice(start + options[0].length);
+  return text.slice(0, start) + `        options:${newline}${choices}` + text.slice(start + options.end - options.index);
 }
 
 export function releaseDetails(version, release) {
