@@ -168,7 +168,7 @@ function cyclonedx(repo: string, version: string, repoUrl: string): string {
   const d = load(repo);
   const used = new Set(d.programs.flatMap((p) => [...p.cargo, ...p.npm].map((e) => e.k)));
   const scopeOf = (k: string) => (d.programs.some((p) => p.ships && [...p.cargo, ...p.npm].some((e) => e.k === k && e.kind === 'run')) ? 'required' : 'excluded');
-  const components = [...used].sort().map((k) => {
+  const components = [...used].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)).map((k) => {
     const p = d.packages[k];
     const hashes = [] as { alg: string; content: string }[];
     if (p.checksum) hashes.push({ alg: 'SHA-256', content: p.checksum });
@@ -208,7 +208,7 @@ function cyclonedx(repo: string, version: string, repoUrl: string): string {
 
 function uuidFrom(s: string): string {
   const h = createHash('sha256').update(s).digest('hex');
-  return `${h.slice(0, 8)}-${h.slice(8, 12)}-5${h.slice(13, 16)}-${((parseInt(h[16], 16) & 3) | 8).toString(16)}${h.slice(17, 20)}-${h.slice(20, 32)}`;
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-5${h.slice(13, 16)}-${((Number.parseInt(h[16], 16) & 3) | 8).toString(16)}${h.slice(17, 20)}-${h.slice(20, 32)}`;
 }
 
 export function sbomAssets(repoRoot: string, opts: { version: string; repoUrl: string }): Plugin {
