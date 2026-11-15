@@ -94,6 +94,11 @@ permissions:
   assert.doesNotMatch(many, /          - v1\.0\.5\n/);
   assert.equal(releaseTagChoices(source.replaceAll('\n', '\r\n'), '1.0.0-preview.3'), next.replaceAll('\n', '\r\n'));
   assert.throws(() => releaseTagChoices(source.replace('        type: choice', '        type: string'), '1.0.1'), /tag choice input/);
+  // A long, malformed picker is rejected at once instead of backtracking.
+  const long = source.replace('        type: choice', `        type: string\n${' '.repeat(8)}x\n`.repeat(20000));
+  const started = Date.now();
+  assert.throws(() => releaseTagChoices(long, '1.0.1'), /tag choice input/);
+  assert.ok(Date.now() - started < 2000);
 });
 
 test('stable promotion and returning to preview update the channel and notice once', t => {
