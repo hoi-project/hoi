@@ -39,6 +39,7 @@ jobs:
     outputs:
       rust: ${{ steps.match.outputs.rust }}
       web: ${{ steps.match.outputs.web }}
+      sonar: ${{ steps.match.outputs.sonar }}
     steps:
       # Commits only, no file contents: enough to diff the pull request or the push.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -144,7 +145,7 @@ jobs:
   sonarcloud:
     name: SonarCloud
     needs: [changes, rust]
-    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.rust.result != 'failure' }}
+    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.sonar == 'true' && needs.rust.result != 'failure' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
