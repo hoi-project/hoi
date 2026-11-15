@@ -16,42 +16,16 @@ const WEB = [/^apps\//, /^packages\//, /^design\/tokens\//, /^vendor\//, /^packa
 const DEPS = [/(^|\/)Cargo\.(toml|lock)$/, /(^|\/)deny\.toml$/, /^core\/supply-chain\//, /^vendor\//, /^package\.json$/, /(^|\/)package\.json$/, /^pnpm-(lock|workspace)\.yaml$/, /^scripts\/check-dependency-security/, /^\.github\/workflows\/security\.yml$/];
 const WORKFLOWS = [/^\.github\//];
 
-// CodeQL analyses these languages (build-mode none, see security.yml). Its config ignores vendor/,
-// node_modules and the generated WASM bindings, so a change there selects nothing.
-const CODEQL_IGNORED = [/^vendor\//, /(^|\/)node_modules\//, /^apps\/web\/src\/lib\/core\/wasm\/pkg\//];
-const CODEQL_SELF = /^\.github\/workflows\/security\.yml$/;
-const CODEQL_LANGUAGES = {
-  actions: [/^\.github\//],
-  'javascript-typescript': [/\.(?:[cm]?[jt]s|[jt]sx|svelte)$/],
-  rust: [/\.rs$/, /(^|\/)Cargo\.(toml|lock)$/],
-};
-// SonarCloud scans the Rust and web code and its own settings.
+// SonarCloud analyses the Rust and web code (RUST and WEB) and reads its own settings. CodeQL is not
+// gated: pull requests need every baseline configuration (scripts/release-workflow.test.mjs).
 const SONAR = [/^sonar-project\.properties$/];
 
-/** The CodeQL languages a list of changed paths needs. */
-function codeqlLanguages(paths) {
-  if (any(paths, [CODEQL_SELF])) return Object.keys(CODEQL_LANGUAGES);
-  const scanned = paths.filter((path) => !any([path], CODEQL_IGNORED));
-  return Object.entries(CODEQL_LANGUAGES)
-    .filter(([, patterns]) => any(scanned, patterns))
-    .map(([language]) => language);
-}
-
-/** The job switches for a list of changed paths, or `null` (run everything). `codeql` is a JSON list. */
+/** The job switches for a list of changed paths, or `null` (run everything). */
 export function classify(paths) {
-  if (paths === null) {
-    return { rust: true, web: true, deps: true, workflows: true, sonar: true, codeql: JSON.stringify(Object.keys(CODEQL_LANGUAGES)) };
-  }
+  if (paths === null) return { rust: true, web: true, deps: true, workflows: true, sonar: true };
   const rust = any(paths, RUST);
   const web = any(paths, WEB);
-  return {
-    rust,
-    web,
-    deps: any(paths, DEPS),
-    workflows: any(paths, WORKFLOWS),
-    sonar: rust || web || any(paths, SONAR),
-    codeql: JSON.stringify(codeqlLanguages(paths)),
-  };
+  return { rust, web, deps: any(paths, DEPS), workflows: any(paths, WORKFLOWS), sonar: rust || web || any(paths, SONAR) };
 }
 
 function git(...args) {

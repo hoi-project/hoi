@@ -2,22 +2,13 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { classify } from './ci-changes.mjs';
 
-const codeql = (paths) => JSON.parse(classify(paths).codeql);
-
 test('without a base, everything runs', () => {
-  assert.deepEqual(classify(null), {
-    rust: true,
-    web: true,
-    deps: true,
-    workflows: true,
-    sonar: true,
-    codeql: '["actions","javascript-typescript","rust"]',
-  });
+  assert.deepEqual(classify(null), { rust: true, web: true, deps: true, workflows: true, sonar: true });
 });
 
 test('documentation alone selects no conditional build or security jobs', () => {
   assert.deepEqual(classify(['README.md', 'docs/CI.md', 'docs/spec/PROTOCOL.md', 'rfcs/README.md']),
-    { rust: false, web: false, deps: false, workflows: false, sonar: false, codeql: '[]' });
+    { rust: false, web: false, deps: false, workflows: false, sonar: false });
 });
 
 test('each area selects its jobs', () => {
@@ -49,25 +40,6 @@ test('changing CI itself runs the jobs it defines', () => {
   assert.equal(classify(['.github/workflows/security.yml']).deps, true);
   assert.equal(classify(['vendor/dimpl/src/lib.rs']).rust, true);
   assert.equal(classify(['vendor/dimpl/src/lib.rs']).deps, true);
-});
-
-test('CodeQL runs only the languages whose files changed', () => {
-  assert.deepEqual(codeql(['README.md', 'docs/CI.md']), []);
-  assert.deepEqual(codeql(['core/crates/hoi-types/src/record.rs']), ['rust']);
-  assert.deepEqual(codeql(['core/Cargo.lock']), ['rust']);
-  assert.deepEqual(codeql(['apps/web/src/lib/util.ts', 'apps/web/src/App.svelte']), ['javascript-typescript']);
-  assert.deepEqual(codeql(['scripts/build-all.mjs']), ['javascript-typescript']);
-  assert.deepEqual(codeql(['.github/workflows/release.yml']), ['actions']);
-  assert.deepEqual(codeql(['core/a.rs', 'apps/web/a.ts', '.github/workflows/ci.yml']),
-    ['actions', 'javascript-typescript', 'rust']);
-});
-
-test('CodeQL ignores the paths its configuration ignores', () => {
-  assert.deepEqual(codeql(['vendor/dimpl/src/lib.rs', 'apps/web/src/lib/core/wasm/pkg/hoi.js']), []);
-});
-
-test('changing the security workflow runs every CodeQL language', () => {
-  assert.deepEqual(codeql(['.github/workflows/security.yml']), ['actions', 'javascript-typescript', 'rust']);
 });
 
 test('SonarCloud runs for Rust, web and its own settings, not for documentation', () => {
