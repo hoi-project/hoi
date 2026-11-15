@@ -10,6 +10,8 @@
   [home nodes](../deploy/home/README.md) and [server nodes](../deploy/server/README.md).
 - [Node setup app](../apps/setup/README.md): installs and manages a public node on a server over SSH, with a wizard.
 - Optional [registry](../registry/README.md) and [encrypted relay](../relay/README.md).
+- [Security assessment](SECURITY-ASSESSMENT.md): what is protected, who it defends against and
+  where each threat table lives.
 - [Security policy](../SECURITY.md), [contribution guide](../CONTRIBUTING.md),
   [code of conduct](../CODE_OF_CONDUCT.md), [governance](../GOVERNANCE.md) and the rules for
   [coding agents](../AGENTS.md).
