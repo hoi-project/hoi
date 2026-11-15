@@ -37,7 +37,7 @@ changes and include relevant validation in the pull request.
 - Keep the TypeScript API in `packages/core-api` aligned with Rust DTOs.
 - Edit `design/tokens/tokens.json` and run `pnpm tokens` for shared styling changes.
 - Explain new dependencies and preserve their licenses and supply-chain records. Ask in the
-  issue before adding one.
+  issue before adding one. See [docs/DEPENDENCIES.md](docs/DEPENDENCIES.md).
 
 ## Project conventions
 
