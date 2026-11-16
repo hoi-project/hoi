@@ -388,8 +388,13 @@ jobs:
               id="$(gh api --method PATCH "$release_url" -f "body=$body" -F "prerelease=$PRERELEASE" --jq .id)"
             fi
           else
+            # Every release carries a change log (OpenSSF Baseline OSPS-BR-04.01): GitHub lists the
+            # pull requests merged since the previous release. An empty answer would make a draft
+            # without one, so it stops here. The source marker stays the body's last line.
+            changes="$(gh api --method POST "repos/$GH_REPO/releases/generate-notes" -f "tag_name=$TAG" --jq .body)"
+            test -n "$changes" || { echo "GitHub generated no release notes for $TAG." >&2; exit 1; }
             # Drafts have pending tags; do not refind a newly created release in the REST list.
-            notes="${notes}"$'\n\n'"<!-- hoi-release-source: $SOURCE_SHA -->"
+            notes="${notes}"$'\n\n'"${changes}"$'\n\n'"<!-- hoi-release-source: $SOURCE_SHA -->"
             id="$(gh api --method POST "repos/$GH_REPO/releases" -f "tag_name=$TAG" \
               -f "name=hoi $TAG" -f "body=$notes" \
               -F draft=true -F "prerelease=$PRERELEASE" --jq .id)"

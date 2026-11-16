@@ -4,13 +4,20 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { LOCKFILES, lockWithVersion, mismatches, readVersion, repoSlug, versionFiles, writeVersion } from './release-local.mjs';
+import { draftArgs, LOCKFILES, lockWithVersion, mismatches, readVersion, repoSlug, versionFiles, writeVersion } from './release-local.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 test('local releases target the public repository rather than the private checkout origin', () => {
   assert.equal(repoSlug({}), 'hoi-project/hoi');
   assert.equal(repoSlug({ GITHUB_REPOSITORY: 'fork/hoi' }), 'fork/hoi');
+});
+
+test('a local draft keeps its notes and adds a generated change log', () => {
+  const args = draftArgs('v1.0.0-preview.2', true);
+  assert.deepEqual(args.slice(0, 8), ['release', 'create', 'v1.0.0-preview.2', '--draft', '--verify-tag', '--prerelease=true', '--title', 'hoi v1.0.0-preview.2']);
+  assert.match(args[args.indexOf('--notes') + 1], /Verify downloads against the signed manifest\.json \(minisign\)\./);
+  assert.ok(args.includes('--generate-notes'), 'OSPS-BR-04.01: every release carries a change log');
 });
 
 test('every package of the tree carries the same version', () => {

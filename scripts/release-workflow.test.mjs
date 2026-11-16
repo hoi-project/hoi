@@ -94,6 +94,7 @@ test('draft creation and recovery avoid target permissions and preserve source p
     'api --method')
       case "$*" in *target_commitish=*) echo 'gh: Resource not accessible by integration (HTTP 403)' >&2; return 1 ;; esac
       [ "$API_FAIL" != true ] || return 1
+      case "$*" in *releases/generate-notes*) printf '%s\\n' "$CHANGES"; return ;; esac
       printf '%s\\n' "$RESPONSE_ID"
       ;;
     'api repos/example/hoi/commits/'*) printf '%s\\n' "$REMOTE_SHA" ;;
@@ -109,6 +110,7 @@ test('draft creation and recovery avoid target permissions and preserve source p
 }
 `;
   const sha = 'a'.repeat(40);
+  const changes = "## What's Changed\n* fix(web): example by @example in https://github.com/example/hoi/pull/1";
   const run = (patch = {}) => {
     writeFileSync(join(cwd, 'output'), '');
     writeFileSync(join(cwd, 'calls'), '');
@@ -116,7 +118,7 @@ test('draft creation and recovery avoid target permissions and preserve source p
       PATH: process.env.PATH, GH_REPO: 'example/hoi', TAG: 'v1.0.0-preview.2', SOURCE_SHA: sha,
       DESKTOP: 'true', SIGNED: 'false', PRERELEASE: 'true', PREVIOUS_SHA: '',
       GITHUB_OUTPUT: 'output', REMOTE_SHA: sha, RESPONSE_ID: '123', EXISTING: 'false',
-      DRAFT: 'true', EXISTING_PRERELEASE: 'true', ASSETS: '0', BODY64: '', ...patch,
+      DRAFT: 'true', EXISTING_PRERELEASE: 'true', ASSETS: '0', BODY64: '', CHANGES: changes, ...patch,
     } });
     assert.ifError(result.error);
     return { ...result, output: readFileSync(join(cwd, 'output'), 'utf8'), calls: readFileSync(join(cwd, 'calls'), 'utf8') };
@@ -126,6 +128,9 @@ test('draft creation and recovery avoid target permissions and preserve source p
   assert.equal(created.output, 'id=123\n');
   assert.match(created.calls, /api --method POST .*tag_name=v1\.0\.0-preview\.2/);
   assert.match(created.calls, new RegExp(`<!-- hoi-release-source: ${sha} -->`));
+  // OSPS-BR-04.01: the new draft carries GitHub's change log, and the marker stays its last line.
+  assert.match(created.calls, /api --method POST repos\/example\/hoi\/releases\/generate-notes -f tag_name=v1\.0\.0-preview\.2 --jq \.body/);
+  assert.ok(created.calls.includes(`(minisign) before running them.\n\n${changes}\n\n<!-- hoi-release-source: ${sha} --> -F draft=true`));
   assert.doesNotMatch(created.calls, /target_commitish/);
   assert.match(created.calls, /releases\?per_page/);
   assert.doesNotMatch(created.calls, /release view/);
@@ -139,6 +144,7 @@ test('draft creation and recovery avoid target permissions and preserve source p
     assert.match(recovered.calls, new RegExp(`<!-- hoi-release-source: ${sha} -->`));
     assert.doesNotMatch(recovered.calls, /target_commitish/);
     assert.doesNotMatch(recovered.calls, /api --method POST/);
+    assert.doesNotMatch(recovered.calls, /generate-notes/, 'an existing draft keeps its notes');
   }
   const resumed = run({ EXISTING: 'true', BODY64: Buffer.from(boundBody).toString('base64'), ASSETS: '3' });
   assert.equal(resumed.status, 0, resumed.stderr);
@@ -149,7 +155,7 @@ test('draft creation and recovery avoid target permissions and preserve source p
   assert.match(reclassified.calls, /api --method PATCH/);
   assert.doesNotMatch(reclassified.calls, /target_commitish/);
   for (const patch of [
-    { REMOTE_SHA: 'b'.repeat(40) }, { API_FAIL: 'true' }, { RESPONSE_ID: 'null' },
+    { REMOTE_SHA: 'b'.repeat(40) }, { API_FAIL: 'true' }, { RESPONSE_ID: 'null' }, { CHANGES: '' },
     { LOOKUP_FAIL: 'true' }, { EXISTING: 'true', DUPLICATE: 'true' },
     { EXISTING: 'true', DRAFT: 'false' },
     { EXISTING: 'true', ASSETS: '1' },
