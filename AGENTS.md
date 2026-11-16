@@ -103,5 +103,8 @@ run the relevant ones locally when you touch that area.
   - Scopes are top-level areas: `core`, `web`, `site`, `desktop`, `setup`, `mobile`, `registry`,
     `relay`, `deploy`, `ci`, `deps`, `spec`.
   - A breaking change adds `!` (`feat(core)!: …`) and a `BREAKING CHANGE:` footer.
+- Sign off every commit (`git commit -s`) with the name and email of the person who runs the
+  agent, who is also the commit's author ([CONTRIBUTING.md](CONTRIBUTING.md#sign-off-your-commits)).
+  The sign-off is that person's certification of the Developer Certificate of Origin.
 - Fill in the pull request template truthfully. Link the issue with `Fixes #N`.
 - Do not change workflows, release tooling or `publication.json` in a feature or fix pull request.

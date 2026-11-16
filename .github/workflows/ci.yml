@@ -72,6 +72,24 @@ jobs:
       - name: Metadata, tokens, boundaries, wiki, SBOM and focused regression tests
         run: pnpm check:quick
 
+  # Each commit a pull request adds is signed off by its author (Developer Certificate of Origin,
+  # CONTRIBUTING.md; OpenSSF Baseline OSPS-LE-01.01). Pull requests only: main changes only through them.
+  signoff:
+    name: Sign-off
+    needs: changes
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # Commits only, no file contents: the merge commit's parents are the base and the head.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          filter: blob:none
+      - name: Every commit has its author's Signed-off-by
+        run: node scripts/check-signoff.mjs
+
   web:
     name: Web
     needs: changes
