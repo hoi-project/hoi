@@ -89,7 +89,7 @@ Review the edits and run `pnpm check:quick`, then commit and push to `main`:
 
 ```sh
 git add -u
-git commit -m "chore(release): v1.0.0-preview.1"
+git commit -s -m "chore(release): v1.0.0-preview.1"
 git push origin HEAD
 ```
 

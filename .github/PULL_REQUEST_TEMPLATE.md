@@ -11,6 +11,7 @@ Full integration and platform suites belong to major-release CI.
 
 - [ ] `pnpm check:quick`
 - [ ] A test that fails without this change
+- [ ] Every commit is signed off (`git commit -s`)
 
 ## Compatibility
 

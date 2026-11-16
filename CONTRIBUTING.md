@@ -11,7 +11,8 @@ follows the [code of conduct](CODE_OF_CONDUCT.md).
    `good first issue` or `help wanted` are ready to pick up; `needs-decision` ones are not.
 2. **Claim it.** Comment that you are working on it, and release the claim if you stop.
 3. **Branch and change.** One issue per pull request, named `<type>/<issue>-<slug>`. Keep the
-   change narrow and add a test that fails without it.
+   change narrow and add a test that fails without it. Sign off every commit (`git commit -s`;
+   see [below](#sign-off-your-commits)).
 4. **Check.** Run `pnpm check:quick` and the tests for the code you changed.
 5. **Open the pull request.** Use [Conventional Commits](https://www.conventionalcommits.org/)
    for the title (`fix(core): …`, `feat(web): …`), link the issue with `Fixes #N`, and fill in
@@ -52,6 +53,26 @@ a minute. Runs use a read-only token; a maintainer approves first-time contribut
 requests; treat its findings like any review suggestion. The full platform suites run weekly
 and before major releases; run the relevant ones locally when you touch that area. See
 [CI](docs/CI.md).
+
+## Sign off your commits
+
+Every commit in a pull request ends with a sign-off line,
+`Signed-off-by: Your Name <you@example.com>`, with the same email as the commit's author.
+`git commit -s` adds it. By signing off you certify the
+[Developer Certificate of Origin 1.1](https://developercertificate.org/): you have the right to
+submit the change under the project's licenses, and you agree that the change and your sign-off
+are public and kept indefinitely.
+
+The *CI / Sign-off* check lists every commit without one. To sign them off and update the pull
+request:
+
+```sh
+git rebase --signoff origin/main
+git push --force-with-lease
+```
+
+Merge commits and commits by GitHub Apps such as Dependabot need no sign-off. To check a branch
+before you push it, run `node scripts/check-signoff.mjs origin/main..HEAD`.
 
 ## License
 

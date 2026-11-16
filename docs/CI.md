@@ -49,7 +49,7 @@ runs, and pushes whose base is unknown, check everything.
 
 | File / name | When | What |
 | --- | --- | --- |
-| `ci.yml` / CI | every pull request and push to `main`; by hand anywhere | **Changes**; **Quick checks** (`pnpm check:quick`, always); **Web** (site and API types, web unit tests); **Rust** (fmt, clippy `-D warnings`, `cargo llvm-cov nextest` over the workspace including the conformance vectors); **SonarCloud** (scan with the Rust coverage; `sonar-project.properties`; passes with a notice without `SONAR_TOKEN`) |
+| `ci.yml` / CI | every pull request and push to `main`; by hand anywhere | **Changes**; **Quick checks** (`pnpm check:quick`, always); **Sign-off** (pull requests: every commit has its author's `Signed-off-by`, `scripts/check-signoff.mjs`); **Web** (site and API types, web unit tests); **Rust** (fmt, clippy `-D warnings`, `cargo llvm-cov nextest` over the workspace including the conformance vectors); **SonarCloud** (scan with the Rust coverage; `sonar-project.properties`; passes with a notice without `SONAR_TOKEN`) |
 | `security.yml` / Security | pull requests, `main`, daily; by hand anywhere | **Changes**; CodeQL for every language (Rust, JavaScript/TypeScript, Actions; `security-extended`; a private repository analyses without uploading); per Cargo graph the dependency regression gate's tests, cargo-deny and cargo-audit; cargo-vet; `pnpm audit`; GitHub dependency review (pull requests); zizmor and actionlint |
 | `scorecard.yml` / Scorecard | `main`, weekly, branch-rule changes | OpenSSF Scorecard; results in the Security tab and the public badge (public repository only) |
 | `weekly.yml` / Weekly | Saturdays (public repository); by hand anywhere, `linux_only` by default | the full major suites on `main` |
@@ -59,8 +59,9 @@ runs, and pushes whose base is unknown, check everything.
 | `release-major.yml` / Release: major suites | called by Release for a validated major tag, and by Weekly | full suites on Linux, macOS and Windows (`linux_only` keeps them on Linux) |
 | `website.yml` / Website | manual (`HOI_PAGES_ENABLED`) | website publication check (repository and site, no signing keys), quick checks, static build and Pages upload |
 
-Required checks for `main` (**Settings -> Rules**): *CI / Changes*, *CI / Quick checks*, *CI / Web*
-and *CI / Rust*. Security, SonarCloud and Scorecard report but do not block.
+Required checks for `main` (**Settings -> Rules**): *CI / Changes*, *CI / Quick checks*,
+*CI / Sign-off*, *CI / Web* and *CI / Rust*. Security, SonarCloud and Scorecard report but do not
+block.
 
 Pull requests are also reviewed by CodeRabbit (`.coderabbit.yaml`, against `AGENTS.md` and
 `.claude/rules/`); its comments are suggestions. Dependabot opens Actions updates and npm/Cargo
