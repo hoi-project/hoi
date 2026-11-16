@@ -3,6 +3,17 @@
 hoi is maintained by the members of the `hoi-project` GitHub organization. Today that is one
 maintainer, who decides what is merged and released.
 
+## Roles and responsibilities
+
+- **Maintainers** are the members of the `hoi-project/maintainers` GitHub team. They review and
+  merge pull requests, decide RFCs ([RFC-0000](rfcs/0000-decision-process.md)), start releases,
+  answer security reports within the times in [SECURITY.md](SECURITY.md), and hold access to
+  sensitive resources (below).
+- **Contributors** are everyone who opens an issue or pull request. They follow
+  [CONTRIBUTING.md](CONTRIBUTING.md) and the [code of conduct](CODE_OF_CONDUCT.md), sign off
+  every commit, and answer review feedback.
+- **Emeritus maintainers** are former maintainers. They hold no access.
+
 ## How changes are decided
 
 - **Bugs and small improvements:** an issue, then a pull request (see [CONTRIBUTING.md](CONTRIBUTING.md)).
@@ -20,9 +31,12 @@ Maintainers who stop participating for a year may be moved to emeritus.
 
 ## Access to sensitive resources
 
-Only maintainers of the `hoi-project` organization have access to release secrets, signing
-keys, repository settings and security reports. Today that is one maintainer. Access is
-granted and removed by the existing maintainers, and a maintainer who becomes emeritus loses
-it.
+Only maintainers have access to release secrets, signing keys, repository settings and security
+reports. Today they are:
+
+- [@pclshm](https://github.com/pclshm)
+
+Access is granted and removed by the existing maintainers, and a maintainer who becomes emeritus
+loses it. This list is updated whenever access changes.
 
 This document changes through a pull request that is open for comment for at least 7 days.
