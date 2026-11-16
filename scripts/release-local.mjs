@@ -320,6 +320,16 @@ function fetchDraft(o, out) {
   return true;
 }
 
+/**
+ * `gh release create` arguments for a new draft. `--generate-notes` puts GitHub's list of the pull
+ * requests merged since the previous release after the notes: every release carries a change log
+ * (OpenSSF Baseline OSPS-BR-04.01).
+ */
+export function draftArgs(tag, prerelease) {
+  const notes = `Built on a computer with scripts/release-local.mjs. Desktop installers are not code-signed unless stated. Verify downloads against the signed manifest.json (minisign).`;
+  return ['release', 'create', tag, '--draft', '--verify-tag', `--prerelease=${prerelease}`, '--title', `hoi ${tag}`, '--notes', notes, '--generate-notes'];
+}
+
 function upload(o, out, signed, exists) {
   const tag = `v${o.version}`;
   step(`Draft release ${tag}`);
@@ -327,9 +337,8 @@ function upload(o, out, signed, exists) {
   if (!signed) usage('refusing to upload an unsigned manifest; give the configured minisign signing key');
   const env = { GH_REPO: repoSlug() };
   if (!exists) {
-    const notes = `Built on a computer with scripts/release-local.mjs. Desktop installers are not code-signed unless stated. Verify downloads against the signed manifest.json (minisign).`;
     const { prerelease } = checkVersion(o.version);
-    sh('gh', ['release', 'create', tag, '--draft', '--verify-tag', `--prerelease=${prerelease}`, '--title', `hoi ${tag}`, '--notes', notes], { env });
+    sh('gh', draftArgs(tag, prerelease), { env });
   }
   const files = readdirSync(out).filter((n) => statSync(join(out, n)).isFile()).map((n) => join(out, n));
   sh('gh', ['release', 'upload', tag, ...files, '--clobber'], { env });

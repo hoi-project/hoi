@@ -232,6 +232,13 @@ Artifacts, SHA-256 manifest and signature are uploaded to a **draft** release.
 The preview channel sets GitHub's pre-release flag automatically, including numeric
 `0.x` previews. Both manual and automatic runs validate the same tagged source and
 require the same signing secrets.
+
+A new draft's notes end with a change log: GitHub's generated release notes, listing the pull
+requests merged since the previous release, their authors and a link to the full comparison.
+`release-local.mjs --upload` adds the same list. A draft that already exists keeps its notes.
+Before publishing, read the list and say which changes fix security problems, with their
+advisories.
+
 Publishing the draft is a manual action. It starts **Website**, which copies the newest
 published release's `manifest.json` and `manifest.json.minisig` into the site's `/releases/`
 (the `downloads` address in `publication.json`) after checking the signature. The files stay
