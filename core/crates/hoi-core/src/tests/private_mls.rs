@@ -265,10 +265,11 @@ fn encrypted_member_snapshot_requires_new_approved_welcome_on_same_installation(
     let old = post(&mut owner, &c, "stale private content");
     accept(&mut owner, &mut member, &c);
     assert!(member.post(&old.id).is_ok());
-    let file = member.export_snapshot("private member test password").unwrap();
+    let password = hoi_types::uri::b64(&hoi_crypto::random_bytes::<24>().unwrap());
+    let file = member.export_snapshot(&password).unwrap();
     let disk = Mem::default();
     let mut restored = node("web", &t, &disk);
-    restored.import_snapshot(&file, "private member test password").unwrap();
+    restored.import_snapshot(&file, &password).unwrap();
     assert_eq!(restored.me().unwrap().device, backed_up.device);
     assert!(!restored.private_group(&c).unwrap().active);
     assert!(!restored.store.contains(&Id::from_hex(&old.id).unwrap()));

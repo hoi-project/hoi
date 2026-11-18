@@ -384,7 +384,7 @@ fn full_deletion_journal_preserves_existing_authority_and_rejects_before_suppres
 
 #[test]
 fn encrypted_member_snapshot_preserves_work_and_applies_offline_deletion_before_display() {
-    const PASS: &str = "member snapshot test passphrase";
+    let password = hoi_types::uri::b64(&hoi_crypto::random_bytes::<24>().unwrap());
     let t = Arc::new(AtomicU64::new(T0));
     let mut current = node("desktop", &t, &Mem::default());
     current.create_identity("Robin").unwrap();
@@ -411,7 +411,7 @@ fn encrypted_member_snapshot_preserves_work_and_applies_offline_deletion_before_
     });
     current.state.paired.push(crate::state::PairedDevice { credential: Id::hash(b"paired"), seen: T0 });
     current.mark_state();
-    let file = current.export_snapshot(PASS).unwrap();
+    let file = current.export_snapshot(&password).unwrap();
     assert!(!file.windows(stale.title.len()).any(|b| b == stale.title.as_bytes()));
     current.delete_own(&stale.id).unwrap();
     current.commit().unwrap();
@@ -420,11 +420,12 @@ fn encrypted_member_snapshot_preserves_work_and_applies_offline_deletion_before_
     let mut restored = node("web", &t, &target);
     let target_node = restored.state.node_id;
     let before = target.0.lock().unwrap().clone();
-    assert!(restored.import_snapshot(&file, "wrong passphrase").is_err());
+    let wrong_password = hoi_types::uri::b64(&hoi_crypto::random_bytes::<32>().unwrap());
+    assert!(restored.import_snapshot(&file, &wrong_password).is_err());
     assert_eq!(before, *target.0.lock().unwrap());
     let mut damaged = file.clone();
     *damaged.last_mut().unwrap() ^= 1;
-    assert!(restored.import_snapshot(&damaged, PASS).is_err());
+    assert!(restored.import_snapshot(&damaged, &password).is_err());
     assert_eq!(before, *target.0.lock().unwrap());
 
     struct NoReplace(Mem);
@@ -441,15 +442,15 @@ fn encrypted_member_snapshot_preserves_work_and_applies_offline_deletion_before_
     }
     let clock = t.clone();
     let mut failing = Node::open(Box::new(NoReplace(target.clone())), "web", "https://example.com/", Box::new(move || clock.load(Ordering::SeqCst))).unwrap();
-    assert!(failing.import_snapshot(&file, PASS).is_err());
+    assert!(failing.import_snapshot(&file, &password).is_err());
     assert!(failing.me().is_none());
     assert_eq!(before, *target.0.lock().unwrap());
-    let me = restored.import_snapshot(&file, PASS).unwrap();
+    let me = restored.import_snapshot(&file, &password).unwrap();
     assert_eq!(me.root_key, current.me().unwrap().root_key);
     let events = restored.take_events();
     assert!(events.iter().any(|event| matches!(event, Event::Net { .. })));
     assert!(events.iter().all(|event| !matches!(event, Event::Net { status } if status.home_node.is_some())));
-    assert!(restored.import_snapshot(&file, PASS).is_err(), "existing installation is protected");
+    assert!(restored.import_snapshot(&file, &password).is_err(), "existing installation is protected");
     drop(restored);
     let mut restored = node("web", &t, &target);
     assert_eq!(restored.state.node_id, target_node);
@@ -480,9 +481,9 @@ fn snapshot_member_identity_requires_its_root_or_a_matching_device_blessing() {
     let request = linked.link_request("Browser").unwrap();
     linked.link_complete(&owner.link_approve(&request).unwrap()).unwrap();
     assert!(linked.root_kp.is_none());
-    let password = "linked member snapshot passphrase";
-    linked.export_snapshot(password).unwrap();
+    let password = hoi_types::uri::b64(&hoi_crypto::random_bytes::<24>().unwrap());
+    linked.export_snapshot(&password).unwrap();
     linked.state.me.as_mut().unwrap().root = Id::hash(b"another person");
-    let denied = linked.export_snapshot(password).unwrap_err();
+    let denied = linked.export_snapshot(&password).unwrap_err();
     assert_eq!(denied.code, "not-allowed");
 }
