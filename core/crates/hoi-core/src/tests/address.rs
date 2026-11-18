@@ -981,3 +981,34 @@ fn paired_cleanup_key_lookup_verifies_holder_signatures_without_uptime_or_comple
     assert!(m.n("phone").scatter.keys[&holder].drop_journal.is_none(), "a holder-key signature cannot assert durable deletion");
     assert!(m.n("phone").deletion_progress().is_empty(), "key lookup never creates completion observations");
 }
+
+#[test]
+fn scoped_cleanup_can_address_an_older_index_on_the_home_holder_itself() {
+    use crate::scatter::{DropOutcome, DropResult, ScatterOutcome};
+    use hoi_store::pieces::{MemPieces, PieceMeta};
+    let (mut m, _) = home_phone();
+    let endpoint = Id::from_hex(&m.eps["home"]).unwrap();
+    m.n("phone").set_peer_meta(
+        "home",
+        PeerMeta { transport: "quic".into(), endpoint: Some(endpoint.hex()), addr: Some("203.0.113.50:7843".into()), ..Default::default() },
+    );
+    m.n("home").set_piece_store(Some(Box::new(MemPieces::new(1 << 20))));
+    m.pump();
+    let today = (m.t.load(Ordering::SeqCst) / DAY) as u32;
+    let locator = Id([0x71; 32]);
+    let token = [0x72; 32];
+    let meta = PieceMeta { expiry_day: today + 1, drop_hash: hoi_crypto::scatter::drop_hash(&token), drop_key_id: [0; 16] };
+    m.n("home").scatter.pieces.as_mut().unwrap().put(locator.as_bytes(), meta, b"older self-held index", today).unwrap();
+    let scope = m.n("phone").journal_home();
+    for (original_home, auth, expected) in
+        [(Some(Id::ZERO), token, DropOutcome::Queued), (scope, [0; 32], DropOutcome::Refused), (scope, token, DropOutcome::LegacyRemoval)]
+    {
+        let op = m.n("phone").scatter_drop_targets(&[(endpoint, locator, auth, original_home)]).unwrap();
+        assert_eq!(m.wait("phone", op, 120), ScatterOutcome::Dropped(vec![DropResult { index: 0, outcome: expected }]));
+    }
+    assert!(m.n("home").scatter.pieces.as_mut().unwrap().has(locator.as_bytes(), today).unwrap().is_none());
+    assert!(
+        m.log.iter().any(|(from, to, msg)| from == "phone" && to == "home" && matches!(msg, Msg::Piece { op: hoi_sync::PieceOp::Drop, to: None, .. })),
+        "address the exact holder without a proxy loop"
+    );
+}

@@ -1993,9 +1993,18 @@ impl Node {
             let avoid: BTreeSet<String> = fkey.iter().filter(|(_, k)| before.is_some_and(|b| b.contains(k))).map(|(f, _)| f.clone()).collect();
             // The original home already knows this generation. It may relay all cleanup
             // envelopes; unrelated forwarders still observe their ordinary place cap.
-            let Some(forwarder) = paths.choose(&holder, index, &avoid, &live).or_else(|| paths.choose(&holder, index, &BTreeSet::new(), &live)).or(home) else {
+            let Some(forwarder) =
+                paths.choose(&holder, index, &avoid, &live).or_else(|| paths.choose(&holder, index, &BTreeSet::new(), &live)).or_else(|| home.clone())
+            else {
                 continue;
             };
+            // Older manifests can include an index on the placing home itself. A scoped
+            // cleanup still reaches that exact holder using the ordinary direct request form;
+            // proxying it back to itself would correctly be rejected as a forwarding loop.
+            let direct_home_holder = dropping
+                && home.as_ref().is_some_and(|h| {
+                    h == &forwarder && self.peers.get(h).is_some_and(|p| p.home && p.said_hello && p.meta.endpoint.as_deref() == Some(holder.hex().as_str()))
+                });
             let Some(xk) = paths.holders.get(&holder).map(|h| h.0).or_else(|| self.key_of(&holder)) else { continue };
             paths.carry(&forwarder, index);
             let Ok(reply) = XKey::generate() else { continue };
@@ -2004,7 +2013,7 @@ impl Node {
                 Some(auth) => Request::Drop { loc, reply: reply.public(), auth },
             };
             let Ok(env) = envelope::seal_request(&holder.0, &xk, &request) else { continue };
-            sent.push((index, forwarder, reply, loc, env, holder));
+            sent.push((index, forwarder, reply, loc, env, holder, direct_home_holder));
         }
         let sent_indexes: BTreeSet<u8> = sent.iter().map(|s| s.0).collect();
         let asked = if dropping { requested } else { sent_indexes.clone() };
@@ -2014,9 +2023,9 @@ impl Node {
         let drops = dropping.then(|| asked.difference(&sent_indexes).map(|&i| (i, DropOutcome::Queued)).collect());
         self.scatter.ops.insert(id, Op::Probe(Box::new(ProbeOp { asked, holders, answers, fkey, drops, durable })));
         let mut shorter = false;
-        for (index, forwarder, reply, loc, env, holder) in sent {
+        for (index, forwarder, reply, loc, env, holder, direct_home_holder) in sent {
             let rid = self.next_rid();
-            let wrapped = if !dropping {
+            let wrapped = if !dropping || direct_home_holder {
                 None
             } else {
                 hops.iter().find(|h| h.peer == forwarder).and_then(|exit| {
@@ -2036,7 +2045,7 @@ impl Node {
                 (entry, Msg::Piece { op: PieceOp::Wrap, rid, to: Some(exit), env })
             } else {
                 shorter |= dropping;
-                (forwarder.clone(), Msg::Piece { op, rid, to: Some(holder), env })
+                (forwarder.clone(), Msg::Piece { op, rid, to: (!direct_home_holder).then_some(holder), env })
             };
             self.scatter
                 .pending

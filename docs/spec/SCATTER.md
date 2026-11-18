@@ -313,6 +313,8 @@ device's candidates is no larger than its share of real places.
    The placing device and its authenticated paired devices never count as independent holders,
    including when other nodes vouch for them. Retain old locator authority and routing metadata
    for cleanup; excluding a fresh candidate never discards an existing placement (#136).
+   An origin with a scoped cleanup capability for an older index held by its home uses the
+   existing direct holder Drop form (`to` absent); it verifies the holder reply as usual.
 2. **Known first hand or corroborated.** A candidate counts once this device or the person's own
    devices (a paired home node, their desktop) saw it answer at least 80% of probes over 7 days,
    *or* at least two introducers in different places list it: the device's own links' node lists,
