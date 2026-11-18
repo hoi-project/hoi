@@ -52,8 +52,13 @@ test("the lockfiles get the new version for hoi's own crates only", () => {
     const text = readFileSync(join(root, lock), 'utf8').replaceAll('\r\n', '\n');
     const next = lockWithVersion(text, '9.8.7');
     const own = [...next.matchAll(/^name = "(hoi-[a-z-]+)"\nversion = "([^"]*)"/gm)].filter(([, name]) => name !== 'hoi-fuzz');
-    // The node setup app's graph has two hoi crates (the app and its engine); the others carry the core.
-    assert.ok(own.length >= (lock.includes('setup') ? 2 : 5), lock);
+    // Setup contains its app and engine. The fuzz harness imports four product crates.
+    if (lock === 'core/fuzz/Cargo.lock') {
+      assert.deepEqual(own.map(([, name]) => name), ['hoi-crypto', 'hoi-sync', 'hoi-types', 'hoi-validate']);
+      assert.match(next, /name = "hoi-fuzz"\nversion = "0\.0\.0"/);
+    } else {
+      assert.ok(own.length >= (lock.includes('setup') ? 2 : 5), lock);
+    }
     for (const [, name, version] of own) assert.equal(version, '9.8.7', `${lock}: ${name}`);
     // Only those lines change; every other package, vendored ones included, keeps its version.
     const before = text.split('\n');
