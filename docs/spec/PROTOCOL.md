@@ -427,8 +427,9 @@ link it sends the fixed initial ASCII frame `hoi/address-check/1`. A node accept
 returns one `hoi/address/1 ` frame followed by the numeric IP (or an empty suffix), and the
 client closes. No sync hello, pairing or community information is sent. Native clients can
 measure the selected node's UDP route with the RTC port's existing STUN service.
-When an interface is required, a native check uses a numeric destination or loopback:
-an operating-system DNS lookup cannot be pinned to the selected interface. Displays label
+When an interface is required, native checks use numeric destinations or loopback. Linux
+can also resolve a hostname through systemd-resolved on that interface when the response
+identifies the selected link. Without per-interface DNS, the check asks for a numeric route. Displays label
 loopback, local and other special-use observations, and an ordinary unicast report does not
 establish public reachability.
 See [RFC-0007](../../rfcs/0007-connection-address.md).

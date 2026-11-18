@@ -71,6 +71,51 @@ async fn udp_observation(to: SocketAddr, policy: &NetPolicy) -> Result<IpAddr, &
     msg.mapped_address().map(|a| a.ip().to_canonical()).filter(|ip| !ip.is_unspecified() && !ip.is_multicast()).ok_or(UNAVAILABLE)
 }
 
+const NEED_NUMERIC: &str = "This device has no DNS answer scoped to the selected VPN. Choose the node’s numeric RTC or WebSocket route.";
+
+/// systemd-resolved marks each returned address with its interface. Take only that interface,
+/// numeric unicast answers, and a family the selected tunnel can carry.
+#[cfg(any(test, target_os = "linux"))]
+fn scoped_answer(output: &str, interface: &str, sources: &[IpAddr]) -> Option<IpAddr> {
+    output.lines().find_map(|line| {
+        let (value, link) = line.split_once("-- link:")?;
+        if link.trim() != interface {
+            return None;
+        }
+        let ip = value.split_whitespace().last()?.parse::<IpAddr>().ok()?.to_canonical();
+        (!ip.is_multicast() && !ip.is_unspecified() && !ip.is_loopback() && sources.iter().any(|local| local.is_ipv4() == ip.is_ipv4())).then_some(ip)
+    })
+}
+
+async fn vpn_hostname(host: &str, port: u16, interface: &str, policy: &NetPolicy) -> Result<SocketAddr, &'static str> {
+    let VpnState::Up(ips) = policy.state() else {
+        return Err("The selected VPN is unavailable for this check.");
+    };
+    #[cfg(target_os = "linux")]
+    {
+        let index = netdev::get_interfaces().into_iter().find(|i| i.name == interface).map(|i| i.index).ok_or(NEED_NUMERIC)?;
+        // The D-Bus lookup is explicitly scoped to this link. Disallow synthetic local answers,
+        // search suffixes, multicast protocols and cached answers from earlier routes.
+        let result = tokio::process::Command::new("/usr/bin/resolvectl")
+            .args(["--interface", &index.to_string(), "--protocol=dns", "--cache=no", "--synthesize=no", "--search=no", "--legend=no", "query", "--", host])
+            .env("LC_ALL", "C")
+            .kill_on_drop(true)
+            .output()
+            .await
+            .map_err(|_| NEED_NUMERIC)?;
+        if !result.status.success() || result.stdout.len() > 8192 {
+            return Err(NEED_NUMERIC);
+        }
+        let answer = scoped_answer(std::str::from_utf8(&result.stdout).map_err(|_| NEED_NUMERIC)?, interface, &ips).ok_or(NEED_NUMERIC)?;
+        return Ok(SocketAddr::new(answer, port));
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (host, port, interface, ips);
+        Err(NEED_NUMERIC)
+    }
+}
+
 async fn socket_observation(route: &str, policy: &NetPolicy) -> Result<IpAddr, &'static str> {
     let url = url::Url::parse(route).map_err(|_| UNAVAILABLE)?;
     if !url.username().is_empty() || url.password().is_some() || url.fragment().is_some() || url.query().is_some() {
@@ -86,12 +131,9 @@ async fn socket_observation(route: &str, policy: &NetPolicy) -> Result<IpAddr, &
         SocketAddr::new(ip, port)
     } else if host == "localhost" {
         SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port)
+    } else if let Some(interface) = policy.vpn.as_deref() {
+        vpn_hostname(host, port, interface, policy).await?
     } else {
-        // The system DNS client cannot be pinned to this socket's interface. A numeric
-        // RTC or WebSocket route avoids sending a lookup outside the selected tunnel.
-        if policy.vpn.is_some() {
-            return Err("Checking a node with a VPN requires its numeric route. Select the node’s RTC or numeric WebSocket address.");
-        }
         tokio::net::lookup_host((host, port)).await.map_err(|_| UNAVAILABLE)?.next().ok_or(UNAVAILABLE)?
     };
     let (local, interface) = source(to, policy)?;
@@ -116,6 +158,13 @@ mod tests {
     use super::*;
 
     #[test]
+    fn only_a_fresh_answer_scoped_to_the_required_tunnel_can_supply_a_hostname() {
+        let answer = "node.example: 127.0.0.53 -- link: wg0\n  203.0.113.3 -- link: eth0\n  2001:db8::1 -- link: wg0\n  203.0.113.7 -- link: wg0";
+        assert_eq!(scoped_answer(answer, "wg0", &["10.0.0.2".parse().unwrap()]), Some("203.0.113.7".parse().unwrap()));
+        assert!(scoped_answer("node.example: 203.0.113.7", "wg0", &["10.0.0.2".parse().unwrap()]).is_none());
+    }
+
+    #[test]
     fn binds_the_vpn_source_for_the_destinations_address_family() {
         let addresses = || VpnState::Up(vec!["fd00::8".parse().unwrap(), "10.2.0.8".parse().unwrap()]);
         let peer = "203.0.113.11:3344".parse().unwrap();
@@ -128,7 +177,7 @@ mod tests {
     #[tokio::test]
     async fn vpn_check_never_looks_up_a_name_or_falls_back_to_an_unbound_public_socket() {
         let policy = NetPolicy { vpn: Some("nonexistent-hoi-check".into()), home_network: false };
-        assert!(socket_observation("wss://node.example/", &policy).await.unwrap_err().contains("numeric route"));
+        assert!(socket_observation("wss://node.example/", &policy).await.unwrap_err().contains("VPN"));
         assert!(source("203.0.113.11:3344".parse().unwrap(), &policy).is_err());
         assert!(source("127.0.0.1:3344".parse().unwrap(), &policy).is_ok());
     }

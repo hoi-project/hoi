@@ -33,8 +33,9 @@ limits apply. Home nodes that do not accept strangers remain silent before pairi
 The native client may also check the UDP path to an invited node's RTC port through its
 existing RFC 8489 STUN service. It checks the responder address and transaction ID and labels
 the result as UDP. This observes the route without verifying the node's DTLS fingerprint.
-When an interface is required, a native check uses a numeric destination or loopback:
-an operating-system DNS lookup cannot be pinned to the selected interface. Displays label
+When an interface is required, native checks use numeric destinations or loopback. Linux
+can also resolve a hostname through systemd-resolved on that interface when the response
+identifies the selected link. Without per-interface DNS, the check asks for a numeric route. Displays label
 loopback, local and other special-use observations, and an ordinary unicast report does not
 establish public reachability.
 The native probe follows the selected VPN and home-network policy. A reverse proxy's own
