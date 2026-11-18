@@ -66,7 +66,7 @@ tag, push or deploy. Dependency versions stay unchanged; the pnpm lockfile uses
 workspace links and needs no product-version edit. Mobile wrappers use the Rust
 workspace version and currently have no separate application version.
 
-The first public preview targets `0.1.0`. Use a fresh version for later releases, such as `0.1.1`.
+The first public preview targets `0.1.0` and protocol edition `0.4`. Upgrade participating private-group devices together: the fresh rejoin credential and membership change require the new edition. Use a fresh version for later releases, such as `0.1.1`.
 Prereleases and `0.x` versions default to the preview channel; other versions default
 to stable. `--channel preview` can explicitly keep a numeric release in preview.
 A prerelease cannot use the stable channel. Channel changes refresh the notice;
@@ -76,9 +76,9 @@ increments `revision` once; repeating an identical command makes no changes.
 Protocol and index versions stay unchanged unless explicitly requested:
 
 ```sh
-pnpm release:version 0.2.0 --protocol 0.4 --index 2
+pnpm release:version 0.2.0 --protocol 0.5 --index 2
 # Only if this build really supports both formats:
-pnpm release:version 0.2.0 --protocol 0.4 --supported-protocols 0.3,0.4
+pnpm release:version 0.2.0 --protocol 0.5 --supported-protocols 0.4,0.5
 ```
 
 A changed protocol defaults to supporting only itself. List older protocols explicitly
