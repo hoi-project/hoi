@@ -74,6 +74,8 @@
   }
 </script>
 
+<JoinWarning bind:open={restoreWarning} oncontinue={requestRestoredAccess} />
+
 <section class="view private-page" aria-labelledby="private-title">
   <div class="vh"><h1 id="private-title">Private communities</h1><a class="pill pill-ink" href={to.start('private')}>+ Start a private community</a></div>
   <p class="lead">Invite only. Posts and media are encrypted on your device, and only devices you approve can read them.</p>
@@ -121,7 +123,6 @@
 
 <JoinWarning bind:open={joinWarning} oncontinue={join} />
 <JoinWarning bind:open={askWarning} oncontinue={ask} />
-<JoinWarning bind:open={restoreWarning} oncontinue={requestRestoredAccess} />
 
 <style>
   .private-page { display: flex; flex-direction: column; gap: 20px; }
