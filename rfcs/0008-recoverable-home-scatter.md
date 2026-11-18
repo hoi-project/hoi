@@ -52,6 +52,12 @@ keys. An authenticated `JournalRelease` clears the home result capability and re
 terminal deduplication tombstone; retry releases while paired. Legacy reception is
 retained, but new initiation requires the new feature.
 
+A full member snapshot restore never resumes archived requests through a new operator. It
+drops serving-placement receipts for other clients and retains known origin capabilities as
+deletion inventory. An unanswered archived request becomes explicit unknown coverage, with
+its original holder expiry horizon, rather than another placement or a claim of erasure.
+Outgoing requests, including already queued packets, are scoped to the current pairing.
+
 ## Alternatives
 
 Keeping whole-record delivery is safe but prevents phones from using a home's available
