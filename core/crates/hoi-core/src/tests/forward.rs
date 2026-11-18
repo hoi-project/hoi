@@ -1200,6 +1200,7 @@ fn a_forwarder_vouch_cannot_make_the_placing_device_an_independent_holder() {
     m.n("a").set_settings(&SettingsPatch { public_node: Some(true), ..Default::default() }).unwrap();
     m.n("a").set_carry_policy(crate::CarryPolicy::Any, 64);
     assert!(m.n("a").is_public_node());
+    m.pump(); // Deliver the holder hello before the forwarders take their hourly sample.
     m.t.fetch_add(3600, Ordering::SeqCst);
     m.run(5);
     let own = Id::from_hex(&m.eps["a"]).unwrap();
