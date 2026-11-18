@@ -1198,6 +1198,8 @@ fn a_forwarder_vouch_cannot_make_the_placing_device_an_independent_holder() {
     join(&mut m, "a", "198.51.100.10:7843", &[0, 1, 2]);
     m.n("a").set_piece_store(Some(Box::new(MemPieces::new(1 << 30))));
     m.n("a").set_settings(&SettingsPatch { public_node: Some(true), ..Default::default() }).unwrap();
+    m.n("a").set_carry_policy(crate::CarryPolicy::Any, 64);
+    assert!(m.n("a").is_public_node());
     m.t.fetch_add(3600, Ordering::SeqCst);
     m.run(5);
     let own = Id::from_hex(&m.eps["a"]).unwrap();
