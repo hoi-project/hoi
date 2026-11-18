@@ -399,13 +399,6 @@ impl Node {
     pub(crate) fn journal_capability(&self, m: &Manifest) -> Option<Capability> {
         self.home_journal.saved.origin.values().filter_map(|r| r.capability.as_ref()).find(|cap| cap.read().is_some_and(|old| old == *m)).cloned()
     }
-    pub(crate) fn journal_cap_needed(&self, m: &Manifest) -> bool {
-        self.home_journal
-            .saved
-            .origin
-            .values()
-            .any(|r| live(r.expires, self.now()) && r.capability.as_ref().is_some_and(|cap| cap.read().is_some_and(|old| old == *m)))
-    }
     pub(crate) fn journal_unknown_until(&self, target: Id) -> u64 {
         self.home_journal
             .saved

@@ -48,19 +48,35 @@ impl Node {
         })
     }
     pub(crate) fn capability_for(&self, m: &Manifest) -> Option<Capability> {
-        if let Some(cap) = self.scatter.saved.drop_caps.get(&cap_id(m)).filter(|cap| cap.read().is_some_and(|old| old.hashes == m.hashes)) {
-            return Some(cap.clone());
+        let id = cap_id(m);
+        let known = self.scatter.saved.drop_caps.get(&id).into_iter().chain(self.home_journal.saved.origin.values().filter_map(|r| r.capability.as_ref()));
+        let mut tokens = BTreeMap::new();
+        // An extension can combine home-issued old pieces and locally placed fresh indexes.
+        // Per-locator authority must survive; the origin never knows the home's drop secret.
+        for cap in known {
+            let Some(old) = cap.read() else { continue };
+            if old.object != m.object
+                || old.generation != m.generation
+                || old.loc_secret != m.loc_secret
+                || old.key != m.key
+                || old.sealed != m.sealed
+                || old.hashes.len() > m.hashes.len()
+                || !m.hashes.starts_with(&old.hashes)
+                || !m.holders.starts_with(&old.holders)
+            {
+                continue;
+            }
+            for (loc, token) in &cap.tokens {
+                tokens.insert(*loc, *token);
+            }
         }
-        if let Some(cap) = self.journal_capability(m) {
-            return Some(cap);
+        let secret = self.drop_secret();
+        for i in 0..m.hashes.len() {
+            let loc = Id(sc::locator(&m.loc_secret, &m.object, m.generation, i as u8));
+            if !tokens.contains_key(&loc) {
+                tokens.insert(loc, sc::drop_token(&secret?, &loc.0));
+            }
         }
-        let secret = self.drop_secret()?;
-        let tokens = (0..m.hashes.len())
-            .map(|i| {
-                let loc = sc::locator(&m.loc_secret, &m.object, m.generation, i as u8);
-                (Id(loc), sc::drop_token(&secret, &loc))
-            })
-            .collect();
         Some(Capability { manifest: b64(&m.encode()), tokens })
     }
     pub(crate) fn save_drop_cap(&mut self, cap: Capability) {
@@ -74,9 +90,9 @@ impl Node {
         self.capture_deleted_cap(&m);
     }
     fn drop_cap_needed(&self, m: &Manifest) -> bool {
-        m.expires_at > self.now()
-            || self.journal_cap_needed(m)
-            || (self.deletion_object_suppressed(Id(m.object)) && self.now() / 86_400 <= m.expires_at.div_ceil(86_400))
+        // Holder days are inclusive and outlive content expiry. Keep each generation's
+        // locator authority through that boundary, including tokens learned from other devices.
+        self.now() / 86_400 <= m.expires_at.div_ceil(86_400)
     }
     fn capture_deleted_cap(&mut self, m: &Manifest) {
         let communities: BTreeSet<_> = self.deletions.saved.jobs.values().filter(|j| j.objects.contains(&Id(m.object))).map(|j| j.community).collect();

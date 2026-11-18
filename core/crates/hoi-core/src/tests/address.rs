@@ -826,3 +826,26 @@ fn home_deletion_authority_is_recovered_when_the_non_authority_scatter_cache_is_
     assert_eq!(reopened.capability_for(&manifest).unwrap().tokens, original.tokens, "do not derive replacement tokens from this phone's unrelated secret");
     assert!(reopened.scatter.saved.kept.values().any(|k| k.records.contains(&Id::from_hex(&p.id).unwrap())));
 }
+
+#[test]
+fn extending_a_delegated_generation_preserves_home_tokens_for_its_original_indexes() {
+    let (mut m, c) = home_phone();
+    let p = post(m.n("phone"), &c, "old home-issued pieces and a locally placed fresh index");
+    assert!(until(&mut m, 600, |m| m.n("b").post(&p.id).is_ok()));
+    let old = m.n("phone").home_journal.saved.origin.values().next().unwrap().capability.clone().unwrap();
+    let mut extended = old.read().unwrap();
+    assert!(extended.hashes.len() < extended.m as usize);
+    let fresh = extended.hashes.len() as u8;
+    extended.hashes.push([0x55; 32]);
+    let holder = m.eps.values().filter_map(|h| Id::from_hex(h).ok()).find(|h| !extended.holders.contains(h)).unwrap();
+    extended.holders.push(holder);
+    extended.keys.push(extended.keys[0]);
+    let cap = m.n("phone").capability_for(&extended).unwrap();
+    for (loc, token) in old.tokens {
+        assert_eq!(cap.tokens[&loc], token, "an origin restart or repair cannot substitute its own secret for the home's authority");
+    }
+    let loc = hoi_crypto::scatter::locator(&extended.loc_secret, &extended.object, extended.generation, fresh);
+    let secret = m.n("phone").drop_secret().unwrap();
+    assert_eq!(cap.tokens[&Id(loc)], hoi_crypto::scatter::drop_token(&secret, &loc));
+    assert_eq!(cap.read(), Some(extended));
+}

@@ -306,7 +306,8 @@ impl Node {
             .get(&crate::drop_share::cap_id(m))
             .filter(|cap| cap.read().is_some_and(|old| old == *m))
             .cloned()
-            .or_else(|| self.journal_capability(m));
+            .or_else(|| self.journal_capability(m))
+            .or_else(|| locally_created.then(|| self.capability_for(m)).flatten());
         let secret = locally_created.then(|| self.drop_secret()).flatten();
         let entries: Vec<_> = m
             .holders
