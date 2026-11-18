@@ -7,6 +7,7 @@ import init, { WasmNode, WasmVault } from './wasm/pkg/hoi_wasm.js';
 import { apply, snapshot, vaultHeader, decodeSnapshot, migrate, openStore, resetStore, saveHeader, type Change, type Db } from './idb';
 import { createDurableSettler } from './durable-settle';
 import { StoreLost } from './opfs';
+import { toBase64Url as b64url } from './rpc-core';
 import { groupRoutes } from './rtc-link';
 
 declare const self: DedicatedWorkerGlobalScope;
@@ -36,7 +37,6 @@ let settleChanges: (() => Promise<void>) | null = null;
 let storageFailed = false;
 let vault: WasmVault | null = null;
 
-import { toBase64Url as b64url } from './rpc-core';
 const unb64url = (s: string) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0));
 let sweepTimer: ReturnType<typeof setInterval> | null = null;
 let rounds = 0;

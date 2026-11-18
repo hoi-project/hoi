@@ -1458,6 +1458,9 @@ impl Node {
         };
         let processed = ProcessedWelcome::new_from_welcome(&p, config().join_config(), welcome).map_err(mls)?;
         let c = Id::from_slice(processed.unverified_group_info().group_id().as_slice()).map_err(mls)?;
+        if self.private.pending_request.as_ref().and_then(|request| request.recovery_group).is_some_and(|expected| expected != c) {
+            return Err(ApiError::not_allowed("This invitation is for a different community than your recovery request."));
+        }
         let known = self.state.joined.contains_key(&c) || self.store.genesis_of(&c).is_some();
         let already_active = self.private.groups.contains_key(&c) && load(&self.private.provider(), c).is_ok_and(|g| g.is_active());
         // A device that joined lately takes a newer invitation: the commit that added it may have

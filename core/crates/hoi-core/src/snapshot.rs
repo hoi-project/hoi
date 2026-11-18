@@ -94,6 +94,9 @@ impl Node {
     /// the UI receives only the resulting encrypted file.
     pub fn seal_member_snapshot(&self, loaded: &Loaded, password: &str) -> R<Vec<u8>> {
         self.check_snapshot_identity()?;
+        if self.preserved_records != 0 {
+            return Err(ApiError::invalid("This database contains unrecognized record formats. Open it with a compatible build to export a member snapshot."));
+        }
         if password.chars().count() < 15 || password.len() > 1024 {
             return Err(ApiError::invalid("Use a backup passphrase of at least 15 characters, up to 1024 bytes."));
         }
@@ -188,5 +191,30 @@ impl Node {
         staged.operator_declaration = self.operator_declaration.take();
         *self = staged;
         Ok(me)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn member_archive_rejects_duplicate_names_truncation_and_trailing_data() {
+        let mut frame = MAGIC.to_vec();
+        frame.extend_from_slice(&0u32.to_le_bytes());
+        frame.extend_from_slice(&3u32.to_le_bytes());
+        for key in ["state", "keys", "format"] {
+            push_field(&mut frame, key.as_bytes()).unwrap();
+            push_field(&mut frame, b"fixture").unwrap();
+        }
+        assert_eq!(read_archive(&frame).unwrap().blobs.len(), 3);
+        assert!(read_archive(&frame[..frame.len() - 1]).is_err());
+        frame.push(0);
+        assert!(read_archive(&frame).is_err());
+        frame.pop();
+        frame[MAGIC.len() + 4..MAGIC.len() + 8].copy_from_slice(&4u32.to_le_bytes());
+        push_field(&mut frame, b"keys").unwrap();
+        push_field(&mut frame, b"replacement").unwrap();
+        assert!(read_archive(&frame).is_err());
     }
 }
