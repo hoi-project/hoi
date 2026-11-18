@@ -110,12 +110,13 @@ test('preview assets complete download, manifest generation, signing, verificati
   const version = env.TAG.slice(1);
   const key = signer(version);
   const names = [
-    `hoi_${version}_amd64.AppImage`, `hoi_${version}_amd64.deb`, `hoi-${version}-1.x86_64.rpm`,
+    `hoi_${version}_amd64.AppImage`, `hoi_${version}_amd64.AppImage.tar.gz`, `hoi_${version}_amd64.deb`, `hoi-${version}-1.x86_64.rpm`,
     `hoi_${version}_universal.app.tar.gz`, `hoi_${version}_universal.dmg`,
     `hoi_${version}_x64-setup.exe`, `hoi.Node.Setup_${version}_x64-setup.exe`,
     `hoi-node_${version}_aarch64-unknown-linux-gnu.tar.gz`,
   ];
   state.assets = names.map((name, i) => ({ id: i + 1, name, bytes: Buffer.from(`fixture: ${name}`) }));
+  // AppImages can ship raw and wrapped; both use the same installed format and one updater target.
   for (const asset of [...state.assets].filter(asset => /AppImage$|\.deb$|\.rpm$|app\.tar\.gz$|^hoi_.*-setup\.exe$/.test(asset.name))) {
     state.assets.push({ id: state.assets.length + 1, name: `${asset.name}.sig`, bytes: Buffer.from(key.sign(asset.bytes)).toString('base64') });
   }

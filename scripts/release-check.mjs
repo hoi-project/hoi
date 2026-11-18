@@ -36,7 +36,7 @@ export function checkCandidate(dir, publication = loadPublication(true)) {
     const targets = updaterTargets(file);
     if (file.platform === 'linux' && targets.length) {
       for (const target of targets) {
-        if (platforms[target]?.url !== file.url) throw new Error(`Desktop release is missing its signed updater package: ${target}`);
+        if (!Object.hasOwn(platforms, target)) throw new Error(`Desktop release is missing its signed updater package: ${target}`);
       }
       continue;
     }
