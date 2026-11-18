@@ -3,7 +3,7 @@
   // Making a key opens "say hoi" (SayHoi.svelte), the three acts of what making it really does.
   import type { InvitePreview, Me } from '@hoi/core-api';
   import { looksLikeRecoveryKey } from '@hoi/core-api';
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import { app, setTitle } from '../lib/app.svelte';
   import type { Route } from '../lib/router';
   import { router } from '../lib/router.svelte';
@@ -161,10 +161,17 @@
     if (!file) { restoreError = 'Choose your .hoisnapshot member snapshot first.'; return; }
     if (file.size > MAX_SNAPSHOT_FILE) { restoreError = 'Member snapshots must be 32 MiB or smaller.'; return; }
     if (!new FormData(form).has('replace-device')) { restoreError = 'Confirm that this replaces the original device.'; return; }
+    const hadFocus = form.contains(document.activeElement);
     busy = 'snapshot';
     try { await back(await app.core.importSnapshot(await readFile(file), pass), 'snapshot'); }
     catch (err) { restoreError = errorText(err); }
     finally { pass = ''; busy = ''; }
+    if (restoreError && hadFocus) {
+      await tick();
+      if (form.isConnected && (document.activeElement === document.body || document.activeElement === e.submitter)) {
+        form.querySelector<HTMLInputElement>('input[name="password"]')?.focus();
+      }
+    }
   }
 
   /** A recovery key from a password manager or a drawer: you come back under a new root that takes
@@ -271,7 +278,7 @@
           <label class="show-secret"><input name="replace-device" type="checkbox" bind:checked={replacingDevice} required disabled={!!busy} /> I am replacing the original device and will not run both copies.</label>
           {#if restoreError}<p class="restore-error" role="alert">{restoreError}</p>{/if}
           {#if busy}<p role="status">Checking the snapshot and restoring this installation…</p>{/if}
-          <button type="submit" class="pill pill-ink" disabled={!!busy}>{busy === 'snapshot' ? 'Restoring…' : 'Restore member snapshot'}</button>
+          <button type="submit" class="pill pill-ink" aria-disabled={!!busy}>{busy === 'snapshot' ? 'Restoring…' : 'Restore member snapshot'}</button>
         </form>
         {/if}
       </section>

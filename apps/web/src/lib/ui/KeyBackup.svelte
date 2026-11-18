@@ -5,7 +5,7 @@
   // the line until you say it is saved, then forgets it, so a stolen device can't replace your
   // root. The page holds it only in this form until the modal closes.
   import type { Me } from '@hoi/core-api';
-  import { onDestroy } from 'svelte';
+  import { onDestroy, tick } from 'svelte';
   import { app } from '../app.svelte';
   import { isDesktopShell } from '../host';
   import { backupLogin, canStoreCredential, credentialValue, recoveryLogin, sameRecoveryKey, snapshotLogin, storeCredential } from '../password-manager';
@@ -122,6 +122,7 @@
     pass2 = credentialValue(form, 'password-confirmation');
     if ([...pass1].length < 15) { error = 'Use at least 15 characters. Your password manager can generate this password.'; return; }
     if (pass1 !== pass2) { error = "The two passwords don't match."; return; }
+    const hadFocus = form.contains(document.activeElement);
     busy = true;
     try {
       const data = method === 'snapshot' ? await app.core.exportSnapshot(pass1) : await app.core.exportIdentity(pass1);
@@ -133,6 +134,12 @@
     } finally {
       pass1 = pass2 = '';
       busy = false;
+    }
+    if (error && hadFocus) {
+      await tick();
+      if (form.isConnected && (document.activeElement === document.body || document.activeElement === e.submitter)) {
+        form.querySelector<HTMLInputElement>('input[name="password"]')?.focus();
+      }
     }
   }
 
@@ -230,7 +237,7 @@
       <label class="field" for="kb-pass2"><span>Repeat backup-file password</span><input id="kb-pass2" name="password-confirmation" class="input" type={showFilePassword ? 'text' : 'password'} bind:value={pass2} minlength="15" autocomplete="new-password" required disabled={busy} /></label>
       <label class="show"><input type="checkbox" bind:checked={showFilePassword} disabled={busy} /> Show backup-file password</label>
       {#if pass2 && pass1 !== pass2}<p class="help bad">Those don't match yet.</p>{/if}
-      <div class="btnrow"><button class="pill" type="submit" disabled={busy}>{busy ? 'Encrypting…' : method === 'snapshot' ? 'Download .hoisnapshot' : 'Download .hoikey'}</button></div>
+      <div class="btnrow"><button class="pill" type="submit" aria-disabled={busy}>{busy ? 'Encrypting…' : method === 'snapshot' ? 'Download .hoisnapshot' : 'Download .hoikey'}</button></div>
     </form>
   </section>
   {/if}

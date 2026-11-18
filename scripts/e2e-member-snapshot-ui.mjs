@@ -21,8 +21,16 @@ const { server, origin } = await startComponentServer('/snapshot-ui-test', `<!do
     app.refresh = async () => {}; app.refreshWarmth = async () => {};
     app.identityChanged = async restored => { app.me = restored; app.rev++; };
     app.syncPrivate = async () => ({ busy:false, replicas:0, total:0 });
-    app.core.exportSnapshot = async password => { fixture.exports.push(password); return new Uint8Array([1,2,3]); };
+    app.core.exportSnapshot = async password => {
+      if (fixture.holdExport) {
+        await new Promise(resolve => { fixture.finishExport = resolve; });
+        throw new Error('Snapshot storage is temporarily unavailable.');
+      }
+      fixture.exports.push(password);
+      return new Uint8Array([1,2,3]);
+    };
     app.core.importSnapshot = async (bytes, password) => {
+      if (fixture.holdImport) await new Promise(resolve => { fixture.finishImport = resolve; });
       fixture.imports.push({ bytes: Array.from(bytes), password });
       if (password !== 'the correct snapshot password') throw new Error('This password did not open the snapshot. No data was replaced.');
       fixture.imported = fixture.pending = true; return me;
@@ -48,7 +56,7 @@ try {
     if (new URL(route.request().url()).origin === origin) return route.continue();
     external.push(route.request().url()); return route.abort();
   });
-  await page.goto(`${origin}/snapshot-ui-test`);
+  await page.goto(`${origin}/snapshot-ui-test`, {waitUntil:'domcontentloaded'});
   const backup = page.locator('#backup');
   await backup.getByRole('button', {name:'Member snapshot',exact:true}).click();
   assert.match(await backup.innerText(), /do not run both copies/);
@@ -57,6 +65,17 @@ try {
   await backup.getByRole('button', {name:'Download .hoisnapshot',exact:true}).click();
   await backup.getByRole('alert').filter({hasText:"passwords don't match"}).waitFor();
   assert.equal(await page.evaluate(() => window.snapshotFixture.exports.length), 0);
+  await backup.getByLabel('Repeat backup-file password', {exact:true}).fill('the correct snapshot password');
+  const exportButton = backup.getByRole('button', {name:'Download .hoisnapshot',exact:true});
+  await page.evaluate(() => { window.snapshotFixture.holdExport = true; });
+  await exportButton.focus();
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(() => !!window.snapshotFixture.finishExport);
+  await page.evaluate(() => { window.snapshotFixture.holdExport = false; window.snapshotFixture.finishExport(); });
+  await backup.getByRole('alert').filter({hasText:'temporarily unavailable'}).waitFor();
+  const newPassword = backup.getByLabel('New backup-file password', {exact:true});
+  assert.ok(await newPassword.evaluate(el => el === document.activeElement), 'Export failures focus the first emptied password field');
+  await newPassword.fill('the correct snapshot password');
   await backup.getByLabel('Repeat backup-file password', {exact:true}).fill('the correct snapshot password');
   const downloadReady = page.waitForEvent('download');
   await backup.getByRole('button', {name:'Download .hoisnapshot',exact:true}).click();
@@ -73,8 +92,27 @@ try {
   await first.getByRole('button', {name:'Restore member snapshot',exact:true}).click();
   assert.equal(await page.evaluate(() => window.snapshotFixture.imports.length), 0, 'Replacement acknowledgement is required');
   await first.getByRole('checkbox', {name:/I am replacing the original device/}).check();
-  await first.getByRole('button', {name:'Restore member snapshot',exact:true}).click();
+  const password = first.getByLabel('Snapshot password', {exact:true});
+  const submit = first.getByRole('button', {name:'Restore member snapshot',exact:true});
+  await page.evaluate(() => { window.snapshotFixture.holdImport = true; });
+  await submit.focus();
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(() => !!window.snapshotFixture.finishImport);
+  const restoring = first.getByRole('button', {name:'Restoring…',exact:true});
+  assert.ok(await restoring.evaluate(el => el === document.activeElement), 'An ongoing import retains focus');
+  await page.evaluate(() => { window.snapshotFixture.finishImport(); });
   await first.getByRole('alert').filter({hasText:'No data was replaced.'}).waitFor();
+  assert.ok(await password.evaluate(el => el === document.activeElement), 'A failed restore returns to the password for retry');
+
+  await password.fill('incorrect snapshot password');
+  await page.evaluate(() => { delete window.snapshotFixture.finishImport; });
+  await submit.click();
+  await page.waitForFunction(() => !!window.snapshotFixture.finishImport);
+  const elsewhere = backup.getByRole('button', {name:'Member snapshot',exact:true});
+  await elsewhere.focus();
+  await page.evaluate(() => { window.snapshotFixture.holdImport = false; window.snapshotFixture.finishImport(); });
+  await first.getByRole('alert').filter({hasText:'No data was replaced.'}).waitFor();
+  assert.ok(await elsewhere.evaluate(el => el === document.activeElement), 'An import error preserves focus moved elsewhere');
   assert.equal(await page.evaluate(() => window.snapshotFixture.imported), false);
   assert.equal(await page.evaluate(() => window.snapshotFixture.app.me), null, 'A failed snapshot does not create or replace an identity');
   assert.equal(await input.evaluate(el => el.files[0].name), 'saved.hoisnapshot', 'An import error retains the file for retry');
@@ -83,7 +121,7 @@ try {
   await first.getByLabel('Snapshot password', {exact:true}).fill('the correct snapshot password');
   await first.getByRole('button', {name:'Restore member snapshot',exact:true}).click();
   await first.getByRole('alert').filter({hasText:'32 MiB or smaller'}).waitFor();
-  assert.equal(await page.evaluate(() => window.snapshotFixture.imports.length), 1, 'Oversized files never cross the secure-core boundary');
+  assert.equal(await page.evaluate(() => window.snapshotFixture.imports.length), 2, 'Oversized files never cross the secure-core boundary');
   await input.setInputFiles({name:'saved.hoisnapshot',mimeType:'application/octet-stream',buffer:Buffer.from([1,2,3])});
   await first.getByRole('button', {name:'Restore member snapshot',exact:true}).click();
   await page.waitForFunction(() => window.snapshotFixture.imported);
