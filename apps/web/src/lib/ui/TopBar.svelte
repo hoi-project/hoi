@@ -7,6 +7,7 @@
   import Logo from './Logo.svelte';
   import { startPost } from '../compose';
   import { toastError } from '../toast.svelte';
+  import { initials } from '../util';
   import { RELAY_URLS } from '../private-relay';
   import { privateLine } from '../private-status';
   import ConnectionIp from './ConnectionIp.svelte';
@@ -52,7 +53,7 @@
       <i use:pulse={connected}></i><span class="rl">{statusLabel}</span>
     </a>
     <button type="button" class="pill pill-ink newpost" onclick={() => startPost()} disabled={privateGroup && !privateGroup.active}>+ Post</button>
-    <a href="#/you" class="me" aria-label={`You · ${app.me?.name ?? ''}`} title={`Signed in as ${app.me?.name ?? ''} · ${app.me?.rootKey.slice(0, 12) ?? ''}`}><Avatar name={app.me?.name ?? ''} keyHex={app.me?.rootKey} avatar={app.me?.avatar} avatarColor={app.me?.avatarColor} accountBadge /></a>
+    <a href="#/you" class="me" aria-label={`${initials(app.me?.name ?? '')} · You${app.me ? ` · ${app.me.name}` : ''}`} title={`Signed in as ${app.me?.name ?? ''} · ${app.me?.rootKey.slice(0, 12) ?? ''}`}><Avatar name={app.me?.name ?? ''} keyHex={app.me?.rootKey} avatar={app.me?.avatar} avatarColor={app.me?.avatarColor} accountBadge /></a>
     <button type="button" class="pill lock" onclick={lock} disabled={locking}>{locking ? 'Locking…' : 'Lock'}</button>
   </div>
   <ConnectionIp />

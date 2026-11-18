@@ -18,7 +18,7 @@
 </script>
 
 <div class="connection-ip gutter" aria-label="Connection IP">
-  <button type="button" class="readout" onclick={() => (open = true)} aria-label={`Connection IP: ${summary}. Show details`}>
+  <button type="button" class="readout" onclick={() => (open = true)} aria-haspopup="dialog">
     <span class="label">Connection IP</span><strong>{summary}</strong><span class="details">Details</span>
   </button>
   <span class="vpn">{vpn ? vpn.up ? `VPN route: ${vpn.interface}` : `VPN required: ${vpn.interface} unavailable` : 'VPN not verified'}</span>

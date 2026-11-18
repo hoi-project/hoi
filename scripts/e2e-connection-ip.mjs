@@ -48,6 +48,10 @@ try {
   await check.getByText(/reveals your source IP to that node/).waitFor();
   assert.equal(await page.evaluate(() => window.ipFixture.calls.length), 0, 'Opening a join screen never initiates an IP check');
   await header.getByText('No active connection', { exact: true }).waitFor();
+  await header.getByRole('button', { name: 'Connection IP No active connection Details', exact: true }).waitFor();
+  const profile = page.locator('a.me');
+  const initials = (await profile.innerText()).trim();
+  assert.ok(initials && (await profile.getAttribute('aria-label')).startsWith(initials), 'The profile link starts with its visible initials');
   await check.getByRole('button', { name: 'Check connection', exact: true }).click();
   await check.getByText('This node sees you as 192.0.2.25', { exact: true }).waitFor();
   assert.match(await check.innerText(), /Reported by first\.example\.com over websocket/);
@@ -66,15 +70,25 @@ try {
   await header.getByText('2001:db8::25', { exact: true }).waitFor();
   assert.equal((await header.innerText()).includes('10.2.0.2'), false, 'A VPN interface IP is not shown as public egress');
   assert.equal((await header.innerText()).includes('198.51.100.90'), false, 'Listening hints are not shown as source evidence');
-  await header.getByRole('button', { name: /Show details/ }).click();
+  const readout = header.getByRole('button', { name: 'Connection IP 2001:db8::25 Details', exact: true });
+  await readout.focus();
+  await page.keyboard.press('Enter');
   const details = page.getByRole('dialog', { name: 'Your connection IP' });
   await details.getByText('Node first-node', { exact: true }).waitFor();
   assert.match(await details.innerText(), /does not verify a VPN/);
-  await details.getByRole('button', { name: 'Close', exact: true }).click();
+  assert.ok(await details.evaluate(el => el.contains(document.activeElement)), 'Opening details moves keyboard focus inside');
+  await page.keyboard.press('Escape');
+  await details.waitFor({ state: 'hidden' });
+  assert.ok(await readout.evaluate(el => el === document.activeElement), 'Escape returns to the opener');
 
   await page.evaluate(() => { window.ipFixture.hold = true; });
   await check.getByRole('button', { name: 'Check connection', exact: true }).click();
   await page.waitForFunction(() => !!window.ipFixture.finish);
+  const checking = check.getByRole('button', { name: 'Checking connection…', exact: true });
+  assert.ok(await checking.evaluate(el => el === document.activeElement), 'The ongoing check retains keyboard focus');
+  assert.equal(await checking.getAttribute('aria-disabled'), 'true');
+  await page.keyboard.press('Enter');
+  assert.equal(await page.evaluate(() => window.ipFixture.calls.length), 2, 'A second activation cannot start a duplicate check');
   await page.evaluate(() => {
     const f = window.ipFixture;
     f.app.net = { ...f.app.net, transport: { ...f.app.net.transport, peers: ['wss://second.example.com/'] } };
