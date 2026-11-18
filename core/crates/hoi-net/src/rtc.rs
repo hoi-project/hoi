@@ -1195,6 +1195,8 @@ mod tests {
         let ph = browser(phone.clone(), &route, 'c', "home").await;
         until("the phone caught up with the picture", || phone.with(|n| n.post(&pid).is_ok_and(|p| !p.media_missing()))).await;
         assert_eq!(home.with(|n| n.net_status().serving.unwrap().clients), 1);
+        let seen = phone.with(|n| n.net_status().connections.into_iter().find(|c| c.role == "home").and_then(|c| c.observed_address));
+        assert_eq!(seen.as_deref(), Some("127.0.0.1"), "the authenticated DTLS home reports the phone's real UDP socket");
         let t = home.with(|n| n.traffic());
         let c = t.connections.iter().find(|c| c.role == "client").expect("the phone's connection");
         assert_eq!(c.transport, "webrtc");

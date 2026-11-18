@@ -740,6 +740,14 @@ mod tests {
         })
         .await
         .expect("browser received the record through the remote home node");
+        until("paired browser sees the WS first hop separately from its home's authenticated QUIC egress", || {
+            let net = web.with(|n| n.net_status());
+            let first_hop =
+                net.connections.iter().any(|c| c.role == "home" && c.transport == "websocket" && c.observed_address.as_deref() == Some("127.0.0.1"));
+            let onward = net.home_node.is_some_and(|h| h.onward.iter().any(|p| p.transport == "quic" && p.address == "127.0.0.1"));
+            first_hop && onward
+        })
+        .await;
         gateway.abort();
         server.abort();
         // Force both ends down: two simultaneous redials must converge, and queued
