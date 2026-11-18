@@ -360,6 +360,15 @@ A list can make a device send packets to at most a handful of addresses an hour,
 
 A node link (`hoi://node?code=…`, §10, or the same query after `#/node?` in the web app's address) names at most 4 routes of each kind and no credential, packed and masked so its addresses are not readable from the link. A node with an operator notice adds it and its signature (`n`, `s`; `nt=` and `ns=` in the earlier clear-text form, §14.5).
 
+For `hoi-node --node`, the operator's current configuration selects the link's primary native
+endpoint identity for holder vouches (SCATTER §5.7). The authenticated QUIC remote identity must
+match exactly. When simultaneous connections retain an incoming session, its vouches keep this
+selection; public-directory discovery, relay accounting, first-hand address evidence and other
+direction-sensitive policies keep their incoming scope. Strict verification also applies to this
+selected participant before any first-frame disclosure. Selection is reapplied from the service
+configuration each launch, never inferred from saved discovery or a matching address. RTC-only
+links and additional native identities in the same link are not promoted by this native rule.
+
 ### 14.3 Only public nodes publish an address
 
 A node that isn't a public node (a browser, a phone, a desktop app whose person didn't turn on *Be a public node*) publishes no internet address of its own: its `hello.routes` to anyone but its own devices and home node, its invites, and the hints it gives its own devices (which they pass on in theirs) carry its routes on this machine and on a local network only, never one on the internet; its own devices and home node still hear every route, and its pairing links still carry them. A headless node (`hoi-node`) publishes what its operator's flags say, as before. Such a node lists `unlisted` in `hello.fx`. A receiver MUST NOT remember the address a connection from an `unlisted` peer came from, nor the routes it gave, as a member route (§10), and so never passes it on in invites, catalogs or node lists; it MUST NOT dial an `unlisted` peer back from a `nodes` list (§14.2). An older node that ignores the feature remembers it as before; the address it learns is the one that connection came from, which that peer saw anyway.

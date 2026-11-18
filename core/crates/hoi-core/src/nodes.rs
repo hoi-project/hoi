@@ -247,11 +247,19 @@ impl Node {
         }
         let own = p.client || p.home;
         let dialed = p.role() == Role::Peer && !p.meta.incoming;
+        let selected_voucher = p.accepts_scatter_vouches();
+        let unlisted = p.features.contains(hoi_sync::FEATURE_UNLISTED);
         if !own && !dialed {
+            // An operator-selected, transport-authenticated native endpoint remains a
+            // voucher when connection deduplication keeps its incoming session (#143).
+            // Its public directory and third-party dial hints still have incoming scope.
+            if selected_voucher {
+                self.note_vouches(peer, holders);
+            }
             // A peer that dialed in makes this node dial nobody else; its own native routes on
             // the address its connection came from are worth one dial back, unless it publishes
             // no address of its own.
-            if !p.features.contains(hoi_sync::FEATURE_UNLISTED) {
+            if !unlisted {
                 let back = self.caller_routes(peer);
                 self.take_candidates(back, now);
             }

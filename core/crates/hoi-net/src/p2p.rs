@@ -17,6 +17,7 @@ use tokio::{
 };
 
 use hoi_core::PeerMeta;
+use hoi_types::Id;
 
 use crate::limit::{self, PerSource};
 use crate::{HELLO, LinkGuard, Shared, WRITE_TIMEOUT};
@@ -73,6 +74,9 @@ fn admit(incoming: Incoming, recent: &mut PerSource<Source>, now: Instant) -> Op
 pub struct P2pConfig {
     pub bind: Option<SocketAddr>,
     pub relays: Vec<String>,
+    /// Exact native identities explicitly selected by this host's operator, not discovery
+    /// hints. Authentication must match one before its holder vouches gain selected scope.
+    pub selected_peers: Vec<Id>,
 }
 
 /// Owns the listener and dialer. Keep this alive for the native node's lifetime.
@@ -81,6 +85,8 @@ pub struct P2pHandle {
     task: JoinHandle<()>,
     shared: Arc<Shared>,
     found: Found,
+    #[cfg(test)]
+    context: PeerContext,
 }
 
 /// Addresses learned while running, such as the public side of a port the router forwards.
@@ -182,11 +188,20 @@ pub async fn start_p2p(shared: Arc<Shared>, config: P2pConfig) -> io::Result<P2p
     let sh = shared.clone();
     let fd = found.clone();
     let serving = Arc::new(crate::blobs::Serving::new(shared.clone()));
+    let context = PeerContext { connections: Default::default(), selected_peers: Arc::new(config.selected_peers.into_iter().collect::<BTreeSet<_>>()) };
+    let session_context = context.clone();
     shared.with(|n| n.set_blobs(true));
     let task = tokio::spawn(async move {
-        supervise(sh, ep, relays, fd, serving).await;
+        supervise(sh, ep, relays, fd, serving, session_context).await;
     });
-    Ok(P2pHandle { endpoint, task, shared, found })
+    Ok(P2pHandle {
+        endpoint,
+        task,
+        shared,
+        found,
+        #[cfg(test)]
+        context,
+    })
 }
 
 /// Those found (a forwarded port's public side) first, so the few routes a hello or an invite
@@ -211,14 +226,21 @@ fn publish_address(shared: &Shared, endpoint: &Endpoint, found: &Found) {
 
 // Active reservations cover attempts as well as established links. Both listeners and
 // dialers share a semaphore; a hostile handshake cannot create unbounded work.
-async fn supervise(shared: Arc<Shared>, endpoint: Endpoint, initial_relays: Vec<RelayUrl>, found: Found, serving: Arc<crate::blobs::Serving>) {
+async fn supervise(
+    shared: Arc<Shared>,
+    endpoint: Endpoint,
+    initial_relays: Vec<RelayUrl>,
+    found: Found,
+    serving: Arc<crate::blobs::Serving>,
+    context: PeerContext,
+) {
     let slots = Arc::new(Semaphore::new(MAX_PEERS));
     let forward_slots = Arc::new(Semaphore::new(MAX_FORWARD_PEERS));
     let served = Arc::new(Semaphore::new(BLOBS_SERVED));
     let fetches = Arc::new(Semaphore::new(BLOBS_FETCHED));
     let mut blob_tick = tokio::time::interval(BLOBS_POLL);
     let active = Arc::new(Mutex::new(BTreeSet::<EndpointId>::new()));
-    let connections = Arc::new(Mutex::new(BTreeMap::<EndpointId, (Connection, bool)>::new()));
+    let PeerContext { connections, selected_peers } = context;
     let mut attempts: BTreeMap<EndpointId, (u32, tokio::time::Instant)> = BTreeMap::new();
     let mut known_relays: BTreeSet<RelayUrl> = initial_relays.into_iter().collect();
     let mut recent = PerSource::new(NEW_PER_SOURCE, SOURCES);
@@ -235,6 +257,7 @@ async fn supervise(shared: Arc<Shared>, endpoint: Endpoint, initial_relays: Vec<
                 let Some(incoming) = admit(incoming, &mut recent, Instant::now()) else { continue };
                 let Ok(slot) = slots.clone().try_acquire_owned() else { incoming.refuse(); continue };
                 let sh = shared.clone(); let sessions = connections.clone(); let local = endpoint.id();
+                let selected_peers = selected_peers.clone();
                 let (serving, served) = (serving.clone(), served.clone());
                 jobs.spawn(async move {
                     let slot = slot;
@@ -246,7 +269,7 @@ async fn supervise(shared: Arc<Shared>, endpoint: Endpoint, initial_relays: Vec<
                         serving.serve(conn).await;
                         return;
                     }
-                    run_peer(sh, conn, false, None, local, sessions, FORWARD_IDLE).await;
+                    run_peer(sh, conn, false, None, local, PeerContext { connections: sessions, selected_peers }, FORWARD_IDLE).await;
                 });
             },
             _ = blob_tick.tick() => {
@@ -294,6 +317,7 @@ async fn supervise(shared: Arc<Shared>, endpoint: Endpoint, initial_relays: Vec<
                     *count = (*count + 1).min(6);
                     *retry = tokio::time::Instant::now() + Duration::from_secs((1 << *count).min(60));
                     let ep = endpoint.clone(); let sh = shared.clone(); let ids = active.clone(); let sessions = connections.clone();
+                    let selected_peers = selected_peers.clone();
                     jobs.spawn(async move {
                         let _slot = slot;
 
@@ -301,7 +325,7 @@ async fn supervise(shared: Arc<Shared>, endpoint: Endpoint, initial_relays: Vec<
                         match tokio::time::timeout(CONNECT_TIMEOUT, ep.connect(addr, SYNC_ALPN)).await {
                             Ok(Ok(conn)) => {
                                 sh.with(|n| n.set_transport_error(None));
-                                run_peer(sh, conn, true, forward_slot, ep.id(), sessions, FORWARD_IDLE).await;
+                                run_peer(sh, conn, true, forward_slot, ep.id(), PeerContext { connections: sessions, selected_peers }, FORWARD_IDLE).await;
                             }
                             _ => sh.with(|n| {
                                 n.set_transport_error(Some("A peer is unreachable. Check its address or relay and try again.".into()));
@@ -361,6 +385,17 @@ fn direct_addr(conn: &Connection) -> Option<SocketAddr> {
 }
 
 type Connections = Arc<Mutex<BTreeMap<EndpointId, (Connection, bool)>>>;
+#[derive(Clone, Default)]
+struct PeerContext {
+    connections: Connections,
+    selected_peers: Arc<BTreeSet<Id>>,
+}
+fn selected_native_endpoint(conn: &Connection, configured: &BTreeSet<Id>) -> Option<Id> {
+    // The QUIC handshake authenticated remote_id. A caller's name, source IP or a route it
+    // supplied can never promote an incoming stranger into an operator-selected voucher.
+    let remote = Id::from_hex(&conn.remote_id().to_string()).ok()?;
+    configured.contains(&remote).then_some(remote)
+}
 struct ConnectionGuard {
     connections: Connections,
     id: EndpointId,
@@ -380,10 +415,12 @@ async fn run_peer(
     outgoing: bool,
     forward_slot: Option<tokio::sync::OwnedSemaphorePermit>,
     local: EndpointId,
-    connections: Connections,
+    context: PeerContext,
     idle: Duration,
 ) {
     let id = conn.remote_id();
+    let PeerContext { connections, selected_peers } = context;
+    let selected_endpoint = selected_native_endpoint(&conn, &selected_peers);
     // Simultaneous dials converge on the connection initiated by the lower ID.
     // A sole incoming or outgoing connection is always usable, regardless of ordering.
     {
@@ -412,6 +449,7 @@ async fn run_peer(
     let meta = |addr: Option<SocketAddr>| PeerMeta {
         transport: "quic".into(),
         incoming: !outgoing,
+        selected_endpoint,
         endpoint: Some(id.to_string()),
         addr: addr.map(|a| a.to_string()),
         ..Default::default()
@@ -508,6 +546,88 @@ mod tests {
         n.set_identity_bits(8);
         Shared::new(n, Box::new(|_| {}))
     }
+    fn native_voucher_fixture(holder: Id, holder_hello: &[u8]) -> Arc<Shared> {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        let sightings = serde_json::json!({"holders":{(holder.hex()):{"first":now-3*86400,"last":now,"checked":168.0,"present":168.0,"routes":[format!("{}@192.0.2.90:7843",holder.hex())]}}});
+        let initial = hoi_store::Loaded { records: vec![], blobs: vec![("scatter".into(), serde_json::to_vec(&sightings).unwrap())] };
+        let mut n = Node::open(Box::new(hoi_store::Journal::with_initial(initial)), "node", "https://example.com/app/", hoi_core::system_clock()).unwrap();
+        n.set_settings(&hoi_core::dto::SettingsPatch { relay: Some(true), ..Default::default() }).unwrap();
+        n.set_carry_policy(hoi_core::CarryPolicy::Any, 64);
+        // A genuine signed holder hello supplies its key; preseeded history is a unit fixture,
+        // independent of the real QUIC authentication/deduplication exercised below.
+        n.net_connect("fixture-holder", hoi_core::Role::Peer);
+        n.set_peer_meta(
+            "fixture-holder",
+            PeerMeta { transport: "quic".into(), endpoint: Some(holder.hex()), addr: Some("192.0.2.90:7843".into()), ..Default::default() },
+        );
+        assert!(n.net_receive("fixture-holder", holder_hello));
+        n.take_outbox();
+        Shared::new(n, Box::new(|_| {}))
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 3)]
+    async fn selected_native_vouches_survive_both_authenticated_dedup_orders() {
+        let mut holder_node = Node::open(Box::new(hoi_store::Ephemeral), "node", "https://example.com/app/", hoi_core::system_clock()).unwrap();
+        let holder = hoi_crypto::Keypair::from_secret(&holder_node.transport_secret().unwrap()).public();
+        holder_node.set_piece_store(Some(Box::new(hoi_store::pieces::MemPieces::new(1 << 20))));
+        holder_node.net_connect("capture", hoi_core::Role::Peer);
+        let holder_hello = holder_node
+            .take_outbox()
+            .into_iter()
+            .find(|(_, b)| matches!(hoi_sync::Msg::decode(b), Ok(hoi_sync::Msg::Hello { holder: Some(_), .. })))
+            .unwrap()
+            .1;
+        let first = native_voucher_fixture(holder, &holder_hello);
+        let second = native_voucher_fixture(holder, &holder_hello);
+        let endpoint = |n: &Arc<Shared>| n.with(|n| hoi_crypto::Keypair::from_secret(&n.transport_secret().unwrap()).public());
+        let (low, high) = if endpoint(&first) < endpoint(&second) { (first, second) } else { (second, first) };
+        for (observer_high, selection) in [(true, "selected"), (false, "selected"), (true, "discovered"), (true, "wrong-identity")] {
+            for observer_first in [true, false] {
+                let (observer, voucher) = if observer_high { (high.clone(), low.clone()) } else { (low.clone(), high.clone()) };
+                let voucher_id = endpoint(&voucher);
+                let selected_peers = match selection {
+                    "selected" => vec![voucher_id],
+                    "wrong-identity" => vec![holder],
+                    _ => vec![],
+                };
+                let a =
+                    start_p2p(observer.clone(), P2pConfig { bind: Some("127.0.0.1:0".parse().unwrap()), selected_peers, ..Default::default() }).await.unwrap();
+                let b = start_p2p(voucher.clone(), P2pConfig { bind: Some("127.0.0.1:0".parse().unwrap()), ..Default::default() }).await.unwrap();
+                let dial = |from: &P2pHandle, to: &P2pHandle, shared: Arc<Shared>| {
+                    let endpoint = from.endpoint.clone();
+                    let destination = to.endpoint.addr();
+                    let context = from.context.clone();
+                    tokio::spawn(async move {
+                        let conn = endpoint.connect(destination, SYNC_ALPN).await.unwrap();
+                        run_peer(shared, conn, true, None, endpoint.id(), context, FORWARD_IDLE).await;
+                    })
+                };
+                let first = if observer_first { dial(&a, &b, observer.clone()) } else { dial(&b, &a, voucher.clone()) };
+                until("the first authenticated native session opened", || {
+                    observer.with(|n| n.net_status().connections.iter().any(|c| c.peer.starts_with("peer-") && c.connected))
+                })
+                .await;
+                let second = if observer_first { dial(&b, &a, voucher.clone()) } else { dial(&a, &b, observer.clone()) };
+                until("deduplication preserves selection while retaining physical direction", || {
+                    observer.with(|n| {
+                        let connections: Vec<_> = n.net_status().connections.into_iter().filter(|c| c.peer.starts_with("peer-") && c.connected).collect();
+                        connections.len() == 1
+                            && connections[0].incoming == observer_high
+                            && n.scatter_places() == usize::from(selection == "selected" || !observer_high)
+                    })
+                })
+                .await;
+                // The normal path observer refreshes metadata every two seconds. Selection
+                // must stay bound to remote_id across that refresh as well as the handshake.
+                tokio::time::sleep(Duration::from_millis(2100)).await;
+                assert_eq!(observer.with(|n| n.scatter_places()), usize::from(selection == "selected" || !observer_high));
+                a.shutdown().await;
+                b.shutdown().await;
+                first.await.unwrap();
+                second.await.unwrap();
+            }
+        }
+    }
     #[test]
     fn hints_are_explicit_and_reject_unsafe_addresses() {
         let key = SecretKey::from_bytes(&[42; 32]).public().to_string();
@@ -521,7 +641,7 @@ mod tests {
     async fn an_idle_temporary_connection_closes_and_releases_its_slot() {
         let a = node();
         let b = node();
-        let cfg = P2pConfig { bind: Some("127.0.0.1:0".parse().unwrap()), relays: Vec::new() };
+        let cfg = P2pConfig { bind: Some("127.0.0.1:0".parse().unwrap()), relays: Vec::new(), ..Default::default() };
         let first = start_p2p(a.clone(), cfg.clone()).await.unwrap();
         let second = start_p2p(b.clone(), cfg).await.unwrap();
         let hint = b.with(|n| n.net_status().transport.unwrap().peers[0].clone());
@@ -541,7 +661,7 @@ mod tests {
     #[tokio::test]
     async fn a_forwarded_port_joins_the_routes_and_leaves_them() {
         let a = node();
-        let handle = start_p2p(a.clone(), P2pConfig { bind: Some("127.0.0.1:0".parse().unwrap()), relays: Vec::new() }).await.unwrap();
+        let handle = start_p2p(a.clone(), P2pConfig { bind: Some("127.0.0.1:0".parse().unwrap()), relays: Vec::new(), ..Default::default() }).await.unwrap();
         let ports = handle.ipv4_ports();
         assert_eq!(ports.len(), 1);
         let peers = || a.with(|n| n.net_status().transport.unwrap().peers);
@@ -555,7 +675,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn one_source_opens_ten_connections_a_minute_after_a_retry() {
         let a = node();
-        let handle = start_p2p(a.clone(), P2pConfig { bind: Some("127.0.0.1:0".parse().unwrap()), relays: Vec::new() }).await.unwrap();
+        let handle = start_p2p(a.clone(), P2pConfig { bind: Some("127.0.0.1:0".parse().unwrap()), relays: Vec::new(), ..Default::default() }).await.unwrap();
         let hint = a.with(|n| n.net_status().transport.unwrap().peers[0].clone());
         let addr = peer_address(&hint, &[]).unwrap();
         // Fresh endpoints, so only the source address is what they share. Each answers the
@@ -623,7 +743,7 @@ mod tests {
             .unwrap()
             .id
         });
-        let cfg = P2pConfig { bind: Some("127.0.0.1:0".parse().unwrap()), relays: Vec::new() };
+        let cfg = P2pConfig { bind: Some("127.0.0.1:0".parse().unwrap()), relays: Vec::new(), ..Default::default() };
         let first = start_p2p(a.clone(), cfg.clone()).await.unwrap();
         let invite = a.with(|n| n.invite(&cid).unwrap().uri);
         b.with(|n| {
@@ -676,7 +796,7 @@ mod tests {
             .unwrap()
             .id
         });
-        let cfg = P2pConfig { bind: Some("127.0.0.1:0".parse().unwrap()), relays: Vec::new() };
+        let cfg = P2pConfig { bind: Some("127.0.0.1:0".parse().unwrap()), relays: Vec::new(), ..Default::default() };
         let first = start_p2p(a.clone(), cfg.clone()).await.unwrap();
         let invite = a.with(|n| n.invite(&cid).unwrap().uri);
         b.with(|n| {

@@ -4,6 +4,90 @@
 use super::*;
 use hoi_sync::Msg;
 
+#[test]
+fn selected_authenticated_incoming_native_peers_keep_vouches_without_directory_authority() {
+    use crate::tests::forward::{join, mesh, passed_through, stored};
+    for mode in ["selected", "unsolicited", "wrong-endpoint", "other-transport"] {
+        let mut m = mesh(3, 14);
+        join(&mut m, "observer", "198.51.100.10:7843", &[0, 1, 2]);
+        m.n("observer").set_settings(&SettingsPatch { relay: Some(true), ..Default::default() }).unwrap();
+        m.n("observer").state.nodes.clear();
+        m.n("observer").node_candidates.clear();
+        for i in 0..3 {
+            let f = format!("f{i}");
+            m.hang_up("observer", &f);
+            m.dial(&f, "observer");
+            let mut meta = m.n("observer").peers[&f].meta.clone();
+            meta.selected_endpoint = match mode {
+                "unsolicited" => None,
+                "wrong-endpoint" => Some(Id::from_hex(&m.eps["h0"]).unwrap()),
+                _ => Some(Id::from_hex(&m.eps[&f]).unwrap()),
+            };
+            if mode == "other-transport" {
+                meta.transport = "webrtc".into();
+            }
+            m.n("observer").set_peer_meta(&f, meta);
+        }
+        m.pump();
+        assert!(m.n("observer").peers.values().all(|p| p.meta.incoming), "physical direction remains incoming");
+        let holder = Id::from_hex(&m.eps["h0"]).unwrap();
+        let candidate = m.n("f0").linked_holders(None).into_iter().find(|h| h.endpoint == holder).unwrap().candidate;
+        let expected = mode == "selected";
+        assert_eq!(m.n("observer").vouched_by(&holder, &candidate, None).is_some(), expected, "{mode}: cached voucher eligibility rechecks provenance");
+        assert_eq!(
+            m.n("observer").scatter_places(),
+            if expected { 14 } else { 0 },
+            "{mode}: only selected authenticated native vouchers supply the holder pool"
+        );
+        assert!(m.n("observer").state.nodes.is_empty(), "incoming voucher authority never accepts a public directory");
+        let holder_ids: Vec<_> = (0..14).map(|i| m.eps[&format!("h{i}")].clone()).collect();
+        assert!(
+            !m.n("observer").node_candidates.iter().any(|(r, _)| holder_ids.iter().any(|id| r.starts_with(id))),
+            "third-party dial hints retain incoming scope"
+        );
+        if expected {
+            m.log.clear();
+            let op = m.n("observer").scatter_store(b"selected native peers remain useful after inbound deduplication", 10, T0 + 30 * 86_400).unwrap();
+            let manifest = stored(m.wait("observer", op, 120));
+            assert!(passed_through(&m, hoi_sync::PieceOp::Put).values().all(|n| *n < manifest.k as usize));
+            for i in 0..2 {
+                m.n("observer").peers.get_mut(&format!("f{i}")).unwrap().meta.selected_endpoint = None;
+            }
+            assert!(m.n("observer").vouched_by(&holder, &candidate, None).is_none(), "stored vouchers do not survive loss of their selected provenance");
+        }
+    }
+}
+
+#[test]
+fn a_selected_incoming_native_peer_hears_nothing_under_verified_policy() {
+    let t = Arc::new(AtomicU64::new(T0));
+    let (mut observer, _) = public(&t, &Mem::default(), "203.0.113.1", 'a');
+    let (mut peer, endpoint) = public(&t, &Mem::default(), "203.0.113.2", 'b');
+    observer.set_settings(&SettingsPatch { assurance: Some("verified".into()), ..Default::default() }).unwrap();
+    observer.net_connect("selected", Role::Peer);
+    observer.set_peer_meta(
+        "selected",
+        PeerMeta {
+            transport: "quic".into(),
+            incoming: true,
+            endpoint: Some(endpoint.clone()),
+            selected_endpoint: Some(Id::from_hex(&endpoint).unwrap()),
+            ..Default::default()
+        },
+    );
+    assert!(observer.take_outbox().is_empty(), "selection cannot turn an incoming session into a strict-policy first-frame leak");
+    peer.net_connect("observer", Role::Peer);
+    let hello = peer.take_outbox().into_iter().find(|(_, bytes)| matches!(Msg::decode(bytes), Ok(Msg::Hello { .. }))).unwrap().1;
+    assert!(!observer.net_receive("selected", &hello), "the selected unverified endpoint is refused as a relied-on node");
+    assert!(observer.take_outbox().is_empty());
+    observer.net_connect("unsolicited", Role::Peer);
+    observer.set_peer_meta("unsolicited", PeerMeta { transport: "quic".into(), incoming: true, endpoint: Some(endpoint), ..Default::default() });
+    assert!(
+        observer.take_outbox().iter().any(|(_, bytes)| matches!(Msg::decode(bytes), Ok(Msg::Hello { .. }))),
+        "ordinary incoming server behavior is unchanged"
+    );
+}
+
 fn fp(c: char) -> String {
     c.to_string().repeat(43)
 }

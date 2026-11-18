@@ -186,9 +186,10 @@ impl Node {
 
     /// Under `verified`, whether this link leads to a participant this device would rely on and
     /// that is not verified: a stranger it dialed, or its home node. None is verified in this
-    /// version. Its own devices, and strangers that dialed in, are not relied on.
+    /// version. A native peer explicitly selected by the operator is relied on even if its
+    /// authenticated incoming session won deduplication. Other incoming strangers are not.
     pub(crate) fn unverified_relied_on(&self, peer: &str) -> bool {
-        self.strict() && self.peers.get(peer).is_some_and(|p| p.home || (p.role() == Role::Peer && !p.meta.incoming))
+        self.strict() && self.peers.get(peer).is_some_and(|p| p.home || (p.role() == Role::Peer && (!p.meta.incoming || p.meta.selected_native_peer())))
     }
 
     /// The policy changed: under `verified`, links to participants this device relies on stop now

@@ -792,7 +792,8 @@ impl Node {
         out
     }
 
-    /// A node list's vouches, from the person's own device or a link this device dialed
+    /// A node list's vouches, from an own device, a dialed link or an operator-selected
+    /// authenticated native peer whose incoming session won deduplication (#143).
     /// (crate::nodes checks which). A node's vouch for itself is dropped.
     pub(crate) fn note_vouches(&mut self, peer: &str, holders: Vec<Vouch>) {
         let now = self.now();
@@ -827,8 +828,7 @@ impl Node {
         let mut keys = Vec::new();
         for p in self.peers.values() {
             let own = p.client || p.home;
-            let dialed = p.role() == Role::Peer && !p.meta.incoming;
-            if !p.said_hello || !(own || dialed) || !p.scatter.vouches.iter().any(|v| v.endpoint == *holder && enough(v)) {
+            if !p.accepts_scatter_vouches() || !p.scatter.vouches.iter().any(|v| v.endpoint == *holder && enough(v)) {
                 continue;
             }
             if own {

@@ -159,6 +159,9 @@ pub(crate) struct PeerState {
 }
 
 impl PeerState {
+    pub(crate) fn accepts_scatter_vouches(&self) -> bool {
+        self.said_hello && (self.home || self.client || (self.role() == crate::net::Role::Peer && (!self.meta.incoming || self.meta.selected_native_peer())))
+    }
     pub(crate) fn role(&self) -> crate::net::Role {
         if self.home {
             crate::net::Role::Home

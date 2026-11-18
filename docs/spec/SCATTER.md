@@ -324,6 +324,11 @@ device's candidates is no larger than its share of real places.
    rounded down to 5%, days known up to 30); a linked holder also counts when the person's own
    devices vouch for it, or two dialed links in different places, neither the holder's own, vouch
    with at least this device's bar. It is then counted against the introducer first heard from.
+   A native endpoint explicitly selected by the operator through `hoi-node --node` remains a
+   voucher if the authenticated incoming session wins connection deduplication. Only the
+   selected link's primary native identity qualifies, with current notice and assurance checks;
+   names, matching addresses, discovery and additional identities in that link grant nothing.
+   This does not accept incoming public directories or change connection direction.
    *Rosters.* A desktop or node whose person turned on "Share the holders I see"
    publishes, in each community where that person is established, a `roster` record naming the
    holders it saw up for days, first hand (endpoints only, at most 32, every twelve hours at most,
