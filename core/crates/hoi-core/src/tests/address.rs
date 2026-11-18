@@ -326,6 +326,9 @@ fn a_home_node_places_phone_posts_with_recoverable_deletion_authority() {
         && matches!(msg, Msg::HomeScatter { reply:false,payload,.. }
             if serde_json::from_slice::<serde_json::Value>(payload).unwrap()["type"] == "JournalStore")));
     assert!(!m.n("phone").post(&p.id).unwrap().checks.address_hidden, "the home knows its sender");
+    assert!(!m.n("phone").peers["home"].features.contains(hoi_sync::FEATURE_HOME_SCATTER), "exercise status polling without the legacy capability");
+    assert!(m.log.iter().any(|(from, _, msg)| from == "phone"
+        && matches!(msg,Msg::HomeScatter{reply:false,payload,..} if serde_json::from_slice::<serde_json::Value>(payload).unwrap()["type"]=="Status")));
     assert_eq!(m.n("phone").post(&p.id).unwrap().checks.home_delivery.as_deref(), Some("pieces-injected"));
     assert!(!m.log.iter().any(|(f, _, msg)| f == "phone" && carried(msg).contains(&pid)), "the phone sends pointers instead of whole records");
 }
