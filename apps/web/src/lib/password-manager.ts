@@ -30,6 +30,10 @@ export function backupLogin(filename: string): string {
   return `hoi key file · ${filename}`;
 }
 
+export function snapshotLogin(filename: string): string {
+  return `hoi member snapshot · ${filename}`;
+}
+
 /** Read the submitted DOM, including autofill that did not dispatch an input event. */
 export function credentialValue(form: HTMLFormElement, name = 'password'): string {
   const value = new FormData(form).get(name);

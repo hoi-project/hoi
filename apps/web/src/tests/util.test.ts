@@ -28,6 +28,13 @@ describe('native backup saves', () => {
     await expect(saveFile('identity.hoikey', new Uint8Array([1, 2, 3]))).resolves.toBeUndefined();
     expect(invoke).toHaveBeenCalledWith('hoi_save_file', { name: 'identity.hoikey', data: 'AQID' }, undefined);
   });
+
+  it('passes a snapshot filename and encrypted bytes to the same native save dialog', async () => {
+    const invoke = vi.fn().mockResolvedValue(true);
+    vi.stubGlobal('window', { __TAURI_INTERNALS__: { invoke } });
+    await saveFile('member.hoisnapshot', new Uint8Array([1, 2, 3]));
+    expect(invoke).toHaveBeenCalledWith('hoi_save_file', { name: 'member.hoisnapshot', data: 'AQID' }, undefined);
+  });
 });
 
 describe('names and text', () => {

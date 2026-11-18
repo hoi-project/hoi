@@ -8,10 +8,10 @@
   import type { Route } from '../lib/router';
   import { router } from '../lib/router.svelte';
   import { to } from '../lib/router';
-  import { MAX_KEY_FILE, inviteQuery, joinLink, readFile } from '../lib/util';
+  import { MAX_KEY_FILE, MAX_SNAPSHOT_FILE, inviteQuery, joinLink, readFile } from '../lib/util';
   import { enterView, popIn } from '../lib/motion';
   import { errorText, toast } from '../lib/toast.svelte';
-  import { backupLogin, credentialValue } from '../lib/password-manager';
+  import { backupLogin, credentialValue, snapshotLogin } from '../lib/password-manager';
   import Logo from '../lib/ui/Logo.svelte';
   import Modal from '../lib/ui/Modal.svelte';
   import LinkDevice from '../lib/ui/LinkDevice.svelte';
@@ -26,12 +26,13 @@
   let file = $state<File | null>(null);
   let recoveryKey = $state('');
   let restoreName = $state('');
-  let restoreMethod = $state<'recovery' | 'file'>('recovery');
+  let restoreMethod = $state<'recovery' | 'file' | 'snapshot'>('recovery');
+  let replacingDevice = $state(false);
   let recoveryEntry = $state('');
   let fileEntry = $state('');
   let restoreError = $state('');
   let showSecret = $state(false);
-  let busy = $state<'' | 'start' | 'invite' | 'key' | 'restore' | 'look' | 'join'>('');
+  let busy = $state<'' | 'start' | 'invite' | 'key' | 'snapshot' | 'restore' | 'look' | 'join'>('');
   let nameEl: HTMLInputElement | undefined = $state();
   let linkOpen = $state(false);
   let askOpen = $state(false);
@@ -119,11 +120,13 @@
     busy = '';
   }
 
-  async function back(me: Me, method?: 'recovery' | 'file') {
+  async function back(me: Me, method?: 'recovery' | 'file' | 'snapshot') {
     await app.identityChanged(me);
     toast(method === 'recovery' ? `Identity restored, ${me.name}. Standing returns as your communities sync. Private communities may need a new invitation.`
       : method === 'file' ? `Backup restored, ${me.name}. Your saved profile and settings are back. Posts need syncing; private communities may need a new invitation.`
+      : method === 'snapshot' ? `Snapshot restored, ${me.name}. Public posts wait for sync. Private communities need fresh approval.`
       : `Welcome back, ${me.name}.`);
+    if (method === 'snapshot' && (await app.core.snapshotRejoins()).length) { router.go('#/private'); return; }
     if (!pendingJoin && !pendingPublic && !pendingNode) router.go('#/');
   }
 
@@ -145,6 +148,23 @@
     }
     pass = '';
     busy = '';
+  }
+
+  async function bringSnapshot(e: SubmitEvent) {
+    e.preventDefault();
+    if (busy) return;
+    restoreError = '';
+    const form = e.currentTarget as HTMLFormElement;
+    const selected = new FormData(form).get('snapshot-file');
+    file = selected instanceof File && selected.size ? selected : null;
+    pass = credentialValue(form);
+    if (!file) { restoreError = 'Choose your .hoisnapshot member snapshot first.'; return; }
+    if (file.size > MAX_SNAPSHOT_FILE) { restoreError = 'Member snapshots must be 32 MiB or smaller.'; return; }
+    if (!new FormData(form).has('replace-device')) { restoreError = 'Confirm that this replaces the original device.'; return; }
+    busy = 'snapshot';
+    try { await back(await app.core.importSnapshot(await readFile(file), pass), 'snapshot'); }
+    catch (err) { restoreError = errorText(err); }
+    finally { pass = ''; busy = ''; }
   }
 
   /** A recovery key from a password manager or a drawer: you come back under a new root that takes
@@ -170,12 +190,13 @@
     busy = '';
   }
 
-  function chooseRestore(method: 'recovery' | 'file') {
+  function chooseRestore(method: 'recovery' | 'file' | 'snapshot') {
     restoreMethod = method;
     restoreError = '';
     recoveryKey = pass = '';
     file = null;
     showSecret = false;
+    replacingDevice = false;
   }
 
   async function lookAround() {
@@ -211,6 +232,7 @@
           <div class="btnrow" role="group" aria-label="Choose a backup to restore">
             <button type="button" class="pill" aria-pressed={restoreMethod === 'recovery'} onclick={() => chooseRestore('recovery')} disabled={!!busy}>Use recovery key</button>
             <button type="button" class="pill" aria-pressed={restoreMethod === 'file'} onclick={() => chooseRestore('file')} disabled={!!busy}>Use backup file</button>
+            <button type="button" class="pill" aria-pressed={restoreMethod === 'snapshot'} onclick={() => chooseRestore('snapshot')} disabled={!!busy}>Use member snapshot</button>
           </div>
         </div>
         {#if restoreMethod === 'recovery'}
@@ -226,7 +248,7 @@
           <button type="submit" class="pill pill-ink" disabled={!!busy}>{busy === 'restore' ? 'Bringing you back…' : 'Restore with recovery key'}</button>
           <button type="button" class="lnk lnk-ink" onclick={() => (askOpen = true)} disabled={!!busy}>No line? Ask the friends who keep it</button>
         </form>
-        {:else}
+        {:else if restoreMethod === 'file'}
         <form id="restore-file" class="keyfile" onsubmit={bringKey} autocomplete="on" aria-busy={!!busy}>
           <h3>Encrypted backup file</h3>
           <label class="field" for="fr-key-file"><span>Key backup (.hoikey)</span><input id="fr-key-file" name="key-file" type="file" accept=".hoikey,application/octet-stream" onchange={(e) => { file = e.currentTarget.files?.[0] ?? null; fileEntry = file ? backupLogin(file.name) : ''; }} required disabled={!!busy} /></label>
@@ -237,6 +259,19 @@
           {#if restoreError}<p class="restore-error" role="alert">{restoreError}</p>{/if}
           {#if busy}<p role="status">Opening your backup and preparing this device's key…</p>{/if}
           <button type="submit" class="pill pill-ink" disabled={!!busy}>{busy === 'key' ? 'Opening…' : 'Restore backup file'}</button>
+        </form>
+        {:else}
+        <form id="restore-snapshot" class="keyfile" onsubmit={bringSnapshot} autocomplete="on" aria-busy={!!busy}>
+          <h3>Member snapshot</h3>
+          <label class="field" for="fr-snapshot-file"><span>Member snapshot (.hoisnapshot)</span><input id="fr-snapshot-file" name="snapshot-file" type="file" accept=".hoisnapshot,application/octet-stream" onchange={(e) => { file = e.currentTarget.files?.[0] ?? null; fileEntry = file ? snapshotLogin(file.name) : ''; }} required disabled={!!busy} /></label>
+          <label class="field" for="fr-snapshot-entry"><span>Password-manager entry</span><input id="fr-snapshot-entry" class="input" name="username" autocomplete="username" bind:value={fileEntry} spellcheck="false" autocapitalize="none" disabled={!!busy} /></label>
+          <label class="field" for="fr-snapshot-pass"><span>Snapshot password</span><input id="fr-snapshot-pass" class="input" name="password" type={showSecret ? 'text' : 'password'} bind:value={pass} autocomplete="current-password" required disabled={!!busy} /></label>
+          <label class="show-secret"><input type="checkbox" bind:checked={showSecret} disabled={!!busy} /> Show snapshot password</label>
+          <p class="help">Restore only on a fresh installation. This replaces the original device; stop using its old copy. Public content waits for synchronization and old private message caches are discarded. Each private community needs fresh approval. Node addresses, serving and pairing credentials are reset. Your local vault password stays the same.</p>
+          <label class="show-secret"><input name="replace-device" type="checkbox" bind:checked={replacingDevice} required disabled={!!busy} /> I am replacing the original device and will not run both copies.</label>
+          {#if restoreError}<p class="restore-error" role="alert">{restoreError}</p>{/if}
+          {#if busy}<p role="status">Checking the snapshot and restoring this installation…</p>{/if}
+          <button type="submit" class="pill pill-ink" disabled={!!busy}>{busy === 'snapshot' ? 'Restoring…' : 'Restore member snapshot'}</button>
         </form>
         {/if}
       </section>

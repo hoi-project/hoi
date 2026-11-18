@@ -1515,6 +1515,14 @@ export interface HoiCore {
   /** Encrypted with Argon2id + XChaCha20-Poly1305 under a passphrase of at least 15 characters. */
   exportIdentity(passphrase: string): Promise<Uint8Array>;
   importIdentity(data: Uint8Array, passphrase: string): Promise<Me>;
+  /** Encrypted full member snapshot, at most 32 MiB, for replacing this installation.
+   * Import requires a fresh installation and does not preserve private message caches. */
+  exportSnapshot(passphrase: string): Promise<Uint8Array>;
+  importSnapshot(data: Uint8Array, passphrase: string): Promise<Me>;
+  /** Restored private communities awaiting fresh authorized membership, [key, display name]. */
+  snapshotRejoins(): Promise<[string, string][]>;
+  /** Explicitly prepare one restored community for fresh membership and make its request. */
+  snapshotRejoinRequest(community: string): Promise<string>;
   /** Your recovery line (`hoi-key-1-…`) for a password manager or paper, while this device still
    * keeps it. Whoever holds it can always replace your root and keep your standing. */
   recoveryKey(): Promise<string>;
