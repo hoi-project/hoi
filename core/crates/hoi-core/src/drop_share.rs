@@ -71,7 +71,9 @@ impl Node {
         self.capture_deleted_cap(&m);
     }
     fn drop_cap_needed(&self, m: &Manifest) -> bool {
-        m.expires_at > self.now() || (self.deletion_object_suppressed(Id(m.object)) && self.now() / 86_400 <= m.expires_at.div_ceil(86_400))
+        m.expires_at > self.now()
+            || self.journal_cap_needed(m)
+            || (self.deletion_object_suppressed(Id(m.object)) && self.now() / 86_400 <= m.expires_at.div_ceil(86_400))
     }
     fn capture_deleted_cap(&mut self, m: &Manifest) {
         let communities: BTreeSet<_> = self.deletions.saved.jobs.values().filter(|j| j.objects.contains(&Id(m.object))).map(|j| j.community).collect();

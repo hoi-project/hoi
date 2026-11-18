@@ -208,7 +208,7 @@ impl Node {
         self.end_home_wait_op(
             op,
             manifest.clone(),
-            if r.result == Some(true) {
+            if r.result == Some(true) && manifest.as_ref().is_some_and(|m| m.expires_at > self.now()) {
                 manifest.map(ScatterOutcome::Stored).unwrap_or_else(|| ScatterOutcome::Failed("Invalid home placement result.".into()))
             } else {
                 ScatterOutcome::Failed("Your home could not finish placement; delivery will use the whole post.".into())
@@ -392,6 +392,13 @@ impl Node {
         self.home_journal.waits.clear();
         self.home_journal.background.clear();
         self.home_journal.dirty = true;
+    }
+    pub(crate) fn journal_cap_needed(&self, m: &Manifest) -> bool {
+        self.home_journal
+            .saved
+            .origin
+            .values()
+            .any(|r| live(r.expires, self.now()) && r.capability.as_ref().is_some_and(|cap| cap.read().is_some_and(|old| old == *m)))
     }
     pub(crate) fn journal_unknown_until(&self, target: Id) -> u64 {
         self.home_journal

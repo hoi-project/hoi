@@ -798,3 +798,17 @@ fn a_restored_unanswered_home_request_becomes_a_visible_unknown_deletion_gap() {
     let reopened = node("mobile", &m.t, &disk);
     assert!(reopened.deletions.saved.jobs[&job].coverage_gaps.contains(&target));
 }
+
+#[test]
+fn delegated_tokens_survive_content_expiry_until_the_inclusive_holder_day_ends() {
+    let (mut m, c) = home_phone();
+    let p = post(m.n("phone"), &c, "retain the home-issued tokens through the holder storage boundary");
+    assert!(until(&mut m, 600, |m| m.n("b").post(&p.id).is_ok()));
+    let manifest = m.n("phone").home_journal.saved.origin.values().next().unwrap().capability.as_ref().unwrap().read().unwrap();
+    m.t.store(manifest.expires_at + 1, Ordering::SeqCst);
+    m.n("phone").drop_share_tick();
+    assert!(
+        m.n("phone").scatter.saved.drop_caps.contains_key(&crate::drop_share::cap_id(&manifest)),
+        "content expiry is earlier than the inclusive holder cleanup boundary"
+    );
+}
