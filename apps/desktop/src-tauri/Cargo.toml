@@ -50,7 +50,7 @@ base64 = "0.23"
 keyring = { version = "3.6", default-features = false, features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
 zeroize = "1"
 serde_json = "1"
-tokio = { version = "1.54", features = ["rt-multi-thread", "net", "sync", "time", "macros"] }
+tokio = { version = "1.54", features = ["rt-multi-thread", "net", "sync", "time", "macros", "fs"] }
 
 [target.'cfg(windows)'.dependencies]
 # keyring defaults to enterprise-roaming persistence on Windows. Vault unlock keys must

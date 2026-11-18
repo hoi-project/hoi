@@ -60,7 +60,7 @@ pub async fn hoi_update_check(app: AppHandle, state: State<'_, Updates>) -> Resu
     }
     let installed = app.package_info().version.to_string();
     let path = app.path().app_data_dir().map_err(|_| "Local update settings are unavailable.")?.join("release-seen.json");
-    let seen: Value = std::fs::read(&path).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or(Value::Null);
+    let seen: Value = tokio::fs::read(&path).await.ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or(Value::Null);
     let build: Value = serde_json::from_str(include_str!("../../../../release.json")).expect("release config");
     let mut minimum = installed.clone();
     if let Some(v) = seen["version"].as_str() {
@@ -89,9 +89,10 @@ pub async fn hoi_update_check(app: AppHandle, state: State<'_, Updates>) -> Resu
         *slot = Some(Pending { update, size, hash, bytes: None });
     }
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|_| "Could not save update verification state.")?;
+        tokio::fs::create_dir_all(parent).await.map_err(|_| "Could not save update verification state.")?;
     }
-    std::fs::write(path, json!({"version":manifest["latest"],"revision":manifest["release"]["revision"]}).to_string())
+    tokio::fs::write(path, json!({"version":manifest["latest"],"revision":manifest["release"]["revision"]}).to_string())
+        .await
         .map_err(|_| "Could not save update verification state.")?;
     Ok(json!({"state":if slot.is_some() {"available"} else {"current"}, "version":manifest["latest"], "message":manifest["release"]["notice"]["message"]}))
 }

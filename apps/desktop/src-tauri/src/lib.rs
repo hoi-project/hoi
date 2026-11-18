@@ -489,13 +489,17 @@ fn hoi_benchmark() -> Value {
 /// Saves exported keys and bundles with a native dialog. Returns false if cancelled.
 #[tauri::command]
 async fn hoi_save_file(app: AppHandle, name: String, data: String) -> Result<bool, Value> {
-    let bytes = hoi_types::uri::unb64(&data).map_err(|_| json!({ "code": "invalid", "message": "bad file data" }))?;
-    let Some(path) = app.dialog().file().set_file_name(&name).blocking_save_file() else {
-        return Ok(false);
-    };
-    let path = path.into_path().map_err(internal)?;
-    std::fs::write(&path, bytes).map_err(internal)?;
-    Ok(true)
+    tauri::async_runtime::spawn_blocking(move || {
+        let bytes = hoi_types::uri::unb64(&data).map_err(|_| json!({ "code": "invalid", "message": "bad file data" }))?;
+        let Some(path) = app.dialog().file().set_file_name(&name).blocking_save_file() else {
+            return Ok(false);
+        };
+        let path = path.into_path().map_err(internal)?;
+        std::fs::write(&path, bytes).map_err(internal)?;
+        Ok(true)
+    })
+    .await
+    .map_err(internal)?
 }
 
 /// Opens a web page in the person's own browser: the app's pairing link, hoi.sh. Nothing else
