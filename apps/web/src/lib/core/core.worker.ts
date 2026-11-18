@@ -34,6 +34,7 @@ let stolen = false;
 let queue: Promise<unknown> = Promise.resolve();
 let settleChanges: (() => Promise<void>) | null = null;
 let storageFailed = false;
+let headerDirty = false;
 let vault: WasmVault | null = null;
 
 const b64url = (b: Uint8Array) => btoa(String.fromCharCode(...b)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
@@ -99,6 +100,8 @@ function releaseRuntime() {
   vault?.free();
   vault = null;
   settleChanges = null;
+  headerDirty = false;
+  storageFailed = false;
   db?.close();
   db = null;
 }
@@ -221,7 +224,9 @@ function handOutLooks() {
 async function saveChanges(store: Db, changes: Change[]) {
   try {
     if (!vault || stolen) throw new Error('This device is locked.');
-    await apply(store, changes, vault);
+    if (!changes.length && headerDirty) await saveHeader(store, vault);
+    else await apply(store, changes, vault); // Nonempty batches also commit the header.
+    headerDirty = false;
   } catch (e) {
     // Freeing space or allowing storage cannot bring back files the browser closed or removed.
     const message = e instanceof StoreLost
@@ -779,13 +784,13 @@ async function handle(r: Req): Promise<unknown> {
     case '__addPasskey': return run(async () => {
       if (!vault || !db || stolen) throw new Error('Unlock this device first.');
       vault.add_passkey(unb64url(String(r.args[0])), unb64url(String(r.args[1])), unb64url(String(r.args[2])));
-      await saveHeader(db, vault);
-    }, false);
+      headerDirty = true;
+    });
     case '__removePasskeys': return run(async () => {
       if (!vault || !db || stolen) throw new Error('Unlock this device first.');
       vault.remove_passkeys();
-      await saveHeader(db, vault);
-    }, false);
+      headerDirty = true;
+    });
     case '__resetVault': return run(async () => {
       if (blocked || stolen) throw new Error('Open hoi in this tab before clearing its local data.');
       if (r.args[0] !== 'RESET') throw new Error('Type RESET to confirm clearing local data.');
@@ -794,7 +799,17 @@ async function handle(r: Req): Promise<unknown> {
       await resetStore(storeName, 'RESET');
       storageFailed = false;
     }, false);
-    case '__lock': return run(async () => { await settle(); releaseRuntime(); });
+    case '__lock': return run(async () => {
+      try {
+        await settle();
+      } catch (error) {
+        if (!storageFailed) throw error;
+        if (r.args[0] !== 'discard-unsaved') {
+          throw { code: 'lock-unsaved', message: 'Changes could not be saved. The vault is still open.' };
+        }
+      }
+      releaseRuntime();
+    }, false);
     case '__takeOver': {
       if (blocked || stolen) {
         await holdLock(true);

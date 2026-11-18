@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { LogStore, StoreLost, crc32, type OpenFile, type SyncHandle } from '../lib/core/opfs';
-import { apply, decodeSnapshot, migrate, snapshot, vaultHeader, type Change } from '../lib/core/idb';
+import { apply, decodeSnapshot, migrate, saveHeader, snapshot, vaultHeader, type Change } from '../lib/core/idb';
 import { testVault } from './fixtures/vault.mjs';
 
 /** A file in memory. */
@@ -186,6 +186,45 @@ describe('records in OPFS log files', () => {
     expect(d.handles.every((h) => h.closed)).toBe(true);
     const plain = decodeSnapshot(await snapshot(await LogStore.open(d.open)), vault);
     expect(plain.records).toEqual([bytes('saved after'), bytes('saved before')]);
+  });
+
+  it('saves a new passkey header after files close and refuses to recreate a cleared vault', async () => {
+    const diskFiles = disk();
+    const store = await LogStore.open(diskFiles.open);
+    const vault = testVault();
+    await migrate(store, await snapshot(store), vault);
+    await apply(store, [put('before', 'private post')], vault);
+    const changed = vault.header();
+    changed[0] ^= 1;
+    vault.header = () => changed;
+    diskFiles.closeAll();
+    await saveHeader(store, vault);
+    const saved = await snapshot(store);
+    expect(vaultHeader(saved)).toEqual(changed);
+    expect(decodeSnapshot(saved, vault).records).toEqual([bytes('private post')]);
+
+    diskFiles.closeAll();
+    for (const file of diskFiles.files.values()) file.truncate(0);
+    await expect(saveHeader(store, vault)).rejects.toBeInstanceOf(StoreLost);
+    expect([...diskFiles.files.values()].every(file => file.getSize() === 0)).toBe(true);
+  });
+
+  it('refuses a replacement vault even when its log has the same size and generation', async () => {
+    const original = disk();
+    const store = await LogStore.open(original.open);
+    const vault = testVault();
+    await migrate(store, await snapshot(store), vault);
+    const replacement = disk();
+    const other = await LogStore.open(replacement.open);
+    await migrate(other, await snapshot(other), testVault());
+    original.closeAll();
+    for (const [name, file] of replacement.files) {
+      expect(file.getSize()).toEqual(original.files.get(name)!.getSize());
+      original.files.set(name, file);
+    }
+    const before = replacement.files.get('log-a')!.data.slice();
+    await expect(saveHeader(store, vault)).rejects.toBeInstanceOf(StoreLost);
+    expect(replacement.files.get('log-a')!.data).toEqual(before);
   });
 
   it('writes nothing to files that were emptied while closed, and says they are lost', async () => {

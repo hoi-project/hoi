@@ -305,7 +305,7 @@ export class LogStore {
    * Opens both files again after the browser closed their handles behind the store's back
    * (Firefox closes all of a site's handles when its storage is cleared or reset). The new
    * handles are kept only if the files still end where this store left them: the same file,
-   * generation and size. Otherwise a write would land on data this store does not know, so it
+   * generation, size and live cells. Otherwise a write would land on data this store does not know, so it
    * lets them go and throws `StoreLost`; only reloading can open what is there now.
    */
   async reacquire(): Promise<void> {
@@ -332,7 +332,19 @@ export class LogStore {
     const at = newest(logs);
     const log = logs[at];
     if (!log) return this.size === 0 && handles.every((h) => h.getSize() === 0);
-    return at === this.active && log.generation === this.generation && log.end === this.size && handles[at].getSize() === this.size;
+    if (at !== this.active || log.generation !== this.generation || log.end !== this.size || handles[at].getSize() !== this.size) return false;
+    // A different vault can have the same log length and generation.
+    const actual = replay(log.frames);
+    const matches = (a: Uint8Array | undefined, b: Uint8Array) => a?.length === b.length && b.every((v, i) => v === a[i]);
+    if (actual.records.size !== this.state.records.size || actual.blobs.size !== this.state.blobs.size) return false;
+    for (const [id, record] of this.state.records) {
+      const reopened = actual.records.get(id);
+      if (!reopened || reopened.community !== record.community || reopened.expiresAt !== record.expiresAt || !matches(reopened.wire, record.wire)) return false;
+    }
+    for (const [key, value] of this.state.blobs) {
+      if (!matches(actual.blobs.get(key), value)) return false;
+    }
+    return true;
   }
 
   /** Everything stored, keys in order, as IndexedDB lists them. */
