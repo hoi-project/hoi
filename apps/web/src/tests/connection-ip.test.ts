@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { NetStatus } from '@hoi/core-api';
-import { connectionIps, connectionIpSummary, connectionTarget } from '../lib/connection-ip';
+import { addressScope, connectionIps, connectionIpSummary, connectionTarget } from '../lib/connection-ip';
 
 const net: NetStatus = { mode: 'local', label: 'offline', peers: 0, rtc: [], relaying: false };
 const link = { peer: 'named-node', role: 'peer' as const, route: 'direct', connected: true, transport: 'quic', encryption: 'encrypted', observedAddress: '192.0.2.21' };
@@ -23,6 +23,15 @@ describe('current connection IP reports', () => {
     const rtc = [{ id: 3, kind: 'node' as const, connected: true, address: '192.0.2.10' }];
     expect(connectionIps(net, rtc)[0]).toMatchObject({ source: 'browser', observer: 'Node connection 3' });
     expect(connectionIpSummary(net, [{ ...rtc[0], connected: false }])).toBe('No active connection');
+  });
+
+  it('identifies local, shared and special-use addresses without claiming public reachability', () => {
+    for (const ip of ['127.8.9.1', '::1']) expect(addressScope(ip)).toContain('Loopback');
+    for (const ip of ['10.1.2.3', '172.31.8.9', '192.168.1.7', 'fd00::1', '::ffff:192.168.0.1']) expect(addressScope(ip)).toContain('Private');
+    for (const ip of ['169.254.8.7', 'fe80::1']) expect(addressScope(ip)).toContain('Link-local');
+    expect(addressScope('100.127.99.1')).toContain('Shared carrier');
+    expect(addressScope('2001:db8::5')).toContain('Special-use');
+    expect(addressScope('8.8.8.8')).toContain('unverified');
   });
 
   it('names only the intended endpoint rather than invitation data or credentials', () => {

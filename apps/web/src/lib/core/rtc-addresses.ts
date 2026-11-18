@@ -1,5 +1,5 @@
-// Browser-only observations of existing connections. They never enter the core, storage,
-// signaling, or logs. A selected reflexive candidate is a browser report, not a VPN check.
+// Selected local ICE observations feed this browser’s readout. A direct remote candidate may
+// be reported back to that peer only. Neither observation goes into storage, signaling or logs.
 export interface RtcAddress {
   id: number;
   kind: 'node' | 'browser';
@@ -10,10 +10,13 @@ export interface RtcAddress {
 export function numericAddress(value: unknown): value is string {
   if (typeof value !== 'string' || !value) return false;
   if (/^(0|[1-9]\d{0,2})(\.(0|[1-9]\d{0,2})){3}$/.test(value)) {
-    return value !== '0.0.0.0' && value.split('.').every((part) => Number(part) <= 255);
+    return value !== '0.0.0.0' && Number(value.split('.')[0]) < 224 && value.split('.').every((part) => Number(part) <= 255);
   }
   if (!value.includes(':') || !/^[\da-f:.]+$/i.test(value)) return false;
-  try { return new URL(`http://[${value}]/`).hostname !== '[::]'; }
+  try {
+    const ip = new URL(`http://[${value}]/`).hostname;
+    return ip !== '[::]' && !ip.startsWith('[ff');
+  }
   catch { return false; }
 }
 

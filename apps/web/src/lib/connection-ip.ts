@@ -34,6 +34,34 @@ export function connectionIpSummary(net: NetStatus | null, rtc: readonly RtcAddr
   return connected ? 'IP unavailable' : 'No active connection';
 }
 
+/** Scope of a numeric observation. Ordinary unicast alone does not prove public reachability. */
+export function addressScope(address: string): string {
+  if (address.includes(':')) {
+    let ip: string;
+    try { ip = new URL(`http://[${address}]/`).hostname.slice(1, -1); }
+    catch { return 'Address scope unknown'; }
+    if (ip === '::1') return 'Loopback · same device';
+    const mapped = /^::ffff:([a-f0-9]{1,4}):([a-f0-9]{1,4})$/.exec(ip);
+    if (mapped) {
+      const hi = parseInt(mapped[1], 16), lo = parseInt(mapped[2], 16);
+      return addressScope([hi >> 8, hi & 255, lo >> 8, lo & 255].join('.'));
+    }
+    if (/^f[cd]/.test(ip)) return 'Private network · local route';
+    if (/^fe[89ab]/.test(ip)) return 'Link-local · local route';
+    if (ip.startsWith('2001:db8:') || (ip.startsWith('3fff:') && parseInt(ip.split(':')[1] || '0', 16) < 0x1000) || ip === '::') return 'Special-use address';
+  } else {
+    const [a, b, c] = address.split('.').map(Number);
+    if (a === 127) return 'Loopback · same device';
+    if (a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168)) return 'Private network · local route';
+    if (a === 169 && b === 254) return 'Link-local · local route';
+    if (a === 100 && b >= 64 && b <= 127) return 'Shared carrier network address';
+    if (a === 0 || a >= 224 || (a === 192 && b === 0 && c === 2)
+      || (a === 198 && (b === 18 || b === 19 || (b === 51 && c === 100)))
+      || (a === 203 && b === 0 && c === 113)) return 'Special-use address';
+  }
+  return 'Observed IP · public reachability unverified';
+}
+
 /** Names the exact destination without showing credentials, URL paths or invitation contents. */
 export function connectionTarget(route: string): string {
   if (route.startsWith('rtc:')) return route.slice(route.lastIndexOf('@') + 1);

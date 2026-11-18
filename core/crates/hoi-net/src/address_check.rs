@@ -39,14 +39,16 @@ fn source(to: SocketAddr, policy: &NetPolicy) -> Result<(SocketAddr, Option<&str
     if to.port() == 0 || to.ip().is_unspecified() || to.ip().is_multicast() {
         return Err(UNAVAILABLE);
     }
-    if policy.vpn.is_none() || to.ip().is_loopback() || (policy.home_network && crate::vpn::home_network(to.ip())) {
+    let Some(interface) = policy.vpn.as_deref().filter(|_| !to.ip().is_loopback() && !(policy.home_network && crate::vpn::home_network(to.ip()))) else {
         return Ok((SocketAddr::new(any, 0), None));
-    }
-    let VpnState::Up(ips) = policy.state() else {
-        return Err("The selected VPN is unavailable for this check.");
     };
+    Ok((tunnel_source(to, policy.state())?, Some(interface)))
+}
+
+fn tunnel_source(to: SocketAddr, state: VpnState) -> Result<SocketAddr, &'static str> {
+    let VpnState::Up(ips) = state else { return Err("The selected VPN is unavailable for this check.") };
     let ip = ips.into_iter().find(|ip| ip.is_ipv4() == to.is_ipv4()).ok_or("The VPN has no address for this route.")?;
-    Ok((SocketAddr::new(ip, 0), policy.vpn.as_deref()))
+    Ok(SocketAddr::new(ip, 0))
 }
 
 async fn udp_observation(to: SocketAddr, policy: &NetPolicy) -> Result<IpAddr, &'static str> {
@@ -85,10 +87,11 @@ async fn socket_observation(route: &str, policy: &NetPolicy) -> Result<IpAddr, &
     } else if host == "localhost" {
         SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port)
     } else {
-        if policy.vpn.is_some() && !matches!(policy.state(), VpnState::Up(_)) {
-            return Err("The selected VPN is unavailable for this check.");
+        // The system DNS client cannot be pinned to this socket's interface. A numeric
+        // RTC or WebSocket route avoids sending a lookup outside the selected tunnel.
+        if policy.vpn.is_some() {
+            return Err("Checking a node with a VPN requires its numeric route. Select the node’s RTC or numeric WebSocket address.");
         }
-        // Name resolution follows the same OS resolver policy as hoi's native HTTPS client.
         tokio::net::lookup_host((host, port)).await.map_err(|_| UNAVAILABLE)?.next().ok_or(UNAVAILABLE)?
     };
     let (local, interface) = source(to, policy)?;
@@ -106,4 +109,27 @@ async fn socket_observation(route: &str, policy: &NetPolicy) -> Result<IpAddr, &
     };
     let ip = std::str::from_utf8(&bytes).ok().and_then(|s| s.strip_prefix(crate::ADDRESS_REPLY)).and_then(|s| s.parse::<IpAddr>().ok());
     ip.filter(|ip| !ip.is_unspecified() && !ip.is_multicast()).ok_or(UNAVAILABLE)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn binds_the_vpn_source_for_the_destinations_address_family() {
+        let addresses = || VpnState::Up(vec!["fd00::8".parse().unwrap(), "10.2.0.8".parse().unwrap()]);
+        let peer = "203.0.113.11:3344".parse().unwrap();
+        let local = tunnel_source(peer, addresses()).unwrap();
+        assert_eq!(local, "10.2.0.8:0".parse().unwrap());
+        assert_eq!(tunnel_source("[2001:db8::4]:3344".parse().unwrap(), addresses()).unwrap(), "[fd00::8]:0".parse().unwrap());
+        assert!(tunnel_source(peer, VpnState::Up(vec!["fd00::8".parse().unwrap()])).is_err());
+    }
+
+    #[tokio::test]
+    async fn vpn_check_never_looks_up_a_name_or_falls_back_to_an_unbound_public_socket() {
+        let policy = NetPolicy { vpn: Some("nonexistent-hoi-check".into()), home_network: false };
+        assert!(socket_observation("wss://node.example/", &policy).await.unwrap_err().contains("numeric route"));
+        assert!(source("203.0.113.11:3344".parse().unwrap(), &policy).is_err());
+        assert!(source("127.0.0.1:3344".parse().unwrap(), &policy).is_ok());
+    }
 }

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { app } from '../app.svelte';
   import { rtcAddresses } from '../core/rtc-addresses';
-  import { connectionIps, connectionIpSummary } from '../connection-ip';
+  import { addressScope, connectionIps, connectionIpSummary } from '../connection-ip';
   import { copyText } from '../util';
   import { toast } from '../toast.svelte';
   import Modal from './Modal.svelte';
@@ -10,6 +10,7 @@
   const rows = $derived(connectionIps(app.net, $rtcAddresses));
   const summary = $derived(connectionIpSummary(app.net, $rtcAddresses));
   const home = $derived(app.net?.homeNode);
+  const relayed = $derived(app.net?.connections?.some(c => c.connected && c.route === 'relay'));
   const vpn = $derived(app.net?.vpn);
   async function copy(address: string) {
     toast(await copyText(address) ? 'Address copied.' : 'Copy did not work here.');
@@ -32,7 +33,7 @@
         <li>
           <b>{row.observer}</b>
           <span class="address">{row.address}<button type="button" class="pill pill-sm" onclick={() => copy(row.address)} aria-label={`Copy IP address reported for ${row.observer}`}>Copy</button></span>
-          <span class="help">{row.source === 'node' ? 'This node reports seeing you as this address.' : 'WebRTC reports this source address.'} {row.path}.</span>
+          <span class="help">{row.source === 'node' ? 'This node reports seeing you as this address.' : 'WebRTC reports this source address.'} {row.path}. {addressScope(row.address)}.</span>
         </li>
       {/each}
     </ul>
@@ -42,11 +43,12 @@
     {#if home.connected && home.onward?.length}
       <ul class="reports" aria-label="Home node onward addresses">
         {#each home.onward as path}
-          <li><b>{path.transport}</b><span class="address">{path.address}</span></li>
+          <li><b>{path.transport}</b><span class="address">{path.address}</span><span class="help">{addressScope(path.address)}.</span></li>
         {/each}
       </ul>
     {:else}<p role="status">The home node has no current onward address to report.</p>{/if}
   {/if}
+  {#if relayed}<p class="help">A connection uses a packet relay. Its destination has no direct observation of your IP on that route.</p>{/if}
   {#if vpn}
     <p class="help">{vpn.up ? `hoi restricts its internet connections to ${vpn.interface}. Its interface addresses are not its public exit address.` : `${vpn.interface} ${vpn.detail || 'is unavailable'}. hoi’s VPN policy pauses internet connections until it can use that interface.`}</p>
   {/if}
