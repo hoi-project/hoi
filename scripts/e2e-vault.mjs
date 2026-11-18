@@ -81,6 +81,11 @@ try {
     const { app } = await import('/src/lib/app.svelte.ts');
     try { void app.core; return false; } catch { return true; }
   }), true, 'no identity APIs are accessible before unlock');
+  const ipSection = await page.getByRole('region', { name: 'Browser public IP' }).boundingBox();
+  const passwordField = await page.locator('#vault-passphrase').boundingBox();
+  assert.ok(ipSection && passwordField, 'both the IP check and vault field are visible');
+  assert.equal(ipSection.x, passwordField.x, 'the IP check aligns with the vault fields');
+  assert.equal(ipSection.width, passwordField.width, 'the IP check shares the vault field width');
   await page.setViewportSize({ width: 390, height: 844 });
   await page.screenshot({ path: resolve(output, 'protect-device-mobile.png'), fullPage: true });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
