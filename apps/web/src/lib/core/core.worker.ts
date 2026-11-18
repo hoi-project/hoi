@@ -208,9 +208,9 @@ async function checkHandle(domain: string) {
   } finally {
     clearTimeout(timer);
   }
-  if (!node) return;
-  node.handleChecked(domain, lines);
-  await settle();
+  // Queue this asynchronous result with vault writes and locking; overlapping settlements
+  // could clear pending changes before the write that owns them has completed.
+  await run(() => node?.handleChecked(domain, lines)).catch(() => undefined);
 }
 
 /** Media the core wants looked at outside itself: the page's look worker. */
