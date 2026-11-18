@@ -34,6 +34,7 @@
       </section>
     {/each}
   </div>
+  <p class="help">After Continue, you can check your browser’s public IP before creating a vault or joining a community.</p>
   <form onsubmit={submit}>
     <label class="ack"><input id="safety-ack-ip" type="checkbox" bind:checked={ip} /> <span>{NETWORK_SAFETY.checks.ip}</span></label>
     <label class="ack"><input id="safety-ack-vpn" type="checkbox" bind:checked={vpn} /> <span>{NETWORK_SAFETY.checks.vpn}</span></label>

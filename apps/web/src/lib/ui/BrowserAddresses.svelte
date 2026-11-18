@@ -1,4 +1,5 @@
 <script lang="ts">
+  import PublicIpCheck from './PublicIpCheck.svelte';
   import type { NetStatus } from '@hoi/core-api';
   import { addressScope, connectionIps, hasUnreportedConnections } from '../connection-ip';
   import { rtcAddresses } from '../core/rtc-addresses';
@@ -15,6 +16,7 @@
 </script>
 
 <div class="browser-addresses">
+  <PublicIpCheck />
   {#if !reports.length && !unavailable}
     <p class="state" role="status">No active connections.</p>
   {:else}

@@ -33,6 +33,10 @@ limits apply. Home nodes that do not accept strangers remain silent before pairi
 The native client may also check the UDP path to an invited node's RTC port through its
 existing RFC 8489 STUN service. It checks the responder address and transaction ID and labels
 the result as UDP. This observes the route without verifying the node's DTLS fingerprint.
+When the pinned browser RTC probe fails, the browser can ask the same numeric socket
+for a STUN binding using a fresh peer connection. Only a numeric server-reflexive UDP
+candidate from that check is displayed. A missing or redacted candidate leaves the
+peer result unavailable.
 For a numeric direct QUIC route, the native client creates a fresh temporary endpoint,
 pins its socket source to that route and authenticates the endpoint key in the invitation.
 The ALPN `hoi/address/1` accepts one bidirectional stream containing the same fixed request,
@@ -49,7 +53,11 @@ upstream address and an iroh packet relay's address are never substituted for a 
 
 ## Alternatives and effects
 
-An external IP lookup contacts another operator and can follow another route. Browser ICE
+A separate user-initiated **Check public IP** can contact the named HTTPS observer
+`api64.ipify.org` without an invitation or active peer. The UI identifies the service
+before contact and labels the returned value as the browser’s HTTPS exit IP, with the
+time of observation. A peer check, a failed peer check, and opening the panel send no
+request to this service. HTTPS and peer traffic can follow different routes. Browser ICE
 statistics can supply direct evidence for some active connections, but can omit a reflexive
 candidate. Both known addresses and unavailable states remain local. Observations never
 enter signed records, operator logs, peer discovery, storage or shared profile data.

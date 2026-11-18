@@ -331,7 +331,7 @@ Service worker: activates, deletes older <code>hoi-*</code> caches; the page rel
   </section>
 
   <section class="wk-sec" id="third-party">
-    <h2>No third-party requests</h2>
+    <h2>Same-origin app assets</h2>
     <p>The website and the app load everything from their own origin: scripts, styles, fonts and images are bundled locally. Tests hold this in place:</p>
     <ul>
       <li><code>apps/site/scripts/e2e.mjs</code> fails on any request to another origin (<code>data:</code> and <code>blob:</code> aside), on every page, at every viewport, with and without scripts.</li>

@@ -15,7 +15,7 @@
 
   <section class="wk-sec" id="overview">
     <h2>What it is</h2>
-    <p>The app lives in <code>apps/web</code> (package <code>@hoi/web</code>, version <code>1.0.0-preview.1</code>). It is Svelte 5 with runes switched on in <code>svelte.config.js</code>, built by Vite. Its runtime dependencies are short: <code>@hoi/core-api</code> (the <code>HoiCore</code> types, see <a href="/wiki/api/">Core API</a>), <code>@hoi/tokens</code> (colors and fonts), <code>@tauri-apps/api</code> (used only inside the desktop shell), <code>animejs</code> 4.5.0 for motion and <code>uqr</code> for QR codes. Fonts and Anime.js are bundled, so the app makes no third-party request of its own.</p>
+    <p>The app lives in <code>apps/web</code> (package <code>@hoi/web</code>, version <code>1.0.0-preview.1</code>). It is Svelte 5 with runes switched on in <code>svelte.config.js</code>, built by Vite. Its runtime dependencies are short: <code>@hoi/core-api</code> (the <code>HoiCore</code> types, see <a href="/wiki/api/">Core API</a>), <code>@hoi/tokens</code> (colors and fonts), <code>@tauri-apps/api</code> (used only inside the desktop shell), <code>animejs</code> 4.5.0 for motion and <code>uqr</code> for QR codes. Fonts and Anime.js are bundled, so loading the app needs no external asset server.</p>
     <p>One source tree makes three builds. Vite's <code>--mode</code> picks which:</p>
     <div class="wk-table" tabindex="0" role="region" aria-label="Builds of apps/web">
       <table>
@@ -28,7 +28,7 @@
       </table>
     </div>
     <p>Development has three more entry points: <code>dev</code> (the real core in a worker), <code>dev:mock</code> (the mock backend switch, a seeded in-memory core, no Rust needed) and <code>dev:desktop</code> / <code>dev:setup</code> on the fixed ports 5174 and 5175 that the two Tauri apps load. The wasm core itself is built once with <code>pnpm core:wasm</code> (<code>scripts/build-wasm.mjs</code>), which runs <code>cargo build -p hoi-wasm --target wasm32-unknown-unknown --profile wasm</code>, then <code>wasm-bindgen --target web</code> into <code>src/lib/core/wasm/pkg/</code>, then <code>wasm-opt -O3</code> when binaryen is installed.</p>
-    <div class="wk-note info"><b>Rules the app keeps</b><p>No third-party requests. The relay pill is honest about being a browser: it says "only in this browser" until a home node is paired. Every signed action ends in a toast. Removed things show "Poof." with the reason and a link to the ledger. Reduced motion is respected and every view is complete at rest. Nothing scrolls sideways at 320 px.</p></div>
+    <div class="wk-note info"><b>Rules the app keeps</b><p>Opening the app sends no requests to external IP services. Only <b>Check public IP</b> asks <code>api64.ipify.org</code> which address it saw over HTTPS. The relay pill is honest about being a browser: it says "only in this browser" until a home node is paired. Every signed action ends in a toast. Removed things show "Poof." with the reason and a link to the ledger. Reduced motion is respected and every view is complete at rest. Nothing scrolls sideways at 320 px.</p></div>
   </section>
 
   <section class="wk-sec" id="threads">
@@ -529,10 +529,10 @@ Page: <code>location.reload()</code>, once
     <h2>Consent, legal texts and banners</h2>
     <h3 id="notices-safety">Network &amp; Safety, before anything connects</h3>
     <p>The notice's words live in <code>src/lib/legal/texts.ts</code> (<code>NETWORK_SAFETY</code>, <code>PRIVACY_NOTICE</code>, <code>OPERATOR_RESPONSIBILITY</code>) so the screens, the setup app and the tests read the same text. Its versions live in plain JavaScript, <code>src/lib/legal/version.mjs</code>, so browser tests and the site can import them:</p>
-    <div class="wk-code" data-lang="js" data-title="apps/web/src/lib/legal/version.mjs"><pre><code>export const NETWORK_NOTICE_VERSION = '1.2';
-export const PRIVACY_NOTICE_VERSION = '1.2';
-export const PRIVACY_NOTICE_DATE = '2026-11-05';
-/** localStorage key of the Network &amp; Safety acknowledgement: `{"version":"1.2","date":"2026-11-05"}`. */
+    <div class="wk-code" data-lang="js" data-title="apps/web/src/lib/legal/version.mjs"><pre><code>export const NETWORK_NOTICE_VERSION = '1.3';
+export const PRIVACY_NOTICE_VERSION = '1.3';
+export const PRIVACY_NOTICE_DATE = '2026-11-18';
+/** localStorage key of the Network &amp; Safety acknowledgement: `{"version":"1.3","date":"2026-11-18"}`. */
 export const CONSENT_KEY = 'hoi:consent:network';</code></pre></div>
     <p>The acknowledgement is kept in <code>localStorage</code>, not in the vault, so it can be read before unlocking. Continue needs both boxes: the IP address box and the VPN box. A stored record whose version differs counts as not accepted (<code>networkConsent.changed</code> is true), so the notice comes back when its words change in substance. A wipe resets it, and so does "read again" on the privacy screen. In a private window where <code>localStorage</code> throws, the acknowledgement lasts for the visit.</p>
     <h3 id="notices-operator">Operators' notices</h3>

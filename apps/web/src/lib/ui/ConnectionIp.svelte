@@ -1,4 +1,6 @@
 <script lang="ts">
+  import PublicIpCheck from './PublicIpCheck.svelte';
+  import { browserIp } from '../browser-ip.svelte';
   import { app } from '../app.svelte';
   import { rtcAddresses } from '../core/rtc-addresses';
   import { addressScope, connectionIps, connectionIpSummary } from '../connection-ip';
@@ -19,12 +21,14 @@
 
 <div class="connection-ip gutter" aria-label="Connection IP">
   <button type="button" class="readout" onclick={() => (open = true)} aria-haspopup="dialog">
-    <span class="label">Connection IP</span><strong>{summary}</strong><span class="details">Details</span>
+    <span class="label">Connection IP</span><strong>{summary}</strong>{#if browserIp.sample}<span>Browser HTTPS · {browserIp.sample.address}</span>{/if}<span class="details">Details</span>
   </button>
   <span class="vpn">{vpn ? vpn.up ? `VPN route: ${vpn.interface}` : `VPN required: ${vpn.interface} unavailable` : 'VPN not verified'}</span>
 </div>
 
 <Modal bind:open title="Your connection IP">
+  <PublicIpCheck />
+  <h3>Connected peers</h3>
   <p>What an existing connection reports about its current path. Other connections can use different addresses.</p>
   {#if home}<h3>This device to its home node and other connections</h3>{/if}
   {#if rows.length}

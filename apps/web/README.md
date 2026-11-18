@@ -54,7 +54,7 @@ node ../../scripts/e2e-rtc.mjs --shots <dir>       # a phone pairs and links ove
 
 ## Rules this app keeps
 
-- No third-party requests: fonts and Anime.js are bundled; `connect-src` allows `ws:`/`wss:` only for home nodes and relays you choose.
+- Fonts and Anime.js are bundled. Only the explicit **Check public IP** action contacts the named external HTTPS observer.
 - Honest about being a browser: the relay pill says "only in this browser" until you pair with your home node, then "via <its name>".
 - Every signed action gets a toast; removed things show "Poof." with the reason and the ledger; hidden things can be peeked.
 - Reduced motion and the motion setting are respected; every view is complete at rest; no horizontal scroll at 320px.
@@ -76,6 +76,13 @@ Only the selected node is checked; no generic IP service is used. A successful a
 or community membership and does not join. Missing/unsupported routes and failures remain
 unknown; change a VPN or network and check again before deciding to join. Joining still needs
 the separate VPN warning and confirmation.
+
+After acknowledging Network & Safety, you can choose **Check public IP** on the vault screen,
+during onboarding, in connection details or settings, and before joining. That separate
+button asks `api64.ipify.org` which IP it saw on the browser’s HTTPS request. It works
+without a peer or invitation. A failed peer check never invokes the service. Changing
+networks, hiding the tab or an expired sample clears the display. Check again to compare
+VPN routes. The desktop app offers to open the service in your default browser.
 
 ## Known gaps
 

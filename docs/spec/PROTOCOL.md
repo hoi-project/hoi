@@ -426,7 +426,10 @@ A client may check a selected public node before joining. On a separate WS or RT
 link it sends the fixed initial ASCII frame `hoi/address-check/1`. A node accepting members
 returns one `hoi/address/1 ` frame followed by the numeric IP (or an empty suffix), and the
 client closes. No sync hello, pairing or community information is sent. Native clients can
-measure the selected node's UDP route with the RTC port's existing STUN service.
+measure the selected node's UDP route with the RTC port's existing STUN service. If the
+browser's pinned RTC check yields no report, the browser may use that exact numeric
+socket as its only STUN server. It displays a UDP server-reflexive observation separately
+and describes the responder as unauthenticated. This check never contacts an external IP service.
 For a numeric direct QUIC route, the native client creates a fresh temporary endpoint,
 pins its socket source to that route and authenticates the endpoint key in the invitation.
 The ALPN `hoi/address/1` accepts one bidirectional stream containing the same fixed request,

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import PublicIpCheck from '../lib/ui/PublicIpCheck.svelte';
   import { app } from '../lib/app.svelte';
   import { errorText } from '../lib/toast.svelte';
   import Logo from '../lib/ui/Logo.svelte';
@@ -73,6 +74,7 @@
   <p>{creating ? 'Choose a vault password to encrypt your keys and saved content here. Your password manager can generate and save it.' : 'Use this device’s saved vault password, or select it in your password manager.'}</p>
   {#if app.vaultState === 'create'}<p class="help">Already use hoi? Protect this device first, then import your key backup or link a signed-in device. This step does not create a new identity.</p>{/if}
   {#if app.vaultState === 'migrate'}<p>Your existing identity and communities will be kept and encrypted.</p>{/if}
+  <PublicIpCheck />
   <form id="vault-login" onsubmit={submit} aria-busy={busy} autocomplete="on">
     <label for="vault-username">Password-manager entry</label>
     <input id="vault-username" name="username" type="text" autocomplete="username" bind:value={loginLabel} maxlength="200" disabled={busy} spellcheck="false" autocapitalize="none" />
