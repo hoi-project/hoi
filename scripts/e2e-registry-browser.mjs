@@ -2,6 +2,7 @@
 // No mocked keys or signatures. Peer delivery/admission is covered by core public-join tests.
 // Run after pnpm core:wasm: node scripts/e2e-registry-browser.mjs
 import assert from 'node:assert/strict';
+import { loadRelease } from './release-config.mjs';
 import { createServer } from 'node:http';
 import { mkdtemp, rmdir, unlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -12,6 +13,7 @@ import { createServer as createViteServer } from '../apps/web/node_modules/vite/
 import { createRegistryServer } from '../registry/server.mjs';
 import { unlockBrowser, consentAccepted } from './browser-vault.mjs';
 
+const { protocolVersion, indexVersion } = loadRelease();
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const temp = await mkdtemp(join(tmpdir(), 'hoi-registry-browser-'));
 const filename = join(temp, 'registry.db');
@@ -105,8 +107,8 @@ try {
   const community = await robin.evaluate(() => location.hash.split('/')[2]);
   assert.match(community, /^[a-f0-9]{64}$/);
   const listing = await (await fetch(`${registryUrl}/v2/communities?name=registry-browser-test`)).json();
-  assert.deepEqual(listing, { name: 'registry-browser-test', community, protocolVersion: '0.3', indexVersion: 1, compatible: true, indexed: true,
-    proof: { version: 2, signature: listing.proof.signature, protocolVersion: '0.3', indexVersion: 1 } });
+  assert.deepEqual(listing, { name: 'registry-browser-test', community, protocolVersion, indexVersion, compatible: true, indexed: true,
+    proof: { version: 2, signature: listing.proof.signature, protocolVersion, indexVersion } });
   assert.match(listing.proof.signature, /^[0-9a-f]{128}$/);
   await robin.getByText('People can find this community by name.', { exact: false }).waitFor();
   await robin.keyboard.press('Escape');
@@ -134,7 +136,7 @@ try {
 
   // A crafted link cannot reuse a registered name with another key.
   const forgedKey = 'f'.repeat(64);
-  await lena.evaluate((id) => { location.hash = `#/public?c=${id}&name=registry-browser-test&p=0.3`; }, forgedKey);
+  await lena.evaluate(([id, protocol]) => { location.hash = `#/public?c=${id}&name=registry-browser-test&p=${encodeURIComponent(protocol)}`; }, [forgedKey, protocolVersion]);
   await lena.getByRole('button', { name: 'Join public community', exact: true }).click();
   await lena.getByRole('dialog', { name: 'Turn on your VPN before joining' }).getByRole('button', { name: 'Continue joining' }).click();
   await lena.getByRole('alert').filter({ hasText: 'does not match the verified community name' }).waitFor();

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { latestRelease, signedManifest, RELEASE, PUBLICATION } from '../lib/preview';
 import fixture from '../../../../scripts/fixtures/release-signed.json';
+import { signer } from '../../../../scripts/fixtures/minisign-test-signer.mjs';
 import placeholder from '../../../site/public/releases/manifest.json';
 
 const original = { ...PUBLICATION };
@@ -11,9 +12,12 @@ describe('informational release updates', () => {
     const remove = vi.fn();
     vi.stubGlobal('indexedDB', { deleteDatabase: remove });
     vi.stubGlobal('document', { baseURI: 'https://hoi.test/app/' });
-    Object.assign(PUBLICATION, { downloads: 'https://releases.invalid', manifestKey: fixture.key });
-    const updated = JSON.parse(fixture.manifest).release;
-    const fetcher = vi.fn().mockImplementation(async (url: string) => new Response(url.endsWith('.minisig') ? fixture.signature : fixture.manifest));
+    const signing = signer();
+    const updated = { ...RELEASE, revision: RELEASE.revision + 1 };
+    const bytes = JSON.stringify({ ...JSON.parse(fixture.manifest), release: updated });
+    const signature = signing.sign(new TextEncoder().encode(bytes));
+    Object.assign(PUBLICATION, { downloads: 'https://releases.invalid', manifestKey: signing.key });
+    const fetcher = vi.fn().mockImplementation(async (url: string) => new Response(url.endsWith('.minisig') ? signature : bytes));
     vi.stubGlobal('fetch', fetcher);
     expect(await latestRelease()).toMatchObject(updated);
     expect(await latestRelease()).not.toHaveProperty('wipe');

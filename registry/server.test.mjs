@@ -11,6 +11,8 @@ import { ALLOWED_ANNOUNCER, runAllowlistConformance, runConformance, runLogConfo
 import { loopbackOrigins, registryOrigin, validateAnnouncers } from './protocol.mjs';
 import { runAdmin } from './admin.mjs';
 
+const current = loadRelease();
+
 /** A node's announcement to the registry at `registry` (an origin), signed for it. */
 function nodeAnnouncement(registry, communities, issuedAt, key = generateKeyPairSync('ed25519'), routes = null) {
   const endpoint = key.publicKey.export({ format: 'der', type: 'spki' }).subarray(-32).toString('hex');
@@ -24,7 +26,7 @@ function proof(name, key = generateKeyPairSync('ed25519')) {
   return { name: canonical, community, signature: sign(null, Buffer.from(registrationStatement(canonical, community)), key.privateKey).toString('hex') };
 }
 
-function publication(name, key = generateKeyPairSync('ed25519'), protocolVersion = '0.3', indexVersion = 1) {
+function publication(name, key = generateKeyPairSync('ed25519'), protocolVersion = current.protocolVersion, indexVersion = current.indexVersion) {
   const claim = proof(name, key);
   return { ...claim, protocolVersion, indexVersion, signature: sign(null,
     Buffer.from(publicationStatement(claim.name, claim.community, protocolVersion, indexVersion)), key.privateKey).toString('hex') };
@@ -180,17 +182,19 @@ test('the Rust-generated Ed25519 registration vector is accepted without transla
 });
 
 test('v2 binds protocol metadata, keeps names reserved across index changes, and reads fresh release notices', async (t) => {
-  let release = loadRelease();
+  let release = current;
+  const nextProtocol = `${current.protocolVersion}.next`;
+  const nextIndex = current.indexVersion + 1;
   const server = await start(':memory:', { releaseProvider: () => release });
   t.after(() => server.close());
   const key = generateKeyPairSync('ed25519');
   const claim = publication('garden', key);
   for (const bad of [
-    { ...claim, protocolVersion: '0.4' }, { ...claim, indexVersion: 2 },
+    { ...claim, protocolVersion: nextProtocol }, { ...claim, indexVersion: nextIndex },
     { ...claim, indexVersion: 0 }, { ...claim, name: 'elsewhere' },
     { ...claim, description: 'Do not store this' }, { ...claim, protocolVersion: '0.3\ninjected' },
   ]) assert.equal((await server.publish(bad)).status, 400);
-  const reserved = { name: claim.name, community: claim.community, protocolVersion: '0.3', indexVersion: 1, compatible: true, indexed: true, proof: savedProof(claim) };
+  const reserved = { name: claim.name, community: claim.community, protocolVersion: current.protocolVersion, indexVersion: current.indexVersion, compatible: true, indexed: true, proof: savedProof(claim) };
   assert.deepEqual(await (await server.publish(claim)).json(), reserved);
   assert.deepEqual(await (await server.publish(claim)).json(), reserved);
   assert.deepEqual(await (await fetch(`${server.v2}?prefix=`)).json(), [reserved]);
@@ -198,12 +202,12 @@ test('v2 binds protocol metadata, keeps names reserved across index changes, and
   assert.equal(conflict.status, 409);
   assert.deepEqual(await conflict.json(), { error: 'name-taken', message: 'This public name belongs to another community.', ...reserved });
   assert.equal((await server.publish(publication('other-name', key))).status, 409);
-  assert.equal((await server.publish(publication('garden', key, '0.4', 2))).status, 409, 'a proof cannot mutate a previous index binding');
-  release = { ...release, revision: release.revision + 1, protocolVersion: '0.4', supportedProtocols: ['0.4'], indexVersion: 2,
+  assert.equal((await server.publish(publication('garden', key, nextProtocol, nextIndex))).status, 409, 'a proof cannot mutate a previous index binding');
+  release = { ...release, revision: release.revision + 1, protocolVersion: nextProtocol, supportedProtocols: [nextProtocol], indexVersion: nextIndex,
     notice: { title: 'Preview updated', message: 'This preview can lose data.' } };
   assert.deepEqual(await (await fetch(`${server.v2}?prefix=`)).json(), []);
   assert.deepEqual(await (await fetch(`${server.v2}?name=garden`)).json(), { ...reserved, compatible: false, indexed: false });
-  assert.equal((await server.publish(publication('garden', undefined, '0.4', 2))).status, 409, 'hiding old discovery never frees its name');
+  assert.equal((await server.publish(publication('garden', undefined, nextProtocol, nextIndex))).status, 409, 'hiding old discovery never frees its name');
   assert.deepEqual(await (await fetch(`${server.root}/release.json`)).json(), release);
   const metadata = await (await fetch(`${server.root}/v1/meta`)).json();
   assert.deepEqual(metadata.registry, { apiVersion: 2, schemaVersion: 3, indexVersion: 2 });
@@ -235,7 +239,7 @@ test('a legacy database migrates without losing reservations or inventing protoc
   const check = new DatabaseSync(filename);
   assert.equal(check.prepare('PRAGMA user_version').get().user_version, 5);
   assert.deepEqual(check.prepare('SELECT * FROM community_index').all().map((row) => ({ ...row })), [
-    { community: legacy.community, protocol_version: '0.3', index_version: 1 },
+    { community: legacy.community, protocol_version: current.protocolVersion, index_version: current.indexVersion },
   ]);
   check.close();
 });
@@ -244,7 +248,7 @@ test('current directory filtering happens before the page limit and supports a b
   const server = await start();
   t.after(() => server.close());
   for (let i = 0; i < 52; i++) {
-    assert.equal((await server.publish(publication(`a-old-${i}`, undefined, '0.2', 1))).status, 200);
+    assert.equal((await server.publish(publication(`a-old-${i}`, undefined, 'test-old', current.indexVersion))).status, 200);
     assert.equal((await server.publish(publication(`garden-${String(i).padStart(2, '0')}`))).status, 200);
   }
   const page = await (await fetch(`${server.v2}?prefix=`)).json();
