@@ -64,7 +64,10 @@
     <p class="help">Checking contacts <b>{connectionTarget(target)}</b> and reveals your source IP to that node. It sends no profile or community membership and does not join. Only check a node you are willing to contact.</p>
     <button type="button" class="pill" onclick={run} aria-disabled={busy}>{busy ? 'Checking connection…' : 'Check connection'}</button>
     {#if result}
-      <div class="result" role="status"><p><b>This node sees you as {result.address}</b></p><p class="help">Reported by {connectionTarget(target)} over {result.transport} for this check. {addressScope(result.address)}. Other connections and your home node’s onward traffic can use different addresses.</p></div>
+      <div class="result" role="status"><p><b>This node sees you as {result.address}</b></p><p class="help">Reported by {connectionTarget(target)} over {result.transport} for this check. {addressScope(result.address)}.
+        {#if result.transport === 'udp'}UDP confirms the route to the invited socket. The node’s identity is unverified.
+        {:else if result.transport === 'quic'}The QUIC handshake verified the node key in this invitation.
+        {/if} Other connections and your home node’s onward traffic can use different addresses.</p></div>
       <p class="help">Change your VPN or network? Check again before deciding to join. No membership was changed.</p>
     {/if}
     {#if error}<p role="alert">Connection IP unavailable. {error} No community was joined. You can retry or choose whether to continue.</p>{/if}
