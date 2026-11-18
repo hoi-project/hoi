@@ -42,11 +42,11 @@ export function hasUnreportedConnections(net: NetStatus | null, rtc: readonly Rt
   return !coveredByPeers && !coveredByIce;
 }
 
-export function connectionIpSummary(net: NetStatus | null, rtc: readonly RtcAddress[]): string {
+export function connectionIpSummary(net: NetStatus | null, rtc: readonly RtcAddress[], browserAddress?: string): string {
   const addresses = [...new Set(connectionIps(net, rtc).map(row => row.address))];
-  if (addresses.length) return addresses.join(' · ');
+  if (addresses.length) return addresses.filter(address => address !== browserAddress).join(' · ');
   const connected = liveConnections(net).length > 0 || rtc.some(c => c.connected);
-  return connected ? 'IP unavailable' : 'No active connection';
+  return connected ? 'No peer address reported' : 'No active connection';
 }
 
 /** Scope of a numeric observation. Ordinary unicast alone does not prove public reachability. */

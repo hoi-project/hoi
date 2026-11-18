@@ -82,7 +82,7 @@ try {
   await header.getByText('2001:db8::25', { exact: true }).waitFor();
   assert.equal((await header.innerText()).includes('10.2.0.2'), false, 'A VPN interface IP is not shown as public egress');
   assert.equal((await header.innerText()).includes('198.51.100.90'), false, 'Listening hints are not shown as source evidence');
-  const readout = header.getByRole('button', { name: 'Connection IP 2001:db8::25 Details', exact: true });
+  const readout = header.getByRole('button', { name: 'Your IP on peer connections 2001:db8::25 Details', exact: true });
   await readout.focus();
   await page.keyboard.press('Enter');
   const details = page.getByRole('dialog', { name: 'Your connection IP' });
@@ -117,7 +117,23 @@ try {
   await publicIp.getByText('api64.ipify.org', { exact: true }).waitFor();
   await publicIp.getByRole('button', { name: 'Check public IP', exact: true }).click();
   await publicIp.locator('output').filter({ hasText: result }).waitFor();
-  await header.getByText(`Browser HTTPS · ${result}`, { exact: true }).waitFor();
+  const bothSources = `Browser public IP ${result} Your IP on peer connections 2001:db8::25 Details`;
+  await header.getByRole('button', { name: bothSources, exact: true }).waitFor();
+  await header.getByText('VPN route: wg0', { exact: true }).waitFor();
+  await page.evaluate(address => {
+    const { app } = window.ipFixture;
+    app.net = { ...app.net, connections: app.net.connections.map(c => ({ ...c, observedAddress: address })) };
+  }, result);
+  const browserOnly = header.getByRole('button', { name: `Browser public IP ${result} Details`, exact: true });
+  await browserOnly.waitFor(); // Two observations of the same address need only one headline.
+  await page.evaluate(() => {
+    const { app } = window.ipFixture;
+    app.net = { ...app.net, vpn: undefined, connections: app.net.connections.map(c => ({ ...c, observedAddress: undefined })) };
+  });
+  await browserOnly.click();
+  await details.getByText(/^No peer address reported\./).waitFor();
+  assert.doesNotMatch(await header.innerText(), /VPN not verified|unavailable/i);
+  await page.keyboard.press('Escape');
   assert.equal(await check.getByText(/This node sees you as/).count(), 0, 'An HTTPS exit IP never fills a peer observation');
   assert.equal(lookups.length, 1);
   assert.equal(lookups[0].method(), 'GET');
@@ -126,6 +142,7 @@ try {
   assert.equal(headers.cookie, undefined);
   await page.evaluate(() => window.dispatchEvent(new Event('offline')));
   await publicIp.locator('output').waitFor({ state: 'detached' });
+  await header.getByRole('button', { name: 'Connection IP No peer address reported Details', exact: true }).waitFor();
   assert.equal(lookups.length, 1, 'A route change clears the sample without a fresh lookup');
   result = '2606:4700:4700::1111';
   await publicIp.getByRole('button', { name: 'Check public IP', exact: true }).click();
@@ -143,6 +160,8 @@ try {
     const f = window.ipFixture;
     f.app.net = { ...f.app.net, connections: [], peers: 0, transport: { ...f.app.net.transport, peers: [] } };
   });
+  await header.getByRole('button', { name: `Browser public IP ${result} Details`, exact: true }).waitFor();
+  await page.evaluate(() => window.dispatchEvent(new Event('offline')));
   await header.getByText('No active connection', { exact: true }).waitFor();
   await check.getByRole('button', { name: 'Check connection unavailable' }).waitFor();
   assert.equal(await check.getByText(/This node sees you as/).count(), 0);

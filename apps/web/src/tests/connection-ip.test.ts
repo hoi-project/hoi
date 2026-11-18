@@ -9,13 +9,14 @@ describe('current connection IP reports', () => {
   it('does not substitute a VPN interface or advertised listening address for observed egress', () => {
     const n = { ...net, vpn: { interface: 'wg0', up: true, addresses: ['10.2.0.2'] }, exposure: [{ address: '192.0.2.99:7844', scope: 'internet' as const, fromRouter: true, told: [] }] };
     expect(connectionIps(n, [])).toEqual([]);
-    expect(connectionIpSummary({ ...n, connections: [{ ...link, observedAddress: undefined }] }, [])).toBe('IP unavailable');
+    expect(connectionIpSummary({ ...n, connections: [{ ...link, observedAddress: undefined }] }, [])).toBe('No peer address reported');
   });
 
   it('preserves each observer and distinct paths rather than claiming one universal address', () => {
     const n = { ...net, connections: [link, { ...link, peer: 'second-node', observedAddress: '2001:db8::25' }] };
     expect(connectionIps(n, []).map(row => [row.observer, row.address])).toEqual([['Node named-node', '192.0.2.21'], ['Node second-node', '2001:db8::25']]);
     expect(connectionIpSummary(n, [])).toBe('192.0.2.21 · 2001:db8::25');
+    expect(connectionIpSummary(n, [], '192.0.2.21')).toBe('2001:db8::25');
     expect(connectionIps({ ...n, connections: [{ ...link, connected: false }] }, [])).toEqual([]);
   });
 

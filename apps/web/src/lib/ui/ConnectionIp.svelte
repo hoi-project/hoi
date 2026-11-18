@@ -10,7 +10,7 @@
 
   let open = $state(false);
   const rows = $derived(connectionIps(app.net, $rtcAddresses));
-  const summary = $derived(connectionIpSummary(app.net, $rtcAddresses));
+  const summary = $derived(connectionIpSummary(app.net, $rtcAddresses, browserIp.sample?.address));
   const home = $derived(app.net?.homeNode);
   const relayed = $derived(app.net?.connections?.some(c => c.connected && c.route === 'relay'));
   const vpn = $derived(app.net?.vpn);
@@ -21,9 +21,17 @@
 
 <div class="connection-ip gutter" aria-label="Connection IP">
   <button type="button" class="readout" onclick={() => (open = true)} aria-haspopup="dialog">
-    <span class="label">Connection IP</span><strong>{summary}</strong>{#if browserIp.sample}<span>Browser HTTPS · {browserIp.sample.address}</span>{/if}<span class="details">Details</span>
+    {#if browserIp.sample}
+      <span class="observation"><span class="label">Browser public IP</span> <strong>{browserIp.sample.address}</strong></span>
+    {/if}
+    {#if rows.length && summary}
+      <span class="observation"><span class="label">Your IP on peer connections</span> <strong>{summary}</strong></span>
+    {:else if !rows.length && !browserIp.sample}
+      <span class="observation"><span class="label">Connection IP</span> <strong>{summary}</strong></span>
+    {/if}
+    <span class="details">Details</span>
   </button>
-  <span class="vpn">{vpn ? vpn.up ? `VPN route: ${vpn.interface}` : `VPN required: ${vpn.interface} unavailable` : 'VPN not verified'}</span>
+  {#if vpn}<span class="vpn">{vpn.up ? `VPN route: ${vpn.interface}` : `VPN required: ${vpn.interface} unavailable`}</span>{/if}
 </div>
 
 <Modal bind:open title="Your connection IP">
@@ -64,6 +72,7 @@
 <style>
   .connection-ip { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-1) var(--space-3); max-width: 1240px; margin: 0 auto; padding-bottom: var(--space-2); font-size: var(--type-meta-size); }
   .readout { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); min-height: var(--space-8); min-width: 0; max-width: 100%; text-align: left; }
+  .observation { min-width: 0; max-width: 100%; }
   .readout strong { overflow-wrap: anywhere; min-width: 0; font-variant-numeric: tabular-nums; }
   .label, .vpn { color: var(--mute); }
   .details { color: var(--cobalt); text-decoration: underline; text-underline-offset: 3px; }

@@ -18,7 +18,7 @@
 <div class="browser-addresses">
   <PublicIpCheck />
   {#if !reports.length && !unavailable}
-    <p class="state" role="status">No active connections.</p>
+    <p class="state" role="status">No active peer connections.</p>
   {:else}
     {#if reports.length}
       <ul aria-label="Your connection IP addresses">
@@ -37,7 +37,7 @@
     {/if}
     {#if unavailable}
       <div class="unavailable" role="status">
-        <p class="state">Connection IP unavailable.</p>
+        <p class="state">{reports.length ? 'Some peer connections have no address report.' : 'No peer address reported.'}</p>
         <p class="help">hoi cannot determine the source IP for {reports.length ? 'every connection' : 'this connection'}. A direct peer can still see your source IP. A relay sees the incoming address on a relayed connection.</p>
       </div>
     {/if}

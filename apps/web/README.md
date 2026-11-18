@@ -62,12 +62,15 @@ node ../../scripts/e2e-rtc.mjs --shots <dir>       # a phone pairs and links ove
 
 ## Connection IP and checking before joining
 
-The main header keeps **Connection IP** visible. Its details distinguish source addresses
-reported by current nodes from the browser's selected WebRTC path, and name each observer.
-Reports are connection-specific: listening routes, router forwards and VPN interface
-addresses are not substitutes for public egress. Missing reports say the IP is unavailable;
-neither a report nor an up VPN interface proves anonymity. A home node's onward traffic is
-a separate path. Reports stay in memory and opening the panel makes no lookup or new connection.
+After a successful HTTPS check the header shows **Browser public IP**. If a peer observes a
+different address, the header also shows **Your IP on peer connections**. Matching addresses
+appear once. **Details** names each observer and shows what current nodes and the browser's
+selected WebRTC path report. A missing peer report appears in the peer status.
+
+Listening routes, router forwards and VPN interface addresses describe other parts of the
+connection. An observed IP alone cannot verify VPN use or anonymity. A home node's onward
+traffic is a separate path. Reports stay in memory and opening the panel makes no lookup or
+new connection.
 
 Invite and public-join screens offer **Check connection** for supported routes. Before the
 click they name the intended destination and explain that contacting it exposes the source IP.
