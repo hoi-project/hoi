@@ -397,6 +397,7 @@ impl Plan {
         Paths {
             place: self.fplace.clone(),
             carried: BTreeMap::new(),
+            alternates: BTreeMap::new(),
             holders: self.holders.iter().map(|h| (h.endpoint, (h.xk, h.via.iter().filter(|f| self.fplace.contains_key(*f)).cloned().collect()))).collect(),
             cap: k - 1,
         }
