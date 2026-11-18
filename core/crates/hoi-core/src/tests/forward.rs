@@ -440,6 +440,27 @@ fn a_durable_device_repairs_with_fresh_indexes_then_a_new_generation() {
     for h in &alive[..alive.len() - (k + 1)] {
         m.cut.insert(h.clone());
     }
+    // Model durable data loss independently of temporary availability: the failed holders
+    // rejoin with empty stores. Keeping them silent also makes randomized new-generation
+    // placement fail depending on candidate selection, which this repair test does not test.
+    let failed: Vec<_> = m.cut.iter().cloned().collect();
+    for name in failed {
+        m.n(&name).set_piece_store(Some(Box::new(MemPieces::new(1 << 30))));
+        m.cut.remove(&name);
+    }
+    m.pump();
+    let today = (m.t.load(Ordering::SeqCst) / DAY) as u32;
+    let remaining = repaired
+        .holders
+        .iter()
+        .enumerate()
+        .filter(|(index, holder)| {
+            let name = m.eps.iter().find(|(_, endpoint)| **endpoint == holder.hex()).unwrap().0.clone();
+            let loc = sc::locator(&repaired.loc_secret, &repaired.object, repaired.generation, *index as u8);
+            m.n(&name).scatter.pieces.as_mut().unwrap().has(&loc, today).unwrap().is_some()
+        })
+        .count();
+    assert_eq!(remaining, k + 1, "old generation keeps exactly its required recovery coverage");
     // at most a day after the last repair, once the losses are known
     for _ in 0..10 {
         m.run_every(DAY / 2, 60);
@@ -448,7 +469,18 @@ fn a_durable_device_repairs_with_fresh_indexes_then_a_new_generation() {
         }
     }
     let next = m.n("a").scatter.saved.kept[&object].newest().unwrap();
-    assert_eq!(next.generation, 1, "a new generation");
+    let state = &m.nodes["a"].scatter.saved.kept[&object];
+    assert_eq!(
+        next.generation,
+        1,
+        "new generation: lost={}, cleanup={}, scheduled={}, jobs={}, pending={}, cut={}",
+        state.lost.len(),
+        state.cleanup_gens.len(),
+        state.repair_at.is_some(),
+        m.nodes["a"].scatter.jobs.len(),
+        m.nodes["a"].scatter.pending.len(),
+        m.cut.len()
+    );
     assert_ne!(next.loc_secret, man.loc_secret);
     assert_eq!(next.sealed, man.sealed);
     let s = sc::size::Size { k: next.k as usize, n: next.n as usize, m: next.m as usize };
