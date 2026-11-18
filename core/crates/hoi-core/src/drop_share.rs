@@ -66,15 +66,18 @@ impl Node {
             {
                 continue;
             }
-            for (loc, token) in &cap.tokens {
-                tokens.insert(*loc, *token);
+            for i in 0..old.hashes.len() {
+                let loc = Id(sc::locator(&old.loc_secret, &old.object, old.generation, i as u8));
+                if let Some(token) = cap.tokens.get(&loc) {
+                    tokens.insert(loc, *token);
+                }
             }
         }
         let secret = self.drop_secret();
         for i in 0..m.hashes.len() {
             let loc = Id(sc::locator(&m.loc_secret, &m.object, m.generation, i as u8));
-            if !tokens.contains_key(&loc) {
-                tokens.insert(loc, sc::drop_token(&secret?, &loc.0));
+            if let std::collections::btree_map::Entry::Vacant(entry) = tokens.entry(loc) {
+                entry.insert(sc::drop_token(&secret?, &loc.0));
             }
         }
         Some(Capability { manifest: b64(&m.encode()), tokens })
