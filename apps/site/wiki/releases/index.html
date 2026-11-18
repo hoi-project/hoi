@@ -26,7 +26,7 @@
           <tr><td><code>apps/desktop/src-tauri/Cargo.toml</code>, <code>apps/setup/src-tauri/Cargo.toml</code></td><td><code>[package] version</code></td></tr>
           <tr><td><code>apps/desktop/src-tauri/tauri.conf.json</code>, <code>apps/setup/src-tauri/tauri.conf.json</code></td><td>top-level <code>"version"</code></td></tr>
           <tr><td><code>apps/*/package.json</code>, <code>packages/*/package.json</code></td><td>top-level <code>"version"</code>, for every one that has a version (the root <code>package.json</code> has none)</td></tr>
-          <tr><td><code>core/Cargo.lock</code>, <code>apps/desktop/src-tauri/Cargo.lock</code>, <code>apps/setup/src-tauri/Cargo.lock</code></td><td>the <code>version</code> of every local <code>hoi-*</code> package (those without a <code>source</code>); external and vendored crates keep theirs</td></tr>
+          <tr><td><code>core/Cargo.lock</code>, <code>core/fuzz/Cargo.lock</code>, <code>apps/desktop/src-tauri/Cargo.lock</code>, <code>apps/setup/src-tauri/Cargo.lock</code></td><td>the <code>version</code> of every local <code>hoi-*</code> package (those without a <code>source</code>); external and vendored crates keep theirs</td></tr>
         </tbody>
       </table>
     </div>
@@ -167,7 +167,7 @@ Maintainer -> GitHub release: publish the draft by hand
           <tr><td><code>plan</code></td><td>—</td><td>the tag matches <code>^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$</code>; checks out the tag; <code>release-version.mjs --check "$TAG" --github-output</code>; outputs the tier, the prerelease flag and the commit SHA that every later job checks out</td></tr>
           <tr><td><code>checks</code></td><td>plan</td><td><code>release-checks.yml</code> on that commit</td></tr>
           <tr><td><code>long</code></td><td>plan; full test tier</td><td><code>release-major.yml</code></td></tr>
-          <tr><td><code>security</code></td><td>plan; full test tier</td><td>for each of the three Cargo manifests: the dependency gate, cargo-deny with <code>--all-features</code>, <code>cargo audit</code> of the lockfile</td></tr>
+          <tr><td><code>security</code></td><td>plan; full test tier</td><td>for each audited Cargo manifest: the dependency gate, cargo-deny with <code>--all-features</code>, <code>cargo audit</code> of the lockfile</td></tr>
           <tr><td><code>npm-audit</code></td><td>plan; full test tier</td><td><code>pnpm audit --audit-level low</code></td></tr>
           <tr><td><code>signing</code></td><td>all of the above</td><td>runs only if plan and checks succeeded and, for a major, long, security and npm-audit succeeded (for others they must be skipped). Checks the tree carries the tag's version and that the signing secrets exist</td></tr>
           <tr><td><code>draft</code></td><td>plan, signing</td><td>creates the draft with <code>gh release create "$TAG" --draft --verify-tag --prerelease=… --title "hoi $TAG"</code>, or reuses a draft already there (one uploaded by <code>release-local.mjs --upload</code>); a published release with that tag stops it: "use a new version"</td></tr>

@@ -51,7 +51,7 @@ test("the lockfiles get the new version for hoi's own crates only", () => {
   for (const lock of LOCKFILES) {
     const text = readFileSync(join(root, lock), 'utf8').replaceAll('\r\n', '\n');
     const next = lockWithVersion(text, '9.8.7');
-    const own = [...next.matchAll(/^name = "(hoi-[a-z-]+)"\nversion = "([^"]*)"/gm)];
+    const own = [...next.matchAll(/^name = "(hoi-[a-z-]+)"\nversion = "([^"]*)"/gm)].filter(([, name]) => name !== 'hoi-fuzz');
     // The node setup app's graph has two hoi crates (the app and its engine); the others carry the core.
     assert.ok(own.length >= (lock.includes('setup') ? 2 : 5), lock);
     for (const [, name, version] of own) assert.equal(version, '9.8.7', `${lock}: ${name}`);

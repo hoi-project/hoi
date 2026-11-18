@@ -61,7 +61,7 @@ pnpm release:version --check 0.1.0       # verify all manifests and lockfiles
 ```
 
 The helper updates the Rust workspace, the desktop and node setup apps' Cargo/Tauri
-manifests, versioned first-party JS packages and all three Rust lockfiles. It does not run a build, commit,
+manifests, versioned first-party JS packages and all four Rust lockfiles, including the fuzz harness’s local product dependencies. It does not run a build, commit,
 tag, push or deploy. Dependency versions stay unchanged; the pnpm lockfile uses
 workspace links and needs no product-version edit. Mobile wrappers use the Rust
 workspace version and currently have no separate application version.
