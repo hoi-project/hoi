@@ -44,7 +44,6 @@ pub(crate) struct Runtime {
     asked: BTreeMap<(String, u32), (u64, Waiting)>,
     rate: BTreeMap<String, (u64, u32)>,
     poll_at: u64,
-    failed_at: Option<u64>,
 }
 impl Node {
     pub(crate) fn scattering_home(&self, c: Id) -> Option<String> {
@@ -139,7 +138,6 @@ impl Node {
                         self.save_drop_cap(cap);
                         ScatterOutcome::Stored(m)
                     } else {
-                        self.scatter.home_scatter.failed_at = Some(self.now());
                         ScatterOutcome::Failed("Your home could not store this post in pieces; delivery will use the whole post.".into())
                     };
                     self.end_wait_op(op, outcome);
@@ -157,7 +155,6 @@ impl Node {
                 }
                 #[cfg(test)]
                 (Waiting::Store { op, .. }, _) => {
-                    self.scatter.home_scatter.failed_at = Some(self.now());
                     self.end_wait_op(op, ScatterOutcome::Failed("Your home returned an invalid placement response.".into()));
                 }
                 _ => {}
@@ -254,7 +251,6 @@ impl Node {
             let _ = waiting;
             #[cfg(test)]
             if let Some((_, Waiting::Store { op, .. })) = waiting {
-                self.scatter.home_scatter.failed_at = Some(now);
                 self.end_wait_op(op, ScatterOutcome::Failed("Your home did not answer; delivery will use the whole post.".into()));
             }
         }
