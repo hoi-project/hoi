@@ -23,6 +23,8 @@ pub async fn check(route: &str, policy: &NetPolicy) -> Result<(IpAddr, &'static 
             // The existing STUN service on the *same* RTC port tells us the UDP mapping.
             // It proves reachability on this route; it does not authenticate a node identity.
             Ok((udp_observation(to, policy).await?, "udp"))
+        } else if !route.contains("://") && route.contains('@') {
+            Ok((quic_observation(route, policy).await?, "quic"))
         } else {
             Ok((socket_observation(route, policy).await?, "websocket"))
         }
@@ -48,6 +50,61 @@ fn tunnel_source(to: SocketAddr, state: VpnState) -> Result<SocketAddr, &'static
     let VpnState::Up(ips) = state else { return Err("The selected VPN is unavailable for this check.") };
     let ip = ips.into_iter().find(|ip| ip.is_ipv4() == to.is_ipv4()).ok_or("The VPN has no address for this route.")?;
     Ok(SocketAddr::new(ip, 0))
+}
+
+/// An ephemeral iroh endpoint dials the single explicit IP, authenticating the node's
+/// endpoint key from the invite. The Minimal preset and disabled relays install no discovery.
+async fn quic_observation(route: &str, policy: &NetPolicy) -> Result<IpAddr, &'static str> {
+    use iroh::{
+        Endpoint, EndpointAddr, EndpointId, RelayMode, SecretKey,
+        endpoint::{NetReportConfig, PortmapperConfig, presets},
+    };
+    let (key, socket) = route.split_once('@').ok_or(UNAVAILABLE)?;
+    let peer = key.parse::<EndpointId>().map_err(|_| UNAVAILABLE)?;
+    let destination = socket.parse::<SocketAddr>().map_err(|_| UNAVAILABLE)?;
+    let (mut local, _) = source(destination, policy)?;
+    // Limit the endpoint to the source interface for this one route, including when the OS
+    // ordinarily chooses among several. UDP connect selects a source without sending a packet.
+    if local.ip().is_unspecified() {
+        let selector = std::net::UdpSocket::bind(local).map_err(|_| UNAVAILABLE)?;
+        selector.connect(destination).map_err(|_| UNAVAILABLE)?;
+        local = SocketAddr::new(selector.local_addr().map_err(|_| UNAVAILABLE)?.ip(), 0);
+    }
+    let endpoint = Endpoint::builder(presets::Minimal)
+        .secret_key(SecretKey::from_bytes(&hoi_crypto::random_bytes::<32>().map_err(|_| UNAVAILABLE)?))
+        .relay_mode(RelayMode::Disabled)
+        .clear_address_lookup()
+        .net_report_config(NetReportConfig::minimal())
+        .portmapper_config(PortmapperConfig::Disabled)
+        .clear_ip_transports()
+        .bind_addr(local)
+        .map_err(|_| UNAVAILABLE)?
+        .bind()
+        .await
+        .map_err(|_| UNAVAILABLE)?;
+    let observation = async {
+        let addr = EndpointAddr::new(peer).with_ip_addr(destination);
+        let connection = endpoint.connect(addr, crate::p2p::ADDRESS_ALPN).await.ok()?;
+        if crate::p2p::direct_addr(&connection) != Some(destination) {
+            return None;
+        }
+        let (mut send, mut recv) = connection.open_bi().await.ok()?;
+        send.write_all(crate::ADDRESS_CHECK).await.ok()?;
+        send.finish().ok()?;
+        let reply = recv.read_to_end(64).await.ok()?;
+        if crate::p2p::direct_addr(&connection) != Some(destination) {
+            return None;
+        }
+        read_address(&reply)
+    }
+    .await;
+    endpoint.close().await;
+    observation.ok_or(UNAVAILABLE)
+}
+
+fn read_address(bytes: &[u8]) -> Option<IpAddr> {
+    let ip = std::str::from_utf8(bytes).ok()?.strip_prefix(crate::ADDRESS_REPLY)?.parse::<IpAddr>().ok()?.to_canonical();
+    (!ip.is_unspecified() && !ip.is_multicast()).then_some(ip)
 }
 
 async fn udp_observation(to: SocketAddr, policy: &NetPolicy) -> Result<IpAddr, &'static str> {
@@ -175,8 +232,7 @@ async fn socket_observation(route: &str, policy: &NetPolicy) -> Result<IpAddr, &
     let Some(Ok(Message::Binary(bytes))) = ws.next().await else {
         return Err(UNAVAILABLE);
     };
-    let ip = std::str::from_utf8(&bytes).ok().and_then(|s| s.strip_prefix(crate::ADDRESS_REPLY)).and_then(|s| s.parse::<IpAddr>().ok());
-    ip.filter(|ip| !ip.is_unspecified() && !ip.is_multicast()).ok_or(UNAVAILABLE)
+    read_address(&bytes).ok_or(UNAVAILABLE)
 }
 
 #[cfg(test)]

@@ -18,6 +18,15 @@ describe('isolated pre-join address check', () => {
     }
   });
 
+  it('offers a numeric direct QUIC destination only in the native shell', () => {
+    const route = '1'.repeat(64) + '@127.0.0.1:7843';
+    expect(canCheckRoute(route)).toBe(false);
+    vi.stubGlobal('window', { __TAURI_INTERNALS__: {} });
+    expect(canCheckRoute(route)).toBe(true);
+    expect(canCheckRoute('1'.repeat(64) + '@node.example:7843')).toBe(false);
+    expect(canCheckRoute('1'.repeat(64))).toBe(false);
+  });
+
   it('sends just the fixed request on a new connection to the selected node, then closes', async () => {
     const sent = vi.fn();
     const close = vi.fn();

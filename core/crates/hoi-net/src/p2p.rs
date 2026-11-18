@@ -22,6 +22,7 @@ use crate::limit::{self, PerSource};
 use crate::{HELLO, LinkGuard, Shared, WRITE_TIMEOUT};
 
 pub const SYNC_ALPN: &[u8] = b"hoi/sync/1";
+pub(crate) const ADDRESS_ALPN: &[u8] = b"hoi/address/1";
 const MAX_PEERS: usize = 32;
 /// Temporary holder dials cannot occupy every regular sync slot.
 const MAX_FORWARD_PEERS: usize = 8;
@@ -162,7 +163,7 @@ pub async fn start_p2p(shared: Arc<Shared>, config: P2pConfig) -> io::Result<P2p
     // relay insertion without opting into N0's DNS, pkarr or relay infrastructure.
     let mut builder = Endpoint::builder(presets::Minimal)
         .secret_key(SecretKey::from_bytes(&secret))
-        .alpns(vec![SYNC_ALPN.to_vec(), iroh_blobs::ALPN.to_vec()])
+        .alpns(vec![SYNC_ALPN.to_vec(), iroh_blobs::ALPN.to_vec(), ADDRESS_ALPN.to_vec()])
         .transport_config(
             QuicTransportConfig::builder()
                 .max_concurrent_bidi_streams(1u32.into())
@@ -239,6 +240,12 @@ async fn supervise(shared: Arc<Shared>, endpoint: Endpoint, initial_relays: Vec<
                 jobs.spawn(async move {
                     let slot = slot;
                     let Ok(Ok(conn)) = tokio::time::timeout(CONNECT_TIMEOUT, incoming).await else { return };
+                    if conn.alpn() == ADDRESS_ALPN {
+                        // The admission check, retry, per-source cap and global slot already applied.
+                        // This short-lived protocol has no sync state, role or authenticated-device rights.
+                        let _ = tokio::time::timeout(HELLO, answer_address(&conn)).await;
+                        return;
+                    }
                     if conn.alpn() == iroh_blobs::ALPN {
                         // media only, for an endpoint with a sync link here (crate::blobs)
                         let Ok(_serving) = served.try_acquire_owned() else { conn.close(0u32.into(), b"busy"); return };
@@ -353,7 +360,20 @@ async fn write_frame(send: &mut SendStream, bytes: &[u8]) -> io::Result<()> {
 }
 
 /// The UDP address a direct path to the peer uses, if the selected path is direct.
-fn direct_addr(conn: &Connection) -> Option<SocketAddr> {
+async fn answer_address(conn: &Connection) -> Option<()> {
+    let (mut send, mut recv) = conn.accept_bi().await.ok()?;
+    let check = recv.read_to_end(crate::ADDRESS_CHECK.len()).await.ok()?;
+    if check.as_slice() != crate::ADDRESS_CHECK {
+        return None;
+    }
+    let reply = crate::address_reply(direct_addr(conn).map(|addr| addr.ip()));
+    send.write_all(&reply).await.ok()?;
+    send.finish().ok()?;
+    let _ = send.stopped().await;
+    Some(())
+}
+
+pub(crate) fn direct_addr(conn: &Connection) -> Option<SocketAddr> {
     conn.paths().iter().find(|p| p.is_selected()).and_then(|p| match p.remote_addr() {
         TransportAddr::Ip(a) => Some(*a),
         _ => None,
@@ -516,6 +536,19 @@ mod tests {
         n.set_identity_bits(8);
         Shared::new(n, Box::new(|_| {}))
     }
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_isolated_native_check_authenticates_the_quic_destination_without_opening_sync() {
+        let home = node();
+        home.with(|n| n.set_settings(&hoi_core::dto::SettingsPatch { relay: Some(true), ..Default::default() }).unwrap());
+        let handle = start_p2p(home.clone(), P2pConfig { bind: Some("127.0.0.1:0".parse().unwrap()), relays: Vec::new() }).await.unwrap();
+        let socket = handle.endpoint.bound_sockets().into_iter().find(SocketAddr::is_ipv4).unwrap();
+        let route = format!("{}@127.0.0.1:{}", handle.endpoint.id(), socket.port());
+        let observation = crate::address_check::check(&route, &crate::vpn::NetPolicy::default()).await.unwrap();
+        assert_eq!(observation, ("127.0.0.1".parse().unwrap(), "quic"));
+        assert!(home.with(|n| n.net_status().connections.is_empty()));
+        handle.shutdown().await;
+    }
+
     #[test]
     fn hints_are_explicit_and_reject_unsafe_addresses() {
         let key = SecretKey::from_bytes(&[42; 32]).public().to_string();

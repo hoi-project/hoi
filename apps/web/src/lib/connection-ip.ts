@@ -64,6 +64,7 @@ export function addressScope(address: string): string {
 
 /** Names the exact destination without showing credentials, URL paths or invitation contents. */
 export function connectionTarget(route: string): string {
+  if (/^[0-9a-f]{64}@/i.test(route)) return `${route.slice(65)} (QUIC node ${route.slice(0, 12)}…)`;
   if (route.startsWith('rtc:')) return route.slice(route.lastIndexOf('@') + 1);
   try { return new URL(route).host; } catch { return route.slice(0, 96); }
 }

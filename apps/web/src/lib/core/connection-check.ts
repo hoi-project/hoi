@@ -4,7 +4,7 @@ import { isDesktopShell } from '../host';
 import { numericAddress } from './rtc-addresses';
 import { openRtc, parseRoute } from './rtc-link';
 
-type Transport = 'websocket' | 'webrtc' | 'udp';
+type Transport = 'websocket' | 'webrtc' | 'udp' | 'quic';
 type Observation = { address: string; transport: Transport };
 const request = new TextEncoder().encode('hoi/address-check/1');
 const prefix = 'hoi/address/1 ';
@@ -18,8 +18,15 @@ function socketRoute(route: string): boolean {
   } catch { return false; }
 }
 
+function quicRoute(route: string): boolean {
+  const parts = /^[0-9a-f]{64}@(?:\[([0-9a-f:.]+)\]|([0-9.]+)):(\d{1,5})$/i.exec(route);
+  if (!parts) return false;
+  const port = Number(parts[3]);
+  return port > 0 && port <= 65535 && numericAddress(parts[1] || parts[2]);
+}
+
 export function canCheckRoute(route: string): boolean {
-  return !!parseRoute(route) || socketRoute(route);
+  return !!parseRoute(route) || socketRoute(route) || (isDesktopShell() && quicRoute(route));
 }
 
 export function readObservation(bytes: Uint8Array): string | null {

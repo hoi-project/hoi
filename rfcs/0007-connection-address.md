@@ -33,6 +33,12 @@ limits apply. Home nodes that do not accept strangers remain silent before pairi
 The native client may also check the UDP path to an invited node's RTC port through its
 existing RFC 8489 STUN service. It checks the responder address and transaction ID and labels
 the result as UDP. This observes the route without verifying the node's DTLS fingerprint.
+For a numeric direct QUIC route, the native client creates a fresh temporary endpoint,
+pins its socket source to that route and authenticates the endpoint key in the invitation.
+The ALPN `hoi/address/1` accepts one bidirectional stream containing the same fixed request,
+terminated by FIN. It returns the same response, terminated by FIN, without opening sync.
+The client uses no default relays, discovery providers, UPnP, captive-portal or HTTPS probes.
+The listener applies its usual admission, per-source and connection limits.
 When an interface is required, native checks use numeric destinations or loopback. Linux
 can also resolve a hostname through systemd-resolved on that interface when the response
 identifies the selected link. Without per-interface DNS, the check asks for a numeric route. Displays label

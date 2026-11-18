@@ -427,6 +427,12 @@ link it sends the fixed initial ASCII frame `hoi/address-check/1`. A node accept
 returns one `hoi/address/1 ` frame followed by the numeric IP (or an empty suffix), and the
 client closes. No sync hello, pairing or community information is sent. Native clients can
 measure the selected node's UDP route with the RTC port's existing STUN service.
+For a numeric direct QUIC route, the native client creates a fresh temporary endpoint,
+pins its socket source to that route and authenticates the endpoint key in the invitation.
+The ALPN `hoi/address/1` accepts one bidirectional stream containing the same fixed request,
+terminated by FIN. It returns the same response, terminated by FIN, without opening sync.
+The client uses no default relays, discovery providers, UPnP, captive-portal or HTTPS probes.
+The listener applies its usual admission, per-source and connection limits.
 When an interface is required, native checks use numeric destinations or loopback. Linux
 can also resolve a hostname through systemd-resolved on that interface when the response
 identifies the selected link. Without per-interface DNS, the check asks for a numeric route. Displays label
