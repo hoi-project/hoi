@@ -10,6 +10,7 @@
   import CopyField from '../lib/ui/CopyField.svelte';
   import JoinWarning from '../lib/ui/JoinWarning.svelte';
   import { publicRoutes } from '../lib/public-connections';
+  import ConnectionCheck from '../lib/ui/ConnectionCheck.svelte';
 
   let { query }: { query: string } = $props();
   const parsed = $derived.by(() => { try { return { target: publicTarget(query), error: '' }; } catch (e) { return { target: null, error: errorText(e) }; } });
@@ -103,6 +104,7 @@
         {#if metadata && !routes.length}<p class="callout">No public peer is available from this registry yet. Ask a member for an invite with a reachable peer. A reserved name alone cannot deliver posts; the static app host does not supply them.</p>{/if}
         {#if routes.length && !usableRoutes.length}<p class="callout">Public connections are unavailable on this device. Ask a member for an invite, or try an existing connection to this community.</p>{/if}
         {#if routes.length}<p class="help">Joining connects to public nodes listed by the registry{carrying.length ? ', those carrying this community first' : ''}. These nodes carry community data separately from the name registry; network peers can see your connection.</p>{/if}
+        <ConnectionCheck {routes} />
         <div class="btnrow">
           <button type="button" class="pill pill-ink" onclick={() => (joinWarning = true)} disabled={busy}>{busy ? 'Requesting…' : status?.status === 'pending' ? 'Retry public nodes' : 'Join public community'}</button>
           {#if status?.status === 'pending' || status?.status === 'rejected'}<button type="button" class="pill" onclick={cancel} disabled={busy}>Cancel request</button>{/if}

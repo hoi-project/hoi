@@ -9,6 +9,7 @@
   import { toastError } from '../toast.svelte';
   import { RELAY_URLS } from '../private-relay';
   import { privateLine } from '../private-status';
+  import ConnectionIp from './ConnectionIp.svelte';
   let locking = $state(false);
   async function lock() {
     locking = true;
@@ -54,6 +55,7 @@
     <a href="#/you" class="me" aria-label={`You · ${app.me?.name ?? ''}`} title={`Signed in as ${app.me?.name ?? ''} · ${app.me?.rootKey.slice(0, 12) ?? ''}`}><Avatar name={app.me?.name ?? ''} keyHex={app.me?.rootKey} avatar={app.me?.avatar} avatarColor={app.me?.avatarColor} accountBadge /></a>
     <button type="button" class="pill lock" onclick={lock} disabled={locking}>{locking ? 'Locking…' : 'Lock'}</button>
   </div>
+  <ConnectionIp />
 </header>
 
 <style>

@@ -60,6 +60,23 @@ node ../../scripts/e2e-rtc.mjs --shots <dir>       # a phone pairs and links ove
 - Reduced motion and the motion setting are respected; every view is complete at rest; no horizontal scroll at 320px.
 - Use short sentences and clear labels.
 
+## Connection IP and checking before joining
+
+The main header keeps **Connection IP** visible. Its details distinguish source addresses
+reported by current nodes from the browser's selected WebRTC path, and name each observer.
+Reports are connection-specific: listening routes, router forwards and VPN interface
+addresses are not substitutes for public egress. Missing reports say the IP is unavailable;
+neither a report nor an up VPN interface proves anonymity. A home node's onward traffic is
+a separate path. Reports stay in memory and opening the panel makes no lookup or new connection.
+
+Invite and public-join screens offer **Check connection** for supported routes. Before the
+click they name the intended destination and explain that contacting it exposes the source IP.
+Only the selected node is checked; no generic IP service is used. A successful answer says
+**This node sees you as …**, with its destination and transport. The check sends no profile
+or community membership and does not join. Missing/unsupported routes and failures remain
+unknown; change a VPN or network and check again before deciding to join. Joining still needs
+the separate VPN warning and confirmation.
+
 ## Known gaps
 
 The first-run friend-recovery demonstration uses only the public key, not recovery shares; real recovery is configured under **You → Friends**. Social recovery and labeler subscriptions are implemented. A browser cannot act as a listening public relay. Tor routing is not implemented in either build. Owners collect cosignatures by passing proposal codes; a proposal inbox and an appeals protocol are outside the completion scope.
