@@ -822,7 +822,7 @@ fn home_deletion_authority_is_recovered_when_the_non_authority_scatter_cache_is_
     let manifest = original.read().unwrap();
     let disk = home_checkpoint(m.n("phone"));
     disk.0.lock().unwrap().1.insert(crate::scatter::BLOB.into(), b"{".to_vec());
-    let mut reopened = node("mobile", &m.t, &disk);
+    let reopened = node("mobile", &m.t, &disk);
     assert_eq!(reopened.capability_for(&manifest).unwrap().tokens, original.tokens, "do not derive replacement tokens from this phone's unrelated secret");
     assert!(reopened.scatter.saved.kept.values().any(|k| k.records.contains(&Id::from_hex(&p.id).unwrap())));
 }
