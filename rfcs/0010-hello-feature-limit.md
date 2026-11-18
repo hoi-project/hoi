@@ -1,6 +1,7 @@
 # RFC-0010: Advertise all active services in the edition 0.4 hello
 
-Issue: #144  
+Issue: #144
+
 Status: proposed
 
 ## Summary
