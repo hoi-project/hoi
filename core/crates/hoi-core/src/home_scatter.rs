@@ -324,7 +324,13 @@ impl Node {
             return;
         }
         self.scatter.home_scatter.poll_at = now + 15;
-        let Some(home) = self.peers.iter().find(|(_, p)| p.home && p.said_hello && p.features.contains(hoi_sync::FEATURE_HOME_SCATTER)).map(|(p, _)| p.clone())
+        let Some(home) = self
+            .peers
+            .iter()
+            .find(|(_, p)| {
+                p.home && p.said_hello && (p.features.contains(hoi_sync::FEATURE_HOME_SCATTER) || p.features.contains(hoi_sync::FEATURE_HOME_SCATTER_JOURNAL))
+            })
+            .map(|(p, _)| p.clone())
         else {
             return;
         };

@@ -313,6 +313,9 @@ fn home_phone() -> (Mesh, String) {
 #[test]
 fn a_home_node_places_phone_posts_with_recoverable_deletion_authority() {
     let (mut m, c) = home_phone();
+    // Fully featured homes can omit the legacy feature to fit the 16-feature hello limit.
+    // The v2 capability must still support delivery-status polling and completion.
+    m.n("phone").peers.get_mut("home").unwrap().features.remove(hoi_sync::FEATURE_HOME_SCATTER);
     let p = post(m.n("phone"), &c, "from the phone, through the home node");
     let pid = Id::from_hex(&p.id).unwrap();
     assert!(until(&mut m, 600, |m| m.n("b").post(&p.id).is_ok()), "b has the phone's post");
