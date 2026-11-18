@@ -548,8 +548,14 @@ mod tests {
     }
     fn native_voucher_fixture(holder: Id, holder_hello: &[u8]) -> Arc<Shared> {
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
-        let sightings = serde_json::json!({"holders":{(holder.hex()):{"first":now-3*86400,"last":now,"checked":168.0,"present":168.0,"routes":[format!("{}@192.0.2.90:7843",holder.hex())]}}});
-        let initial = hoi_store::Loaded { records: vec![], blobs: vec![("scatter".into(), serde_json::to_vec(&sightings).unwrap())] };
+        let sightings = format!(
+            r#"{{"holders":{{"{}":{{"first":{},"last":{},"checked":168.0,"present":168.0,"routes":["{}@192.0.2.90:7843"]}}}}}}"#,
+            holder.hex(),
+            now - 3 * 86400,
+            now,
+            holder.hex()
+        );
+        let initial = hoi_store::Loaded { records: vec![], blobs: vec![("scatter".into(), sightings.into_bytes())] };
         let mut n = Node::open(Box::new(hoi_store::Journal::with_initial(initial)), "node", "https://example.com/app/", hoi_core::system_clock()).unwrap();
         n.set_settings(&hoi_core::dto::SettingsPatch { relay: Some(true), ..Default::default() }).unwrap();
         n.set_carry_policy(hoi_core::CarryPolicy::Any, 64);
