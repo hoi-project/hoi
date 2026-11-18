@@ -10,6 +10,8 @@ A member can move an existing installation to an empty vault by exporting and im
 a passphrase-protected file. The receiving installation applies the deletion safeguards of
 RFC-0001 and obtains new MLS membership before serving private content. The file resumes the
 source device identity. The two copies should not run concurrently.
+The archive requires a local device signing key and its matching root or signed device
+blessing. A remotely signed browser establishes a fresh link with its signing computer.
 
 ## Archive
 
@@ -29,6 +31,13 @@ replacement. After cleanup write the prepared records, state and deletion invent
 one vault transaction. A failed write leaves the previous persisted contents intact.
 Incoming public content needs peer synchronization. Cached private payloads and old MLS
 epoch secrets are discarded. Local pairing and serving settings need fresh authorization.
+
+The restored member retains known holder-removal tokens and pending author deletion jobs.
+For an unfinished placement delegated to a paired home (RFC-0008), the previous home may
+have written pieces before the member received the cleanup tokens. An author deletion
+records the missing coverage and still removes the available copies. Import discards
+work the source installation performed as an operator for other clients. Opening a new
+pairing does not restart a placement sent under the former credentials.
 
 ## MLS rejoin
 
