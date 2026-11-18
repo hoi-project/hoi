@@ -169,6 +169,27 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn previews_start_tls_at_the_selected_address() {
+        use tokio::io::AsyncReadExt;
+
+        let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let host = "preview.invalid";
+        let client = client(host, &[address], None).unwrap();
+        let url = format!("https://{host}:{}/", address.port());
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let receive = async {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                assert_eq!(socket.read_u8().await.unwrap(), 0x16, "expected a TLS handshake");
+            };
+            let (response, ()) = tokio::join!(client.get(url).send(), receive);
+            assert!(response.unwrap_err().is_connect(), "an interrupted handshake must fail the request");
+        })
+        .await
+        .expect("the preview client must connect to the selected endpoint");
+    }
+
+    #[tokio::test]
     async fn local_and_plain_addresses_are_never_fetched() {
         let open = NetPolicy::default();
         for url in ["http://example.com/", "https://127.0.0.1/", "https://localhost/", "https://10.0.0.1/x", "https://[::1]/", "https://user@example.com/"] {
