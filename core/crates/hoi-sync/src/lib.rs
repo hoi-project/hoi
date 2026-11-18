@@ -415,6 +415,8 @@ pub enum Msg {
         /// `rb`, from a home node to its own devices only: it fetches and rebuilds objects kept
         /// in pieces for them (`rebuild`, SCATTER.md §5.12). Older peers ignore it.
         rebuilds: bool,
+        /// Current source addresses of a home node, reported only to its own paired devices.
+        home_egress: Vec<(String, std::net::IpAddr)>,
         /// RFC-0007: IP of the recipient as seen on this connection.
         observed_address: Option<std::net::IpAddr>,
     },
@@ -750,6 +752,7 @@ impl Msg {
                 forwards,
                 rebuilds,
                 observed_address,
+                home_egress,
             } => {
                 let mut e = vec![
                     ("t", t("hello")),
@@ -795,6 +798,9 @@ impl Msg {
                 }
                 if *forwards {
                     e.push(("fw", Value::Bool(true)));
+                }
+                if !home_egress.is_empty() {
+                    e.push(("he", Value::A(home_egress.iter().take(16).map(|(transport, ip)| t(&format!("{transport} {ip}"))).collect())));
                 }
                 if let Some(ip) = observed_address {
                     e.push(("oa", t(&ip.to_string())));
@@ -1007,6 +1013,15 @@ impl Msg {
                     declaration: declaration_from(m.remove("dc"))?,
                     holder: holder_from(m.remove("sk"))?,
                     forwards: matches!(m.remove("fw"), Some(Value::Bool(true))),
+                    home_egress: texts_from(m.remove("he"), 16, 56)?
+                        .into_iter()
+                        .filter_map(|s| {
+                            let (transport, address) = s.split_once(' ')?;
+                            let ip = address.parse::<std::net::IpAddr>().ok()?.to_canonical();
+                            (matches!(transport, "quic" | "webrtc" | "websocket") && !ip.is_unspecified() && !ip.is_multicast())
+                                .then(|| (transport.to_string(), ip))
+                        })
+                        .collect(),
                     observed_address: bounded_text(&mut m, "oa", 45)?
                         .map(|s| s.parse::<std::net::IpAddr>().map(|ip| ip.to_canonical()).map_err(|_| TypesError::Field("invalid observed IP".into())))
                         .transpose()?,
@@ -1282,6 +1297,7 @@ mod tests {
             declaration: None,
             holder: None,
             forwards: false,
+            home_egress: Vec::new(),
             observed_address: None,
             rebuilds: false,
         }
@@ -1309,6 +1325,7 @@ mod tests {
                 declaration: None,
                 holder: None,
                 forwards: false,
+                home_egress: Vec::new(),
                 observed_address: None,
                 rebuilds: false,
             },
@@ -1331,6 +1348,7 @@ mod tests {
                 declaration: None,
                 holder: None,
                 forwards: false,
+                home_egress: Vec::new(),
                 observed_address: None,
                 rebuilds: false,
             },

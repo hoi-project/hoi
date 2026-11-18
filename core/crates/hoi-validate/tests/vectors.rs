@@ -520,4 +520,9 @@ fn a_connection_observation_round_trips_in_a_hello() {
     };
     assert_eq!(ip.to_string(), v["observed"]);
     assert_eq!(hello.encode(), wire);
+    let paired = unhex(v["pairedHello"].as_str().unwrap());
+    let hello = hoi_sync::Msg::decode(&paired).unwrap();
+    assert_eq!(hello.encode(), paired);
+    let hoi_sync::Msg::Hello { home_egress, .. } = hello else { panic!("missing paired report") };
+    assert_eq!(home_egress, vec![("quic".into(), v["homeEgress"].as_str().unwrap().parse().unwrap())]);
 }

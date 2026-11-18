@@ -415,6 +415,13 @@ An optional `oa` in `hello` reports the recipient's IP literal on this connectio
 port. Receivers use it for local display only; they discard it on disconnect or replacement
 by a hello without an observation. A relayed or proxied path may have no direct observation.
 
+A home node may include `he` only after the recipient authenticates as its paired device.
+It lists up to 16 distinct strings of the form `transport IP` (`quic`, `webrtc` or
+`websocket`). Each address is the home node's own source as reported on an active onward
+connection. It supplies no other peer's IP, identifier, or community. The device displays
+this list separately from its own connection to home, refreshes it on replacement hellos,
+and drops it when the home connection closes. Ordinary peers never receive this list.
+
 A client may check a selected public node before joining. On a separate WS or RTC client
 link it sends the fixed initial ASCII frame `hoi/address-check/1`. A node accepting members
 returns one `hoi/address/1 ` frame followed by the numeric IP (or an empty suffix), and the

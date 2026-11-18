@@ -332,6 +332,7 @@ fn scatter_vectors() -> Value {
         declaration: None,
         holder: Some(holder_key),
         forwards: false,
+        home_egress: Vec::new(),
         observed_address: None,
         rebuilds: false,
     }
@@ -665,6 +666,7 @@ fn main() {
         declaration: None,
         holder: None,
         forwards: false,
+        home_egress: Vec::new(),
         observed_address: None,
         rebuilds: false,
     };
@@ -742,6 +744,7 @@ fn main() {
         declaration: None,
         holder: None,
         forwards: false,
+        home_egress: Vec::new(),
         observed_address: None,
         rebuilds: false,
     };
@@ -775,6 +778,7 @@ fn main() {
             declaration: None,
             holder: None,
             forwards: false,
+            home_egress: Vec::new(),
             observed_address: None,
             rebuilds: false,
         };
@@ -799,6 +803,7 @@ fn main() {
             declaration: None,
             holder: None,
             forwards: false,
+            home_egress: Vec::new(),
             observed_address: None,
             rebuilds: false,
         };
@@ -1060,6 +1065,7 @@ fn main() {
             declaration: None,
             holder: None,
             forwards: false,
+            home_egress: Vec::new(),
             observed_address: None,
             rebuilds: false,
         };
@@ -1134,6 +1140,7 @@ fn main() {
             declaration: Some(hoi_sync::SignedDeclaration { bytes: canonical.clone(), sig: signature.0 }),
             holder: None,
             forwards: true,
+            home_egress: Vec::new(),
             observed_address: None,
             rebuilds: false,
         };
@@ -1156,11 +1163,16 @@ fn main() {
     if let hoi_sync::Msg::Hello { observed_address, .. } = &mut address_hello {
         *observed_address = Some("203.0.113.7".parse().unwrap());
     }
+    let mut paired_hello = address_hello.clone();
+    if let hoi_sync::Msg::Hello { home_egress, .. } = &mut paired_hello {
+        home_egress.push(("quic".into(), "2001:db8::7".parse().unwrap()));
+    }
     let files = [
         (
             "connection-address.json",
             json!({
                 "hello": hex_encode(&address_hello.encode()), "observed": "203.0.113.7",
+                "pairedHello": hex_encode(&paired_hello.encode()), "homeEgress": "2001:db8::7",
                 "check": "hoi/address-check/1", "reply": "hoi/address/1 203.0.113.7"
             }),
         ),

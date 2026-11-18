@@ -191,6 +191,7 @@ fn a_home_node_keeps_a_bounded_set_of_device_credentials() {
             declaration: None,
             holder: None,
             forwards: false,
+            home_egress: Vec::new(),
             observed_address: None,
             rebuilds: false,
         }

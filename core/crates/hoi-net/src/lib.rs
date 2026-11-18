@@ -827,6 +827,7 @@ mod tests {
             declaration: None,
             holder: None,
             forwards: false,
+            home_egress: Vec::new(),
             observed_address: None,
             rebuilds: false,
         };

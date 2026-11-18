@@ -9,6 +9,7 @@
   let open = $state(false);
   const rows = $derived(connectionIps(app.net, $rtcAddresses));
   const summary = $derived(connectionIpSummary(app.net, $rtcAddresses));
+  const home = $derived(app.net?.homeNode);
   const vpn = $derived(app.net?.vpn);
   async function copy(address: string) {
     toast(await copyText(address) ? 'Address copied.' : 'Copy did not work here.');
@@ -24,6 +25,7 @@
 
 <Modal bind:open title="Your connection IP">
   <p>What an existing connection reports about its current path. Other connections can use different addresses.</p>
+  {#if home}<h3>This device to its home node and other connections</h3>{/if}
   {#if rows.length}
     <ul class="reports">
       {#each rows as row (row.id)}
@@ -35,11 +37,21 @@
       {/each}
     </ul>
   {:else}<p role="status">{summary}. A node can still see your source address when it connects.</p>{/if}
+  {#if home}
+    <h3>Home node to other nodes</h3>
+    {#if home.connected && home.onward?.length}
+      <ul class="reports" aria-label="Home node onward addresses">
+        {#each home.onward as path}
+          <li><b>{path.transport}</b><span class="address">{path.address}</span></li>
+        {/each}
+      </ul>
+    {:else}<p role="status">The home node has no current onward address to report.</p>{/if}
+  {/if}
   {#if vpn}
     <p class="help">{vpn.up ? `hoi restricts its internet connections to ${vpn.interface}. Its interface addresses are not its public exit address.` : `${vpn.interface} ${vpn.detail || 'is unavailable'}. hoi’s VPN policy pauses internet connections until it can use that interface.`}</p>
   {/if}
-  <p class="help">An address report does not verify a VPN or anonymity. A node can report an incorrect address. Your home node’s onward connections are a separate path.</p>
-  <p class="help">These reports stay in memory on this device. Opening this panel makes no IP lookup or new connection.</p>
+  <p class="help">An address report does not verify a VPN or anonymity. A node can report an incorrect address.</p>
+  <p class="help">These reports are held in memory. A home node shares its own onward addresses only with its paired devices. Opening this panel makes no IP lookup or new connection.</p>
   <a class="textlink" href="#/you" onclick={() => (open = false)}>Connection settings and advertised addresses</a>
 </Modal>
 

@@ -22,6 +22,7 @@ fn hello(community: Id) -> Msg {
         declaration: None,
         holder: None,
         forwards: false,
+        home_egress: Vec::new(),
         observed_address: None,
         rebuilds: false,
     }

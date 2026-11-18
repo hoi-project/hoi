@@ -85,6 +85,9 @@ async fn socket_observation(route: &str, policy: &NetPolicy) -> Result<IpAddr, &
     } else if host == "localhost" {
         SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port)
     } else {
+        if policy.vpn.is_some() && !matches!(policy.state(), VpnState::Up(_)) {
+            return Err("The selected VPN is unavailable for this check.");
+        }
         // Name resolution follows the same OS resolver policy as hoi's native HTTPS client.
         tokio::net::lookup_host((host, port)).await.map_err(|_| UNAVAILABLE)?.next().ok_or(UNAVAILABLE)?
     };

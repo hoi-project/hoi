@@ -13,6 +13,13 @@ A new hello replaces the prior observation, including when it omits the field. C
 keep one value per active link and discard it when the link closes. A peer can misreport its
 observation. It never authorizes a dial, proves a VPN is active or changes node trust.
 
+A home node may include `he` only after the recipient authenticates as its paired device.
+It lists up to 16 distinct strings of the form `transport IP` (`quic`, `webrtc` or
+`websocket`). Each address is the home node's own source as reported on an active onward
+connection. It supplies no other peer's IP, identifier, or community. The device displays
+this list separately from its own connection to home, refreshes it on replacement hellos,
+and drops it when the home connection closes. Ordinary peers never receive this list.
+
 Before joining, a person can explicitly check a selected node. The screen says that the
 check reveals the source IP to the destination. The client opens a fresh connection to that
 route and sends no sync hello, identity, pairing secret or community. A browser uses the

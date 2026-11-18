@@ -457,6 +457,8 @@ async fn run_peer(
     let routes = async {
         let opened = tokio::time::Instant::now();
         let mut forward_slot = forward_slot;
+        let selected = || conn.paths().iter().find(|p| p.is_selected()).map(|p| (p.id(), p.local_addr().clone(), p.remote_addr().clone()));
+        let mut old_path = selected();
         let mut tick = tokio::time::interval(Duration::from_secs(2));
         loop {
             tick.tick().await;
@@ -486,7 +488,13 @@ async fn run_peer(
                 })
                 .unwrap_or("unknown");
             let addr = direct_addr(&conn);
+            let path = selected();
+            let changed = path != old_path;
+            old_path = path;
             shared.with(|n| {
+                if changed {
+                    n.invalidate_address_report(&peer);
+                }
                 n.set_peer_route(&peer, route);
                 n.set_peer_meta(&peer, meta(addr));
             });

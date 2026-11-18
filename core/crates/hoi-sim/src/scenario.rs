@@ -196,6 +196,7 @@ impl Battle {
             declaration: None,
             holder: None,
             forwards: false,
+            home_egress: Vec::new(),
             observed_address: None,
             rebuilds: false,
         };
@@ -420,6 +421,7 @@ pub fn siege_with_churn(honest: usize, attackers: usize, days: u64, pow_bits: Op
                 declaration: None,
                 holder: None,
                 forwards: false,
+                home_egress: Vec::new(),
                 observed_address: None,
                 rebuilds: false,
             };
@@ -494,6 +496,7 @@ pub fn siege_with_churn(honest: usize, attackers: usize, days: u64, pow_bits: Op
                 declaration: None,
                 holder: None,
                 forwards: false,
+                home_egress: Vec::new(),
                 observed_address: None,
                 rebuilds: false,
             };
@@ -563,6 +566,7 @@ pub fn siege_with_churn(honest: usize, attackers: usize, days: u64, pow_bits: Op
                 declaration: None,
                 holder: None,
                 forwards: false,
+                home_egress: Vec::new(),
                 observed_address: None,
                 rebuilds: false,
             };

@@ -1178,6 +1178,8 @@ export interface NetStatus {
   label: string;
   peers: number;
   homeNode?: {
+    /** Current egress of the paired home node, grouped by transport and source address. */
+    onward?: { transport: string; address: string }[];
     url: string;
     connected: boolean;
     name?: string;
