@@ -4,7 +4,6 @@ use crate::vpn::{NetPolicy, VpnState};
 use futures_util::{SinkExt, StreamExt};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::time::Duration;
-use str0m::ice::StunMessage;
 use tokio::net::{TcpSocket, UdpSocket};
 use tokio_tungstenite::tungstenite::{Message, protocol::WebSocketConfig};
 
@@ -61,14 +60,41 @@ async fn udp_observation(to: SocketAddr, policy: &NetPolicy) -> Result<IpAddr, &
     sock.send(&request).await.map_err(|_| UNAVAILABLE)?;
     let mut buf = [0u8; 512];
     let n = sock.recv(&mut buf).await.map_err(|_| UNAVAILABLE)?;
-    if n < 20 || buf[8..20] != request[8..] {
-        return Err(UNAVAILABLE);
+    mapped_ip(&buf[..n], &request[8..]).ok_or(UNAVAILABLE)
+}
+
+/// RFC 8489 binding success from the connected destination. Plain STUN omits the ICE
+/// MESSAGE-INTEGRITY attribute, so use the transaction-bound XOR-MAPPED-ADDRESS directly.
+fn mapped_ip(reply: &[u8], transaction: &[u8]) -> Option<IpAddr> {
+    let header = reply.get(..20)?;
+    if header[..2] != [1, 1]
+        || header[4..8] != [0x21, 0x12, 0xa4, 0x42]
+        || &header[8..20] != transaction
+        || usize::from(u16::from_be_bytes([header[2], header[3]])) != reply.len() - 20
+    {
+        return None;
     }
-    let msg = StunMessage::parse(&buf[..n]).map_err(|_| UNAVAILABLE)?;
-    if !msg.is_successful_binding_response() {
-        return Err(UNAVAILABLE);
+    let mut attributes = &reply[20..];
+    let mut mapped = None;
+    while !attributes.is_empty() {
+        let tag = attributes.get(..4)?;
+        let len = usize::from(u16::from_be_bytes([tag[2], tag[3]]));
+        let value = attributes.get(4..4 + len)?;
+        attributes = attributes.get(4 + len.div_ceil(4) * 4..)?;
+        if tag[..2] != [0, 0x20] {
+            continue;
+        }
+        if mapped.is_some() || value.first() != Some(&0) {
+            return None;
+        }
+        let ip = match (value.get(1), len) {
+            (Some(1), 8) => IpAddr::V4(Ipv4Addr::from(std::array::from_fn::<_, 4, _>(|i| value[4 + i] ^ header[4 + i]))),
+            (Some(2), 20) => IpAddr::V6(Ipv6Addr::from(std::array::from_fn::<_, 16, _>(|i| value[4 + i] ^ header[4 + i]))),
+            _ => return None,
+        };
+        mapped = Some(ip.to_canonical());
     }
-    msg.mapped_address().map(|a| a.ip().to_canonical()).filter(|ip| !ip.is_unspecified() && !ip.is_multicast()).ok_or(UNAVAILABLE)
+    mapped.filter(|ip| !ip.is_unspecified() && !ip.is_multicast())
 }
 
 const NEED_NUMERIC: &str = "This device has no DNS answer scoped to the selected VPN. Choose the node’s numeric RTC or WebSocket route.";
@@ -156,6 +182,27 @@ async fn socket_observation(route: &str, policy: &NetPolicy) -> Result<IpAddr, &
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plain_stun_uses_the_reply_transaction_and_both_address_families() {
+        let transaction = [7; 12];
+        for ip in ["198.51.100.9".parse::<IpAddr>().unwrap(), "2001:db8::7".parse::<IpAddr>().unwrap()] {
+            let mut reply = vec![1, 1, 0, 0, 0x21, 0x12, 0xa4, 0x42];
+            reply.extend_from_slice(&transaction);
+            let (family, bytes) = match ip {
+                IpAddr::V4(v) => (1, v.octets().to_vec()),
+                IpAddr::V6(v) => (2, v.octets().to_vec()),
+            };
+            let encoded: Vec<u8> = bytes.iter().enumerate().map(|(i, b)| b ^ reply[4 + i]).collect();
+            reply.extend_from_slice(&[0, 0x20, 0, 4 + bytes.len() as u8, 0, family, 0, 1]);
+            reply.extend_from_slice(&encoded);
+            reply[3] = (reply.len() - 20) as u8;
+            assert_eq!(mapped_ip(&reply, &transaction), Some(ip));
+            assert_eq!(mapped_ip(&reply, &[8; 12]), None);
+            reply.pop();
+            assert_eq!(mapped_ip(&reply, &transaction), None);
+        }
+    }
 
     #[test]
     fn only_a_fresh_answer_scoped_to_the_required_tunnel_can_supply_a_hostname() {
