@@ -67,11 +67,8 @@ pub const MAX_HINT_PEERS: usize = 16;
 pub const MAX_HINT_RELAYS: usize = 8;
 /// The sender's own routes in `hello.routes` (iroh `endpoint@addr` and `rtc:` hints).
 pub const MAX_ROUTES: usize = 8;
-/// Feature names in `hello.fx`, so newer messages only go to peers that understand them. Up to
-/// 16 are read and sent (releases before scattered delivery refused more than 8; nothing older
-/// is in use).
-pub const MAX_FEATURES: usize = 16;
-pub const SEND_FEATURES: usize = 16;
+/// Feature names in a sync hello. Senders advertise every active service within this bound.
+pub const MAX_FEATURES: usize = 32;
 /// Holder commits authenticated drop markers before acknowledging removal (RFC-0001).
 pub const FEATURE_DROP_JOURNAL: &str = "drop-journal";
 /// The sender answers `find`: which nodes carry a community, from what it knows and, for a node
@@ -1762,16 +1759,29 @@ mod tests {
     }
 
     #[test]
-    fn up_to_sixteen_features_are_read() {
+    fn hello_accepts_32_feature_names_and_rejects_33() {
         let mut h = bare();
         if let Msg::Hello { features, .. } = &mut h {
-            *features = (0..MAX_FEATURES).map(|i| format!("f{i}")).collect();
+            *features = (0..32).map(|i| format!("f{i}")).collect();
         }
         assert!(Msg::decode(&h.encode()).is_ok());
         if let Msg::Hello { features, .. } = &mut h {
             features.push("one-more".into());
         }
         assert!(Msg::decode(&h.encode()).is_err());
+    }
+
+    #[test]
+    fn hello_limits_each_feature_name_to_16_utf8_bytes() {
+        let message = |name: &str| {
+            let mut h = bare();
+            if let Msg::Hello { features, .. } = &mut h {
+                features.push(name.to_owned());
+            }
+            h.encode()
+        };
+        assert!(Msg::decode(&message(&"é".repeat(8))).is_ok());
+        assert!(Msg::decode(&message(&format!("{}x", "é".repeat(8)))).is_err());
     }
 
     #[test]

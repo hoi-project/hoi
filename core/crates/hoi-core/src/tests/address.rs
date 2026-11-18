@@ -311,10 +311,50 @@ fn home_phone() -> (Mesh, String) {
 }
 
 #[test]
+fn a_fully_configured_home_advertises_all_active_services() {
+    use hoi_store::pieces::SqlitePieces;
+    let (mut m, _) = home_phone();
+    let path = std::env::temp_dir().join(format!("hoi-full-hello-{}.db", std::process::id()));
+    let home = m.n("home");
+    home.set_settings(&SettingsPatch { public_node: Some(true), relay: Some(true), relay_notice_seen: Some(true), ..Default::default() }).unwrap();
+    home.set_carry_policy(crate::CarryPolicy::Any, 64);
+    home.set_piece_store(Some(Box::new(SqlitePieces::open(&path, 1 << 20).unwrap())));
+    home.set_dht(Some(crate::find::DhtPorts { dht: 7846, answer: 7847 }));
+    home.set_signal_relay(true);
+    home.set_blobs(true);
+    home.rehello("phone");
+    m.pump();
+    let advertised = &m.n("phone").peers["home"].features;
+    for feature in [
+        "link",
+        "home-scatter",
+        "home-scatter-v2",
+        "catalog",
+        "profile",
+        "profile-color",
+        "nodes",
+        "directory",
+        "range",
+        "drop-journal",
+        "scatter-store",
+        "keeps",
+        "carry",
+        "find",
+        "dht",
+        "blobs",
+        "signal",
+    ] {
+        assert!(advertised.contains(feature), "missing {feature} from the fully configured home's hello: {advertised:?}");
+    }
+    assert!(!advertised.contains("direct") && !advertised.contains("unlisted"));
+    drop(m);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn a_home_node_places_phone_posts_with_recoverable_deletion_authority() {
     let (mut m, c) = home_phone();
-    // Fully featured homes can omit the legacy feature to fit the 16-feature hello limit.
-    // The v2 capability must still support delivery-status polling and completion.
+    // A peer offering v2 alone must still support delivery-status polling and completion.
     m.omitted_features.insert(("home".into(), "phone".into()), [hoi_sync::FEATURE_HOME_SCATTER.into()].into());
     m.n("phone").peers.get_mut("home").unwrap().features.remove(hoi_sync::FEATURE_HOME_SCATTER);
     let p = post(m.n("phone"), &c, "from the phone, through the home node");
