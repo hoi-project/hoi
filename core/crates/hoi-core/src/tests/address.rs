@@ -1062,7 +1062,11 @@ fn leaving_after_re_pairing_never_sends_old_manifest_authority_to_the_new_home()
 fn pending_delivery_reports_cannot_follow_a_replacement_pairing_or_snapshot() {
     for reset in ["pair", "unpair", "restore"] {
         let (mut m, c) = home_phone();
-        let record = Id::from_hex(&c).unwrap();
+        let post = post(m.n("phone"), &c, "a delivered pointer still waiting for its home report");
+        let target = Id::from_hex(&post.id).unwrap();
+        assert!(until(&mut m, 600, |m| m.n("b").post(&post.id).is_ok()));
+        let record = *m.n("phone").scatter.saved.own_pointers[&target].iter().next().unwrap();
+        assert!(m.n("phone").store.contains(&record), "use a retained real pointer, not a community root");
         m.n("phone").scatter.saved.home_delivery.insert(record, "pending".into());
         m.n("phone").scatter.dirty = true;
         m.t.fetch_add(20, Ordering::SeqCst);
