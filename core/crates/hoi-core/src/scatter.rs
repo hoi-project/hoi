@@ -1283,6 +1283,14 @@ impl Node {
         out
     }
 
+    /// A placing device and its authenticated paired devices are not independent holders.
+    /// Retain their routing metadata for cleanup of older manifests, but never count them
+    /// as fresh candidate places, including when a forwarder vouches for them (#136).
+    pub(crate) fn own_holder(&self, endpoint: &Id) -> bool {
+        Some(*endpoint) == self.own_endpoint()
+            || self.peers.values().any(|p| p.said_hello && (p.home || p.client) && p.meta.endpoint.as_deref() == Some(endpoint.hex().as_str()))
+    }
+
     /// What an object can use now: this device's forwarders, each with its place, and the
     /// holders that may take pieces outside every forwarder's place, each with the forwarders
     /// that reach it.
@@ -1293,7 +1301,11 @@ impl Node {
     /// [`Node::plan`] for an object of community `c`: its rosters count too.
     pub(crate) fn plan_in(&self, c: Option<Id>) -> Plan {
         let forwarders = self.forwarders();
-        let holders: Vec<Reachable> = self.reachable_holders(&forwarders, c).into_iter().filter(|h| h.qualified && !self.unreached(&h.endpoint)).collect();
+        let holders: Vec<Reachable> = self
+            .reachable_holders(&forwarders, c)
+            .into_iter()
+            .filter(|h| h.qualified && !self.own_holder(&h.endpoint) && !self.unreached(&h.endpoint))
+            .collect();
         let mut all: Vec<Candidate> = forwarders.iter().map(|f| f.candidate).collect();
         all.extend(holders.iter().map(|h| h.candidate));
         let place = place::places(&all);

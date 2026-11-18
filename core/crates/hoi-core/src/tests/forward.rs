@@ -1191,3 +1191,21 @@ fn a_reader_whose_forwarders_vouch_for_no_holder_still_rebuilds_through_one_hop_
     let op = m.n("r").scatter_load(&man).unwrap();
     assert!(matches!(m.wait("r", op, 120), ScatterOutcome::Loaded(_)), "holders open what was sealed to their earlier keys");
 }
+
+#[test]
+fn a_forwarder_vouch_cannot_make_the_placing_device_an_independent_holder() {
+    let mut m = mesh(3, 14);
+    join(&mut m, "a", "198.51.100.10:7843", &[0, 1, 2]);
+    m.n("a").set_piece_store(Some(Box::new(MemPieces::new(1 << 30))));
+    m.n("a").set_settings(&SettingsPatch { public_node: Some(true), ..Default::default() }).unwrap();
+    m.t.fetch_add(3600, Ordering::SeqCst);
+    m.run(5);
+    let own = Id::from_hex(&m.eps["a"]).unwrap();
+    let forwarders = m.n("a").forwarders();
+    assert!(m.n("a").reachable_holders(&forwarders, None).iter().any(|h| h.endpoint == own), "exercise a genuine signed vouch of this holder");
+    assert_eq!(m.n("a").scatter_places(), 14, "count only remote independent places");
+    assert!(m.n("a").mail_links().get(&own).is_some_and(|link| !link.qualified), "retain existing mailbox routes without selecting our own copy");
+    let op = m.n("a").scatter_store(b"independent remote holders", 10, T0 + DAY).unwrap();
+    let manifest = stored(m.wait("a", op, 120));
+    assert!(!manifest.holders.contains(&own));
+}

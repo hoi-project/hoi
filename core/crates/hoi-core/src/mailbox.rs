@@ -409,7 +409,7 @@ impl Node {
                     to: Some(h.endpoint),
                     candidate: h.candidate,
                     routes: h.routes.clone(),
-                    qualified: h.qualified,
+                    qualified: h.qualified && !self.own_holder(&h.endpoint),
                 },
             );
         }

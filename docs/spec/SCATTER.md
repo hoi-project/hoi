@@ -310,6 +310,9 @@ device's candidates is no larger than its share of real places.
 
 1. **Who can be a candidate.** A node listing `scatter` and `keeps` in `hello.fx`, a public node or
    an opted-in desktop, with a valid signed `xk`, whose notice this device has not declined.
+   The placing device and its authenticated paired devices never count as independent holders,
+   including when other nodes vouch for them. Retain old locator authority and routing metadata
+   for cleanup; excluding a fresh candidate never discards an existing placement (#136).
 2. **Known first hand or corroborated.** A candidate counts once this device or the person's own
    devices (a paired home node, their desktop) saw it answer at least 80% of probes over 7 days,
    *or* at least two introducers in different places list it: the device's own links' node lists,
