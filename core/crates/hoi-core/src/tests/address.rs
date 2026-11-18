@@ -315,6 +315,7 @@ fn a_home_node_places_phone_posts_with_recoverable_deletion_authority() {
     let (mut m, c) = home_phone();
     // Fully featured homes can omit the legacy feature to fit the 16-feature hello limit.
     // The v2 capability must still support delivery-status polling and completion.
+    m.omitted_features.insert(("home".into(), "phone".into()), [hoi_sync::FEATURE_HOME_SCATTER.into()].into());
     m.n("phone").peers.get_mut("home").unwrap().features.remove(hoi_sync::FEATURE_HOME_SCATTER);
     let p = post(m.n("phone"), &c, "from the phone, through the home node");
     let pid = Id::from_hex(&p.id).unwrap();
@@ -327,6 +328,13 @@ fn a_home_node_places_phone_posts_with_recoverable_deletion_authority() {
             if serde_json::from_slice::<serde_json::Value>(payload).unwrap()["type"] == "JournalStore")));
     assert!(!m.n("phone").post(&p.id).unwrap().checks.address_hidden, "the home knows its sender");
     assert!(!m.n("phone").peers["home"].features.contains(hoi_sync::FEATURE_HOME_SCATTER), "exercise status polling without the legacy capability");
+    assert!(
+        m.log
+            .iter()
+            .filter(|(from, to, _)| from == "home" && to == "phone")
+            .all(|(_, _, msg)| !matches!(msg,Msg::Hello { features,.. } if features.iter().any(|f| f == hoi_sync::FEATURE_HOME_SCATTER))),
+        "every later Hello preserves the v2-only wire fixture"
+    );
     assert!(m.log.iter().any(|(from, _, msg)| from == "phone"
         && matches!(msg,Msg::HomeScatter{reply:false,payload,..} if serde_json::from_slice::<serde_json::Value>(payload).unwrap()["type"]=="Status")));
     assert_eq!(m.n("phone").post(&p.id).unwrap().checks.home_delivery.as_deref(), Some("pieces-injected"));

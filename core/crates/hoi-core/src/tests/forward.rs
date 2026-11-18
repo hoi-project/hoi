@@ -25,6 +25,8 @@ pub(crate) struct Mesh {
     pub(crate) log: Vec<(String, String, Msg)>,
     /// Every message that went nowhere because either side was cut: (from, to, decoded).
     pub(crate) lost: Vec<(String, String, Msg)>,
+    /// Capabilities omitted from every Hello on a selected test link, including re-Hellos.
+    pub(crate) omitted_features: BTreeMap<(String, String), BTreeSet<String>>,
 }
 
 impl Mesh {
@@ -37,6 +39,7 @@ impl Mesh {
             cut: BTreeSet::new(),
             log: Vec::new(),
             lost: Vec::new(),
+            omitted_features: BTreeMap::new(),
         }
     }
 
@@ -89,7 +92,7 @@ impl Mesh {
             let names: Vec<String> = self.nodes.keys().cloned().collect();
             for from in &names {
                 let out = self.nodes.get_mut(from).unwrap().take_outbox();
-                for (to, m) in out {
+                for (to, mut m) in out {
                     if self.cut.contains(from) || self.cut.contains(&to) {
                         if let Ok(msg) = Msg::decode(&m) {
                             self.lost.push((from.clone(), to, msg));
@@ -100,7 +103,13 @@ impl Mesh {
                         continue;
                     }
                     quiet = false;
-                    if let Ok(msg) = Msg::decode(&m) {
+                    if let Ok(mut msg) = Msg::decode(&m) {
+                        if let Msg::Hello { features, .. } = &mut msg
+                            && let Some(omitted) = self.omitted_features.get(&(from.clone(), to.clone()))
+                        {
+                            features.retain(|feature| !omitted.contains(feature));
+                            m = msg.encode();
+                        }
                         self.log.push((from.clone(), to.clone(), msg));
                     }
                     self.nodes.get_mut(&to).unwrap().net_receive(from, &m);
