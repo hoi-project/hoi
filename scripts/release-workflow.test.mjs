@@ -416,7 +416,9 @@ test('routine checks start by themselves in the public hoi-project repository, a
     event: { repository: { private: isPrivate }, ...(head ? { pull_request: { head: { repo: { full_name: head } } } } : {}) } } });
   // One gate per workflow, on its changes job; every other job needs it.
   for (const workflow of ['ci', 'security']) {
-    for (const event of ['push', 'schedule']) assert.equal(gate(workflow, 'changes', ctx(event)), true, `${workflow}: ${event}`);
+    assert.match(read(workflow), /^  merge_group:\n    types: \[checks_requested\]$/m);
+    assert.match(read(workflow), /QUEUE_BASE: \$\{\{ github\.event\.merge_group\.base_sha \}\}/);
+    for (const event of ['push', 'schedule', 'merge_group']) assert.equal(gate(workflow, 'changes', ctx(event)), true, `${workflow}: ${event}`);
     assert.equal(gate(workflow, 'changes', ctx('pull_request', { head: 'contributor/hoi' })), true, `${workflow}: fork pull request`);
     assert.equal(gate(workflow, 'changes', ctx('push', { isPrivate: true })), false, `${workflow}: hoi-project/hoi while private`);
     assert.equal(gate(workflow, 'changes', ctx('push', { owner: 'pclshm', isPrivate: true })), false, `${workflow}: private workspace push`);
@@ -437,6 +439,7 @@ test('routine checks start by themselves in the public hoi-project repository, a
   assert.equal(gate('ci', 'web', outputs({ web: 'true' })), true);
   assert.doesNotMatch(job('ci', 'quick'), /^    if:/m, 'quick checks run whenever CI runs');
   const sonar = { result: 'success', outputs: { sonar: 'true' } };
+  assert.equal(gate('ci', 'sonarcloud', { ...outputs({ sonar: 'true' }), github: { event_name: 'merge_group' } }), false, 'temporary queue heads do not need a Sonar token');
   assert.equal(gate('ci', 'sonarcloud', outputs({ sonar: 'true' })), true, 'Sonar after Rust');
   assert.equal(gate('ci', 'sonarcloud', { ...outputs({}), needs: { changes: sonar, rust: { result: 'skipped' } } }), true, 'Sonar for web changes without Rust');
   assert.equal(gate('ci', 'sonarcloud', { ...outputs({}), needs: { changes: sonar, rust: { result: 'failure' } } }), false, 'no Sonar after failed tests');
