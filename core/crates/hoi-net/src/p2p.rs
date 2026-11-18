@@ -536,19 +536,6 @@ mod tests {
         n.set_identity_bits(8);
         Shared::new(n, Box::new(|_| {}))
     }
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn an_isolated_native_check_authenticates_the_quic_destination_without_opening_sync() {
-        let home = node();
-        home.with(|n| n.set_settings(&hoi_core::dto::SettingsPatch { relay: Some(true), ..Default::default() }).unwrap());
-        let handle = start_p2p(home.clone(), P2pConfig { bind: Some("127.0.0.1:0".parse().unwrap()), relays: Vec::new() }).await.unwrap();
-        let socket = handle.endpoint.bound_sockets().into_iter().find(SocketAddr::is_ipv4).unwrap();
-        let route = format!("{}@127.0.0.1:{}", handle.endpoint.id(), socket.port());
-        let observation = crate::address_check::check(&route, &crate::vpn::NetPolicy::default()).await.unwrap();
-        assert_eq!(observation, ("127.0.0.1".parse().unwrap(), "quic"));
-        assert!(home.with(|n| n.net_status().connections.is_empty()));
-        handle.shutdown().await;
-    }
-
     #[test]
     fn hints_are_explicit_and_reject_unsafe_addresses() {
         let key = SecretKey::from_bytes(&[42; 32]).public().to_string();
@@ -804,5 +791,18 @@ mod tests {
         .expect("catch-up recovered the post after simultaneous reconnects");
         second.shutdown().await;
         first.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_isolated_native_check_authenticates_the_quic_destination_without_opening_sync() {
+        let home = node();
+        home.with(|n| n.set_settings(&hoi_core::dto::SettingsPatch { relay: Some(true), ..Default::default() }).unwrap());
+        let handle = start_p2p(home.clone(), P2pConfig { bind: Some("127.0.0.1:0".parse().unwrap()), ..P2pConfig::default() }).await.unwrap();
+        let socket = handle.endpoint.bound_sockets().into_iter().find(SocketAddr::is_ipv4).unwrap();
+        let route = format!("{}@127.0.0.1:{}", handle.endpoint.id(), socket.port());
+        let observation = crate::address_check::check(&route, &crate::vpn::NetPolicy::default()).await.unwrap();
+        assert_eq!(observation, ("127.0.0.1".parse().unwrap(), "quic"));
+        assert!(home.with(|n| n.net_status().connections.is_empty()));
+        handle.shutdown().await;
     }
 }

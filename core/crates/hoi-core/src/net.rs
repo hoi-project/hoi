@@ -101,16 +101,6 @@ pub struct PeerMeta {
 }
 
 impl PeerMeta {
-    /// Source observed on this connection. A proxy report only contributes to this display value.
-    pub fn observed_ip(&self) -> Option<std::net::IpAddr> {
-        self.addr
-            .as_ref()
-            .and_then(|a| a.parse::<std::net::SocketAddr>().ok())
-            .map(|a| a.ip())
-            .or(self.websocket_proxy_ip)
-            .map(|a| a.to_canonical())
-            .filter(|ip| !ip.is_unspecified() && !ip.is_multicast())
-    }
     fn for_role(role: Role) -> PeerMeta {
         match role {
             Role::Peer => PeerMeta { transport: "quic".into(), ..Default::default() },
@@ -124,6 +114,17 @@ impl PeerMeta {
     pub(crate) fn reaches(&self) -> BTreeSet<Reach> {
         let endpoint = self.endpoint.iter().filter_map(|e| Id::from_hex(e).ok()).map(Reach::Endpoint);
         endpoint.chain(self.dialed.iter().filter(|r| r.starts_with("rtc:")).filter_map(|r| reach(r))).collect()
+    }
+
+    /// Source observed on this connection. A proxy report only contributes to this display value.
+    pub fn observed_ip(&self) -> Option<std::net::IpAddr> {
+        self.addr
+            .as_ref()
+            .and_then(|a| a.parse::<std::net::SocketAddr>().ok())
+            .map(|a| a.ip())
+            .or(self.websocket_proxy_ip)
+            .map(|a| a.to_canonical())
+            .filter(|ip| !ip.is_unspecified() && !ip.is_multicast())
     }
 }
 
