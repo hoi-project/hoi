@@ -399,6 +399,16 @@ fn encrypted_member_snapshot_preserves_work_and_applies_offline_deletion_before_
     current.state.settings.favorites = vec![c.clone()];
     current.state.serve_token = Some("source-pairing-link".into());
     current.state.link_key = Some("source-link-key".into());
+    current.state.home = Some(crate::state::PairInfo {
+        url: "wss://old-home.example".into(),
+        token: "old-home-credential".into(),
+        name: None,
+        rtc: vec![],
+        spent: None,
+        next: None,
+        link_key: None,
+        proven: true,
+    });
     current.state.paired.push(crate::state::PairedDevice { credential: Id::hash(b"paired"), seen: T0 });
     current.mark_state();
     let file = current.export_snapshot(PASS).unwrap();
@@ -436,6 +446,9 @@ fn encrypted_member_snapshot_preserves_work_and_applies_offline_deletion_before_
     assert_eq!(before, *target.0.lock().unwrap());
     let me = restored.import_snapshot(&file, PASS).unwrap();
     assert_eq!(me.root_key, current.me().unwrap().root_key);
+    let events = restored.take_events();
+    assert!(events.iter().any(|event| matches!(event, Event::Net { .. })));
+    assert!(events.iter().all(|event| !matches!(event, Event::Net { status } if status.home_node.is_some())));
     assert!(restored.import_snapshot(&file, PASS).is_err(), "existing installation is protected");
     drop(restored);
     let mut restored = node("web", &t, &target);

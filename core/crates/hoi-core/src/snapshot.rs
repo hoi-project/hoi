@@ -175,6 +175,11 @@ impl Node {
         if self.strict() {
             staged.state.settings.assurance.clone_from(&self.state.settings.assurance);
         }
+        // Replaying the source database can enqueue its old network status before
+        // installation settings are replaced. Publish only the restored view.
+        staged.events.clear();
+        staged.last_net = None;
+        staged.changed.extend(staged.state.joined.keys().copied());
         staged.mark_state();
         staged.mark_keys();
         staged.commit()?;
