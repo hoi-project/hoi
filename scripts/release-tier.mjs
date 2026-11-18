@@ -14,6 +14,8 @@ export function releaseTier(tag) {
     throw new Error('Invalid release version: major, minor and patch must fit Rust SemVer unsigned 64-bit integers.');
   }
   const [, major, minor, patch] = match;
+  // The first public preview must pass the full cross-platform and security suites.
+  if (major === '0' && minor === '1' && patch === '0') return 'major';
   if (patch !== '0') return 'patch';
   if (minor !== '0') return 'minor';
   return major !== '0' ? 'major' : 'patch';

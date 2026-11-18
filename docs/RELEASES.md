@@ -97,8 +97,8 @@ key or export an encrypted identity backup and verify that you can read it. Keep
 installation until you confirm recovery in a clean profile. An identity backup does not
 contain private-group history. The preview data-loss notice applies.
 
-Run **Weekly** on the exact candidate commit with all platforms enabled. The regular release
-workflow classifies `0.1.0` as a minor release and selects a limited suite. Verify the artifact
+Run **Weekly** on the exact candidate commit with all platforms enabled. The signing
+workflow also requires the full major test tier for the first public preview. Verify the artifact
 list and signatures for the same commit, then test a clean install and a signed upgrade from
 an earlier 0.x test build, including a download interrupted before installation. Keep the
 release draft until real-device, field-network and independent-review results have been
@@ -160,7 +160,7 @@ the built-in GitHub token to create its tag and explicitly dispatch the build:
 [token-created tags do not trigger push workflows](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow).
 
 Validation is selected automatically from the tag: patch = quick, minor = limited,
-major = full. Prereleases inherit their numeric version's tier. See [CI](CI.md).
+major = full. The first public preview, 0.1.0, also uses the full tier. Prereleases inherit their numeric version's tier. See [CI](CI.md).
 Validation runs on the pinned source commit and must pass before artifact creation.
 
 ### Resume a failed run
@@ -261,7 +261,7 @@ Local builds use the same patch/minor/major tiers. Major versions also run the l
 browser suites; platform-specific checks still require their respective platforms.
 `--quick` selects only quick checks for a local build; `--no-audit` omits online audits.
 Neither option replaces full major-release CI validation. `--long` is accepted only
-for major versions.
+for versions assigned the full major test tier.
 
 Output goes to `dist/release/vX.Y.Z/`, flat, as a GitHub release and `install.sh --from`
 take it. To build every part into a folder per tool for trying and posting, without checks

@@ -30,7 +30,7 @@
         </tbody>
       </table>
     </div>
-    <p>The pnpm lockfile uses workspace links and needs no edit. The mobile wrappers use the Rust workspace version and have no version of their own. Versions are SemVer; prereleases and <code>0.x</code> versions default to the <code>preview</code> channel, everything else to <code>stable</code>, and a prerelease can never be <code>stable</code>. Each subsequent public preview uses a fresh version. Internal 1.x preview installations need a clean install when moving to 0.1.0.</p>
+    <p>The pnpm lockfile uses workspace links and needs no edit. The mobile wrappers use the Rust workspace version and have no version of their own. Versions are SemVer; prereleases and <code>0.x</code> versions default to the <code>preview</code> channel, everything else to <code>stable</code>, and a prerelease can never be <code>stable</code>. The signing workflow runs the full cross-platform and security suites for 0.1.0. Each subsequent public preview uses a fresh version. Internal 1.x preview installations need a clean install when moving to 0.1.0.</p>
   </section>
 
   <section class="wk-sec" id="release-json">
@@ -166,9 +166,9 @@ Maintainer -> GitHub release: publish the draft by hand
         <tbody>
           <tr><td><code>plan</code></td><td>—</td><td>the tag matches <code>^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$</code>; checks out the tag; <code>release-version.mjs --check "$TAG" --github-output</code>; outputs the tier, the prerelease flag and the commit SHA that every later job checks out</td></tr>
           <tr><td><code>checks</code></td><td>plan</td><td><code>release-checks.yml</code> on that commit</td></tr>
-          <tr><td><code>long</code></td><td>plan; major only</td><td><code>release-major.yml</code></td></tr>
-          <tr><td><code>security</code></td><td>plan; major only</td><td>for each of the three Cargo manifests: the dependency gate, cargo-deny with <code>--all-features</code>, <code>cargo audit</code> of the lockfile</td></tr>
-          <tr><td><code>npm-audit</code></td><td>plan; major only</td><td><code>pnpm audit --audit-level low</code></td></tr>
+          <tr><td><code>long</code></td><td>plan; full test tier</td><td><code>release-major.yml</code></td></tr>
+          <tr><td><code>security</code></td><td>plan; full test tier</td><td>for each of the three Cargo manifests: the dependency gate, cargo-deny with <code>--all-features</code>, <code>cargo audit</code> of the lockfile</td></tr>
+          <tr><td><code>npm-audit</code></td><td>plan; full test tier</td><td><code>pnpm audit --audit-level low</code></td></tr>
           <tr><td><code>signing</code></td><td>all of the above</td><td>runs only if plan and checks succeeded and, for a major, long, security and npm-audit succeeded (for others they must be skipped). Checks the tree carries the tag's version and that the signing secrets exist</td></tr>
           <tr><td><code>draft</code></td><td>plan, signing</td><td>creates the draft with <code>gh release create "$TAG" --draft --verify-tag --prerelease=… --title "hoi $TAG"</code>, or reuses a draft already there (one uploaded by <code>release-local.mjs --upload</code>); a published release with that tag stops it: "use a new version"</td></tr>
           <tr><td><code>desktop</code>, <code>setup</code></td><td>plan, draft; <code>desktop</code> on</td><td><code>tauri-apps/tauri-action</code> for <code>apps/desktop</code> and <code>apps/setup</code> on macOS (<code>--target universal-apple-darwin</code>), Ubuntu 22.04, Ubuntu 22.04 ARM and Windows, uploading into the draft</td></tr>

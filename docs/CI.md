@@ -56,7 +56,7 @@ runs, and pushes whose base is unknown, check everything.
 | `release-version.yml` / Release: version | version push to `main` (switch), or manual | validates versions, creates the tag and starts Release |
 | `release.yml` / Release | tag push (switch), or manual existing tag | validates, builds, signs and uploads a draft with the channel's pre-release flag |
 | `release-checks.yml` / Release: checks | called by Release | quick or minor validation on the pinned source commit |
-| `release-major.yml` / Release: major suites | called by Release for a validated major tag, and by Weekly | full suites on Linux, macOS and Windows (`linux_only` keeps them on Linux) |
+| `release-major.yml` / Release: major suites | called by Release for the first public preview and major versions, and by Weekly | full suites on Linux, macOS and Windows (`linux_only` keeps them on Linux) |
 | `website.yml` / Website | manual (`HOI_PAGES_ENABLED`) | website publication check (repository and site, no signing keys), quick checks, static build and Pages upload |
 
 Required checks for `main` (**Settings -> Rules**): *CI / Changes*, *CI / Quick checks*,
@@ -78,7 +78,7 @@ tier; prerelease suffixes use the same rule (`v2.0.0-rc.1` is major).
 | Minor (`X.Y.0`, Y > 0) | Quick checks, site/API type checks, web unit tests and selected pure Rust library tests on Linux |
 | Major (`X.0.0`, X > 0) | Minor checks plus full Rust and JavaScript suites, WASM/static builds, browser integration, platform and installer checks, dependency audits |
 
-`v0.1.0` uses the minor tier. `v0.0.0` uses patch checks.
+The first public preview `v0.1.0` uses the full major test tier, including its prerelease builds. `v0.0.0` uses patch checks.
 Minor checks do not compile WASM or run network/browser integration suites. Full
 Svelte checks need generated WASM bindings and run in the major suite after its build.
 Patch checks install the JavaScript dependencies but need no Rust compilation, browser, Docker
