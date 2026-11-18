@@ -1,14 +1,13 @@
 <script lang="ts">
+  import type { NetStatus } from '@hoi/core-api';
+  import { addressScope, connectionIps, hasUnreportedConnections } from '../connection-ip';
   import { rtcAddresses } from '../core/rtc-addresses';
   import { copyText } from '../util';
   import { toast } from '../toast.svelte';
 
-  let { connected, unreported }: { connected: number; unreported: boolean } = $props();
-  const active = $derived($rtcAddresses.filter((row) => row.connected));
-  const known = $derived(active.filter((row) => row.address));
-  // Core and RTC observations arrive separately: equal counts do not prove every link is covered.
-  const unavailable = $derived(unreported || active.some((row) => !row.address) || connected > active.length);
-  const context = (kind: 'node' | 'browser', id: number) => `${kind === 'node' ? 'Node' : 'Browser'} connection ${id}`;
+  let { net }: { net: NetStatus | null } = $props();
+  const reports = $derived(connectionIps(net, $rtcAddresses));
+  const unavailable = $derived(hasUnreportedConnections(net, $rtcAddresses));
 
   async function copy(address: string) {
     toast(await copyText(address) ? 'Address copied.' : 'Copy did not work here. Select the address and copy it yourself.');
@@ -16,28 +15,28 @@
 </script>
 
 <div class="browser-addresses">
-  {#if !connected && !active.length}
+  {#if !reports.length && !unavailable}
     <p class="state" role="status">No active connections.</p>
   {:else}
-    {#if known.length}
+    {#if reports.length}
       <ul aria-label="Your connection IP addresses">
-        {#each known as row (row.id)}
+        {#each reports as row (row.id)}
           <li>
-            <span class="help">{context(row.kind, row.id)}</span>
+            <span class="help">{row.observer}</span>
             <div class="address">
               <span class="ip">{row.address}</span>
-              <button type="button" class="pill pill-sm" aria-label={`Copy IP address for ${context(row.kind, row.id).toLowerCase()}`} onclick={() => copy(row.address!)}>Copy</button>
+              <button type="button" class="pill pill-sm" aria-label={`Copy IP address for ${row.observer}`} onclick={() => copy(row.address)}>Copy</button>
             </div>
-            <span class="help">WebRTC reports this source IP for this connection.</span>
+            <span class="help">{row.source === 'node' ? 'This peer reports seeing your connection from this address.' : 'WebRTC reports this source IP for this connection.'} {row.path}. {addressScope(row.address)}.</span>
           </li>
         {/each}
       </ul>
-      <p class="help">Shown only here. Other connections may use a different address.</p>
+      <p class="help">Other connections may use a different address.</p>
     {/if}
-    {#if unavailable || !known.length}
+    {#if unavailable}
       <div class="unavailable" role="status">
         <p class="state">Connection IP unavailable.</p>
-        <p class="help">hoi cannot determine the source IP for {known.length ? 'every connection' : 'this connection'}. The other device can still see it.</p>
+        <p class="help">hoi cannot determine the source IP for {reports.length ? 'every connection' : 'this connection'}. A direct peer can still see your source IP. A relay sees the incoming address on a relayed connection.</p>
       </div>
     {/if}
   {/if}

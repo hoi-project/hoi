@@ -9,17 +9,20 @@ export interface ConnectionIp {
   path: string;
 }
 
+function liveConnections(net: NetStatus | null) {
+  return (net?.connections ?? []).filter(c => c.connected && c.encryption !== 'stays on this device');
+}
+
 /** Reports about a live path, never a listening hint or a VPN interface address. */
 export function connectionIps(net: NetStatus | null, rtc: readonly RtcAddress[]): ConnectionIp[] {
-  const reported = (net?.connections ?? []).filter(c => c.connected && c.encryption !== 'stays on this device')
-    .flatMap(c => {
-      const address = c.observedAddress;
-      return address ? [{
-        id: `peer:${c.peer}`, address,
-        observer: c.role === 'home' ? net?.homeNode?.name || 'Your home node' : `${c.kind === 'browser' ? 'Browser' : 'Node'} ${c.peer.slice(0, 12)}`,
-        source: 'node' as const, path: `${c.transport} · ${c.route}`,
-      }] : [];
-    });
+  const reported = liveConnections(net).flatMap(c => {
+    const address = c.observedAddress;
+    return address ? [{
+      id: `peer:${c.peer}`, address,
+      observer: c.role === 'home' ? net?.homeNode?.name || 'Your home node' : `${c.kind === 'browser' ? 'Browser' : 'Node'} ${c.peer.slice(0, 12)}`,
+      source: 'node' as const, path: `${c.transport} · ${c.route}`,
+    }] : [];
+  });
   const browser = rtc.filter(c => c.connected && c.address).map(c => ({
     id: `rtc:${c.id}`, address: c.address!, observer: `${c.kind === 'node' ? 'Node' : 'Browser'} connection ${c.id}`,
     source: 'browser' as const, path: 'WebRTC selected path',
@@ -27,10 +30,22 @@ export function connectionIps(net: NetStatus | null, rtc: readonly RtcAddress[])
   return [...reported, ...browser];
 }
 
+/** Whether any live link still lacks an observation. ICE and core use separate link IDs,
+ * so partial reports from each source cannot establish that they cover every RTC link. */
+export function hasUnreportedConnections(net: NetStatus | null, rtc: readonly RtcAddress[]): boolean {
+  const links = liveConnections(net);
+  if (links.some(c => c.transport !== 'webrtc' && !c.observedAddress)) return true;
+  const rtcLinks = links.filter(c => c.transport === 'webrtc');
+  const activeIce = rtc.filter(c => c.connected);
+  const coveredByPeers = rtcLinks.length >= activeIce.length && rtcLinks.every(c => c.observedAddress);
+  const coveredByIce = activeIce.length >= rtcLinks.length && activeIce.every(c => c.address);
+  return !coveredByPeers && !coveredByIce;
+}
+
 export function connectionIpSummary(net: NetStatus | null, rtc: readonly RtcAddress[]): string {
   const addresses = [...new Set(connectionIps(net, rtc).map(row => row.address))];
   if (addresses.length) return addresses.join(' · ');
-  const connected = net?.connections?.some(c => c.connected && c.encryption !== 'stays on this device') || rtc.some(c => c.connected);
+  const connected = liveConnections(net).length > 0 || rtc.some(c => c.connected);
   return connected ? 'IP unavailable' : 'No active connection';
 }
 

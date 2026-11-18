@@ -26,7 +26,7 @@
   import KeyWork from '../lib/ui/KeyWork.svelte';
   import Devices from '../lib/ui/Devices.svelte';
   import Addresses from '../lib/ui/Addresses.svelte';
-  import BrowserAddresses from '../lib/ui/BrowserAddresses.svelte';
+  import ConnectionAddresses from '../lib/ui/BrowserAddresses.svelte';
   import NetworkMap from '../lib/ui/NetworkMap.svelte';
   import DeleteKnown from '../lib/ui/DeleteKnown.svelte';
   import { readinessWords } from '../lib/deletion-status';
@@ -193,8 +193,6 @@
   let publicAsk = $state(false);
   const routed = $derived(routerWords(net?.portMapping));
   const seen = $derived(whoSees(net));
-  const unreportedAddress = $derived(net?.connections?.some((connection) =>
-    connection.connected && connection.encryption !== 'stays on this device' && connection.transport !== 'webrtc') ?? false);
   async function publicSwitch(next: boolean) {
     if (!next) {
       await set({ publicNode: false }, `Not a public node any more. Your router's forwards are removed, and this ${app.platformName} publishes no address of its own.`);
@@ -487,22 +485,19 @@
       </div>
     {/if}
     <div class="set top flow">
-      <span class="l">{web ? 'Your address' : 'Your addresses'}</span>
-      <span class="h">
-        {#if web}
-          Connected nodes and browsers can see the IP address your connection comes from. This browser does not advertise a listening
-          address; direct browser links also exchange connection addresses.
-        {:else}
-          Every address this {app.platformName} gives out, and who hears it. Point at one to see it, click to copy. Devices that connect also
-          see the address your connection comes from{seen.own + seen.others ? ` (now: ${plural(seen.others, 'other device')}, ${seen.own} of yours)` : ''}.
-        {/if}
-      </span>
-      {#if web}
-        <div class="v addrv"><BrowserAddresses connected={seen.own + seen.others} unreported={unreportedAddress} /></div>
-      {:else if net?.exposure?.length}
-        <div class="v addrv"><Addresses /></div>
-      {/if}
+      <span class="l">{web ? 'Your address' : 'Your connection IP'}</span>
+      <span class="h">Connected nodes and browsers can see the source IP for their connection to this device.</span>
+      <div class="v addrv"><ConnectionAddresses {net} /></div>
     </div>
+    {#if !web && net?.exposure?.length}
+      <div class="set top flow">
+        <span class="l">Your advertised addresses</span>
+        <span class="h">Every listening address this {app.platformName} gives out, and who hears it. Point at one to see it, click to copy.
+          {#if seen.own + seen.others}Connected now: {plural(seen.others, 'other device')}, {seen.own} of yours.{/if}
+        </span>
+        <div class="v addrv"><Addresses /></div>
+      </div>
+    {/if}
     {#if web || net?.homeNode}
       <div class="set top flow">
         <span class="l">Home node</span>

@@ -54,7 +54,22 @@ try {
     app.net = { ...app.net, connections: [{ peer: 'example-node', role: 'peer', route: 'direct', connected: true, transport: 'websocket', encryption: 'encrypted' }] };
   });
   await panel.getByText('Connection IP unavailable.', { exact: true }).waitFor();
-  assert.match(await panel.innerText(), /other device can still see it/i, 'unavailable is not a claim of hidden network metadata');
+  assert.match(await panel.innerText(), /direct peer can still see your source IP/i, 'unavailable is not a claim of hidden network metadata');
+
+  // An ordinary WebSocket has no browser ICE stats. Its peer observation is sufficient.
+  await page.evaluate(() => {
+    const { app } = window.addressFixture;
+    app.net = { ...app.net, connections: app.net.connections.map(c => ({ ...c, observedAddress: '192.0.2.81' })) };
+  });
+  await panel.getByText('192.0.2.81', { exact: true }).waitFor();
+  assert.match(await panel.innerText(), /peer reports.*websocket/i);
+  assert.equal(await panel.getByText('Connection IP unavailable.', { exact: true }).count(), 0);
+  await page.evaluate(() => {
+    const { app } = window.addressFixture;
+    app.net = { ...app.net, connections: app.net.connections.map(c => ({ ...c, observedAddress: undefined })) };
+  });
+  await panel.getByText('Connection IP unavailable.', { exact: true }).waitFor();
+  assert.equal(await panel.getByText('192.0.2.81', { exact: true }).count(), 0);
 
   await page.evaluate(async () => {
     const { rtcAddresses } = await import('/src/lib/core/rtc-addresses.ts');
@@ -135,6 +150,19 @@ try {
   assert.equal(await panel.getByText('2001:db8:abcd:ffff:1234:5678:90ab:cdef', { exact: true }).count(), 0, 'an unavailable result replaces the previous known IP');
   assert.equal(await panel.getByText('192.0.2.26', { exact: true }).count(), 0, 'a host/interface candidate is not presented as a peer-observed external address');
 
+  // A receiving node can report this route even when the browser hides its host candidate.
+  await page.evaluate(() => {
+    const { app } = window.addressFixture;
+    app.net = { ...app.net, connections: app.net.connections.map(c => ({ ...c, observedAddress: '2001:db8::83' })) };
+  });
+  await panel.getByText('2001:db8::83', { exact: true }).waitFor();
+  assert.equal(await panel.getByText('Connection IP unavailable.', { exact: true }).count(), 0);
+  await page.evaluate(() => {
+    const { app } = window.addressFixture;
+    app.net = { ...app.net, connections: app.net.connections.map(c => ({ ...c, observedAddress: undefined })) };
+  });
+  await panel.getByText('Connection IP unavailable.', { exact: true }).waitFor();
+
   await page.evaluate(() => {
     const fixture = window.addressFixture;
     fixture.stop();
@@ -160,7 +188,7 @@ try {
   assert.deepEqual(externalRequests, [], 'looking at connection addresses makes no external request');
   assert.deepEqual(errors, []);
   await context.close();
-  console.log('PASS: You connection address states, source context, keyboard copy, stale clearing and 1280/320 px layout (offline browser statistics).');
+  console.log('PASS: You connection address states, source context, keyboard copy, stale clearing and 1280/320 px layout (peer reports and offline browser statistics).');
 } finally {
   await browser?.close();
   await server.close();
