@@ -21,7 +21,7 @@ and make local cleanup unsafe.
 
 ## Proposal
 
-Advertise `home-scatter-journal` separately from legacy `home-scatter`. Add journalled store
+Advertise `home-scatter-v2` separately from legacy `home-scatter`. Add journalled store
 and result packets to the existing authenticated home link. A request identity binds the
 community, content and scatter level; its first accepted expiry is retained. Origin entries
 also name the carried record IDs. Home entries are namespaced by the digest of the durable
@@ -46,7 +46,10 @@ authority recoverable; no timeout claims erasure.
 Admission is bounded by entry count and aggregate content size. A full journal rejects new
 work instead of evicting live capabilities. Entries remain through the original inclusive
 holder expiry day, at most the existing 400-day piece lifetime, and are then pruned. The
-journal stores no raw pairing credential or global author drop secret. Legacy reception is
+journal stores no raw pairing credential or global author drop secret. Once a deletion has
+atomically captured locator-level retry tokens, clear originating content and decryption
+keys. An authenticated `JournalRelease` clears the home result capability and retains its
+terminal deduplication tombstone; retry releases while paired. Legacy reception is
 retained, but new initiation requires the new feature.
 
 ## Alternatives
@@ -58,7 +61,8 @@ uncertain placement with fresh randomness strands earlier locators, so it is rej
 ## Consequences
 
 This changes preview link messages and adds a versioned local authority journal. Older
-clients retain the whole-record fallback; older stores without this journal remain readable.
+clients retain the whole-record fallback; client storage format 6 prevents older binaries
+from silently ignoring pending authority. Format-5 stores migrate with an empty journal.
 The home necessarily sees the sender, community and plaintext of public objects. Holders
 continue to receive sealed pieces, locators and expiry rather than authors or communities.
 Receipts report trusted-home delivery progress; they do not prove anonymity or global erasure.
