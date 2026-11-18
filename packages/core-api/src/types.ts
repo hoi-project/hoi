@@ -1082,8 +1082,8 @@ export interface Settings {
   /** Desktop, while a public node: keep mailboxes and encrypted pieces for others, up to this many
    * gigabytes (0.5 to 100); 0 is off, and turning it off deletes what was kept. Absent from older cores. */
   holdPiecesGb?: number;
-  /** Communities marked as favorites in this app's list, in the order shown. This device only:
-   * never sent, never in a backup. Absent from older cores. */
+  /** Communities marked as favorites in this app's list, in the order shown.
+   * Encrypted member snapshots preserve this local preference. Absent from older cores. */
   favorites?: Hex[];
   /** The order the person put their other communities in, this device only. */
   communityOrder?: Hex[];

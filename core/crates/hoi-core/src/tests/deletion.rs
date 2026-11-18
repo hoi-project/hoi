@@ -393,6 +393,14 @@ fn encrypted_member_snapshot_preserves_work_and_applies_offline_deletion_before_
     let kept = post(&mut current, &c, "still available");
     let pending = post(&mut current, &c, "deletion already pending");
     current.delete_own(&pending.id).unwrap();
+    current.state.settings.public_node = true;
+    current.state.settings.direct_links = true;
+    current.state.settings.hold_pieces_gb = 1.0;
+    current.state.settings.favorites = vec![c.clone()];
+    current.state.serve_token = Some("source-pairing-link".into());
+    current.state.link_key = Some("source-link-key".into());
+    current.state.paired.push(crate::state::PairedDevice { credential: Id::hash(b"paired"), seen: T0 });
+    current.mark_state();
     let file = current.export_snapshot(PASS).unwrap();
     assert!(!file.windows(stale.title.len()).any(|b| b == stale.title.as_bytes()));
     current.delete_own(&stale.id).unwrap();
@@ -400,6 +408,7 @@ fn encrypted_member_snapshot_preserves_work_and_applies_offline_deletion_before_
 
     let target = Mem::default();
     let mut restored = node("web", &t, &target);
+    let target_node = restored.state.node_id;
     let before = target.0.lock().unwrap().clone();
     assert!(restored.import_snapshot(&file, "wrong passphrase").is_err());
     assert_eq!(before, *target.0.lock().unwrap());
@@ -430,6 +439,12 @@ fn encrypted_member_snapshot_preserves_work_and_applies_offline_deletion_before_
     assert!(restored.import_snapshot(&file, PASS).is_err(), "existing installation is protected");
     drop(restored);
     let mut restored = node("web", &t, &target);
+    assert_eq!(restored.state.node_id, target_node);
+    assert_ne!(restored.state.node_id, current.state.node_id);
+    assert!(restored.state.paired.is_empty() && restored.state.serve_token.is_none() && restored.state.link_key.is_none());
+    assert!(!restored.state.settings.public_node && !restored.state.settings.direct_links);
+    assert_eq!(restored.state.settings.hold_pieces_gb, 0.0);
+    assert_eq!(restored.state.settings.favorites, [c.clone()]);
     assert!(restored.post(&stale.id).is_err());
     assert!(restored.post(&kept.id).is_err());
     assert!(restored.deletion_for_target(Id::from_hex(&pending.id).unwrap()).is_some());

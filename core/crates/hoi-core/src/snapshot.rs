@@ -160,6 +160,7 @@ impl Node {
         staged.state.node_id = self.state.node_id;
         staged.state.notices.clear();
         staged.remote.keys.clear();
+        staged.pending_kp = None;
         staged.transport_kp = self.transport_kp.as_ref().map(|k| hoi_crypto::Keypair::from_secret(&k.secret()));
         staged.rtc_cert.clone_from(&self.rtc_cert);
         staged.state.settings.relay = self.state.settings.relay;
@@ -170,6 +171,10 @@ impl Node {
         staged.state.settings.vpn.clone_from(&self.state.settings.vpn);
         staged.state.settings.home_network = self.state.settings.home_network;
         staged.state.settings.relay_notice_seen = self.state.settings.relay_notice_seen;
+        staged.state.settings.tor |= self.state.settings.tor;
+        if self.strict() {
+            staged.state.settings.assurance.clone_from(&self.state.settings.assurance);
+        }
         staged.mark_state();
         staged.mark_keys();
         staged.commit()?;

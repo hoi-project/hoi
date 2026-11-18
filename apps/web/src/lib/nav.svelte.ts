@@ -1,7 +1,7 @@
 // The communities list as the person arranged it on this device: favorites, their own order,
 // and private communities kept out of sight until asked for, like a private browsing window.
-// Favorites and order live in the core's local settings (encrypted with everything else, never
-// sent, never in a backup); whether private ones show is forgotten when the app closes.
+// Encrypted member snapshots preserve favorites and order in the local settings.
+// The app forgets whether private communities were visible when it closes.
 import type { CommunitySummary } from '@hoi/core-api';
 import { app } from './app.svelte';
 import { arrange, move } from './arrange';

@@ -30,6 +30,13 @@ one vault transaction. A failed write leaves the previous persisted contents int
 Incoming public content needs peer synchronization. Cached private payloads and old MLS
 epoch secrets are discarded. Local pairing and serving settings need fresh authorization.
 
+The restored member retains known holder-removal tokens and pending author deletion jobs.
+For an unfinished placement delegated to a paired home (RFC-0008), the previous home may
+have written pieces before the member received the cleanup tokens. An author deletion
+records the missing coverage and still removes the available copies. Import discards
+work the source installation performed as an operator for other clients. Opening a new
+pairing does not restart a placement sent under the former credentials.
+
 ## MLS rejoin
 
 Before erasing MLS state, retain the fingerprint of this device’s old public leaf encryption
