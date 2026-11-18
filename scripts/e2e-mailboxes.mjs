@@ -228,15 +228,18 @@ async function acceptHolderDeclarations(page, expected) {
   const dialog = page.getByRole('dialog', { name: 'Before this node serves you' });
   while (reviewed.size < expected.size) {
     await dialog.waitFor({ timeout: 180_000 });
-    const current = await page.evaluate(async () => (await import('/src/lib/app.svelte.ts')).app.net.pendingNotices[0]);
-    assert.ok(expected.has(current.node), 'Only the two holders named by the signed links may be accepted');
+    const displayed = await dialog.getByRole('article').evaluate(article => ({
+      title: article.getAttribute('aria-label'), text: article.innerText,
+    }));
+    const current = (await call(page, 'nodeNotices')).find(notice =>
+      notice.state === 'pending' && notice.title === displayed.title && displayed.text.includes(notice.footer));
+    assert.ok(current && expected.has(current.node), 'Only the signed holder whose current notice is displayed may be accepted');
     assert.equal(current.noticeHash, expected.get(current.node), 'The live notice matches the signed link');
     assert.ok(current.declaration && current.declaration === current.hash, 'Consent names the current signed declaration');
     assert.ok(!reviewed.has(current.node), 'Each holder is reviewed once per browser');
-    const notice = dialog.getByRole('article', { name: current.title, exact: true });
-    await notice.getByText('Roles and limits.', { exact: true }).waitFor();
-    assert.ok((await notice.innerText()).includes(`Configuration ${current.declaration.slice(0, 12)}.`));
-    await dialog.getByRole('button', { name: 'Accept and join', exact: true }).click();
+    assert.ok(displayed.text.includes('Roles and limits.') && displayed.text.includes(`Configuration ${current.declaration.slice(0, 12)}.`));
+    const notice = page.getByRole('article', { name: current.title, exact: true }).filter({ hasText: current.footer });
+    await dialog.filter({ has: notice }).getByRole('button', { name: 'Accept and join', exact: true }).click();
     await notice.waitFor({ state: 'hidden' });
     reviewed.add(current.node);
   }
