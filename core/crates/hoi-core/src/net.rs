@@ -87,6 +87,8 @@ pub struct PeerMeta {
     /// The authenticated iroh endpoint, and the UDP address it came from, when direct.
     pub endpoint: Option<String>,
     pub addr: Option<String>,
+    /// The upstream TLS proxy observed this IP. Display only, never a dial or identity hint.
+    pub websocket_proxy_ip: Option<std::net::IpAddr>,
     /// The `rtc:` routes the host dialed for this connection: one node's addresses, sharing the
     /// certificate fingerprint the DTLS handshake pinned. Says which communities' routes led here.
     pub dialed: Vec<String>,
@@ -99,9 +101,15 @@ pub struct PeerMeta {
 }
 
 impl PeerMeta {
-    /// The connection's transport supplied this socket address. Do not infer one from routes.
-    fn observed_ip(&self) -> Option<std::net::IpAddr> {
-        self.addr.as_ref()?.parse::<std::net::SocketAddr>().ok().map(|a| a.ip().to_canonical()).filter(|ip| !ip.is_unspecified() && !ip.is_multicast())
+    /// Source observed on this connection. A proxy report only contributes to this display value.
+    pub fn observed_ip(&self) -> Option<std::net::IpAddr> {
+        self.addr
+            .as_ref()
+            .and_then(|a| a.parse::<std::net::SocketAddr>().ok())
+            .map(|a| a.ip())
+            .or(self.websocket_proxy_ip)
+            .map(|a| a.to_canonical())
+            .filter(|ip| !ip.is_unspecified() && !ip.is_multicast())
     }
     fn for_role(role: Role) -> PeerMeta {
         match role {

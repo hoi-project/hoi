@@ -114,6 +114,7 @@ struct Args {
     peer_bind: Option<SocketAddr>,
     relays: Vec<String>,
     public_url: Option<String>,
+    trusted_ws_proxy: Option<std::net::IpAddr>,
     joins: Vec<String>,
     rtc_port: Option<u16>,
     /// The embedded packet relay: where it listens, the address others reach it at,
@@ -186,6 +187,7 @@ Home node:
   --new-pairing            issue a new pairing link and print it; devices paired before must pair again
   --show-pairing           print the pairing link (otherwise it is only written to DIR/pairing-link)
   --public-url URL         advertise a wss:// TLS proxy address in pairing links
+  --trusted-ws-proxy IP    accept a single X-Real-IP from this TLS proxy for address reports
   --peer-only              run only peer transports; no paired-device control listener (--public implies it)
 
 Operator notice (a public node tells people who runs it before it serves them):
@@ -300,6 +302,7 @@ fn args() -> Args {
         peer_bind: None,
         relays: Vec::new(),
         public_url: None,
+        trusted_ws_proxy: None,
         joins: Vec::new(),
         rtc_port: None,
         packet_relay: None,
@@ -389,6 +392,14 @@ fn args() -> Args {
             }
             "--peer-bind" => a.peer_bind = Some(it.next().and_then(|s| s.parse().ok()).unwrap_or_else(|| usage())),
             "--relay" => a.relays.push(it.next().unwrap_or_else(|| usage())),
+            "--trusted-ws-proxy" => {
+                a.trusted_ws_proxy = Some(
+                    it.next()
+                        .and_then(|s| s.parse::<std::net::IpAddr>().ok())
+                        .filter(|ip| !ip.is_unspecified() && !ip.is_multicast())
+                        .unwrap_or_else(|| usage()),
+                );
+            }
             "--public-url" => {
                 let value = it.next().unwrap_or_else(|| usage());
                 if !valid_public_url(&value) {
@@ -490,6 +501,10 @@ fn args() -> Args {
             }
             _ => usage(),
         }
+    }
+    if a.trusted_ws_proxy.is_some() && (a.public_url.is_none() || a.peer_only) {
+        eprintln!("hoi-node: --trusted-ws-proxy needs a WebSocket listener and --public-url");
+        usage();
     }
     // A public node has no person behind it, so it is no home node's public relay unless asked.
     a.public_relay = public_relay.unwrap_or(!a.public);
@@ -729,19 +744,14 @@ async fn main() {
     let server = if a.peer_only {
         None
     } else {
-        Some(match hoi_net::serve(shared.clone(), a.listen, &hoi_net::origins_from_env()).await {
-            Ok(s) => s,
+        Some(match hoi_net::serve_websocket(shared.clone(), a.listen, &hoi_net::origins_from_env(), a.public_url.as_deref(), a.trusted_ws_proxy).await {
+            Ok((_, s)) => s,
             Err(e) => {
                 eprintln!("hoi-node: can't listen on {}: {e}", a.listen);
                 std::process::exit(1);
             }
         })
     };
-    if !a.peer_only
-        && let Some(url) = &a.public_url
-    {
-        shared.with(|n| n.set_serving(Some(url))).expect("public pairing address");
-    }
     let rtc = match a.rtc_port {
         Some(0) => None,
         port => match hoi_net::start_rtc(

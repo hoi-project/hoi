@@ -15,7 +15,7 @@
 //! validation and sync engine serves all three; see PROTOCOL.md §14.
 
 use std::collections::HashMap;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -77,19 +77,31 @@ pub fn web_origin(url: &str) -> Option<String> {
 
 /// Refuses a WebSocket upgrade from a web page outside the allowed origins. A request
 /// without `Origin` comes from a native app, not a browser, and passes.
-struct OriginCheck(Arc<[String]>);
+struct OriginCheck<'a> {
+    allowed: &'a [String],
+    trusted_report: Option<&'a mut Option<IpAddr>>,
+}
 
-impl Callback for OriginCheck {
+impl Callback for OriginCheck<'_> {
     fn on_request(self, req: &Request, res: Response) -> Result<Response, ErrorResponse> {
-        match req.headers().get("origin") {
-            None => Ok(res),
-            Some(o) if o.to_str().ok().and_then(web_origin).is_some_and(|o| self.0.contains(&o)) => Ok(res),
-            Some(_) => {
-                let mut refused = ErrorResponse::new(None);
-                *refused.status_mut() = tokio_tungstenite::tungstenite::http::StatusCode::FORBIDDEN;
-                Err(refused)
+        if let Some(origin) = req.headers().get("origin")
+            && !origin.to_str().ok().and_then(web_origin).is_some_and(|o| self.allowed.contains(&o))
+        {
+            let mut refused = ErrorResponse::new(None);
+            *refused.status_mut() = tokio_tungstenite::tungstenite::http::StatusCode::FORBIDDEN;
+            return Err(refused);
+        }
+        if let Some(report) = self.trusted_report {
+            // The configured proxy overwrites this header using its downstream socket.
+            // Chains or duplicate headers do not identify which address the proxy observed.
+            let mut values = req.headers().get_all("x-real-ip").iter();
+            if let Some(value) = values.next()
+                && values.next().is_none()
+            {
+                *report = value.to_str().ok().and_then(|text| text.parse().ok());
             }
         }
+        Ok(res)
     }
 }
 
@@ -335,8 +347,7 @@ where
         let Ok(Some(Ok(first))) = tokio::time::timeout(HELLO, ws.next()).await else { return };
         if matches!(&first, Message::Binary(b) if b.as_ref() == ADDRESS_CHECK) {
             if shared.with(|n| n.accepts_members()) {
-                let source = meta.addr.as_deref().and_then(|a| a.parse::<SocketAddr>().ok()).map(|a| a.ip());
-                let _ = tokio::time::timeout(WRITE_TIMEOUT, ws.send(Message::Binary(address_reply(source).into()))).await;
+                let _ = tokio::time::timeout(WRITE_TIMEOUT, ws.send(Message::Binary(address_reply(meta.observed_ip()).into()))).await;
             }
             return;
         }
@@ -427,6 +438,24 @@ impl Drop for LinkGuard {
 /// credential receives no sync data. While accepting strangers, a node also answers an isolated
 /// address probe with only the requester's transport address.
 pub async fn serve(shared: Arc<Shared>, addr: SocketAddr, origins: &[String]) -> std::io::Result<tokio::task::JoinHandle<()>> {
+    Ok(serve_websocket(shared, addr, origins, None, None).await?.1)
+}
+
+/// Serve an optionally proxied listener. Only the explicitly selected upstream TCP peer can
+/// supply a display-only client IP, and only when advertising a secure WebSocket address.
+/// Return the actual local listener address separately from the advertised URL.
+pub async fn serve_websocket(
+    shared: Arc<Shared>,
+    addr: SocketAddr,
+    origins: &[String],
+    public_url: Option<&str>,
+    trusted_proxy: Option<IpAddr>,
+) -> std::io::Result<(SocketAddr, tokio::task::JoinHandle<()>)> {
+    if public_url.is_some_and(|url| !url.starts_with("wss://")) || (trusted_proxy.is_some() && public_url.is_none()) {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "a WebSocket proxy needs an advertised wss:// URL"));
+    }
+    let proxied = public_url.is_some();
+    let trusted_proxy = trusted_proxy.map(|ip| ip.to_canonical());
     let mut allowed = Vec::new();
     for o in origins {
         allowed.push(web_origin(o).ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("{o:?} is not a web origin")))?);
@@ -435,9 +464,9 @@ pub async fn serve(shared: Arc<Shared>, addr: SocketAddr, origins: &[String]) ->
     let allowed: Arc<[String]> = allowed.into();
     let listener = TcpListener::bind(addr).await?;
     let local = listener.local_addr()?;
-    let url = format!("ws://{local}");
-    shared.with(|n| n.set_serving(Some(&url))).map_err(|e| std::io::Error::other(e.to_string()))?;
-    Ok(tokio::spawn(async move {
+    let local_url = format!("ws://{local}");
+    shared.with(|n| n.set_serving(Some(public_url.unwrap_or(&local_url)))).map_err(|e| std::io::Error::other(e.to_string()))?;
+    let server = tokio::spawn(async move {
         let slots = Arc::new(Semaphore::new(MAX_CLIENTS));
         let mut tasks = tokio::task::JoinSet::new();
         loop {
@@ -451,25 +480,29 @@ pub async fn serve(shared: Arc<Shared>, addr: SocketAddr, origins: &[String]) ->
             let allowed = allowed.clone();
             tasks.spawn(async move {
                 let _permit = permit;
-                let accept = tokio_tungstenite::accept_hdr_async_with_config(tcp, OriginCheck(allowed), Some(ws_config()));
+                let trusted = trusted_proxy == Some(from.ip().to_canonical());
+                let mut proxy_ip = None;
+                let check = OriginCheck { allowed: &allowed, trusted_report: trusted.then_some(&mut proxy_ip) };
+                let accept = tokio_tungstenite::accept_hdr_async_with_config(tcp, check, Some(ws_config()));
                 let Ok(Ok(ws)) = tokio::time::timeout(HANDSHAKE, accept).await else { return };
                 let peer = shared.peer_id("client");
                 // Behind a TLS proxy (a `wss://` public address) loopback is the proxy, not you.
-                let proxied = shared.with(|n| n.serving_url().is_some_and(|u| u.starts_with("wss://")));
                 let local = from.ip().is_loopback() && !proxied;
                 let meta = PeerMeta {
                     transport: "websocket".into(),
                     local,
-                    tls: proxied,
+                    tls: proxied && (trusted_proxy.is_none() || trusted),
                     incoming: true,
-                    // A reverse proxy observes the client. Its upstream socket and request headers do not identify the client's egress.
+                    // Keep a proxy’s private upstream socket and its client report out of peer routing.
                     addr: (!proxied).then(|| from.to_string()),
+                    websocket_proxy_ip: proxy_ip,
                     ..Default::default()
                 };
                 run_link(shared, peer, Role::Client, meta, ws).await;
             });
         }
-    }))
+    });
+    Ok((local, server))
 }
 
 /// Dials a home node and keeps the link up, retrying with backoff while `keep_going` says so.
@@ -771,6 +804,38 @@ mod tests {
         home.with(|n| n.set_settings(&hoi_core::dto::SettingsPatch { relay: Some(false), ..Default::default() }).unwrap());
         assert!(address_check::check(&url, &policy).await.is_err());
         listener.abort();
+    }
+
+    #[tokio::test]
+    async fn public_websocket_reports_only_a_single_address_from_the_selected_tls_proxy() {
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+        let published = "wss://home.example/";
+        let home = Shared::new(node("desktop"), Box::new(|_| {}));
+        home.with(|n| n.set_settings(&hoi_core::dto::SettingsPatch { relay: Some(true), ..Default::default() }).unwrap());
+        for (proxy, expected) in [(None, ""), (Some("192.0.2.10"), ""), (Some("127.0.0.1"), "2001:db8::42")] {
+            let (backend, server) =
+                serve_websocket(home.clone(), "127.0.0.1:0".parse().unwrap(), &[], Some(published), proxy.map(|s| s.parse().unwrap())).await.unwrap();
+            assert_eq!(home.with(|n| n.serving_url().unwrap().to_string()), published);
+            let check = |headers: &[&str]| {
+                let mut req = format!("ws://{backend}/").into_client_request().unwrap();
+                req.headers_mut().insert("origin", "https://hoi.sh".parse().unwrap());
+                req.headers_mut().insert("x-forwarded-for", "192.0.2.1".parse().unwrap());
+                for text in headers {
+                    req.headers_mut().append("x-real-ip", text.parse().unwrap());
+                }
+                async move {
+                    let (mut ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
+                    ws.send(Message::Binary(ADDRESS_CHECK.to_vec().into())).await.unwrap();
+                    ws.next().await.unwrap().unwrap().into_data()
+                }
+            };
+            assert_eq!(check(&["2001:db8::42"]).await.as_ref(), format!("{ADDRESS_REPLY}{expected}").as_bytes());
+            for headers in [&[][..], &["invalid"], &["::"], &["ff02::1"], &["192.0.2.1, 192.0.2.2"], &["192.0.2.1", "192.0.2.2"]] {
+                assert_eq!(check(headers).await.as_ref(), ADDRESS_REPLY.as_bytes());
+            }
+            assert_eq!(home.clients(), 0);
+            server.abort();
+        }
     }
 
     #[test]

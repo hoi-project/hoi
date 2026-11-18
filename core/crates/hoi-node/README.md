@@ -49,6 +49,7 @@ On start a public node (any node but a `--no-public-relay` one) prints the link 
 | `--peer-bind ADDR` | automatic | native iroh UDP listening address, independent of the WebSocket port |
 | `--relay HTTPS_URL` | none | explicit iroh relay, repeatable; URLs must not contain credentials, a query or a fragment |
 | `--public-url WSS_URL` | local WebSocket address | public TLS proxy address to put in pairing links |
+| `--trusted-ws-proxy IP` | none | with `--public-url`, trust the exact proxy socket IP to supply one `X-Real-IP` for the client’s own address report |
 | `--join INVITE` | none | join a community and retain its network hints, repeatable |
 | `--rtc-port PORT` | `7844` | UDP port for browsers and phones over WebRTC; `0` turns it off; any free port if taken |
 | `--rtc-advertise ADDR` | none | also advertise this UDP address (a forwarded port, a public address), repeatable; with `--index` this is the address announced to the registry |
@@ -325,13 +326,26 @@ open in a hoi-node older than this one rather than fetch it all again.
 
 ## Remote browsers and explicit relays
 
-With a TLS proxy for `home.example` forwarding WebSocket upgrades to `127.0.0.1:7842`:
+With Caddy accepting TLS connections from visitors and forwarding WebSocket upgrades to a
+dedicated backend on the same machine, use the following site configuration. Caddy overwrites
+any incoming `X-Real-IP` with the IP from its downstream connection.
+
+```caddyfile
+home.example {
+    reverse_proxy 127.0.0.1:7842 {
+        header_up X-Real-IP {remote_host}
+    }
+}
+```
+
+Start the node with the exact address its upstream connection sees for Caddy.
 
 ```sh
 cargo run --release -p hoi-node -- \
   --data ~/hoi-node \
   --listen 127.0.0.1:7842 \
   --public-url wss://home.example/ \
+  --trusted-ws-proxy 127.0.0.1 \
   --peer-bind 0.0.0.0:7843 \
   --relay https://relay.example/
 ```
@@ -340,6 +354,20 @@ Both domains are examples. Supply a real home-node hostname with a valid TLS cer
 and a compatible iroh relay operated by you or your community. `--public-url` only changes
 the advertised pairing address; it does not create the proxy, certificate or DNS record.
 `--relay` configures a connection to a packet relay; `--packet-relay` (below) runs one.
+
+The trusted address must belong exclusively to the proxy on the backend network. On a
+shared host, isolate the proxy and backend so other users or containers cannot connect
+from that address. If another proxy or CDN terminates the visitor’s connection before
+Caddy, leave the option unset unless the component submitting the header has a
+verified end-user address. With the option unset, secure WebSockets still work and the
+node leaves its source-IP report empty. Ordinary forwarding chains are ignored.
+
+The WebSocket handshake also checks the app’s origin. The canonical web app is allowed by
+default. To allow a copy served on the operator-approved local demo origin, set
+`HOI_ALLOWED_ORIGINS=http://127.0.0.1:4871` in the node process environment before
+starting it. Use the exact scheme, hostname and port printed by the demo server. The
+pre-join address check requires the node to be accepting members. A paired device can
+also see its address from an authenticated home connection.
 
 ## Run a packet relay (optional)
 

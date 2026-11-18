@@ -49,7 +49,13 @@ identifies the selected link. Without per-interface DNS, the check asks for a nu
 loopback, local and other special-use observations, and an ordinary unicast report does not
 establish public reachability.
 The native probe follows the selected VPN and home-network policy. A reverse proxy's own
-upstream address and an iroh packet relay's address are never substituted for a client IP.
+upstream address and an iroh packet relay's address are never substituted for a client IP. A node
+advertising a secure WebSocket URL can opt in to a single `X-Real-IP` value from an
+explicitly configured TLS proxy's exact upstream socket IP. The proxy must overwrite
+the header with its observed downstream client address and have exclusive use of its
+source address on the backend network. The node uses that value only for the address
+report back to the same connection. A missing, ambiguous or malformed value leaves the
+observation unavailable. WebSocket origin and credential checks still apply.
 
 ## Alternatives and effects
 
