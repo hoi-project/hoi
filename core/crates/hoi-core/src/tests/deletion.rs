@@ -457,7 +457,7 @@ fn encrypted_member_snapshot_preserves_work_and_applies_offline_deletion_before_
     assert!(restored.state.paired.is_empty() && restored.state.serve_token.is_none() && restored.state.link_key.is_none());
     assert!(!restored.state.settings.public_node && !restored.state.settings.direct_links);
     assert_eq!(restored.state.settings.hold_pieces_gb, 0.0);
-    assert_eq!(restored.state.settings.favorites, [c.clone()]);
+    assert_eq!(restored.state.settings.favorites.as_slice(), std::slice::from_ref(&c));
     assert!(restored.post(&stale.id).is_err());
     assert!(restored.post(&kept.id).is_err());
     assert!(restored.deletion_for_target(Id::from_hex(&pending.id).unwrap()).is_some());
