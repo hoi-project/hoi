@@ -6,6 +6,15 @@ The app as a static PWA (Svelte 5 + Vite). The same build, with `--mode desktop`
 
 The local vault password unlocks storage in this browser or desktop app. It is separate from the recovery key (`hoi-key-1-…`) and from an exported `.hoikey` file's password. **You → Back up my identity** offers both backup methods, one form at a time. New-device setup protects local storage first, then offers **Restore my identity** using a recovery key, a file and its password, or the existing authenticated device-linking flow. Recovery keys preserve the person's standing by rotating the signing root; they still need community history to sync. Files restore the exported identity, profile and settings, not private-group history. A public key is not a sign-in secret.
 
+**Member snapshot** saves the member database as an encrypted `.hoisnapshot` file of up to
+32 MiB. Import it from first-run restore on an empty installation. It resumes an existing
+device identity, so keep only the restored installation active. Its password is separate
+from the local vault password. Peers must synchronize before public content is displayed.
+Old private group keys and cached messages are discarded. Make a request under **Private
+communities** and have a current authorized committer approve it before reading new private
+messages. The original authorization to run a public node or pair with another device stays
+on the original installation. Review the receiving installation’s network settings.
+
 The unlock and storage-error screens offer **Recover or start over**. Clearing data requires a checkbox and the exact text `RESET`; the browser must own the writer lock, and an unlocked runtime refuses recovery. Clearing destroys only this installation's local data and cannot recover an old key without a backup or another usable device. It does not revoke the old identity or erase peers' copies. No reset runs in response to an incorrect password or failed import.
 
 Password forms expose editable `username` fields, `current-password` on use and `new-password` on creation. The submit handlers read the DOM, including autofill that sends no input events. New vaults get distinct, remembered non-secret entry labels; recovery entries use `hoi key · <name> · <short key>`; each file export gets a unique filename and matching `hoi key file · <filename>` label. Restore accepts a selected manager entry instead of fixing the username in advance. Existing vault and file passwords still work.

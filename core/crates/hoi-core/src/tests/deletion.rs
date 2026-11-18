@@ -381,3 +381,64 @@ fn full_deletion_journal_preserves_existing_authority_and_rejects_before_suppres
     assert_eq!(n.deletions.saved.jobs.values().next().unwrap().record, signed);
     assert!(n.store.contains(&Id::from_hex(&second.id).unwrap()));
 }
+
+#[test]
+fn encrypted_member_snapshot_preserves_work_and_applies_offline_deletion_before_display() {
+    const PASS: &str = "member snapshot test passphrase";
+    let t = Arc::new(AtomicU64::new(T0));
+    let mut current = node("desktop", &t, &Mem::default());
+    current.create_identity("Robin").unwrap();
+    let c = current.create_community(draft("garden")).unwrap().id;
+    let stale = post(&mut current, &c, "offline deletion");
+    let kept = post(&mut current, &c, "still available");
+    let pending = post(&mut current, &c, "deletion already pending");
+    current.delete_own(&pending.id).unwrap();
+    let file = current.export_snapshot(PASS).unwrap();
+    assert!(!file.windows(stale.title.len()).any(|b| b == stale.title.as_bytes()));
+    current.delete_own(&stale.id).unwrap();
+    current.commit().unwrap();
+
+    let target = Mem::default();
+    let mut restored = node("web", &t, &target);
+    let before = target.0.lock().unwrap().clone();
+    assert!(restored.import_snapshot(&file, "wrong passphrase").is_err());
+    assert_eq!(before, *target.0.lock().unwrap());
+    let mut damaged = file.clone();
+    *damaged.last_mut().unwrap() ^= 1;
+    assert!(restored.import_snapshot(&damaged, PASS).is_err());
+    assert_eq!(before, *target.0.lock().unwrap());
+
+    struct NoReplace(Mem);
+    impl Persist for NoReplace {
+        fn load(&mut self) -> Result<Loaded, String> {
+            self.0.load()
+        }
+        fn apply(&mut self, changes: &[Change]) -> Result<(), String> {
+            if changes.iter().any(|c| matches!(c, Change::Wipe)) {
+                return Err("transaction refused".into());
+            }
+            self.0.apply(changes)
+        }
+    }
+    let clock = t.clone();
+    let mut failing = Node::open(Box::new(NoReplace(target.clone())), "web", "https://example.com/", Box::new(move || clock.load(Ordering::SeqCst))).unwrap();
+    assert!(failing.import_snapshot(&file, PASS).is_err());
+    assert!(failing.me().is_none());
+    assert_eq!(before, *target.0.lock().unwrap());
+    let me = restored.import_snapshot(&file, PASS).unwrap();
+    assert_eq!(me.root_key, current.me().unwrap().root_key);
+    assert!(restored.import_snapshot(&file, PASS).is_err(), "existing installation is protected");
+    drop(restored);
+    let mut restored = node("web", &t, &target);
+    assert!(restored.post(&stale.id).is_err());
+    assert!(restored.post(&kept.id).is_err());
+    assert!(restored.deletion_for_target(Id::from_hex(&pending.id).unwrap()).is_some());
+    current.net_connect("restored", Role::Peer);
+    restored.net_connect("current", Role::Peer);
+    pump_named(&mut current, "restored", &mut restored, "current");
+    restored.scatter_tick();
+    restored.commit().unwrap();
+    let mut reopened = node("web", &t, &target);
+    assert!(reopened.post(&stale.id).is_err());
+    assert_eq!(reopened.post(&kept.id).unwrap().summary.title, kept.title);
+}

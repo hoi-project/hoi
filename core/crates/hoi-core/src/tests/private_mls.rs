@@ -238,3 +238,62 @@ fn private_mls_removed_member_can_rejoin_and_private_labels_survive_local_leave(
     assert!(b.private_groups().unwrap().iter().any(|g| g.community == c));
     assert!(b.invite(&c).is_err());
 }
+
+#[test]
+fn encrypted_member_snapshot_requires_new_approved_welcome_on_same_installation() {
+    let t = Arc::new(AtomicU64::new(T0));
+    let mut owner = node("desktop", &t, &Mem::default());
+    let mut member = node("web", &t, &Mem::default());
+    let mut observer = node("desktop", &t, &Mem::default());
+    owner.create_identity("Owner").unwrap();
+    member.create_identity("Member").unwrap();
+    observer.create_identity("Observer").unwrap();
+    let mut community = draft("garden");
+    community.limits.as_mut().unwrap().admission = Some("invite".into());
+    let c = owner.create_private_community(community).unwrap().id;
+    let member_welcome = owner.private_invite(&c, &member.private_join_request().unwrap()).unwrap();
+    member.private_join(&member_welcome).unwrap();
+    accept(&mut owner, &mut member, &c);
+    let observer_welcome = owner.private_invite(&c, &observer.private_join_request().unwrap()).unwrap();
+    observer.private_join(&observer_welcome).unwrap();
+    let mut delivery = owner.private_outbox(&c).unwrap();
+    deliver(&mut member, &c, &delivery);
+    deliver(&mut observer, &c, &delivery);
+    clear(&mut owner, &c);
+    assert!(observer.private_group(&c).unwrap().follows_records);
+    let backed_up = member.me().unwrap();
+    let old = post(&mut owner, &c, "stale private content");
+    accept(&mut owner, &mut member, &c);
+    assert!(member.post(&old.id).is_ok());
+    let file = member.export_snapshot("private member test password").unwrap();
+    let disk = Mem::default();
+    let mut restored = node("web", &t, &disk);
+    restored.import_snapshot(&file, "private member test password").unwrap();
+    assert_eq!(restored.me().unwrap().device, backed_up.device);
+    assert!(!restored.private_group(&c).unwrap().active);
+    assert!(!restored.store.contains(&Id::from_hex(&old.id).unwrap()));
+    assert_eq!(restored.snapshot_rejoins()[0].0, c);
+    let ordinary = restored.private_join_request().unwrap();
+    assert!(owner.private_invite(&c, &ordinary).is_err(), "ordinary requests cannot replace an existing member");
+    let request = restored.snapshot_rejoin_request(&c).unwrap();
+    assert_ne!(request, ordinary);
+    let mut another = node("web", &t, &Mem::default());
+    another.create_identity("Other owner").unwrap();
+    let other_group = another.create_private_community(draft("unrelated group")).unwrap().id;
+    assert!(another.private_invite(&other_group, &request).is_err(), "the signed request names its group");
+    assert!(!restored.private_group(&c).unwrap().active);
+    let welcome = owner.private_invite(&c, &request).unwrap();
+    restored.private_join(&welcome).unwrap();
+    delivery = owner.private_outbox(&c).unwrap();
+    deliver(&mut observer, &c, &delivery);
+    assert_eq!(observer.private_group(&c).unwrap().epoch, owner.private_group(&c).unwrap().epoch);
+    assert!(owner.private_invite(&c, &request).is_err(), "the old leaf has been replaced");
+    assert!(restored.snapshot_rejoins().is_empty());
+    assert!(restored.private_group(&c).unwrap().active);
+    restored.commit().unwrap();
+    drop(restored);
+    let mut reopened = node("web", &t, &disk);
+    let fresh = post(&mut owner, &c, "delivered after rejoin");
+    accept(&mut owner, &mut reopened, &c);
+    assert_eq!(reopened.post(&fresh.id).unwrap().summary.title, fresh.title);
+}
