@@ -16,6 +16,7 @@ export function versionFiles(base = root) {
     { path: 'apps/desktop/src-tauri/Cargo.toml', kind: 'cargo', section: 'package' },
     { path: 'apps/desktop/src-tauri/tauri.conf.json', kind: 'json' },
     { path: 'apps/setup/src-tauri/Cargo.toml', kind: 'cargo', section: 'package' },
+    { path: 'apps/setup/src-tauri/engine/Cargo.toml', kind: 'cargo', section: 'package' },
     { path: 'apps/setup/src-tauri/tauri.conf.json', kind: 'json' },
   ];
   if ('version' in JSON.parse(readFileSync(join(base, 'package.json'), 'utf8'))) {

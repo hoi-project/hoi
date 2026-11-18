@@ -23,7 +23,7 @@
         <thead><tr><th>File</th><th>Where the version is</th></tr></thead>
         <tbody>
           <tr><td><code>core/Cargo.toml</code></td><td><code>[workspace.package] version</code>: the one read first, and the one whose change starts an automatic release</td></tr>
-          <tr><td><code>apps/desktop/src-tauri/Cargo.toml</code>, <code>apps/setup/src-tauri/Cargo.toml</code></td><td><code>[package] version</code></td></tr>
+          <tr><td><code>apps/desktop/src-tauri/Cargo.toml</code>, <code>apps/setup/src-tauri/Cargo.toml</code>, <code>apps/setup/src-tauri/engine/Cargo.toml</code></td><td><code>[package] version</code></td></tr>
           <tr><td><code>apps/desktop/src-tauri/tauri.conf.json</code>, <code>apps/setup/src-tauri/tauri.conf.json</code></td><td>top-level <code>"version"</code></td></tr>
           <tr><td><code>apps/*/package.json</code>, <code>packages/*/package.json</code></td><td>top-level <code>"version"</code>, for every one that has a version (the root <code>package.json</code> has none)</td></tr>
           <tr><td><code>core/Cargo.lock</code>, <code>core/fuzz/Cargo.lock</code>, <code>apps/desktop/src-tauri/Cargo.lock</code>, <code>apps/setup/src-tauri/Cargo.lock</code></td><td>the <code>version</code> of every local <code>hoi-*</code> package (those without a <code>source</code>); external and vendored crates keep theirs</td></tr>
