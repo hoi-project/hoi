@@ -88,6 +88,9 @@ from silently ignoring pending authority. Format-5 stores migrate with an empty 
 The home necessarily sees the sender, community and plaintext of public objects. Holders
 continue to receive sealed pieces, locators and expiry rather than authors or communities.
 Receipts report trusted-home delivery progress; they do not prove anonymity or global erasure.
+Pending delivery polls and replies are scoped to the original pairing. Replacement pairing,
+unpairing and archive restore discard queued/in-flight polls and mark unfinished reports
+unknown; ordinary reconnect and reopen with the same pairing retain them.
 Origin and home must retain bounded metadata until its original holder expiry boundary.
 
 Acceptance includes lost replies, restarts on both sides, duplicate/conflicting requests,

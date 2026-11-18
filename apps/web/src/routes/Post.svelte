@@ -313,7 +313,7 @@
         {#if p.checks.homeDelivery}
           <div class="kv" role="status"><span>Delivery through your home</span><span>
             {#if p.checks.homeDelivery.endsWith('-unknown')}
-              This archive has no saved placement receipt. Delivery is unknown; earlier pieces may still exist. Deletion reports the missing coverage.
+              The original home’s delivery report is unavailable. Earlier pieces may still exist. Deletion reports any missing coverage.
             {:else}
               {p.checks.homeDelivery === 'placing' ? 'Your home is storing this post in pieces.' : p.checks.homeDelivery.startsWith('pieces-') ? 'Stored in pieces.' : 'Sent as a whole post.'}
               {p.checks.homeDelivery === 'placing' || p.checks.homeDelivery.endsWith('-pending') ? ' Waiting for your home’s delivery report.' : p.checks.homeDelivery.endsWith('-injected') ? ' Your home reports delivery through an injector.' : ' Your home reports direct forwarding because protected delivery was unavailable.'}

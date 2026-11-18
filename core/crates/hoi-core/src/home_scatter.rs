@@ -48,7 +48,10 @@ enum Waiting {
         level: u8,
         expires: u64,
     },
-    Status(Vec<Id>),
+    Status {
+        home: Id,
+        records: Vec<Id>,
+    },
     CleanupKeys {
         home: Id,
         holders: Vec<Id>,
@@ -171,8 +174,8 @@ impl Node {
                         }
                     }
                 }
-                (Waiting::Status(ids), Packet::Receipt { states }) => {
-                    for id in ids {
+                (Waiting::Status { home, records }, Packet::Receipt { states }) if Some(home) == self.journal_home() => {
+                    for id in records {
                         if let Some(state) = states.get(&id).filter(|s| ["pending", "injected", "fallback"].contains(&s.as_str())) {
                             self.scatter.saved.home_delivery.insert(id, state.clone());
                             self.scatter.dirty = true;
@@ -269,14 +272,43 @@ impl Node {
         self.scatter.home_scatter.asked.insert((home.into(), rid), (now, Waiting::CleanupKeys { home: scope, holders: holders.clone() }));
         self.home_packet(home, rid, false, Packet::CleanupKeys { holders });
     }
-    pub(crate) fn home_cleanup_scopes(&mut self) -> BTreeMap<(String, u32), Id> {
+    pub(crate) fn home_request_scopes(&mut self) -> BTreeMap<(String, u32), Id> {
         let mut scopes = std::mem::take(&mut self.scatter.home_scatter.cleanup_egress);
         for (key, (_, waiting)) in &self.scatter.home_scatter.asked {
-            if let Waiting::CleanupKeys { home, .. } = waiting {
-                scopes.insert(key.clone(), *home);
-            }
+            let home = match waiting {
+                Waiting::CleanupKeys { home, .. } | Waiting::Status { home, .. } => home,
+                #[cfg(test)]
+                Waiting::Store { .. } => continue,
+            };
+            scopes.insert(key.clone(), *home);
         }
         scopes
+    }
+    /// A replacement pairing cannot confirm the previous operator's delivery. Discard
+    /// queued and in-flight polls before forgetting their scope; retain pending reports
+    /// across ordinary disconnection and reopening with the same pairing instead.
+    pub(crate) fn invalidate_home_delivery_status(&mut self) {
+        let mut changed = Vec::new();
+        for (id, state) in &mut self.scatter.saved.home_delivery {
+            if matches!(state.as_str(), "pending" | "placing") {
+                *state = "unknown".into();
+                changed.push(*id);
+            }
+        }
+        if !changed.is_empty() {
+            self.scatter.dirty = true;
+            for id in changed {
+                if let Some(c) = self.store.get(&id).and_then(|s| s.record.community) {
+                    self.mark_changed(c);
+                }
+            }
+        }
+        self.outbox.retain(|(_, bytes)| {
+            !matches!(Msg::decode(bytes),
+            Ok(Msg::HomeScatter { reply: false, payload, .. }) if matches!(serde_json::from_slice::<Packet>(&payload), Ok(Packet::Status { .. })))
+        });
+        self.scatter.home_scatter.asked.retain(|_, (_, waiting)| !matches!(waiting, Waiting::Status { .. }));
+        self.scatter.home_scatter.poll_at = 0;
     }
     pub(crate) fn stored_for_home_device(&mut self, peer: &str, rid: u32, outcome: ScatterOutcome) {
         let capability = match outcome {
@@ -304,6 +336,7 @@ impl Node {
             return;
         }
         self.scatter.home_scatter.poll_at = now + 15;
+        let Some(scope) = self.journal_home() else { return };
         let Some(home) = self
             .peers
             .iter()
@@ -319,7 +352,7 @@ impl Node {
             return;
         }
         let rid = self.next_rid();
-        self.scatter.home_scatter.asked.insert((home.clone(), rid), (now, Waiting::Status(records.clone())));
+        self.scatter.home_scatter.asked.insert((home.clone(), rid), (now, Waiting::Status { home: scope, records: records.clone() }));
         self.home_packet(&home, rid, false, Packet::Status { records });
     }
 }

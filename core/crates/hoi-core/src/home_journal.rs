@@ -361,6 +361,7 @@ impl Node {
     /// or serve that operator's clients. Known capabilities remain deletion inventory;
     /// missing results become explicit unknown coverage rather than fresh placements.
     pub(crate) fn journal_restore_snapshot(&mut self) {
+        self.invalidate_home_delivery_status();
         self.journal_recover_authority();
         self.home_journal.saved.placements.clear();
         // An archive is a new installation. Retain locator authority, but never restore
@@ -432,13 +433,13 @@ impl Node {
     /// already queued old request leak its body to the newly selected operator.
     pub(crate) fn filter_home_journal_outbox(&mut self) {
         let current = self.journal_home();
-        let cleanup = self.home_cleanup_scopes();
+        let scopes = self.home_request_scopes();
         self.outbox.retain(|(peer, bytes)| {
             let rid = match hoi_sync::Msg::decode(bytes) {
                 Ok(hoi_sync::Msg::Piece { rid, .. } | hoi_sync::Msg::HomeScatter { rid, .. }) => rid,
                 _ => return true,
             };
-            cleanup.get(&(peer.clone(), rid)).is_none_or(|scope| Some(*scope) == current)
+            scopes.get(&(peer.clone(), rid)).is_none_or(|scope| Some(*scope) == current)
         });
         let allowed: std::collections::BTreeSet<_> = self
             .home_journal

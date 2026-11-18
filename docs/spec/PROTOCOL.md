@@ -1111,6 +1111,9 @@ homes retain local-scatter or whole-record delivery fallback. A still-running le
 also makes author deletion retryable before mutation. Unknown legacy inventory stays a gap.
 The trusted home sees the sender, community and public object plaintext. Receipts report its
 progress, not anonymity or guarantees of global erasure (proposed RFC-0008).
+Delivery-status polls and replies use the original pairing scope. Replacing or removing that
+pairing, or restoring an archive, discards queued/in-flight polls and marks pending/placing
+reports unknown. Reconnecting or reopening with the same pairing preserves pending reports.
 
 Deletion suppresses queued and in-flight repair. Already dispatched placements are retained as
 cleanup targets; their completion must not publish a replacement for deleted content. Other

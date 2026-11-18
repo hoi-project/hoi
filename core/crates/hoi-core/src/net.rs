@@ -1865,6 +1865,9 @@ impl Node {
         if self.state.home.as_ref().is_some_and(|h| h.spent == Some(digest(SPENT_LINK_CONTEXT, &p.token))) {
             return Ok(self.net_status());
         }
+        if self.state.home.as_ref().is_none_or(|h| h.token != p.token) {
+            self.invalidate_home_delivery_status();
+        }
         let rtc = p.rtc.into_iter().filter(|r| valid_peer_hint(r)).collect();
         self.state.home = Some(PairInfo { url: p.url, token: p.token, name: p.name, rtc, spent: None, next: None, link_key: None, proven: false });
         self.net_error = None;
@@ -1873,6 +1876,7 @@ impl Node {
     }
 
     pub fn unpair(&mut self) -> NetStatus {
+        self.invalidate_home_delivery_status();
         self.state.home = None;
         self.net_error = None;
         self.mark_state();

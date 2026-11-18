@@ -435,6 +435,14 @@ fn home_delivery_waits_for_reconnection_and_receipts_never_claim_privacy_from_ho
     m.run(130);
     assert!(m.n("phone").scatter.saved.whole.contains(&Id::from_hex(&p.id).unwrap()));
     assert!(!m.n("phone").post(&p.id).unwrap().checks.address_hidden);
+    let disk = home_checkpoint(m.n("phone"));
+    let reopened = node("mobile", &m.t, &disk);
+    m.nodes.insert("phone".into(), reopened);
+    assert_eq!(
+        m.n("phone").post(&p.id).unwrap().checks.home_delivery.as_deref(),
+        Some("whole-pending"),
+        "ordinary restart preserves the original pairing's report"
+    );
     m.n("phone").net_connect("home", Role::Home);
     m.n("home").net_connect("phone", Role::Client);
     m.pump();
@@ -1048,4 +1056,45 @@ fn leaving_after_re_pairing_never_sends_old_manifest_authority_to_the_new_home()
         m.n("phone").scatter.saved.drop_caps.contains_key(&crate::drop_share::cap_id(&manifest)),
         "unsent authority is retained through its holder horizon"
     );
+}
+
+#[test]
+fn pending_delivery_reports_cannot_follow_a_replacement_pairing_or_snapshot() {
+    for reset in ["pair", "unpair", "restore"] {
+        let (mut m, c) = home_phone();
+        let record = Id::from_hex(&c).unwrap();
+        m.n("phone").scatter.saved.home_delivery.insert(record, "pending".into());
+        m.n("phone").scatter.dirty = true;
+        m.t.fetch_add(20, Ordering::SeqCst);
+        m.n("phone").home_scatter_tick(None);
+        let rid = m.n("phone").outbox.iter().find_map(|(_, bytes)| match Msg::decode(bytes) {
+            Ok(Msg::HomeScatter { rid, reply: false, payload })
+                if matches!(serde_json::from_slice::<crate::home_scatter::Packet>(&payload), Ok(crate::home_scatter::Packet::Status { records }) if records.contains(&record)) => Some(rid),
+            _ => None,
+        }).expect("poll was queued for the original home");
+        match reset {
+            "pair" => {
+                let mut other = node("desktop", &m.t, &Mem::default());
+                let pairing = other.set_serving(Some("ws://127.0.0.1:7845")).unwrap().serving.unwrap().pairing;
+                m.n("phone").pair(&pairing).unwrap();
+            }
+            "unpair" => {
+                m.n("phone").unpair();
+            }
+            "restore" => m.n("phone").journal_restore_snapshot(),
+            _ => unreachable!(),
+        }
+        let payload = serde_json::to_vec(&crate::home_scatter::Packet::Receipt { states: [(record, "injected".into())].into() }).unwrap();
+        // Even the previous authenticated peer and its valid old request ID cannot confirm
+        // delivery after the pairing has been discarded or restored as a stale archive.
+        m.n("phone").on_home_scatter("home", rid, true, &payload);
+        assert_eq!(m.n("phone").scatter.saved.home_delivery[&record], "unknown", "{reset}");
+        m.t.fetch_add(20, Ordering::SeqCst);
+        m.n("phone").home_scatter_tick(None);
+        assert!(!m.n("phone").take_outbox().iter().any(|(_, bytes)| matches!(Msg::decode(bytes),
+            Ok(Msg::HomeScatter { reply: false, payload, .. }) if matches!(serde_json::from_slice::<crate::home_scatter::Packet>(&payload), Ok(crate::home_scatter::Packet::Status { .. })))),
+            "{reset}: no old record ID escapes in queued or retried status polls");
+        let disk = home_checkpoint(m.n("phone"));
+        assert_eq!(node("mobile", &m.t, &disk).scatter.saved.home_delivery[&record], "unknown", "{reset}: invalidation is durable");
+    }
 }
