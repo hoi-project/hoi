@@ -1321,7 +1321,7 @@ impl Node {
         records && media
     }
 
-    fn record_deleted(&self, id: &Id) -> bool {
+    pub(crate) fn record_deleted(&self, id: &Id) -> bool {
         self.store.is_deleted(id) || self.state.skeletons.contains_key(id)
     }
 
@@ -1495,7 +1495,7 @@ impl Node {
     /// Whether this device could keep something in pieces now: enough places, and forwarders
     /// in at least two places with room for the pieces.
     pub(crate) fn can_scatter(&self, c: Id) -> bool {
-        self.scattering_home(c).is_some() || self.journal_community_pending(c) || self.can_scatter_local(c)
+        self.scattering_home(c).is_some() || self.journal_community_work(c) || self.can_scatter_local(c)
     }
 
     pub(crate) fn can_scatter_local(&self, c: Id) -> bool {

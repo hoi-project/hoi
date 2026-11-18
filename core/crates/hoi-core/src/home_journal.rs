@@ -122,6 +122,9 @@ impl Node {
     fn journal_home(&self) -> Option<Id> {
         self.state.home.as_ref().map(|h| Id::hash(h.token.as_bytes()))
     }
+    fn journal_home_peer(&self) -> Option<String> {
+        self.peers.iter().find(|(_, p)| p.home && p.said_hello && p.features.contains(hoi_sync::FEATURE_HOME_SCATTER_JOURNAL)).map(|(peer, _)| peer.clone())
+    }
     pub(crate) fn journal_store(&mut self, home: &str, c: Id, content: &[u8], level: u8, expires: u64) -> R<u64> {
         let home_id = self.journal_home().ok_or_else(|| ApiError::invalid("Home unavailable."))?;
         let request = request_id(c, content, level);
@@ -200,10 +203,7 @@ impl Node {
     fn complete_home_origin(&mut self, op: u64, r: &Origin) {
         let manifest = r.capability.as_ref().and_then(Capability::read);
         if let Some(cap) = r.capability.clone() {
-            self.save_drop_cap(cap);
-        }
-        if let Some(m) = manifest.clone() {
-            self.remember_outgoing_placement(r.community, &r.records, None, m);
+            self.recover_home_cap(r.community, &r.records, cap);
         }
         self.end_home_wait_op(
             op,
@@ -391,10 +391,22 @@ impl Node {
             .values()
             .filter_map(|r| r.capability.clone().and_then(|cap| Some((r.community, r.records.clone(), cap.read()?, cap))))
             .collect();
-        for (c, records, m, cap) in known {
-            self.save_drop_cap(cap);
-            self.remember_outgoing_placement(c, &records, None, m);
+        for (c, records, _, cap) in known {
+            self.recover_home_cap(c, &records, cap);
         }
+    }
+    fn recover_home_cap(&mut self, c: Id, records: &[Id], cap: Capability) {
+        let Some(original) = cap.read() else { return };
+        self.save_drop_cap(cap);
+        let m = self.scatter.saved.drop_caps.get(&crate::drop_share::cap_id(&original)).and_then(Capability::read).unwrap_or(original);
+        let deleted = self.deletion_object_suppressed(Id(m.object)) || (!records.is_empty() && records.iter().all(|r| self.record_deleted(r)));
+        if deleted {
+            let kept = crate::keep::Kept { community: Some(c), records: records.to_vec(), ..Default::default() };
+            if matches!(self.queue_deletion_generation(&kept, &m, false), Ok(true)) {
+                return;
+            }
+        }
+        self.remember_outgoing_placement(c, records, None, m);
     }
     pub(crate) fn journal_capability(&self, m: &Manifest) -> Option<Capability> {
         self.home_journal.saved.origin.values().filter_map(|r| r.capability.as_ref()).find(|cap| cap.read().is_some_and(|old| old == *m)).cloned()
@@ -441,8 +453,8 @@ impl Node {
     pub(crate) fn journal_has_content(&self, c: Id, content: &[u8], level: u8) -> bool {
         self.home_journal.saved.origin.contains_key(&request_id(c, content, level))
     }
-    pub(crate) fn journal_community_pending(&self, c: Id) -> bool {
-        self.home_journal.saved.origin.values().any(|r| r.community == c && !r.released && r.result.is_none() && live(r.expires, self.now()))
+    pub(crate) fn journal_community_work(&self, c: Id) -> bool {
+        self.home_journal.saved.origin.values().any(|r| r.community == c && !r.released && !r.restored && live(r.expires, self.now()))
     }
     /// The deletion journal has atomically captured these locator-level tokens. Retain only
     /// the request tombstone; do not keep deleted record bodies or decryption keys.
@@ -455,7 +467,9 @@ impl Node {
         }
     }
     pub(crate) fn journal_release_generation(&mut self, m: &Manifest) {
-        for r in self.home_journal.saved.origin.values_mut().filter(|r| r.capability.as_ref().is_some_and(|c| c.read().is_some_and(|old| old == *m))) {
+        for r in self.home_journal.saved.origin.values_mut().filter(|r| {
+            r.capability.as_ref().is_some_and(|c| c.read().is_some_and(|old| old == *m || matches!(old.update_to(m), Ok(hoi_types::scatter::Update::Extend))))
+        }) {
             r.capability = None;
             r.content.clear();
             r.released = true;
@@ -477,34 +491,28 @@ impl Node {
             .origin
             .iter()
             .filter(|(id, r)| !r.released && r.result.is_none() && !self.home_journal.operations.values().any(|r| r == *id))
-            .map(|(id, r)| (*id, r.community))
+            .map(|(id, _)| *id)
             .take(4)
             .collect();
-        for (request, community) in orphaned {
+        for request in orphaned {
             if self.check_room(now + 60).is_err() {
                 continue;
             }
             let op = self.scatter_wait_op();
             self.home_journal.operations.insert(op, request);
             self.home_journal.background.insert(op);
-            let home = self.scattering_home(community).unwrap_or_default();
+            let home = self.journal_home_peer().unwrap_or_default();
             self.send_journal_request(&home, op, request);
         }
         if now >= self.home_journal.release_at {
             self.home_journal.release_at = now + 30;
-            let releases: Vec<_> = self
-                .home_journal
-                .saved
-                .origin
-                .iter()
-                .filter(|(_, r)| r.released && Some(r.home) == self.journal_home())
-                .map(|(id, r)| (*id, r.community))
-                .collect();
+            let releases: Vec<_> =
+                self.home_journal.saved.origin.iter().filter(|(_, r)| r.released && Some(r.home) == self.journal_home()).map(|(id, _)| *id).collect();
             let count = releases.len().min(8);
             let cursor = self.home_journal.release_cursor;
             self.home_journal.release_cursor = cursor.saturating_add(count);
-            for (request, c) in (0..count).map(|i| releases[(cursor + i) % releases.len()]) {
-                if let Some(home) = self.scattering_home(c) {
+            for request in (0..count).map(|i| releases[(cursor + i) % releases.len()]) {
+                if let Some(home) = self.journal_home_peer() {
                     let rid = self.next_rid();
                     self.home_packet(&home, rid, false, Packet::JournalRelease { request });
                 }
@@ -519,11 +527,11 @@ impl Node {
             .collect();
         for (key, op, request) in retries {
             self.home_journal.waits.remove(&key);
-            let Some(r) = self.home_journal.saved.origin.get(&request) else {
+            let Some(_) = self.home_journal.saved.origin.get(&request) else {
                 self.end_wait_op(op, ScatterOutcome::Failed("The original piece storage interval has ended.".into()));
                 continue;
             };
-            if let Some(home) = self.scattering_home(r.community) {
+            if let Some(home) = self.journal_home_peer() {
                 self.send_journal_request(&home, op, request);
             } else {
                 self.home_journal.waits.insert(key, (now, op, request));

@@ -82,9 +82,26 @@ impl Node {
         }
         Some(Capability { manifest: b64(&m.encode()), tokens })
     }
-    pub(crate) fn save_drop_cap(&mut self, cap: Capability) {
-        let Some(m) = cap.read().filter(|m| self.drop_cap_needed(m)) else { return };
+    pub(crate) fn save_drop_cap(&mut self, mut cap: Capability) {
+        let Some(mut m) = cap.read().filter(|m| self.drop_cap_needed(m)) else { return };
         let id = cap_id(&m);
+        if let Some(existing) = self.scatter.saved.drop_caps.get(&id).cloned().and_then(|cap| Some((cap.read()?, cap))) {
+            let (old, known) = existing;
+            if old == m || matches!(m.update_to(&old), Ok(hoi_types::scatter::Update::Extend)) {
+                // Replaying an old receipt must not discard a later device's tail tokens.
+                cap = known;
+                m = old;
+            } else if matches!(old.update_to(&m), Ok(hoi_types::scatter::Update::Extend)) {
+                for i in 0..old.hashes.len() {
+                    let loc = Id(sc::locator(&old.loc_secret, &old.object, old.generation, i as u8));
+                    if let Some(token) = known.tokens.get(&loc) {
+                        cap.tokens.insert(loc, *token);
+                    }
+                }
+            } else {
+                return;
+            }
+        }
         if self.scatter.saved.drop_caps.len() >= MAX_CAPS && !self.scatter.saved.drop_caps.contains_key(&id) {
             return;
         }

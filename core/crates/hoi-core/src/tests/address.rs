@@ -573,7 +573,8 @@ fn a_lost_placement_reply_survives_both_restarts_without_duplicate_posts_and_sti
         m.hang_up("home", f);
     }
     let phone = node("mobile", &m.t, &phone_disk);
-    let home = node("desktop", &m.t, &home_disk);
+    let mut home = node("desktop", &m.t, &home_disk);
+    home.set_serving(Some("ws://127.0.0.1:7842")).unwrap();
     m.add("phone", phone, "192.0.2.60:7843");
     m.add("home", home, "203.0.113.50:7843");
     for f in ["f0", "f1", "f2"] {
@@ -582,6 +583,9 @@ fn a_lost_placement_reply_survives_both_restarts_without_duplicate_posts_and_sti
     m.n("phone").net_connect("home", Role::Home);
     m.n("home").net_connect("phone", Role::Client);
     m.pump();
+    // An existing receipt is recoverable even before a restarted home can advertise fresh
+    // placement capacity. Neither reconnect nor cleanup depends on adding another generation.
+    m.n("phone").peers.get_mut("home").unwrap().features.remove("scatter-store");
     assert!(until(&mut m, 600, |m| m.n("b").post(&p.id).is_ok()));
     assert_eq!(m.n("home").home_journal.saved.placements.len(), 1, "retry never creates a second placement");
     let recovered = m.n("phone").scatter.saved.kept.values().find(|k| k.records.contains(&pid)).unwrap().newest().unwrap();
@@ -736,7 +740,8 @@ fn an_uncertain_home_restart_returns_partial_cleanup_authority_and_whole_fallbac
     for f in ["f0", "f1", "f2"] {
         m.hang_up("home", f);
     }
-    let restarted = node("desktop", &m.t, &disk);
+    let mut restarted = node("desktop", &m.t, &disk);
+    restarted.set_serving(Some("ws://127.0.0.1:7842")).unwrap();
     m.add("home", restarted, "203.0.113.50:7843");
     for f in ["f0", "f1", "f2"] {
         m.dial("home", f);
@@ -836,7 +841,7 @@ fn extending_a_delegated_generation_preserves_home_tokens_for_its_original_index
     let mut extended = old.read().unwrap();
     assert!(extended.hashes.len() < extended.m as usize);
     let fresh = extended.hashes.len() as u8;
-    extended.hashes.push([0x55; 32]);
+    extended.hashes.push([0x55; 16]);
     let holder = m.eps.values().filter_map(|h| Id::from_hex(h).ok()).find(|h| !extended.holders.contains(h)).unwrap();
     extended.holders.push(holder);
     extended.keys.push(extended.keys[0]);
@@ -848,4 +853,47 @@ fn extending_a_delegated_generation_preserves_home_tokens_for_its_original_index
     let secret = m.n("phone").drop_secret().unwrap();
     assert_eq!(cap.tokens[&Id(loc)], hoi_crypto::scatter::drop_token(&secret, &loc));
     assert_eq!(cap.read(), Some(extended));
+}
+
+#[test]
+fn old_home_receipts_cannot_replace_extended_authority_or_restore_deleted_manifest_keys() {
+    let (mut m, c) = home_phone();
+    let p = post(m.n("phone"), &c, "keep foreign tail tokens while replaying the original home receipt");
+    assert!(until(&mut m, 600, |m| m.n("b").post(&p.id).is_ok()));
+    let (request, origin) = m.n("phone").home_journal.saved.origin.iter().next().map(|(id, r)| (*id, r.clone())).unwrap();
+    let original = origin.capability.clone().unwrap();
+    let mut extended = original.read().unwrap();
+    let object = Id(extended.object);
+    let index = extended.hashes.len() as u8;
+    extended.hashes.push([0x55; 16]);
+    let holder = m.eps.values().filter_map(|h| Id::from_hex(h).ok()).find(|h| !extended.holders.contains(h)).unwrap();
+    extended.holders.push(holder);
+    extended.keys.push(extended.keys[0]);
+    let loc = Id(hoi_crypto::scatter::locator(&extended.loc_secret, &extended.object, extended.generation, index));
+    let mut stronger = m.n("phone").capability_for(&extended).unwrap();
+    // The tail was placed by another authorized device; this phone cannot derive its token.
+    let foreign_token = [0x91; 32];
+    stronger.tokens.insert(loc, foreign_token);
+    m.n("phone").save_drop_cap(stronger);
+    m.n("phone").save_drop_cap(original);
+    let disk = home_checkpoint(m.n("phone"));
+    let mut reopened = node("mobile", &m.t, &disk);
+    let saved = &reopened.scatter.saved.drop_caps[&crate::drop_share::cap_id(&extended)];
+    assert_eq!(saved.read(), Some(extended.clone()));
+    assert_eq!(saved.tokens[&loc], foreign_token);
+    reopened.delete_own(&p.id).unwrap();
+    let job = reopened.deletion_for_target(Id::from_hex(&p.id).unwrap()).unwrap();
+    assert!(
+        reopened.deletions.saved.jobs[&job].targets.values().any(|t| t.locator == loc && t.token == Some(foreign_token)),
+        "a shorter generation cannot consume the stronger cap before its tail is captured"
+    );
+    reopened.home_journal.saved.origin.insert(request, origin);
+    reopened.home_journal.dirty = true;
+    reopened.journal_recover_authority();
+    assert!(!reopened.scatter.saved.kept.contains_key(&object), "late receipt replay never re-indexes a deleted object's decryption manifest");
+    assert!(reopened.home_journal.saved.origin[&request].capability.is_none());
+    reopened.commit().unwrap();
+    let reopened = node("mobile", &m.t, &disk);
+    assert!(!reopened.scatter.saved.kept.contains_key(&object));
+    assert!(reopened.deletions.saved.jobs[&job].targets.values().any(|t| t.locator == loc && t.token == Some(foreign_token)));
 }

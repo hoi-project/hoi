@@ -324,7 +324,9 @@ impl Node {
         self.journal_release_generation(m);
         // The job now retains only locator-level retry authority. Do not keep or share the
         // old object decryption key merely to repeat a drop.
-        if cap.is_some() && self.scatter.saved.drop_caps.remove(&crate::drop_share::cap_id(m)).is_some() {
+        let consumed =
+            cap.is_some() && self.scatter.saved.drop_caps.get(&crate::drop_share::cap_id(m)).is_some_and(|cached| cached.read().is_some_and(|old| old == *m));
+        if consumed && self.scatter.saved.drop_caps.remove(&crate::drop_share::cap_id(m)).is_some() {
             self.scatter.dirty = true;
         }
         Ok(true)
