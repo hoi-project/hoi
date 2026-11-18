@@ -1104,7 +1104,9 @@ than treating the archive as proof that no pieces were stored. Queued messages a
 filtered against the current pairing before egress, so reusing the connection name cannot
 send an old request to another operator. The post view reports missing archived receipts.
 Client storage format 6 adds this authority journal; format-5 stores migrate empty and older
-software refuses format 6. Legacy reception and reply verification remain supported; old
+software refuses format 6. Legacy reception and reply verification remain supported;
+new code never sends a legacy whole-capability Drop to a currently paired operator, including
+non-author and local-leave cleanup. It retains authority locally and uses sealed holder drops; old
 homes retain local-scatter or whole-record delivery fallback. A still-running legacy placement
 also makes author deletion retryable before mutation. Unknown legacy inventory stays a gap.
 The trusted home sees the sender, community and public object plaintext. Receipts report its

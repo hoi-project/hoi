@@ -11,7 +11,6 @@ use hoi_crypto::scatter as sc;
 use hoi_sync::Msg;
 use hoi_types::{
     Id,
-    scatter::Manifest,
     uri::{b64, unb64},
 };
 use serde::{Deserialize, Serialize};
@@ -285,25 +284,6 @@ impl Node {
             _ => None,
         };
         self.home_packet(peer, rid, true, Packet::Stored { capability });
-    }
-    pub(crate) fn drop_at_home(&mut self, m: &Manifest, ask: &Ask) -> bool {
-        let Some(home) = self.peers.iter().find(|(_, p)| p.home && p.said_hello && p.features.contains(hoi_sync::FEATURE_HOME_SCATTER)).map(|(p, _)| p.clone())
-        else {
-            return false;
-        };
-        let tokens = match ask {
-            Ask::DropTokens(tokens) => tokens.clone(),
-            Ask::DropToken(secret) => (0..m.hashes.len() as u8)
-                .map(|i| {
-                    let loc = sc::locator(&m.loc_secret, &m.object, m.generation, i);
-                    (Id(loc), sc::drop_token(secret, &loc))
-                })
-                .collect(),
-            _ => return false,
-        };
-        let rid = self.next_rid();
-        self.home_packet(&home, rid, false, Packet::Drop { capability: Capability { manifest: b64(&m.encode()), tokens } });
-        true
     }
     pub(crate) fn home_scatter_tick(&mut self, gone: Option<&str>) {
         self.journal_tick();

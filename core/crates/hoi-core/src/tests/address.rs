@@ -1018,3 +1018,34 @@ fn scoped_cleanup_can_address_an_older_index_on_the_home_holder_itself() {
         "address the exact holder without a proxy loop"
     );
 }
+
+#[test]
+fn leaving_after_re_pairing_never_sends_old_manifest_authority_to_the_new_home() {
+    let (mut m, c) = home_phone();
+    let p = post(m.n("phone"), &c, "retain old placement authority when leaving through another operator");
+    assert!(until(&mut m, 600, |m| m.n("b").post(&p.id).is_ok()));
+    let original = m.n("phone").home_journal.saved.origin.values().next().unwrap().capability.clone().unwrap();
+    let manifest = original.read().unwrap();
+    let mut other = node("desktop", &m.t, &Mem::default());
+    other.create_identity("other operator").unwrap();
+    let pairing = other.set_serving(Some("ws://127.0.0.1:7845")).unwrap().serving.unwrap().pairing;
+    m.hang_up("phone", "home");
+    m.add("other", other, "203.0.114.50:7843");
+    m.n("phone").pair(&pairing).unwrap();
+    m.n("phone").net_connect("other", Role::Home);
+    m.n("other").net_connect("phone", Role::Client);
+    m.pump();
+    m.log.clear();
+    m.n("phone").leave(&c).unwrap();
+    m.run(30);
+    assert!(
+        !m.log.iter().any(|(from, to, msg)| from == "phone"
+            && to == "other"
+            && matches!(msg,Msg::HomeScatter{reply:false,payload,..}if serde_json::from_slice::<serde_json::Value>(payload).unwrap()["type"]=="Drop")),
+        "non-author cleanup must not disclose a full old capability to a new pairing"
+    );
+    assert!(
+        m.n("phone").scatter.saved.drop_caps.contains_key(&crate::drop_share::cap_id(&manifest)),
+        "unsent authority is retained through its holder horizon"
+    );
+}

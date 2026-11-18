@@ -50,7 +50,9 @@ journal stores no raw pairing credential or global author drop secret. Once a de
 atomically captured locator-level retry tokens, clear originating content and decryption
 keys. An authenticated `JournalRelease` clears the home result capability and retains its
 terminal deduplication tombstone; retry releases while paired. Legacy reception is
-retained, but new initiation requires the new feature.
+retained, but new initiation requires the new feature. Non-author or local-leave cleanup
+never initiates a legacy whole-capability Drop to the currently paired operator; it retains
+local authority and uses sealed holder requests.
 
 Durable deletion targets retain the original pairing digest alongside each locator/token
 known in that home receipt, never alongside newly appended locators from other devices.

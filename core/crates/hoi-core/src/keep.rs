@@ -1497,9 +1497,8 @@ impl Node {
         } else {
             return Ok(());
         };
-        if self.drop_at_home(m, &ask) {
-            return Ok(());
-        }
+        // A legacy home packet would disclose the complete manifest and all tokens to
+        // whichever operator is paired now. Keep authority local and seal holder requests.
         if let Ok(op) = self.scatter_drop(m, &ask) {
             self.scatter.jobs.insert(op, Job::Dropped);
             if self.op_done(op) {
