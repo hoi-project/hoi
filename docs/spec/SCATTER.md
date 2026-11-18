@@ -358,7 +358,11 @@ device's candidates is no larger than its share of real places.
    cannot all be routed, keep the matched holders and sample reserves for the remaining
    unsent indexes under the same place, block and introducer caps. Only a dispatched index
    consumes its forwarder's exposure budget. A home counts the simultaneous routes from
-   distinct holder places before advertising placement to its paired devices.
+   distinct holder places before advertising placement to its paired devices. For example,
+   a 5-of-12 generation can use three forwarding places when each vouches for a different
+   group of four eligible holder places and all twelve satisfy the caps. If only
+   one forwarding place vouches for all fourteen eligible holder places, it can carry four
+   indexes. The home leaves placement out of its hello until enough vouched paths exist.
    *Built in S3:* a device's forwarders are its links that say `fw` (every public node); the
    holders it can use are those they vouch for in `nodes.h`, with the holder's signed key (`k`)
    and routes (`r`). A holder is placed by its own link, by routes this device saw itself, or by
