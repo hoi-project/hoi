@@ -413,6 +413,8 @@ struct Paths {
     carried: BTreeMap<usize, BTreeSet<u8>>,
     /// Holder → its signed key and the forwarders that reach it.
     holders: BTreeMap<Id, (/* xk */ [u8; 32], Vec<String>)>,
+    /// GET-only alternate relays, used after preferred voucher paths fill or fail.
+    alternates: BTreeMap<Id, Vec<String>>,
     /// At most this many indexes through one forwarder place: k−1.
     cap: usize,
 }
@@ -428,11 +430,14 @@ impl Paths {
             let after = if carried.1 { carried.0 } else { carried.0 + 1 };
             (after <= self.cap).then_some(carried.0)
         };
-        let mut options: Vec<(usize, &String)> =
-            via.iter().filter(|f| !avoid.contains(*f) && live.contains(*f)).filter_map(|f| load(f).map(|l| (l, f))).collect();
-        let least = options.iter().map(|(l, _)| *l).min()?;
-        options.retain(|(l, _)| *l == least);
-        Some(options[uniform(options.len())].1.clone())
+        let choose = |via: &[String]| {
+            let mut options: Vec<(usize, &String)> =
+                via.iter().filter(|f| !avoid.contains(*f) && live.contains(*f)).filter_map(|f| load(f).map(|l| (l, f))).collect();
+            let least = options.iter().map(|(l, _)| *l).min()?;
+            options.retain(|(l, _)| *l == least);
+            Some(options[uniform(options.len())].1.clone())
+        };
+        choose(via).or_else(|| self.alternates.get(holder).and_then(|via| choose(via)))
     }
 
     /// Whether any live forwarder's place may still carry `index`.
@@ -457,6 +462,20 @@ impl Paths {
             if !via.is_empty() {
                 self.holders.insert(*h, (*xk, via));
             }
+        }
+    }
+
+    /// A holder key is already verified (or came in the signed manifest). Partial voucher
+    /// knowledge must not be worse than no voucher: once preferred routes reach k−1, GETs
+    /// may use another independent relay. Placement and deletion never gain these paths.
+    fn load_alternates(&mut self, manifest: &Manifest, forwarders: &[Forwarder], holder_places: &BTreeMap<Id, usize>) {
+        for holder in &manifest.holders {
+            if !self.holders.contains_key(holder) {
+                continue;
+            }
+            let own = holder_places.get(holder);
+            let via = forwarders.iter().filter(|f| own.is_none() || self.place.get(&f.peer) != own).map(|f| f.peer.clone()).collect();
+            self.alternates.insert(*holder, via);
         }
     }
 
@@ -1682,18 +1701,26 @@ impl Node {
         for (i, f) in forwarders.iter().enumerate() {
             paths.place.insert(f.peer.clone(), place[i]);
         }
+        let mut holder_places = BTreeMap::new();
+        for (i, f) in forwarders.iter().enumerate() {
+            if let Some(endpoint) = self.peers.get(&f.peer).and_then(|p| p.meta.endpoint.as_deref()).and_then(|s| Id::from_hex(s).ok()) {
+                holder_places.insert(endpoint, place[i]);
+            }
+        }
         for (j, h) in reach.iter().enumerate() {
             if !manifest.holders.contains(&h.endpoint) {
                 continue;
             }
             // never through a forwarder in the holder's own place
             let own = place[forwarders.len() + j];
+            holder_places.insert(h.endpoint, own);
             let via: Vec<String> = h.via.iter().filter(|f| paths.place.get(*f) != Some(&own)).cloned().collect();
             if !via.is_empty() {
                 paths.holders.insert(h.endpoint, (h.xk, via));
             }
         }
         paths.relay_unvouched(manifest, &forwarders);
+        paths.load_alternates(manifest, &forwarders, &holder_places);
         let id = self.scatter.next_op;
         self.scatter.next_op += 1;
         self.scatter.ops.insert(

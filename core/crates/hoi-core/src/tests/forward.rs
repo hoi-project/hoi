@@ -1212,3 +1212,32 @@ fn a_forwarder_vouch_cannot_make_the_placing_device_an_independent_holder() {
     let manifest = stored(m.wait("a", op, 120));
     assert!(!manifest.holders.contains(&own));
 }
+
+#[test]
+fn partial_holder_vouches_use_alternate_get_routes_without_exceeding_place_caps() {
+    let mut m = mesh(3, 14);
+    join(&mut m, "a", "198.51.100.10:7843", &[0, 1, 2]);
+    let content = b"one preferred voucher must not strand a reconstructable object".to_vec();
+    let op = m.n("a").scatter_store(&content, 10, T0 + DAY).unwrap();
+    let manifest = stored(m.wait("a", op, 120));
+    join(&mut m, "r", "192.0.2.10:7843", &[0, 1, 2]);
+    // Simulate partial post-restart lists. All three real forwarders still reach the holders;
+    // only one preferred voucher is currently known to the reader.
+    for f in ["f1", "f2"] {
+        m.n("r").note_vouches(f, Vec::new());
+    }
+    m.log.clear();
+    let op = m.n("r").scatter_load(&manifest).unwrap();
+    assert_eq!(m.wait("r", op, 120), ScatterOutcome::Loaded(content));
+    let mut asked: BTreeMap<String, BTreeSet<Id>> = BTreeMap::new();
+    for (from, to, msg) in &m.log {
+        if from == "r"
+            && let Msg::Piece { op: PieceOp::Get, to: Some(holder), .. } = msg
+        {
+            asked.entry(to.clone()).or_default().insert(*holder);
+        }
+    }
+    assert!(asked.len() >= 2, "k pieces require independent routes after the preferred k-1");
+    assert_eq!(asked.get("f0").map_or(0, BTreeSet::len), manifest.k as usize - 1, "prefer the actual voucher before alternate relays");
+    assert!(asked.values().all(|indexes| indexes.len() < manifest.k as usize), "never give a place k distinct indexes");
+}

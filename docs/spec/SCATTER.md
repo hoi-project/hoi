@@ -462,6 +462,13 @@ manifest's hash names, starts the next generation from it; a copy that seals oth
 published, and the device does not try again. A reader that finds an object unreadable reads its
 pointer records again, so a new generation it refused for coming within a day counts then.
 
+A reader with only a partial set of holder vouches still uses the holder's verified key or
+signed-manifest key. It prefers the vouched routes, then uses another independent forwarding
+place when those routes fill or fail. A known holder's own place is excluded, and every place
+still carries at most k−1 distinct indexes. Knowing one voucher must not make a reconstructable
+object less available than having no vouchers. This GET fallback grants no new placement or
+delegated deletion routes.
+
 ### 5.11 Retention, deletion, abuse
 - Pieces expire with the post's lifespan, at most 400 days; posts kept longer are regenerated
   before their pieces expire.
