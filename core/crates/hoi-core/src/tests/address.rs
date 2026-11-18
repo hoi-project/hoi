@@ -593,7 +593,19 @@ fn a_lost_placement_reply_survives_both_restarts_without_duplicate_posts_and_sti
     assert!(m.n("phone").scatter.saved.drop_caps.contains_key(&crate::drop_share::cap_id(&recovered)));
     assert_eq!(m.n("b").store.in_community(&Id::from_hex(&c).unwrap()).filter(|s| s.id == pid).count(), 1);
     m.n("phone").delete_own(&p.id).unwrap();
+    // The deletion itself also survives the originating device's restart with only locator
+    // capabilities left: neither the manifest nor runtime holder-key cache is required.
+    let deleting = home_checkpoint(m.n("phone"));
+    m.hang_up("phone", "home");
+    let phone = node("mobile", &m.t, &deleting);
+    m.add("phone", phone, "192.0.2.60:7843");
+    m.n("phone").net_connect("home", Role::Home);
+    m.n("home").net_connect("phone", Role::Client);
+    m.pump();
     m.run(180);
+    let progress = m.n("phone").deletion_progress().into_iter().find(|row| row.target == p.id).unwrap();
+    assert_eq!(progress.acknowledged, 0, "volatile test holders cannot assert durable removal");
+    assert!(progress.legacy_removal > 0, "real holder replies, rather than home acceptance");
     let indexes = (0..recovered.hashes.len() as u8).collect::<Vec<_>>();
     let op = m.n("b").scatter_probe(&recovered, &indexes, &Default::default()).unwrap();
     assert!(matches!(m.wait("b",op,120),crate::scatter::ScatterOutcome::Probed(rows) if rows.iter().all(|r|r.kept==Some(false))));
@@ -768,6 +780,10 @@ fn re_pairing_never_sends_an_old_queued_or_retried_placement_to_the_new_home() {
     post(m.n("phone"), &c, "keep this old pending content away from a new operator");
     m.n("phone").scatter_tick();
     assert_eq!(m.n("phone").home_journal.saved.origin.len(), 1);
+    let scope = m.n("phone").journal_home();
+    let holder = Id::from_hex(&m.eps["h0"]).unwrap();
+    let op = m.n("phone").scatter_drop_targets(&[(holder, Id([3; 32]), [4; 32], scope)]).unwrap();
+    m.n("phone").drop_op(op);
     let mut other = node("desktop", &m.t, &Mem::default());
     other.create_identity("Other operator").unwrap();
     let pairing = other.set_serving(Some("ws://127.0.0.1:7845")).unwrap().serving.unwrap().pairing;
@@ -775,7 +791,12 @@ fn re_pairing_never_sends_an_old_queued_or_retried_placement_to_the_new_home() {
     for _ in 0..3 {
         m.t.fetch_add(30, Ordering::SeqCst);
         m.n("phone").journal_tick();
-        assert!(!m.n("phone").take_outbox().into_iter().any(|(_,bytes)|matches!(Msg::decode(&bytes),Ok(Msg::HomeScatter{reply:false,payload,..}) if serde_json::from_slice::<serde_json::Value>(&payload).unwrap()["type"]=="JournalStore")));
+        assert!(!m.n("phone").take_outbox().into_iter().any(|(_, bytes)| match Msg::decode(&bytes) {
+            Ok(Msg::HomeScatter { reply: false, payload, .. }) =>
+                ["JournalStore", "CleanupKeys"].iter().any(|kind| serde_json::from_slice::<serde_json::Value>(&payload).unwrap()["type"] == *kind),
+            Ok(Msg::Piece { op: hoi_sync::PieceOp::Drop, .. }) => true,
+            _ => false,
+        }));
     }
 }
 

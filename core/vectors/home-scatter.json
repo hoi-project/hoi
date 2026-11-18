@@ -1,4 +1,22 @@
 {
+  "cleanup_key_list": {
+    "keys": [
+      {
+        "drop_journal": "sFeWmH3CTYQ0G7Trgn6R2ovMWM9_RJBiFwPgQEUELR96YDXvqOfuR6JvaUU3M7dEG0O9Qfe6uqcUFxWN80_8Aw",
+        "expires": 1792592000,
+        "holder": "204040e364c10f2bec9c1fe500a1cd4c247c89d650a01ed7e82caba867877c21",
+        "sig": "UxhCLimztpdsrHUXvtS2mIzb2cjOF382t7Zsw3sVDoM__cMJ58bIK1GPcC78NujruEhMkH0xS2kEgCpZhdjYCA",
+        "xk": "YxrToycS9xowrGuW4ZgNaeplHG2Vgyl2fmLFIIdxEwk"
+      }
+    ],
+    "type": "CleanupKeyList"
+  },
+  "cleanup_keys": {
+    "holders": [
+      "204040e364c10f2bec9c1fe500a1cd4c247c89d650a01ed7e82caba867877c21"
+    ],
+    "type": "CleanupKeys"
+  },
   "community": "1111111111111111111111111111111111111111111111111111111111111111",
   "content_hex": "7265636f76657261626c6520686f6d6520706c6163656d656e74",
   "expires": 1790086400,

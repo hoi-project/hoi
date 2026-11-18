@@ -52,6 +52,18 @@ keys. An authenticated `JournalRelease` clears the home result capability and re
 terminal deduplication tombstone; retry releases while paired. Legacy reception is
 retained, but new initiation requires the new feature.
 
+Durable deletion targets retain the original pairing digest alongside each locator/token.
+After a restart, the origin can request up to 32 current holder keys with `CleanupKeys`;
+`CleanupKeyList` returns endpoint-signed X25519 keys and optional signed durable-drop proofs,
+without uptime or first-hand sighting claims. The origin independently verifies both signatures.
+It then seals normal per-holder Drop envelopes and receives the holder's encrypted replies
+through the authenticated home. The home permits this forwarding only for authenticated v2
+clients and Drop requests. Home acceptance and key lookup never count as holder acknowledgement.
+The original home already knows the delegated generation, so this route may carry all its
+cleanup envelopes; ordinary untrusted forwarder place caps remain unchanged. Requests and queued
+sealed envelopes are scoped to the original pairing, including after re-pairing. Unknown or
+expired keys and unavailable routes retain queued work; they do not invent successful deletion.
+
 A full member snapshot restore never resumes archived requests through a new operator. It
 drops serving-placement receipts for other clients and retains known origin capabilities as
 deletion inventory. An unanswered archived request becomes explicit unknown coverage, with

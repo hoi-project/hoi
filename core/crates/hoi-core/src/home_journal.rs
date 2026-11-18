@@ -119,10 +119,10 @@ fn live(expires: u64, now: u64) -> bool {
     now / DAY <= expires.div_ceil(DAY)
 }
 impl Node {
-    fn journal_home(&self) -> Option<Id> {
+    pub(crate) fn journal_home(&self) -> Option<Id> {
         self.state.home.as_ref().map(|h| Id::hash(h.token.as_bytes()))
     }
-    fn journal_home_peer(&self) -> Option<String> {
+    pub(crate) fn journal_home_peer(&self) -> Option<String> {
         self.peers.iter().find(|(_, p)| p.home && p.said_hello && p.features.contains(hoi_sync::FEATURE_HOME_SCATTER_JOURNAL)).map(|(peer, _)| peer.clone())
     }
     pub(crate) fn journal_store(&mut self, home: &str, c: Id, content: &[u8], level: u8, expires: u64) -> R<u64> {
@@ -425,6 +425,14 @@ impl Node {
     /// already queued old request leak its body to the newly selected operator.
     pub(crate) fn filter_home_journal_outbox(&mut self) {
         let current = self.journal_home();
+        let cleanup = self.home_cleanup_scopes();
+        self.outbox.retain(|(peer, bytes)| {
+            let rid = match hoi_sync::Msg::decode(bytes) {
+                Ok(hoi_sync::Msg::Piece { rid, .. } | hoi_sync::Msg::HomeScatter { rid, .. }) => rid,
+                _ => return true,
+            };
+            cleanup.get(&(peer.clone(), rid)).is_none_or(|scope| Some(*scope) == current)
+        });
         let allowed: std::collections::BTreeSet<_> = self
             .home_journal
             .saved
@@ -465,6 +473,15 @@ impl Node {
             r.result = Some(false);
             self.home_journal.dirty = true;
         }
+    }
+    pub(crate) fn journal_generation_home(&self, m: &Manifest) -> Option<Id> {
+        self.home_journal.saved.origin.values().find_map(|r| {
+            (!r.restored
+                && r.capability
+                    .as_ref()
+                    .is_some_and(|c| c.read().is_some_and(|old| old == *m || matches!(old.update_to(m), Ok(hoi_types::scatter::Update::Extend)))))
+            .then_some(r.home)
+        })
     }
     pub(crate) fn journal_release_generation(&mut self, m: &Manifest) {
         for r in self.home_journal.saved.origin.values_mut().filter(|r| {
@@ -556,7 +573,7 @@ mod tests {
         assert_ne!(request_id(Id::ZERO, &content, 10), request);
         assert_ne!(request_id(c, &content, 15), request);
         assert_ne!(placement_id(Id::ZERO, request), placement_id(owner, request));
-        for name in ["store", "pending", "fallback", "release"] {
+        for name in ["store", "pending", "fallback", "release", "cleanup_keys", "cleanup_key_list"] {
             let packet: Packet = serde_json::from_value(v[name].clone()).unwrap();
             assert_eq!(serde_json::to_value(packet).unwrap(), v[name]);
         }

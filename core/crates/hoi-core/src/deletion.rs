@@ -45,6 +45,9 @@ pub(crate) struct Target {
     pub locator: Id,
     pub expiry_day: u32,
     pub token: Option<[u8; 32]>,
+    /// The original delegated-placement pairing, never an arbitrary newly paired home.
+    #[serde(default)]
+    pub home: Option<Id>,
     pub outcome: Outcome,
     pub attempts: u32,
     pub last_attempt: Option<u64>,
@@ -320,7 +323,7 @@ impl Node {
                 (*holder, locator, token, m.expires_at.div_ceil(DAY) as u32)
             })
             .collect();
-        self.capture_deletion_targets(&jobs, Id(m.object), &entries)?;
+        self.capture_deletion_targets(&jobs, Id(m.object), &entries, self.journal_generation_home(m))?;
         self.journal_release_generation(m);
         // The job now retains only locator-level retry authority. Do not keep or share the
         // old object decryption key merely to repeat a drop.
@@ -332,7 +335,7 @@ impl Node {
         Ok(true)
     }
 
-    fn capture_deletion_targets(&mut self, jobs: &[Id], object: Id, entries: &[(Id, Id, Option<[u8; 32]>, u32)]) -> R<()> {
+    fn capture_deletion_targets(&mut self, jobs: &[Id], object: Id, entries: &[(Id, Id, Option<[u8; 32]>, u32)], home: Option<Id>) -> R<()> {
         let current: usize = self.deletions.saved.jobs.values().map(|j| j.targets.len() + j.reserved_targets).sum();
         let additional: usize = jobs
             .iter()
@@ -355,6 +358,7 @@ impl Node {
                     locator: *locator,
                     expiry_day: *expiry_day,
                     token: *token,
+                    home,
                     outcome: Outcome::Queued,
                     attempts: 0,
                     last_attempt: None,
@@ -616,7 +620,7 @@ impl Node {
                 eligible.sort_by_key(|(key, t)| (t.next_retry, t.attempts, t.last_attempt, **key));
                 let next = eligible.first().map(|(_, t)| t.next_retry);
                 let targets: Vec<_> =
-                    eligible.into_iter().take(BATCH).map(|(key, t)| (*key, (t.holder, t.locator, t.token.expect("selected capability")))).collect();
+                    eligible.into_iter().take(BATCH).map(|(key, t)| (*key, (t.holder, t.locator, t.token.expect("selected capability"), t.home))).collect();
                 next.map(|next| (next, *id, targets))
             })
             .collect();

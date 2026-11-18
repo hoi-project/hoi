@@ -20,6 +20,8 @@ use std::collections::BTreeMap;
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub(crate) enum Packet {
+    CleanupKeys { holders: Vec<Id> },
+    CleanupKeyList { keys: Vec<CleanupKey> },
     JournalRelease { request: Id },
     JournalStore { request: Id, community: Id, content: String, level: u8, expires: u64 },
     JournalResult { request: Id, stored: Option<bool>, capability: Option<Capability> },
@@ -28,6 +30,16 @@ pub(crate) enum Packet {
     Status { records: Vec<Id> },
     Receipt { states: BTreeMap<Id, String> },
     Drop { capability: Capability },
+}
+/// Fresh signed encryption keys, without historical uptime or reachability claims.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CleanupKey {
+    pub holder: Id,
+    pub xk: String,
+    pub expires: u64,
+    pub sig: String,
+    pub drop_journal: Option<String>,
 }
 enum Waiting {
     #[cfg(test)]
@@ -38,12 +50,18 @@ enum Waiting {
         expires: u64,
     },
     Status(Vec<Id>),
+    CleanupKeys {
+        home: Id,
+        holders: Vec<Id>,
+    },
 }
 #[derive(Default)]
 pub(crate) struct Runtime {
     asked: BTreeMap<(String, u32), (u64, Waiting)>,
     rate: BTreeMap<String, (u64, u32)>,
     poll_at: u64,
+    cleanup_keys_at: u64,
+    pub(crate) cleanup_egress: BTreeMap<(String, u32), Id>,
 }
 impl Node {
     pub(crate) fn scattering_home(&self, c: Id) -> Option<String> {
@@ -142,6 +160,18 @@ impl Node {
                     };
                     self.end_wait_op(op, outcome);
                 }
+                (Waiting::CleanupKeys { home, holders }, Packet::CleanupKeyList { keys }) if Some(home) == self.journal_home() && keys.len() <= 32 => {
+                    for key in keys.into_iter().filter(|k| holders.contains(&k.holder)) {
+                        let xk = unb64(&key.xk).ok().and_then(|v| <[u8; 32]>::try_from(v).ok());
+                        let sig = unb64(&key.sig).ok().and_then(|v| <[u8; 64]>::try_from(v).ok());
+                        if let (Some(xk), Some(sig)) = (xk, sig)
+                            && hoi_crypto::envelope::xk_valid(&key.holder.0, &xk, key.expires, &hoi_types::Sig(sig), self.now())
+                        {
+                            let drop_journal = key.drop_journal.and_then(|s| unb64(&s).ok()).and_then(|v| <[u8; 64]>::try_from(v).ok());
+                            self.remember_key(key.holder, hoi_sync::HolderKey { xk, expires_at: key.expires, sig, rtc: None, drop_journal });
+                        }
+                    }
+                }
                 (Waiting::Status(ids), Packet::Receipt { states }) => {
                     for id in ids {
                         if let Some(state) = states.get(&id).filter(|s| ["pending", "injected", "fallback"].contains(&s.as_str())) {
@@ -162,6 +192,20 @@ impl Node {
             return;
         }
         match packet {
+            Packet::CleanupKeys { holders }
+                if holders.len() <= 32
+                    && self.peers.get(peer).is_some_and(|p| p.client_credential.is_some() && p.features.contains(hoi_sync::FEATURE_HOME_SCATTER_JOURNAL)) =>
+            {
+                let now = self.now();
+                let keys = holders
+                    .into_iter()
+                    .filter_map(|holder| {
+                        let k = self.scatter.keys.get(&holder).filter(|k| k.expires_at > now)?;
+                        Some(CleanupKey { holder, xk: b64(&k.xk), expires: k.expires_at, sig: b64(&k.sig), drop_journal: k.drop_journal.map(|s| b64(&s)) })
+                    })
+                    .collect();
+                self.home_packet(peer, rid, true, Packet::CleanupKeyList { keys });
+            }
             Packet::Store { community, content, level, expires } => {
                 let running = self.scatter.jobs.values().filter(|j| matches!(j, crate::keep::Job::StoreForDevice { peer: p, .. } if p == peer)).count();
                 let content = unb64(&content).ok().filter(|b| b.len() <= hoi_sync::MAX_REBUILT);
@@ -212,6 +256,28 @@ impl Node {
             }
             _ => {}
         }
+    }
+    /// Lookup discloses endpoints only to the original home. Tokens remain sealed by the
+    /// origin, and this reply never counts as a holder acknowledgement.
+    pub(crate) fn home_cleanup_keys(&mut self, home: &str, holders: Vec<Id>) {
+        let now = self.now();
+        if holders.is_empty() || now < self.scatter.home_scatter.cleanup_keys_at {
+            return;
+        }
+        let Some(scope) = self.journal_home() else { return };
+        self.scatter.home_scatter.cleanup_keys_at = now + 5;
+        let rid = self.next_rid();
+        self.scatter.home_scatter.asked.insert((home.into(), rid), (now, Waiting::CleanupKeys { home: scope, holders: holders.clone() }));
+        self.home_packet(home, rid, false, Packet::CleanupKeys { holders });
+    }
+    pub(crate) fn home_cleanup_scopes(&mut self) -> BTreeMap<(String, u32), Id> {
+        let mut scopes = std::mem::take(&mut self.scatter.home_scatter.cleanup_egress);
+        for (key, (_, waiting)) in &self.scatter.home_scatter.asked {
+            if let Waiting::CleanupKeys { home, .. } = waiting {
+                scopes.insert(key.clone(), *home);
+            }
+        }
+        scopes
     }
     pub(crate) fn stored_for_home_device(&mut self, peer: &str, rid: u32, outcome: ScatterOutcome) {
         let capability = match outcome {

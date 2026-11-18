@@ -1079,6 +1079,20 @@ manifest and retains only a bounded deduplication tombstone. It sends authentica
 `JournalRelease {request}`; a completed home clears its saved capability and retains the
 terminal tombstone, and never repeats the placement. Release is retried while the pairing
 remains. An ordinary local wipe can still abandon work explicitly; it never reports erasure.
+Each durable deletion target also retains its original pairing digest. The origin can obtain
+current holder keys using `CleanupKeys {holders}` (at most 32 endpoints) and
+`CleanupKeyList {keys}`. Each key is `{holder, xk, expires, sig, drop_journal}`; key and signatures
+are base64url, and the optional durable-drop signature can be null. The origin independently
+checks the endpoint's existing holder-key and durable-drop statements. These are current key
+lookups, without historical uptime or first-hand sighting claims. Only an authenticated paired
+v2 client can ask. Neither this reply nor home acceptance counts as a holder acknowledgement.
+The origin seals normal locator/token Drop requests itself, then verifies encrypted holder
+replies relayed by its original authenticated home. Nonpublic homes forward only these Drop
+requests for paired v2 clients. All cleanup envelopes for that delegated generation can use
+the original home, which already knows the sender and generation; unrelated forwarder place
+caps remain unchanged. Persisted scope and egress checks prevent a new pairing from receiving
+old-home lookup endpoints or queued deletion envelopes. Missing keys and routes remain queued.
+
 A full member snapshot is distinct from an ordinary restart. Restore drops serving-placement
 receipts for other clients and never resumes archived requests through a newly chosen home.
 Known origin capabilities remain deletion inventory. Requests whose receipts were absent

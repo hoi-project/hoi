@@ -1104,7 +1104,10 @@ Origins verify manifests before pointer signing; unresolved authority blocks del
 mutation. The journal admits at most 256 entries and 8 MiB of originating content, rejecting
 new work when full; entries expire only after their original inclusive holder expiry day.
 After durable deletion-target capture, origins remove request payloads and manifests and
-retry authenticated release so the home clears its result capability too. See PROTOCOL.md
+retry authenticated release so the home clears its result capability too. Locator-only deletion
+retains the original pairing scope, looks up current signed holder keys after restart and
+relays origin-sealed drops through that home. Only verified holder replies update completion;
+key lookup and home acceptance do not. See PROTOCOL.md
 §21.1 and proposed RFC-0008 for packet fields, storage format 6 and compatibility.
 The post view distinguishes pending placement, pieces and whole-record delivery. The home
 necessarily knows the sender and public content; its receipts prove neither anonymity nor

@@ -358,6 +358,23 @@ impl Node {
         if from.is_some_and(|f| kept.refused.contains(&f)) {
             return refuse("An earlier update from this member did not rebuild.");
         }
+        // A recovered home receipt is indexed for cleanup before its pointer is published.
+        // Promote only the identical, verified generation; an unreadable active pointer or a
+        // different cleanup placement must still fail closed.
+        if kept.gens.is_empty() && kept.cleanup_gens.iter().any(|g| g.manifest == fresh.manifest) {
+            kept.cleanup_gens.retain(|g| g.manifest != fresh.manifest);
+            kept.gens.push(fresh);
+            kept.community = community;
+            kept.expires_at = kept.expires_at.max(m.expires_at);
+            kept.since = now;
+            let every = probe_every(0);
+            kept.next_probe = now + every + jitter(every / 6);
+            kept.apply = apply;
+            kept.apply_at = now;
+            kept.mine |= from.is_none();
+            self.scatter.dirty = true;
+            return Ok(true);
+        }
         let Some(newest) = kept.newest() else { return refuse("Unreadable pointer kept.") };
         if m.generation < newest.generation {
             return Ok(false);

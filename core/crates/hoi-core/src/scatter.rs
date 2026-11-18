@@ -336,6 +336,7 @@ struct AskTarget {
     holder: Id,
     loc: [u8; 32],
     auth: Option<DropAuth>,
+    home: Option<String>,
 }
 
 /// What a forwarder's place is called across operations: its network, else its operator, else
@@ -742,7 +743,7 @@ impl Node {
     }
 
     /// Keeps a holder key whose signature checked out, the latest per holder.
-    fn remember_key(&mut self, endpoint: Id, mut key: HolderKey) {
+    pub(crate) fn remember_key(&mut self, endpoint: Id, mut key: HolderKey) {
         let now = self.now();
         key.drop_journal =
             key.drop_journal.filter(|sig| hoi_crypto::verify(&endpoint, &envelope::drop_journal_statement(&endpoint.0, &key.xk, key.expires_at), &Sig(*sig)));
@@ -1870,9 +1871,15 @@ impl Node {
 
     /// A durable deletion needs only holder/locator capabilities, never object decryption
     /// keys. Unknown routes remain unresolved until another retry (RFC-0001).
-    pub(crate) fn scatter_drop_targets(&mut self, targets: &[(Id, Id, [u8; 32])]) -> R<u64> {
+    pub(crate) fn scatter_drop_targets(&mut self, targets: &[(Id, Id, [u8; 32], Option<Id>)]) -> R<u64> {
         if targets.len() > hoi_types::scatter::MAX_M || targets.len() > 256 {
             return Err(ApiError::invalid("Too many deletion targets in one attempt."));
+        }
+        let home = self.journal_home_peer();
+        let scope = self.journal_home();
+        if let Some(home) = &home {
+            let missing: BTreeSet<_> = targets.iter().filter(|t| t.3.is_some() && t.3 == scope && self.key_of(&t.0).is_none()).map(|t| t.0).collect();
+            self.home_cleanup_keys(home, missing.into_iter().take(32).collect());
         }
         let holders: Vec<_> = targets.iter().map(|t| t.0).collect();
         // Without retaining a generation's manifest, use the conservative cap of one
@@ -1889,7 +1896,13 @@ impl Node {
         let targets = targets
             .iter()
             .enumerate()
-            .map(|(index, &(holder, loc, token))| AskTarget { index: index as u8, holder, loc: loc.0, auth: Some(DropAuth::Token(token)) })
+            .map(|(index, &(holder, loc, token, original_home))| AskTarget {
+                index: index as u8,
+                holder,
+                loc: loc.0,
+                auth: Some(DropAuth::Token(token)),
+                home: (original_home.is_some() && original_home == scope).then(|| home.clone()).flatten(),
+            })
             .collect();
         self.start_asks(targets, paths, fkey, &BTreeMap::new(), true)
     }
@@ -1911,7 +1924,7 @@ impl Node {
                         Some(DropAuth::Signed { key: kp.public().0, sig: kp.sign(&sc::drop_statement(&loc)).0 })
                     }
                 };
-                Some(AskTarget { index, holder, loc, auth })
+                Some(AskTarget { index, holder, loc, auth, home: None })
             })
             .collect();
         self.start_asks(targets, paths, fkey, failed, !matches!(ask, Ask::Has))
@@ -1961,14 +1974,16 @@ impl Node {
             .filter(|t| self.scatter.keys.get(&t.holder).is_some_and(|k| k.expires_at > now && k.drop_journal.is_some()))
             .map(|t| t.index)
             .collect();
-        for AskTarget { index, holder, loc, auth } in targets {
+        for AskTarget { index, holder, loc, auth, home } in targets {
             let before = failed.get(&index);
             let avoid: BTreeSet<String> = fkey.iter().filter(|(_, k)| before.is_some_and(|b| b.contains(k))).map(|(f, _)| f.clone()).collect();
-            let Some(forwarder) = paths.choose(&holder, index, &avoid, &live).or_else(|| paths.choose(&holder, index, &BTreeSet::new(), &live)) else {
+            // The original home already knows this generation. It may relay all cleanup
+            // envelopes; unrelated forwarders still observe their ordinary place cap.
+            let Some(forwarder) = paths.choose(&holder, index, &avoid, &live).or_else(|| paths.choose(&holder, index, &BTreeSet::new(), &live)).or(home) else {
                 continue;
             };
+            let Some(xk) = paths.holders.get(&holder).map(|h| h.0).or_else(|| self.key_of(&holder)) else { continue };
             paths.carry(&forwarder, index);
-            let xk = paths.holders[&holder].0;
             let Ok(reply) = XKey::generate() else { continue };
             let request = match auth {
                 None => Request::Has { loc, reply: reply.public() },
@@ -2012,6 +2027,11 @@ impl Node {
             self.scatter
                 .pending
                 .insert((via.clone(), rid), Pending { op: id, index, via: Some(forwarder.clone()), kind, reply, loc, want: 0, sent_at: now, mail: None });
+            if self.peers.get(&via).is_some_and(|p| p.home)
+                && let Some(scope) = self.journal_home()
+            {
+                self.scatter.home_scatter.cleanup_egress.insert((via.clone(), rid), scope);
+            }
             self.send_msg(&via, message);
         }
         if shorter && now >= self.scatter.last_drop_notice.saturating_add(60) {

@@ -237,6 +237,11 @@ fn home_scatter_vectors() -> Value {
     let mut owned = blake3::Hasher::new_derive_key("hoi home placement owner v1");
     owned.update(owner.as_bytes());
     owned.update(request.as_bytes());
+    let holder = key(0x12);
+    let xk = hoi_crypto::envelope::XKey::from_seed(&[0x13; 32]).expect("xk").public();
+    let expires = T + 30 * DAY;
+    let sig = holder.sign(&hoi_crypto::envelope::xk_statement(&holder.public().0, &xk, expires));
+    let durable = holder.sign(&hoi_crypto::envelope::drop_journal_statement(&holder.public().0, &xk, expires));
     json!({
         "note":"Recoverable paired-home placement. The owner is a fixture credential digest, never a raw token. JSON object ordering is insignificant. No author identity or global drop secret is sent to holders.",
         "feature":hoi_sync::FEATURE_HOME_SCATTER_JOURNAL,
@@ -245,7 +250,9 @@ fn home_scatter_vectors() -> Value {
         "store":{"type":"JournalStore","request":request.hex(),"community":community.hex(),"content":hoi_types::uri::b64(content),"level":level,"expires":T+DAY},
         "pending":{"type":"JournalResult","request":request.hex(),"stored":null,"capability":null},
         "fallback":{"type":"JournalResult","request":request.hex(),"stored":false,"capability":null},
-        "release":{"type":"JournalRelease","request":request.hex()}
+        "release":{"type":"JournalRelease","request":request.hex()},
+        "cleanup_keys":{"type":"CleanupKeys","holders":[holder.public().hex()]},
+        "cleanup_key_list":{"type":"CleanupKeyList","keys":[{"holder":holder.public().hex(),"xk":hoi_types::uri::b64(&xk),"expires":expires,"sig":hoi_types::uri::b64(&sig.0),"drop_journal":hoi_types::uri::b64(&durable.0)}]}
     })
 }
 
