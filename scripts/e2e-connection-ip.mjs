@@ -15,9 +15,11 @@ const { server, origin } = await startComponentServer('/connection-ip-test', `<!
     import TopBar from '/src/lib/ui/TopBar.svelte';
     import ConnectionCheck from '/src/lib/ui/ConnectionCheck.svelte';
     import { app } from '/src/lib/app.svelte.ts';
+    import { watchBrowserIpRoute } from '/src/lib/browser-ip.svelte.ts';
     import '@hoi/tokens/fonts.css'; import '@hoi/tokens/tokens.css'; import '/src/app.css';
     await app.start(); app.refresh = async () => {}; app.refreshWarmth = async () => {};
     app.net = { mode: 'local', label: 'offline', peers: 0, rtc: [], relaying: false, transport: {endpointId:'fixture', peers:['${route}'], relays:[]} };
+    watchBrowserIpRoute();
     window.ipFixture = { app, calls: [], result: '192.0.2.25', hold: false, joinCalls: 0 };
     for (const method of ['join', 'publicJoin', 'privateJoin']) app.core[method] = async () => { window.ipFixture.joinCalls++; throw new Error('The check must never join.'); };
     mount(TopBar, { target: document.querySelector('#header') });
@@ -35,9 +37,19 @@ let browser;
 try {
   browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH || undefined });
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, reducedMotion: 'reduce', serviceWorkers: 'block' });
-  const external = [], errors = [];
+  const external = [], errors = [], lookups = [];
+  const provider = 'https://api64.ipify.org/';
+  // Well-known public resolver addresses stand in for the fixture's HTTPS reply.
+  // The browser never connects to a public resolver or provider.
+  let result = '1.1.1.1';
   await context.route('**/*', request => {
     if (new URL(request.request().url()).origin === origin) return request.continue();
+    if (request.request().url() === provider) {
+      lookups.push(request.request());
+      return request.fulfill({
+        status: 200, contentType: 'text/plain', headers: { 'Access-Control-Allow-Origin': '*' }, body: result,
+      });
+    }
     external.push(request.request().url()); return request.abort();
   });
   const page = await context.newPage();
@@ -97,8 +109,28 @@ try {
   await page.evaluate(() => { window.ipFixture.finish({ address: '192.0.2.99', transport: 'websocket' }); window.ipFixture.hold = false; window.ipFixture.error = true; });
   assert.equal(await check.getByText(/This node sees you as/).count(), 0, 'A stale result cannot name a newly selected node');
   await check.getByRole('button', { name: 'Check connection', exact: true }).click();
-  await check.getByRole('alert').filter({ hasText: 'Connection IP unavailable.' }).waitFor();
+  await check.getByRole('alert').filter({ hasText: 'Peer IP check failed.' }).waitFor();
   assert.equal(await page.evaluate(() => window.ipFixture.joinCalls), 0);
+
+  assert.equal(lookups.length, 0, 'A failed peer check never contacts the public IP service');
+  const publicIp = check.getByRole('region', { name: 'Browser public IP' });
+  await publicIp.getByText('api64.ipify.org', { exact: true }).waitFor();
+  await publicIp.getByRole('button', { name: 'Check public IP', exact: true }).click();
+  await publicIp.locator('output').filter({ hasText: result }).waitFor();
+  await header.getByText(`Browser HTTPS · ${result}`, { exact: true }).waitFor();
+  assert.equal(await check.getByText(/This node sees you as/).count(), 0, 'An HTTPS exit IP never fills a peer observation');
+  assert.equal(lookups.length, 1);
+  assert.equal(lookups[0].method(), 'GET');
+  const headers = await lookups[0].allHeaders();
+  assert.equal(headers.referer, undefined);
+  assert.equal(headers.cookie, undefined);
+  await page.evaluate(() => window.dispatchEvent(new Event('offline')));
+  await publicIp.locator('output').waitFor({ state: 'detached' });
+  assert.equal(lookups.length, 1, 'A route change clears the sample without a fresh lookup');
+  result = '2606:4700:4700::1111';
+  await publicIp.getByRole('button', { name: 'Check public IP', exact: true }).click();
+  await publicIp.locator('output').filter({ hasText: result }).waitFor();
+  assert.equal(lookups.length, 2);
 
   for (const width of [1280, 320]) {
     await page.setViewportSize({ width, height: 900 });
@@ -114,7 +146,8 @@ try {
   await header.getByText('No active connection', { exact: true }).waitFor();
   await check.getByRole('button', { name: 'Check connection unavailable' }).waitFor();
   assert.equal(await check.getByText(/This node sees you as/).count(), 0);
-  assert.deepEqual(external, [], 'The interface makes no generic external lookup');
+  assert.equal(lookups.length, 2, 'Only the two explicit public IP clicks contacted the named provider');
+  assert.deepEqual(external, [], 'No other external requests were made');
   assert.deepEqual(errors, []);
   await context.close();
   console.log('PASS: visible source IP, named intended-node consent, no automatic check or join, stale cancellation, unknown/error and 320 px layout.');
