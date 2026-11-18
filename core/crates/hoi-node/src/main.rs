@@ -880,7 +880,7 @@ async fn main() {
             if let Some(d) = shared.with(|n| n.operator_declaration_hash()) {
                 println!("configuration declaration: hoi-node {} · {} · sent with the notice, signed by this node's key", env!("CARGO_PKG_VERSION"), &d[..12]);
             }
-            Some(tokio::spawn(refresh_notice(shared.clone(), path.clone(), notice_hash_file, hash)))
+            Some(tokio::spawn(refresh_notice(shared.clone(), path.clone(), notice_hash_file, hash, tokio::time::interval(NOTICE_POLL))))
         }
         _ => {
             let _ = tokio::fs::remove_file(&notice_hash_file).await;
@@ -1062,12 +1062,11 @@ async fn load_notice(path: &std::path::Path) -> Result<hoi_types::NodeNotice, St
 /// Keeps `DIR/notice-hash` on the hash of the notice this node carries, and takes a changed
 /// `--notice FILE` on: connected strangers hear the new words, links made from now on carry
 /// them. A file that no longer reads keeps the notice as it was, and says so once.
-async fn refresh_notice(shared: std::sync::Arc<Shared>, path: PathBuf, hash_file: PathBuf, hash: String) {
+async fn refresh_notice(shared: std::sync::Arc<Shared>, path: PathBuf, hash_file: PathBuf, hash: String, mut tick: tokio::time::Interval) {
     let mut written = None;
     let mut modified = tokio::fs::metadata(&path).await.and_then(|m| m.modified()).ok();
     let mut hash = hash;
     let mut complained = false;
-    let mut tick = tokio::time::interval(NOTICE_POLL);
     loop {
         if written.as_ref() != Some(&hash) {
             match tokio::fs::write(&hash_file, format!("{hash}\n")).await {
@@ -1256,6 +1255,10 @@ async fn refresh_pairing_file(shared: std::sync::Arc<Shared>, path: PathBuf, mut
         }
     }
 }
+
+#[cfg(test)]
+#[path = "tests/node_files.rs"]
+mod node_file_tests;
 
 #[cfg(test)]
 mod tests {
