@@ -210,7 +210,7 @@ test('v2 binds protocol metadata, keeps names reserved across index changes, and
   assert.equal((await server.publish(publication('garden', undefined, nextProtocol, nextIndex))).status, 409, 'hiding old discovery never frees its name');
   assert.deepEqual(await (await fetch(`${server.root}/release.json`)).json(), release);
   const metadata = await (await fetch(`${server.root}/v1/meta`)).json();
-  assert.deepEqual(metadata.registry, { apiVersion: 2, schemaVersion: 3, indexVersion: 2 });
+  assert.deepEqual(metadata.registry, { apiVersion: 2, schemaVersion: 3, indexVersion: nextIndex });
   assert.equal(metadata.release.notice.title, 'Preview updated');
   assert.deepEqual(await (await fetch(`${server.url}?name=garden`)).json(), { name: claim.name, community: claim.community, proof: savedProof(claim) }, 'v1 includes the retained proof');
 });
@@ -285,7 +285,9 @@ test('Rust and Node share the exact v2 proof format', async (t) => {
   t.after(() => server.close());
   const result = await server.publish({ name, community, protocolVersion, indexVersion, signature });
   assert.equal(result.status, 200);
-  assert.equal((await result.json()).indexed, true);
+  const entry = await result.json();
+  assert.deepEqual(entry.proof, { version: 2, signature, protocolVersion, indexVersion });
+  assert.equal(entry.indexed, current.indexVersion === indexVersion && current.supportedProtocols.includes(protocolVersion));
 });
 
 test('v2 competing writes are atomic and a future schema cannot be downgraded', async (t) => {
