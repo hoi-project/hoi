@@ -1,0 +1,37 @@
+# RFC-0007: Show the address a connection exposes
+
+Issue: [#114](https://github.com/hoi-project/hoi/issues/114)
+
+Status: proposed
+
+## Decision
+
+A node returns the IP it observes to the remote endpoint of that same connection. Each
+accepted sync hello can carry an optional `oa` text field containing an IPv4 or IPv6
+literal without port or zone. The node omits it when it has no direct socket observation.
+A new hello replaces the prior observation, including when it omits the field. Clients
+keep one value per active link and discard it when the link closes. A peer can misreport its
+observation. It never authorizes a dial, proves a VPN is active or changes node trust.
+
+Before joining, a person can explicitly check a selected node. The screen says that the
+check reveals the source IP to the destination. The client opens a fresh connection to that
+route and sends no sync hello, identity, pairing secret or community. A browser uses the
+invite's pinned DTLS endpoint in client mode or its WebSocket endpoint. A server accepting
+members recognizes an initial binary frame containing the ASCII bytes `hoi/address-check/1`.
+It replies once, on that connection, with `hoi/address/1 ` followed by an IP literal or
+nothing if its direct observation is unavailable. A check cannot become a sync session.
+The usual WebRTC frame length, encrypted channel, WebSocket origin checks and connection
+limits apply. Home nodes that do not accept strangers remain silent before pairing.
+
+The native client may also check the UDP path to an invited node's RTC port through its
+existing RFC 8489 STUN service. It checks the responder address and transaction ID and labels
+the result as UDP. This observes the route without verifying the node's DTLS fingerprint.
+The native probe follows the selected VPN and home-network policy. A reverse proxy's own
+upstream address and an iroh packet relay's address are never substituted for a client IP.
+
+## Alternatives and effects
+
+An external IP lookup contacts another operator and can follow another route. Browser ICE
+statistics can supply direct evidence for some active connections, but can omit a reflexive
+candidate. Both known addresses and unavailable states remain local. Observations never
+enter signed records, operator logs, peer discovery, storage or shared profile data.
