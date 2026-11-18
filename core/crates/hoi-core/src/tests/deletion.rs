@@ -470,3 +470,19 @@ fn encrypted_member_snapshot_preserves_work_and_applies_offline_deletion_before_
     assert!(reopened.post(&stale.id).is_err());
     assert_eq!(reopened.post(&kept.id).unwrap().summary.title, kept.title);
 }
+
+#[test]
+fn snapshot_member_identity_requires_its_root_or_a_matching_device_blessing() {
+    let time = Arc::new(AtomicU64::new(T0));
+    let mut owner = node("desktop", &time, &Mem::default());
+    owner.create_identity("Owner").unwrap();
+    let mut linked = node("web", &time, &Mem::default());
+    let request = linked.link_request("Browser").unwrap();
+    linked.link_complete(&owner.link_approve(&request).unwrap()).unwrap();
+    assert!(linked.root_kp.is_none());
+    let password = "linked member snapshot passphrase";
+    linked.export_snapshot(password).unwrap();
+    linked.state.me.as_mut().unwrap().root = Id::hash(b"another person");
+    let denied = linked.export_snapshot(password).unwrap_err();
+    assert_eq!(denied.code, "not-allowed");
+}

@@ -10,6 +10,8 @@ A member can move an existing installation to an empty vault by exporting and im
 a passphrase-protected file. The receiving installation applies the deletion safeguards of
 RFC-0001 and obtains new MLS membership before serving private content. The file resumes the
 source device identity. The two copies should not run concurrently.
+The archive requires a local device signing key and its matching root or signed device
+blessing. A remotely signed browser establishes a fresh link with its signing computer.
 
 ## Archive
 

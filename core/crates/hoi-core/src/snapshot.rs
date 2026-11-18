@@ -79,8 +79,16 @@ impl Persist for Staging {
 impl Node {
     fn check_snapshot_identity(&self) -> R<()> {
         let identity = self.need_me()?;
+        let root = self.store.current_root(&identity.root);
+        let blessing = self.store.delegation(&identity.device);
+        let bound_to_root = match &self.root_kp {
+            Some(key) => key.public() == root,
+            None => blessing.is_some_and(|d| d.info.root == root),
+        };
         if self.device_kp.as_ref().is_none_or(|key| key.public() != identity.device)
-            || self.root_kp.as_ref().is_some_and(|key| key.public() != self.store.current_root(&identity.root))
+            || !bound_to_root
+            || blessing.is_some_and(|d| d.info.revoked_at.is_some())
+            || self.store.burned_at(&identity.root).is_some()
             || identity.burned
         {
             return Err(ApiError::not_allowed("Only an active member device holding its signing key can use a member snapshot."));
