@@ -18,7 +18,8 @@ fn config() -> Value {
     serde_json::from_str(include_str!("../../../../publication.json")).expect("publication config")
 }
 fn client() -> Result<reqwest::Client, String> {
-    reqwest::Client::builder()
+    hoi_net::public_http_client_builder()
+        .map_err(|_| "Could not initialize secure update downloads.")?
         .https_only(true)
         .timeout(std::time::Duration::from_secs(120))
         .redirect(reqwest::redirect::Policy::limited(5))
@@ -45,6 +46,28 @@ async fn fetch(url: &str, max: u64, progress: impl Fn(u64)) -> Result<Vec<u8>, S
         progress(bytes.len() as u64);
     }
     Ok(bytes)
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn manual_update_fetch_reports_a_failed_tls_handshake() {
+    use tokio::io::AsyncReadExt;
+
+    let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    let manifest = format!("https://{}/manifest.json", listener.local_addr().unwrap());
+    let receiver = async {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut header = [0; 1];
+        socket.read_exact(&mut header).await.unwrap();
+        assert_eq!(header[0], 0x16, "the manual check must initiate a TLS handshake");
+        // Closing before the handshake finishes stands in for an unreachable release service.
+    };
+    let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        tokio::join!(fetch(&manifest, verify::MAX_MANIFEST as u64, |_| {}), receiver)
+    })
+    .await
+    .expect("the manual update check should return");
+    assert_eq!(result.unwrap_err(), "Could not reach the release host. Check your connection and retry.");
 }
 
 #[tauri::command]

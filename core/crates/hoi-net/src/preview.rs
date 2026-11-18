@@ -58,14 +58,7 @@ pub fn start_previews(shared: Arc<Shared>, policy: Policy) -> PreviewHandle {
 }
 
 fn client(host: &str, addrs: &[SocketAddr], from: Option<&(IpAddr, String)>) -> Result<reqwest::Client, String> {
-    let provider = Arc::new(rustls::crypto::ring::default_provider());
-    let roots = rustls::RootCertStore { roots: webpki_roots::TLS_SERVER_ROOTS.to_vec() };
-    let tls = rustls::ClientConfig::builder_with_provider(provider)
-        .with_safe_default_protocol_versions()
-        .map_err(|e| e.to_string())?
-        .with_root_certificates(roots)
-        .with_no_client_auth();
-    let mut b = reqwest::Client::builder();
+    let mut b = crate::public_http_client_builder().map_err(|e| e.to_string())?;
     if let Some((ip, _interface)) = from {
         b = b.local_address(*ip);
         #[cfg(any(target_os = "linux", target_os = "android", target_os = "macos", target_os = "ios"))]
@@ -73,8 +66,7 @@ fn client(host: &str, addrs: &[SocketAddr], from: Option<&(IpAddr, String)>) -> 
             b = b.interface(_interface);
         }
     }
-    b.use_preconfigured_tls(tls)
-        .resolve_to_addrs(host, addrs)
+    b.resolve_to_addrs(host, addrs)
         .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(PREVIEW_SECS))
         .user_agent("hoi link preview")
