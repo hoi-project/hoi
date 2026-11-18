@@ -363,6 +363,13 @@ impl Node {
     pub(crate) fn journal_restore_snapshot(&mut self) {
         self.journal_recover_authority();
         self.home_journal.saved.placements.clear();
+        // An archive is a new installation. Retain locator authority, but never restore
+        // delegation to an archived operator, even if its old pairing token is reused later.
+        for target in self.deletions.saved.jobs.values_mut().flat_map(|j| j.targets.values_mut()) {
+            if target.home.take().is_some() {
+                self.deletions.dirty = true;
+            }
+        }
         let mut unknown_records = Vec::new();
         for r in self.home_journal.saved.origin.values_mut() {
             r.restored = true;
@@ -474,12 +481,16 @@ impl Node {
             self.home_journal.dirty = true;
         }
     }
-    pub(crate) fn journal_generation_home(&self, m: &Manifest) -> Option<Id> {
+    pub(crate) fn journal_locator_home(&self, m: &Manifest, index: usize) -> Option<Id> {
         self.home_journal.saved.origin.values().find_map(|r| {
             (!r.restored
-                && r.capability
-                    .as_ref()
-                    .is_some_and(|c| c.read().is_some_and(|old| old == *m || matches!(old.update_to(m), Ok(hoi_types::scatter::Update::Extend)))))
+                && r.capability.as_ref().is_some_and(|c| {
+                    c.read().is_some_and(|old| {
+                        index < old.holders.len()
+                            && old.holders.get(index) == m.holders.get(index)
+                            && (old == *m || matches!(old.update_to(m), Ok(hoi_types::scatter::Update::Extend)))
+                    })
+                }))
             .then_some(r.home)
         })
     }

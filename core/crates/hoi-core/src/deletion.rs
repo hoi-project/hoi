@@ -24,6 +24,8 @@ const PER_TICK: usize = 4;
 const BATCH: usize = 32;
 const DAY: u64 = 86_400;
 
+type CapturedTarget = (Id, Id, Option<[u8; 32]>, u32, Option<Id>);
+
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum Outcome {
@@ -320,10 +322,10 @@ impl Node {
             .map(|(i, holder)| {
                 let locator = Id(sc::locator(&m.loc_secret, &m.object, m.generation, i as u8));
                 let token = cap.as_ref().and_then(|c| c.tokens.get(&locator)).copied().or_else(|| secret.as_ref().map(|s| sc::drop_token(s, &locator.0)));
-                (*holder, locator, token, m.expires_at.div_ceil(DAY) as u32)
+                (*holder, locator, token, m.expires_at.div_ceil(DAY) as u32, self.journal_locator_home(m, i))
             })
             .collect();
-        self.capture_deletion_targets(&jobs, Id(m.object), &entries, self.journal_generation_home(m))?;
+        self.capture_deletion_targets(&jobs, Id(m.object), &entries)?;
         self.journal_release_generation(m);
         // The job now retains only locator-level retry authority. Do not keep or share the
         // old object decryption key merely to repeat a drop.
@@ -335,12 +337,12 @@ impl Node {
         Ok(true)
     }
 
-    fn capture_deletion_targets(&mut self, jobs: &[Id], object: Id, entries: &[(Id, Id, Option<[u8; 32]>, u32)], home: Option<Id>) -> R<()> {
+    fn capture_deletion_targets(&mut self, jobs: &[Id], object: Id, entries: &[CapturedTarget]) -> R<()> {
         let current: usize = self.deletions.saved.jobs.values().map(|j| j.targets.len() + j.reserved_targets).sum();
         let additional: usize = jobs
             .iter()
             .filter_map(|id| self.deletions.saved.jobs.get(id))
-            .map(|j| entries.iter().filter(|(h, l, _, _)| !j.targets.contains_key(&target_id(*h, *l))).count().saturating_sub(j.reserved_targets))
+            .map(|j| entries.iter().filter(|(h, l, _, _, _)| !j.targets.contains_key(&target_id(*h, *l))).count().saturating_sub(j.reserved_targets))
             .sum();
         if current.saturating_add(additional) > MAX_TARGETS {
             return Err(ApiError::new("deletion-full", "Deletion targets are full. Pending placement authority is retained."));
@@ -349,7 +351,7 @@ impl Node {
         for id in jobs {
             let job = self.deletions.saved.jobs.get_mut(id).expect("selected deletion job");
             job.objects.insert(object);
-            for (holder, locator, token, expiry_day) in entries {
+            for (holder, locator, token, expiry_day, home) in entries {
                 if !job.targets.contains_key(&target_id(*holder, *locator)) {
                     job.reserved_targets = job.reserved_targets.saturating_sub(1);
                 }
@@ -358,7 +360,7 @@ impl Node {
                     locator: *locator,
                     expiry_day: *expiry_day,
                     token: *token,
-                    home,
+                    home: *home,
                     outcome: Outcome::Queued,
                     attempts: 0,
                     last_attempt: None,

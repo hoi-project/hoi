@@ -867,6 +867,8 @@ fn extending_a_delegated_generation_preserves_home_tokens_for_its_original_index
     extended.holders.push(holder);
     extended.keys.push(extended.keys[0]);
     let cap = m.n("phone").capability_for(&extended).unwrap();
+    assert_eq!(m.n("phone").journal_locator_home(&extended, 0), m.n("phone").journal_home());
+    assert_eq!(m.n("phone").journal_locator_home(&extended, fresh as usize), None, "an extension cannot disclose a new holder to the original home");
     for (loc, token) in old.tokens {
         assert_eq!(cap.tokens[&loc], token, "an origin restart or repair cannot substitute its own secret for the home's authority");
     }
@@ -904,6 +906,11 @@ fn old_home_receipts_cannot_replace_extended_authority_or_restore_deleted_manife
     assert_eq!(saved.tokens[&loc], foreign_token);
     reopened.delete_own(&p.id).unwrap();
     let job = reopened.deletion_for_target(Id::from_hex(&p.id).unwrap()).unwrap();
+    assert!(reopened.deletions.saved.jobs[&job].targets.values().any(|t| t.home.is_some()));
+    assert!(
+        reopened.deletions.saved.jobs[&job].targets.values().filter(|t| t.locator == loc).all(|t| t.home.is_none()),
+        "extension locators retain ordinary forwarding only"
+    );
     assert!(
         reopened.deletions.saved.jobs[&job].targets.values().any(|t| t.locator == loc && t.token == Some(foreign_token)),
         "a shorter generation cannot consume the stronger cap before its tail is captured"
@@ -914,7 +921,63 @@ fn old_home_receipts_cannot_replace_extended_authority_or_restore_deleted_manife
     assert!(!reopened.scatter.saved.kept.contains_key(&object), "late receipt replay never re-indexes a deleted object's decryption manifest");
     assert!(reopened.home_journal.saved.origin[&request].capability.is_none());
     reopened.commit().unwrap();
-    let reopened = node("mobile", &m.t, &disk);
+    let mut reopened = node("mobile", &m.t, &disk);
     assert!(!reopened.scatter.saved.kept.contains_key(&object));
     assert!(reopened.deletions.saved.jobs[&job].targets.values().any(|t| t.locator == loc && t.token == Some(foreign_token)));
+    let authority: Vec<_> = reopened.deletions.saved.jobs[&job].targets.values().map(|t| (t.holder, t.locator, t.token)).collect();
+    reopened.journal_restore_snapshot();
+    assert!(reopened.deletions.saved.jobs[&job].targets.values().all(|t| t.home.is_none()), "an archive never revives an old operator's cleanup delegation");
+    assert_eq!(
+        reopened.deletions.saved.jobs[&job].targets.values().map(|t| (t.holder, t.locator, t.token)).collect::<Vec<_>>(),
+        authority,
+        "restore retains locator authority for ordinary routes"
+    );
+}
+
+#[test]
+fn paired_cleanup_key_lookup_verifies_holder_signatures_without_uptime_or_completion_claims() {
+    let (mut m, _) = home_phone();
+    let holder = Id::from_hex(&m.eps["h0"]).unwrap();
+    m.n("phone").scatter.keys.remove(&holder);
+    let ask = |m: &mut Mesh| {
+        m.n("phone").home_cleanup_keys("home", vec![holder]);
+        m.n("phone")
+            .take_outbox()
+            .into_iter()
+            .find_map(|(_, bytes)| match Msg::decode(&bytes).unwrap() {
+                Msg::HomeScatter { rid, payload, reply: false } if serde_json::from_slice::<serde_json::Value>(&payload).unwrap()["type"] == "CleanupKeys" => {
+                    Some((rid, payload))
+                }
+                _ => None,
+            })
+            .unwrap()
+    };
+    let answer = |m: &mut Mesh, rid, request: &[u8]| {
+        m.n("home").on_home_scatter("phone", rid, false, request);
+        m.n("home")
+            .take_outbox()
+            .into_iter()
+            .find_map(|(_, bytes)| match Msg::decode(&bytes).unwrap() {
+                Msg::HomeScatter { rid: found, payload, reply: true } if found == rid => Some(payload),
+                _ => None,
+            })
+            .unwrap()
+    };
+    let (rid, request) = ask(&mut m);
+    let mut forged: serde_json::Value = serde_json::from_slice(&answer(&mut m, rid, &request)).unwrap();
+    assert_eq!(forged["keys"].as_array().unwrap().len(), 1);
+    forged["keys"][0]["sig"] = serde_json::json!(hoi_types::uri::b64(&[0; 64]));
+    m.n("phone").on_home_scatter("home", rid, true, &serde_json::to_vec(&forged).unwrap());
+    assert!(m.n("phone").key_of(&holder).is_none(), "a trusted home cannot forge a holder key");
+    m.t.fetch_add(5, Ordering::SeqCst);
+    let (rid, request) = ask(&mut m);
+    let payload = answer(&mut m, rid, &request);
+    m.n("phone").on_home_scatter("f0", rid, true, &payload);
+    assert!(m.n("phone").key_of(&holder).is_none(), "only the authenticated home can answer its request");
+    let mut forged_durability: serde_json::Value = serde_json::from_slice(&payload).unwrap();
+    forged_durability["keys"][0]["drop_journal"] = forged_durability["keys"][0]["sig"].clone();
+    m.n("phone").on_home_scatter("home", rid, true, &serde_json::to_vec(&forged_durability).unwrap());
+    assert!(m.n("phone").key_of(&holder).is_some());
+    assert!(m.n("phone").scatter.keys[&holder].drop_journal.is_none(), "a holder-key signature cannot assert durable deletion");
+    assert!(m.n("phone").deletion_progress().is_empty(), "key lookup never creates completion observations");
 }

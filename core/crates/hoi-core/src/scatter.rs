@@ -331,6 +331,8 @@ pub(crate) enum Ask {
     DropKey([u8; 32]),
 }
 
+pub(crate) type DropTarget = (Id, Id, [u8; 32], Option<Id>);
+
 struct AskTarget {
     index: u8,
     holder: Id,
@@ -1871,7 +1873,7 @@ impl Node {
 
     /// A durable deletion needs only holder/locator capabilities, never object decryption
     /// keys. Unknown routes remain unresolved until another retry (RFC-0001).
-    pub(crate) fn scatter_drop_targets(&mut self, targets: &[(Id, Id, [u8; 32], Option<Id>)]) -> R<u64> {
+    pub(crate) fn scatter_drop_targets(&mut self, targets: &[DropTarget]) -> R<u64> {
         if targets.len() > hoi_types::scatter::MAX_M || targets.len() > 256 {
             return Err(ApiError::invalid("Too many deletion targets in one attempt."));
         }
