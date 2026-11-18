@@ -146,6 +146,8 @@ impl WasmNode {
     /// Storage changes to apply to IndexedDB, in order:
     /// `{op:"put", id, community, expiresAt, wire}`, `{op:"delete", id}`, `{op:"blob", key, value}`, `{op:"wipe"}`.
     pub fn take_changes(&mut self) -> Array {
+        // Include disconnect/timer authority changes before the host persists and sends.
+        let _ = self.node.commit();
         let changes: Vec<Change> = self.pending.0.lock().map(|mut v| std::mem::take(&mut *v)).unwrap_or_default();
         let out = Array::new();
         for c in changes {

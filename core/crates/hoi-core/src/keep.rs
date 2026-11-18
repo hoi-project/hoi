@@ -234,6 +234,11 @@ pub(crate) enum Job {
         manifest: String,
     },
     /// A rebuild this home node runs for one of its devices (crate::rebuild).
+    StoreJournalled {
+        key: Id,
+        peer: String,
+        rid: u32,
+    },
     StoreForDevice {
         peer: String,
         rid: u32,
@@ -544,6 +549,7 @@ impl Node {
                     self.drop_with_keys(community, &m);
                 }
             }
+            Job::StoreJournalled { key, peer, rid } => self.journal_stored(key, &peer, rid, outcome, placement),
             Job::StoreForDevice { peer, rid } => self.stored_for_home_device(&peer, rid, outcome),
             Job::ForDevice { peer, rid, object } => self.rebuilt_for(&peer, rid, object, outcome),
             Job::Apply { object, generation } => {
@@ -918,7 +924,7 @@ impl Node {
         self.scatter.dirty = true;
     }
 
-    fn remember_outgoing_placement(&mut self, community: Id, records: &[Id], media: Option<Id>, manifest: Manifest) {
+    pub(crate) fn remember_outgoing_placement(&mut self, community: Id, records: &[Id], media: Option<Id>, manifest: Manifest) {
         let object = Id(manifest.object);
         self.scatter.saved.kept.entry(object).or_insert(Kept {
             community: Some(community),
@@ -961,6 +967,7 @@ impl Node {
             self.scatter.placing = Some(c);
             match self.scatter_store(&part.content, level, expires_at) {
                 Ok(op) => {
+                    self.attach_home_records(op, &part.records);
                     contents.insert(op, part.content);
                     carries.insert(op, (part.records, part.media));
                 }
@@ -1488,7 +1495,7 @@ impl Node {
     /// Whether this device could keep something in pieces now: enough places, and forwarders
     /// in at least two places with room for the pieces.
     pub(crate) fn can_scatter(&self, c: Id) -> bool {
-        self.scattering_home(c).is_some() || self.can_scatter_local(c)
+        self.scattering_home(c).is_some() || self.journal_community_pending(c) || self.can_scatter_local(c)
     }
 
     pub(crate) fn can_scatter_local(&self, c: Id) -> bool {

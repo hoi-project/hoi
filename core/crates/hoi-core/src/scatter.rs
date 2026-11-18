@@ -1326,7 +1326,7 @@ impl Node {
     /// sized for `level` (percent of places), until `expires_at`. Returns the operation's id for
     /// [`Node::scatter_take`].
     pub fn scatter_store(&mut self, content: &[u8], level: u8, expires_at: u64) -> R<u64> {
-        let result = if self.scatter.placing.is_some_and(|c| self.scattering_home(c).is_some()) {
+        let result = if self.scatter.placing.is_some_and(|c| self.scattering_home(c).is_some() || self.journal_has_content(c, content, level)) {
             self.store_at_home(content, level, expires_at)
         } else {
             self.scatter_store_inner(content, level, expires_at)
@@ -1455,6 +1455,10 @@ impl Node {
     /// Sends index `index` of a store to its holder, through a forwarder not in `avoid`. Without
     /// one, the index goes elsewhere.
     fn send_put(&mut self, op: u64, index: u8, avoid: &BTreeSet<String>) {
+        if !self.journal_before_put(op) {
+            self.finish(op, ScatterOutcome::Failed("Placement authority could not be retained.".into()));
+            return;
+        }
         let now = self.now();
         let drop_secret = self.drop_secret();
         let live = self.live_forwarders();
@@ -2065,6 +2069,13 @@ impl Node {
         }
     }
 
+    pub(crate) fn end_home_wait_op(&mut self, op: u64, manifest: Option<Manifest>, outcome: ScatterOutcome) {
+        if let Some(m) = manifest {
+            self.scatter.placements.insert(op, m);
+        }
+        self.end_wait_op(op, outcome);
+    }
+
     /// Every locator a placement may have stored, including failed and unfinished work.
     pub(crate) fn scatter_placement(&self, op: u64) -> Option<Manifest> {
         match self.scatter.ops.get(&op) {
@@ -2101,6 +2112,7 @@ impl Node {
 
     /// Lets an operation go, with whatever of it is still waiting for answers.
     pub(crate) fn drop_op(&mut self, op: u64) {
+        self.journal_operation_finished(op);
         self.scatter.ops.remove(&op);
         self.scatter.placements.remove(&op);
         self.scatter.jobs.remove(&op);
@@ -2115,6 +2127,7 @@ impl Node {
 
     pub(crate) fn take_outcome(&mut self, op: u64) -> ScatterOutcome {
         if self.op_done(op) {
+            self.journal_operation_finished(op);
             self.scatter.placements.remove(&op);
         }
         match self.scatter.ops.get(&op) {

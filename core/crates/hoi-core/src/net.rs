@@ -762,6 +762,7 @@ impl Node {
         let mut fx = vec![
             hoi_sync::FEATURE_LINK.to_string(),
             hoi_sync::FEATURE_HOME_SCATTER.to_string(),
+            hoi_sync::FEATURE_HOME_SCATTER_JOURNAL.to_string(),
             hoi_sync::FEATURE_CATALOG.to_string(),
             hoi_sync::FEATURE_PROFILE.to_string(),
             hoi_sync::FEATURE_PROFILE_COLOR.to_string(),
@@ -804,6 +805,10 @@ impl Node {
         }
         if self.takes_direct() {
             fx.push(hoi_sync::FEATURE_DIRECT.to_string());
+        }
+        if fx.len() > hoi_sync::SEND_FEATURES {
+            // New clients use recoverable delegation; older clients safely deliver whole.
+            fx.retain(|feature| feature != hoi_sync::FEATURE_HOME_SCATTER);
         }
         if fx.len() > hoi_sync::SEND_FEATURES {
             // Placement offload is optional; preserve protocol and durability features when
@@ -970,6 +975,7 @@ impl Node {
                 name: None,
                 serves: false,
                 client: role == Role::Client,
+                client_credential: None,
                 home: role == Role::Home,
                 route: if role == Role::Peer { "unknown" } else { "websocket" }.into(),
                 said_hello: false,
@@ -1107,9 +1113,10 @@ impl Node {
 
     pub fn take_outbox(&mut self) -> Vec<(String, Vec<u8>)> {
         // RFC-0001: network deletion cannot outrun its recoverable authority and targets.
-        if self.deletions.dirty && self.commit().is_err() {
+        if (self.deletions.dirty || self.home_journal.dirty) && self.commit().is_err() {
             return Vec::new();
         }
+        self.filter_home_journal_outbox();
         self.filter_rebuilt_outbox();
         std::mem::take(&mut self.outbox)
     }
@@ -1189,6 +1196,7 @@ impl Node {
                     let Some(issued) = self.admit_device(token.as_deref()) else { return false };
                     spent = issued.is_some();
                     if let Some(p) = self.peers.get_mut(peer) {
+                        p.client_credential = issued.as_deref().or(token.as_deref()).map(|t| digest(CREDENTIAL_CONTEXT, t));
                         p.issued = issued;
                     }
                 }

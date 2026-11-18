@@ -80,6 +80,9 @@ pub(crate) struct Job {
     pub reserved_targets: usize,
     /// Unknown generations cannot be silently counted as removed.
     pub coverage_gaps: BTreeSet<Id>,
+    /// Unknown placements restored without a receipt retain their original holder horizon.
+    #[serde(default)]
+    pub unknown_until: u64,
     pub record_submitted: bool,
     pub next_publication: u64,
 }
@@ -89,12 +92,12 @@ impl Job {
     /// still valid (dissemination, local suppression) or a known piece has not passed its
     /// storage day (drops, late placements). Acknowledgements alone never end it (RFC-0001).
     pub(crate) fn needs_local_state(&self, now: u64) -> bool {
-        self.expires_at > now || self.targets.values().any(|t| now / DAY <= t.expiry_day as u64)
+        self.expires_at > now || self.unknown_until > now || self.targets.values().any(|t| now / DAY <= t.expiry_day as u64)
     }
 
     /// When [`Job::needs_local_state`] ends if nothing new is learned.
     pub(crate) fn local_state_until(&self) -> u64 {
-        self.targets.values().map(|t| (t.expiry_day as u64).saturating_add(1).saturating_mul(DAY)).fold(self.expires_at, u64::max)
+        self.targets.values().map(|t| (t.expiry_day as u64).saturating_add(1).saturating_mul(DAY)).fold(self.expires_at.max(self.unknown_until), u64::max)
     }
 
     /// When the last unfinished piece drop this device holds authority for lapses; `None` once
@@ -242,6 +245,7 @@ impl Node {
         }
         let Some(stored) = self.store.get(&id) else { return };
         let generations = self.deletion_generations(target);
+        let unknown_until = self.journal_unknown_until(target);
         let reserved_targets = generations.iter().map(|(_, m, _)| m.holders.len()).sum::<usize>().saturating_add(self.deletion_placement_reservation(target));
         self.deletions.saved.jobs.insert(
             id,
@@ -254,12 +258,14 @@ impl Node {
                 objects: BTreeSet::new(),
                 targets: BTreeMap::new(),
                 reserved_targets,
-                coverage_gaps: BTreeSet::new(),
+                coverage_gaps: if unknown_until > self.now() { BTreeSet::from([target]) } else { BTreeSet::new() },
+                unknown_until,
                 record_submitted: false,
                 next_publication: self.now(),
             },
         );
         self.deletions.dirty = true;
+        self.journal_release_empty_target(target);
         for (k, m, locally_created) in generations {
             // Admission reserved enough room. A capture error leaves Kept for the
             // suppression scheduler to retry before discarding authority.
@@ -307,6 +313,7 @@ impl Node {
             })
             .collect();
         self.capture_deletion_targets(&jobs, Id(m.object), &entries)?;
+        self.journal_release_generation(m);
         // The job now retains only locator-level retry authority. Do not keep or share the
         // old object decryption key merely to repeat a drop.
         if cap.is_some() && self.scatter.saved.drop_caps.remove(&crate::drop_share::cap_id(m)).is_some() {
@@ -655,7 +662,10 @@ impl Node {
         }
         // Status remains briefly after expiry; no capabilities survive their piece horizon.
         let before = self.deletions.saved.jobs.len();
-        self.deletions.saved.jobs.retain(|_, j| j.expires_at.saturating_add(2 * DAY) > now || j.targets.values().any(|t| now / DAY <= t.expiry_day as u64));
+        self.deletions
+            .saved
+            .jobs
+            .retain(|_, j| j.expires_at.saturating_add(2 * DAY) > now || j.unknown_until > now || j.targets.values().any(|t| now / DAY <= t.expiry_day as u64));
         self.deletions.dirty |= before != self.deletions.saved.jobs.len();
     }
 

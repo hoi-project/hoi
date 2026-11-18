@@ -19,7 +19,10 @@ use std::collections::BTreeMap;
 
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "type")]
-enum Packet {
+pub(crate) enum Packet {
+    JournalRelease { request: Id },
+    JournalStore { request: Id, community: Id, content: String, level: u8, expires: u64 },
+    JournalResult { request: Id, stored: Option<bool>, capability: Option<Capability> },
     Store { community: Id, content: String, level: u8, expires: u64 },
     Stored { capability: Option<Capability> },
     Status { records: Vec<Id> },
@@ -27,7 +30,13 @@ enum Packet {
     Drop { capability: Capability },
 }
 enum Waiting {
-    Store { op: u64, content: Vec<u8>, level: u8, expires: u64 },
+    #[cfg(test)]
+    Store {
+        op: u64,
+        content: Vec<u8>,
+        level: u8,
+        expires: u64,
+    },
     Status(Vec<Id>),
 }
 #[derive(Default)]
@@ -38,30 +47,43 @@ pub(crate) struct Runtime {
     failed_at: Option<u64>,
 }
 impl Node {
-    pub(crate) fn scattering_home(&self, _c: Id) -> Option<String> {
-        // RFC-0001 requires deletion authority to survive an origin restart. Legacy home
-        // placement has no durable request identity or result recovery: a lost Stored reply
-        // loses every locator and token. Until that protocol exists, originate locally or
-        // use whole-record delivery. Keep the legacy receiver for existing clients.
-        None
+    pub(crate) fn scattering_home(&self, c: Id) -> Option<String> {
+        if self.is_private_community(&c) {
+            return None;
+        }
+        self.peers
+            .iter()
+            .find(|(_, p)| p.home && p.said_hello && p.features.contains(hoi_sync::FEATURE_HOME_SCATTER_JOURNAL) && p.features.contains("scatter-store"))
+            .map(|(peer, _)| peer.clone())
     }
     pub(crate) fn deletion_home_placement_pending(&self, target: Id) -> bool {
-        self.scatter.home_scatter.asked.values().any(|(_, waiting)| {
-            let Waiting::Store { op, .. } = waiting else { return false };
-            let Some(crate::keep::Job::Outgoing { batch }) = self.scatter.jobs.get(op) else { return false };
-            self.scatter.repair.outgoing.get(batch).and_then(|out| out.carries.get(op)).is_some_and(|(records, _)| records.contains(&target))
-        })
+        if self.journal_deletion_pending(target) {
+            return true;
+        }
+        #[cfg(test)]
+        {
+            self.scatter.home_scatter.asked.values().any(|(_, waiting)| {
+                let Waiting::Store { op, .. } = waiting else { return false };
+                let Some(crate::keep::Job::Outgoing { batch }) = self.scatter.jobs.get(op) else { return false };
+                self.scatter.repair.outgoing.get(batch).and_then(|out| out.carries.get(op)).is_some_and(|(records, _)| records.contains(&target))
+            })
+        }
+        #[cfg(not(test))]
+        {
+            false
+        }
     }
-    fn home_packet(&mut self, peer: &str, rid: u32, reply: bool, packet: Packet) {
+    pub(crate) fn home_packet(&mut self, peer: &str, rid: u32, reply: bool, packet: Packet) {
         if let Ok(payload) = serde_json::to_vec(&packet) {
             self.send_msg(peer, Msg::HomeScatter { rid, reply, payload });
         }
     }
     pub(crate) fn store_at_home(&mut self, content: &[u8], level: u8, expires: u64) -> R<u64> {
         let c = self.scatter.placing.ok_or_else(|| ApiError::invalid("Missing community."))?;
-        let home = self.scattering_home(c).ok_or_else(|| ApiError::invalid("Home unavailable."))?;
-        self.start_home_store(&home, c, content, level, expires)
+        let home = self.scattering_home(c).unwrap_or_default();
+        self.journal_store(&home, c, content, level, expires)
     }
+    #[cfg(test)]
     fn start_home_store(&mut self, home: &str, c: Id, content: &[u8], level: u8, expires: u64) -> R<u64> {
         self.check_room(expires)?;
         if content.len() > hoi_sync::MAX_REBUILT {
@@ -80,11 +102,11 @@ impl Node {
     }
     pub(crate) fn on_home_scatter(&mut self, peer: &str, rid: u32, reply: bool, bytes: &[u8]) {
         let Some(p) = self.peers.get(peer).filter(|p| p.said_hello && if reply { p.home } else { p.client }) else { return };
-        if !p.features.contains(hoi_sync::FEATURE_HOME_SCATTER) {
+        if !p.features.contains(hoi_sync::FEATURE_HOME_SCATTER) && !p.features.contains(hoi_sync::FEATURE_HOME_SCATTER_JOURNAL) {
             return;
         }
         if reply {
-            if !self.scatter.home_scatter.asked.contains_key(&(peer.into(), rid)) {
+            if !self.scatter.home_scatter.asked.contains_key(&(peer.into(), rid)) && !self.home_journal.waits.contains_key(&(peer.into(), rid)) {
                 return;
             }
         } else {
@@ -99,9 +121,13 @@ impl Node {
             }
         }
         let Ok(packet) = serde_json::from_slice::<Packet>(bytes) else { return };
+        if self.journal_packet(peer, rid, reply, &packet) {
+            return;
+        }
         if reply {
             let Some((_, waiting)) = self.scatter.home_scatter.asked.remove(&(peer.into(), rid)) else { return };
             match (waiting, packet) {
+                #[cfg(test)]
                 (Waiting::Store { op, content, level, expires }, Packet::Stored { capability }) => {
                     let valid = capability.and_then(|cap| {
                         let m = cap.read()?;
@@ -129,6 +155,7 @@ impl Node {
                         }
                     }
                 }
+                #[cfg(test)]
                 (Waiting::Store { op, .. }, _) => {
                     self.scatter.home_scatter.failed_at = Some(self.now());
                     self.end_wait_op(op, ScatterOutcome::Failed("Your home returned an invalid placement response.".into()));
@@ -216,12 +243,17 @@ impl Node {
         true
     }
     pub(crate) fn home_scatter_tick(&mut self, gone: Option<&str>) {
+        self.journal_tick();
         let now = self.now();
         self.scatter.home_scatter.rate.retain(|peer, _| self.peers.contains_key(peer));
         let late: Vec<_> =
             self.scatter.home_scatter.asked.iter().filter(|((p, _), (at, _))| now >= at + 120 || gone == Some(p.as_str())).map(|(k, _)| k.clone()).collect();
         for key in late {
-            if let Some((_, Waiting::Store { op, .. })) = self.scatter.home_scatter.asked.remove(&key) {
+            let waiting = self.scatter.home_scatter.asked.remove(&key);
+            #[cfg(not(test))]
+            let _ = waiting;
+            #[cfg(test)]
+            if let Some((_, Waiting::Store { op, .. })) = waiting {
                 self.scatter.home_scatter.failed_at = Some(now);
                 self.end_wait_op(op, ScatterOutcome::Failed("Your home did not answer; delivery will use the whole post.".into()));
             }

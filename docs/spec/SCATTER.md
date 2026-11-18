@@ -1094,13 +1094,21 @@ generations keep it at the table's figures. `scatter-params.mjs` computes all of
 
 ## Completion follow-ups · 2026-11-06
 
-`home_scatter.rs` uses a bounded optional `home-scatter` message on paired links only.
-`scatter-store` advertises actual placement capacity; ordinary homes without it retain the
-existing whole-post path. Store operations validate size/expiry and are capped at 16 per
-client under the global operation bound, with a two-minute timeout and ten-minute failure
-backoff. The origin verifies the returned manifest against its own content before signing.
-Receipts are reports from the trusted home, not anonymity proofs or guarantees of erasure.
-Private group delivery continues to use its existing MLS/mailbox path.
+`home_scatter.rs` retains the bounded legacy receiver and negotiates `home-scatter-v2`
+for new public-community offloads to a paired home with `scatter-store` capacity.
+`home_journal.rs` persists content-bound request IDs, record correlation, receipts and every
+potential placement's deletion authority before network egress. Lost replies are recovered
+with the same identity. A home that restarted with uncertain in-flight work returns its
+partial capability and whole-record fallback instead of creating a fresh generation.
+Origins verify manifests before pointer signing; unresolved authority blocks deletion before
+mutation. The journal admits at most 256 entries and 8 MiB of originating content, rejecting
+new work when full; entries expire only after their original inclusive holder expiry day.
+After durable deletion-target capture, origins remove request payloads and manifests and
+retry authenticated release so the home clears its result capability too. See PROTOCOL.md
+§21.1 and proposed RFC-0008 for packet fields, storage format 6 and compatibility.
+The post view distinguishes pending placement, pieces and whole-record delivery. The home
+necessarily knows the sender and public content; its receipts prove neither anonymity nor
+erasure. Private groups retain their existing MLS/mailbox path.
 
 `drop_share.rs` exchanges only generation-specific tokens with active, unrevoked,
 unexpired same-person delegations. Payload signatures bind both devices and ciphertext;
