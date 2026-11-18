@@ -83,8 +83,8 @@
   {/if}
 </section>
 
-<JoinWarning bind:open={joinWarning} oncontinue={join} />
-<JoinWarning bind:open={askWarning} oncontinue={ask} />
+<JoinWarning bind:open={joinWarning} oncontinue={join} destinationNote="The encrypted invitation names no public node to check before opening. Current connection reports are available in Connection IP." />
+<JoinWarning bind:open={askWarning} oncontinue={ask} destinationNote="A private join request has no single destination to check. Current connection reports are available in Connection IP." />
 
 <style>
   .private-page { display: flex; flex-direction: column; gap: 20px; }

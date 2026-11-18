@@ -8,7 +8,7 @@
   import { to, type CommunityTab } from '../lib/router';
   import { router } from '../lib/router.svelte';
   import { admissionLabel, copyText, formatMs, monthYear, plural, voiceText } from '../lib/util';
-  import { toast } from '../lib/toast.svelte';
+  import { toast, toastError } from '../lib/toast.svelte';
   import PostRow from '../lib/ui/PostRow.svelte';
   import Composer from '../lib/ui/Composer.svelte';
   import { startPost } from '../lib/compose';
@@ -59,6 +59,7 @@
   let inviteOpen = $state(false);
   let inviteFresh = $state(false);
   let joinWarning = $state(false);
+  let joinInvite = $state<{ id: string; uri: string; routes: string[] } | null>(null);
   let joining = $state(false);
   let fresh = $state.raw<PostSummary[]>([]);
   const top = $derived(fresh.map((f) => feed.value?.find((p) => p.id === f.id) ?? f));
@@ -131,21 +132,28 @@
     if (c.joined) {
       await attempt(() => app.core.leave(c.id), `Left. Your copy of c/${c.name} fades over the next ${duration(c.limits.maxRetention)}.`);
     } else {
-      joinWarning = true;
+      const communityId = c.id;
+      joining = true;
+      try {
+        const invite = await app.core.invite(communityId);
+        const preview = await app.core.previewInvite(invite.uri);
+        if (c?.id !== communityId) return;
+        joinInvite = { id: communityId, uri: invite.uri, routes: [...preview.peers, ...preview.relays] };
+        joinWarning = true;
+      } catch (error) { toastError(error); }
+      finally { joining = false; }
       return;
     }
     nudge(btn);
   }
 
   async function join() {
-    if (!c || c.joined || joining) return;
+    if (!c || c.joined || joining || joinInvite?.id !== c.id) return;
     const community = c;
+    const uri = joinInvite.uri;
     joining = true;
     try {
-      await attempt(async () => {
-        const inv = await app.core.invite(community.id);
-        return app.core.join(inv.uri);
-      }, `Joined c/${community.name}. Your ${app.platformName} keeps it in sync now.`);
+      await attempt(() => app.core.join(uri), `Joined c/${community.name}. Your ${app.platformName} keeps it in sync now.`);
     } finally { joining = false; }
   }
 
@@ -380,7 +388,7 @@
   </section>
   {#if !privateGroup}
     <InviteModal bind:open={inviteOpen} community={c} fresh={inviteFresh} onclose={() => (inviteFresh = false)} />
-    <JoinWarning bind:open={joinWarning} oncontinue={join} />
+    <JoinWarning bind:open={joinWarning} oncontinue={join} routes={joinInvite?.routes} />
   {/if}
   {#if canAskCarry}
     <Modal bind:open={carryConfirm} title="Ask public nodes to keep c/{c.name} available?">
