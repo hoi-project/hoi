@@ -469,14 +469,29 @@ impl Paths {
     /// A holder key is already verified (or came in the signed manifest). Partial voucher
     /// knowledge must not be worse than no voucher: once preferred routes reach k−1, GETs
     /// may use another independent relay. Placement and deletion never gain these paths.
-    fn load_alternates(&mut self, manifest: &Manifest, forwarders: &[Forwarder], holder_places: &BTreeMap<Id, usize>) {
-        for holder in &manifest.holders {
-            if !self.holders.contains_key(holder) {
-                continue;
-            }
+    fn load_routes(&mut self, manifest: &Manifest, forwarders: &[Forwarder], holder_places: &BTreeMap<Id, usize>) {
+        for (index, holder) in manifest.holders.iter().enumerate() {
             let own = holder_places.get(holder);
-            let via = forwarders.iter().filter(|f| own.is_none() || self.place.get(&f.peer) != own).map(|f| f.peer.clone()).collect();
-            self.alternates.insert(*holder, via);
+            let place = &self.place;
+            let legal = |peer: &String| own.is_none() || place.get(peer) != own;
+            match self.holders.entry(*holder) {
+                std::collections::btree_map::Entry::Occupied(mut entry) => {
+                    let preferred = &mut entry.get_mut().1;
+                    preferred.retain(legal);
+                    let alternates: Vec<_> = forwarders.iter().filter(|f| legal(&f.peer) && !preferred.contains(&f.peer)).map(|f| f.peer.clone()).collect();
+                    if !alternates.is_empty() {
+                        self.alternates.insert(*holder, alternates);
+                    }
+                }
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    if let Some(key) = manifest.keys.get(index) {
+                        let via: Vec<_> = forwarders.iter().filter(|f| legal(&f.peer)).map(|f| f.peer.clone()).collect();
+                        if !via.is_empty() {
+                            entry.insert((*key, via));
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -1716,12 +1731,9 @@ impl Node {
             let own = place[forwarders.len() + j];
             holder_places.insert(h.endpoint, own);
             let via: Vec<String> = h.via.iter().filter(|f| paths.place.get(*f) != Some(&own)).cloned().collect();
-            if !via.is_empty() {
-                paths.holders.insert(h.endpoint, (h.xk, via));
-            }
+            paths.holders.insert(h.endpoint, (h.xk, via));
         }
-        paths.relay_unvouched(manifest, &forwarders);
-        paths.load_alternates(manifest, &forwarders, &holder_places);
+        paths.load_routes(manifest, &forwarders, &holder_places);
         let id = self.scatter.next_op;
         self.scatter.next_op += 1;
         self.scatter.ops.insert(

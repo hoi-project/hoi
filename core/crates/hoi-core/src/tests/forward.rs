@@ -1241,3 +1241,37 @@ fn partial_holder_vouches_use_alternate_get_routes_without_exceeding_place_caps(
     assert_eq!(asked.get("f0").map_or(0, BTreeSet::len), manifest.k as usize - 1, "prefer the actual voucher before alternate relays");
     assert!(asked.values().all(|indexes| indexes.len() < manifest.k as usize), "never give a place k distinct indexes");
 }
+
+#[test]
+fn get_fallback_excludes_a_known_holder_place_when_no_independent_voucher_remains() {
+    let mut m = mesh(3, 14);
+    join(&mut m, "a", "198.51.100.10:7843", &[0, 1, 2]);
+    let content = b"a same-place voucher cannot become an unsafe preferred fallback".to_vec();
+    let op = m.n("a").scatter_store(&content, 10, T0 + DAY).unwrap();
+    let manifest = stored(m.wait("a", op, 120));
+    join(&mut m, "r", "192.0.2.10:7843", &[0, 1, 2]);
+    for f in ["f1", "f2"] {
+        m.n("r").note_vouches(f, Vec::new());
+    }
+    let mut claims = m.n("r").peers["f0"].scatter.vouches.clone();
+    for (i, v) in claims.iter_mut().enumerate() {
+        // A voucher may conservatively merge places by claiming co-location; even then its
+        // own place must never become a preferred GET route through the manifest fallback.
+        v.routes = vec![format!("{}@44.10.1.{}:7843", v.endpoint.hex(), 20 + i)];
+    }
+    m.n("r").note_vouches("f0", claims);
+    m.log.clear();
+    let op = m.n("r").scatter_load(&manifest).unwrap();
+    assert_eq!(m.wait("r", op, 120), ScatterOutcome::Loaded(content));
+    let mut asked: BTreeMap<String, BTreeSet<Id>> = BTreeMap::new();
+    for (from, to, msg) in &m.log {
+        if from == "r"
+            && let Msg::Piece { op: PieceOp::Get, to: Some(holder), .. } = msg
+        {
+            asked.entry(to.clone()).or_default().insert(*holder);
+        }
+    }
+    assert!(!asked.contains_key("f0"), "exclude every known holder's place from preferred and alternate routes");
+    assert_eq!(asked.len(), 2, "both independent alternate places are used");
+    assert!(asked.values().all(|indexes| indexes.len() < manifest.k as usize));
+}
