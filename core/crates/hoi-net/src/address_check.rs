@@ -190,7 +190,7 @@ async fn vpn_hostname(host: &str, port: u16, interface: &str, policy: &NetPolicy
             return Err(NEED_NUMERIC);
         }
         let answer = scoped_answer(std::str::from_utf8(&result.stdout).map_err(|_| NEED_NUMERIC)?, interface, &ips).ok_or(NEED_NUMERIC)?;
-        return Ok(SocketAddr::new(answer, port));
+        Ok(SocketAddr::new(answer, port))
     }
     #[cfg(not(target_os = "linux"))]
     {
