@@ -9,3 +9,4 @@ packages:
 # Keep this build-only dependency on the reviewed local patch (vendor/README.md).
 overrides:
   '@sveltejs/vite-plugin-svelte>deepmerge': file:./vendor/deepmerge
+  picomatch: file:./vendor/picomatch
