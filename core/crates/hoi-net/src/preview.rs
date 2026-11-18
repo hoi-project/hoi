@@ -169,24 +169,32 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn previews_start_tls_at_the_selected_address() {
+    async fn preview_client_builds_before_a_peer_connection() {
+        client("preview.invalid", &["127.0.0.1:443".parse().unwrap()], None).expect("build with the selected preview endpoint");
+    }
+
+    #[tokio::test]
+    async fn the_shared_http_client_starts_tls_without_a_peer_connection() {
         use tokio::io::AsyncReadExt;
 
         let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let host = "preview.invalid";
-        let client = client(host, &[address], None).unwrap();
-        let url = format!("https://{host}:{}/", address.port());
+        let url = format!("https://{}/", listener.local_addr().unwrap());
+        // This loopback fixture must be reachable on machines with an HTTPS proxy.
+        let client = crate::public_http_client_builder().unwrap().no_proxy().https_only(true).build().unwrap();
         tokio::time::timeout(Duration::from_secs(5), async {
+            let request = client.get(url).send();
+            tokio::pin!(request);
             let receive = async {
                 let (mut socket, _) = listener.accept().await.unwrap();
                 assert_eq!(socket.read_u8().await.unwrap(), 0x16, "expected a TLS handshake");
             };
-            let (response, ()) = tokio::join!(client.get(url).send(), receive);
-            assert!(response.unwrap_err().is_connect(), "an interrupted handshake must fail the request");
+            tokio::select! {
+                _ = receive => assert!(request.await.unwrap_err().is_connect(), "an interrupted handshake must fail the request"),
+                result = &mut request => panic!("request finished before the loopback listener received TLS: {result:?}"),
+            }
         })
         .await
-        .expect("the preview client must connect to the selected endpoint");
+        .expect("the HTTP client must reach the loopback listener");
     }
 
     #[tokio::test]
