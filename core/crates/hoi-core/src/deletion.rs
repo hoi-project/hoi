@@ -299,7 +299,14 @@ impl Node {
             // legacy cleanup. An absent record may still be arriving in this same batch.
             return Err(ApiError::new("deletion-pending", "This object still carries other records."));
         }
-        let cap = self.scatter.saved.drop_caps.get(&crate::drop_share::cap_id(m)).filter(|cap| cap.read().is_some_and(|old| old == *m)).cloned();
+        let cap = self
+            .scatter
+            .saved
+            .drop_caps
+            .get(&crate::drop_share::cap_id(m))
+            .filter(|cap| cap.read().is_some_and(|old| old == *m))
+            .cloned()
+            .or_else(|| self.journal_capability(m));
         let secret = locally_created.then(|| self.drop_secret()).flatten();
         let entries: Vec<_> = m
             .holders
@@ -392,7 +399,8 @@ impl Node {
         if jobs.is_empty() {
             return Ok(false);
         }
-        let validated_cap = self.scatter.saved.drop_caps.get(&crate::drop_share::cap_id(m)).is_some_and(|c| c.read().is_some_and(|old| old == *m));
+        let validated_cap = self.scatter.saved.drop_caps.get(&crate::drop_share::cap_id(m)).is_some_and(|c| c.read().is_some_and(|old| old == *m))
+            || self.journal_capability(m).is_some();
         if from.is_none() || validated_cap {
             let kept = Kept { community, ..Default::default() };
             return self.queue_deletion_generation(&kept, m, from.is_none());

@@ -51,6 +51,9 @@ impl Node {
         if let Some(cap) = self.scatter.saved.drop_caps.get(&cap_id(m)).filter(|cap| cap.read().is_some_and(|old| old.hashes == m.hashes)) {
             return Some(cap.clone());
         }
+        if let Some(cap) = self.journal_capability(m) {
+            return Some(cap);
+        }
         let secret = self.drop_secret()?;
         let tokens = (0..m.hashes.len())
             .map(|i| {

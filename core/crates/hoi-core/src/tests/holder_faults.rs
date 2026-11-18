@@ -221,7 +221,7 @@ enum Expect {
     Unavailable,
 }
 
-/// One row: the generation's first holders, in index order, fail as listed; `silent_forwarders`
+/// One row: holders in the initial request batch first, then remaining holders, fail as listed; `silent_forwarders`
 /// of the reader's three forwarders swallow everything.
 struct Row {
     case: &'static str,

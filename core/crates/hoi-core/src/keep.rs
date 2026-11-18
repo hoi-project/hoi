@@ -1473,7 +1473,7 @@ impl Node {
             }
             return Ok(());
         }
-        let ask = if let Some(cap) = self.scatter.saved.drop_caps.get(&crate::drop_share::cap_id(m)) {
+        let ask = if let Some(cap) = self.scatter.saved.drop_caps.get(&crate::drop_share::cap_id(m)).cloned().or_else(|| self.journal_capability(m)) {
             crate::scatter::Ask::DropTokens(cap.tokens.clone())
         } else if let (true, Some(secret)) = (locally_created, self.drop_secret()) {
             crate::scatter::Ask::DropToken(secret)

@@ -812,3 +812,17 @@ fn delegated_tokens_survive_content_expiry_until_the_inclusive_holder_day_ends()
         "content expiry is earlier than the inclusive holder cleanup boundary"
     );
 }
+
+#[test]
+fn home_deletion_authority_is_recovered_when_the_non_authority_scatter_cache_is_damaged() {
+    let (mut m, c) = home_phone();
+    let p = post(m.n("phone"), &c, "the durable authority journal outlives a damaged sightings cache");
+    assert!(until(&mut m, 600, |m| m.n("b").post(&p.id).is_ok()));
+    let original = m.n("phone").home_journal.saved.origin.values().next().unwrap().capability.clone().unwrap();
+    let manifest = original.read().unwrap();
+    let disk = home_checkpoint(m.n("phone"));
+    disk.0.lock().unwrap().1.insert(crate::scatter::BLOB.into(), b"{".to_vec());
+    let mut reopened = node("mobile", &m.t, &disk);
+    assert_eq!(reopened.capability_for(&manifest).unwrap().tokens, original.tokens, "do not derive replacement tokens from this phone's unrelated secret");
+    assert!(reopened.scatter.saved.kept.values().any(|k| k.records.contains(&Id::from_hex(&p.id).unwrap())));
+}

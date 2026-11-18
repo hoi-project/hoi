@@ -648,6 +648,8 @@ impl Node {
                 _ => {}
             }
         }
+        // Authority is recoverable even when the ordinary scatter sightings cache was damaged.
+        node.journal_recover_authority();
         node.load_previews(preview_index.as_deref(), preview_images);
         // Legacy stores migrate after validation. The current guard prevents older clients
         // from bypassing private record and blob provenance on plaintext sync paths.

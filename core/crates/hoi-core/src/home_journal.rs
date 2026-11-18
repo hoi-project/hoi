@@ -361,17 +361,7 @@ impl Node {
     /// or serve that operator's clients. Known capabilities remain deletion inventory;
     /// missing results become explicit unknown coverage rather than fresh placements.
     pub(crate) fn journal_restore_snapshot(&mut self) {
-        let known: Vec<_> = self
-            .home_journal
-            .saved
-            .origin
-            .values()
-            .filter_map(|r| r.capability.clone().and_then(|cap| Some((r.community, r.records.clone(), cap.read()?, cap))))
-            .collect();
-        for (c, records, m, cap) in known {
-            self.save_drop_cap(cap);
-            self.remember_outgoing_placement(c, &records, None, m);
-        }
+        self.journal_recover_authority();
         self.home_journal.saved.placements.clear();
         let mut unknown_records = Vec::new();
         for r in self.home_journal.saved.origin.values_mut() {
@@ -392,6 +382,22 @@ impl Node {
         self.home_journal.waits.clear();
         self.home_journal.background.clear();
         self.home_journal.dirty = true;
+    }
+    pub(crate) fn journal_recover_authority(&mut self) {
+        let known: Vec<_> = self
+            .home_journal
+            .saved
+            .origin
+            .values()
+            .filter_map(|r| r.capability.clone().and_then(|cap| Some((r.community, r.records.clone(), cap.read()?, cap))))
+            .collect();
+        for (c, records, m, cap) in known {
+            self.save_drop_cap(cap);
+            self.remember_outgoing_placement(c, &records, None, m);
+        }
+    }
+    pub(crate) fn journal_capability(&self, m: &Manifest) -> Option<Capability> {
+        self.home_journal.saved.origin.values().filter_map(|r| r.capability.as_ref()).find(|cap| cap.read().is_some_and(|old| old == *m)).cloned()
     }
     pub(crate) fn journal_cap_needed(&self, m: &Manifest) -> bool {
         self.home_journal
