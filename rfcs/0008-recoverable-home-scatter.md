@@ -50,7 +50,23 @@ journal stores no raw pairing credential or global author drop secret. Once a de
 atomically captured locator-level retry tokens, clear originating content and decryption
 keys. An authenticated `JournalRelease` clears the home result capability and retains its
 terminal deduplication tombstone; retry releases while paired. Legacy reception is
-retained, but new initiation requires the new feature.
+retained, but new initiation requires the new feature. Non-author or local-leave cleanup
+never initiates a legacy whole-capability Drop to the currently paired operator; it retains
+local authority and uses sealed holder requests.
+
+Durable deletion targets retain the original pairing digest alongside each locator/token
+known in that home receipt, never alongside newly appended locators from other devices.
+After a restart, the origin can request up to 32 current holder keys with `CleanupKeys`;
+`CleanupKeyList` returns endpoint-signed X25519 keys and optional signed durable-drop proofs,
+without uptime or first-hand sighting claims. The origin independently verifies both signatures.
+It then seals normal per-holder Drop envelopes and receives the holder's encrypted replies
+through the authenticated home. The home permits this forwarding only for authenticated v2
+clients and Drop requests. Home acceptance and key lookup never count as holder acknowledgement.
+The original home already knows the delegated generation, so this route may carry all its
+cleanup envelopes; ordinary untrusted forwarder place caps remain unchanged. Requests and queued
+sealed envelopes are scoped to the original pairing, including after re-pairing. Snapshot restore removes these archived routing scopes while
+preserving deletion tokens for ordinary routes. Unknown or
+expired keys and unavailable routes retain queued work; they do not invent successful deletion.
 
 A full member snapshot restore never resumes archived requests through a new operator. It
 drops serving-placement receipts for other clients and retains known origin capabilities as
@@ -72,6 +88,9 @@ from silently ignoring pending authority. Format-5 stores migrate with an empty 
 The home necessarily sees the sender, community and plaintext of public objects. Holders
 continue to receive sealed pieces, locators and expiry rather than authors or communities.
 Receipts report trusted-home delivery progress; they do not prove anonymity or global erasure.
+Pending delivery polls and replies are scoped to the original pairing. Replacement pairing,
+unpairing and archive restore discard queued/in-flight polls and mark unfinished reports
+unknown; ordinary reconnect and reopen with the same pairing retain them.
 Origin and home must retain bounded metadata until its original holder expiry boundary.
 
 Acceptance includes lost replies, restarts on both sides, duplicate/conflicting requests,
