@@ -135,3 +135,20 @@ pub async fn hoi_update_install(app: AppHandle, state: State<'_, Updates>, start
     *slot = None;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn bundled_updater_config_initializes_without_automatic_requests() {
+        let config: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        // The plugin deserializes before our commands can supply the publication key.
+        // A missing entry is null and prevents the installed app from starting.
+        let updater: tauri_plugin_updater::Config = serde_json::from_value(config["plugins"]["updater"].clone()).expect("bundled updater config initializes");
+        assert!(updater.endpoints.is_empty(), "only an explicit check may contact the publication host");
+        assert!(updater.require_signed_version, "updates bind their announced version to the package signature");
+        assert!(!updater.allow_downgrades);
+        assert!(!updater.dangerous_insecure_transport_protocol);
+        assert!(!updater.dangerous_accept_invalid_certs);
+        assert!(!updater.dangerous_accept_invalid_hostnames);
+    }
+}
