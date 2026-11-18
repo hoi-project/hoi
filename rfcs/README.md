@@ -48,3 +48,5 @@ merged.
 | [0004](0004-holder-privacy-validation.md) | Holder privacy validation | accepted |
 | [0005](0005-scatter-failure-validation.md) | Scatter failure validation | accepted |
 | [0006](0006-node-verification.md)    | Node declarations and verification | accepted |
+
+| [0008](0008-recoverable-home-scatter.md) | Recoverable home scatter | proposed |
