@@ -1,3 +1,4 @@
+import { deepStrictEqual } from 'node:assert';
 import { describe, expect, it } from 'vitest';
 import { LogStore, StoreLost, crc32, type OpenFile, type SyncHandle } from '../lib/core/opfs';
 import { apply, decodeSnapshot, migrate, saveHeader, snapshot, vaultHeader, type Change } from '../lib/core/idb';
@@ -148,7 +149,8 @@ describe('records in OPFS log files', () => {
     const total = d.files.get('log-a')!.getSize() + (d.files.get('log-b')?.getSize() ?? 0);
     // 6 MB written; the log never holds much more than 4 MiB before it compacts
     expect(total).toBeLessThan(12 * big.length);
-    expect((await LogStore.open(d.open)).snapshot().blobs[0][1]).toEqual(big.map((v) => v ^ 1));
+    // Compare the full typed array in native code, avoiding per-index Vitest matchers on 256 KiB.
+    deepStrictEqual((await LogStore.open(d.open)).snapshot().blobs[0][1], big.map((v) => v ^ 1));
   });
 
   it('checks frames with the usual CRC-32', () => {
