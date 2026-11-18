@@ -210,6 +210,10 @@ impl WasmNode {
         });
         self.node.set_peer_meta(peer, hoi_core::PeerMeta { transport: transport.into(), local, tls, dialed, rtc, ..Default::default() });
     }
+    /// The selected ICE pair of an existing data channel, as observed by this browser.
+    pub fn set_rtc_observed_ip(&mut self, peer: &str, ip: Option<String>) {
+        self.node.set_rtc_observed_ip(peer, ip.and_then(|ip| ip.parse().ok()));
+    }
 
     /// JSON array of `rtc:` routes of members' nodes to try when there is no home node.
     pub fn rtc_candidates(&self) -> String {

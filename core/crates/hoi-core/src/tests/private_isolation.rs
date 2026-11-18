@@ -22,6 +22,7 @@ fn hello(community: Id) -> Msg {
         declaration: None,
         holder: None,
         forwards: false,
+        observed_address: None,
         rebuilds: false,
     }
 }

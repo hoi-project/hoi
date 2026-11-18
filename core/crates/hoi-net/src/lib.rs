@@ -26,6 +26,7 @@ use hoi_core::{IdentityWork, Node, PeerMeta, Role};
 use tokio::net::TcpListener;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, watch};
 
+pub mod address_check;
 mod blobs;
 pub mod dht;
 pub mod handle;
@@ -313,11 +314,34 @@ impl Shared {
     }
 }
 
+/// A probe opens an isolated connection. This fixed first frame carries no identity or community.
+pub const ADDRESS_CHECK: &[u8] = b"hoi/address-check/1";
+pub const ADDRESS_REPLY: &str = "hoi/address/1 ";
+fn address_reply(address: Option<std::net::IpAddr>) -> Vec<u8> {
+    let ip = address.map(|a| a.to_canonical().to_string()).unwrap_or_default();
+    format!("{ADDRESS_REPLY}{ip}").into_bytes()
+}
+
 /// Pumps one WebSocket: node messages out, socket messages in.
 async fn run_link<S>(shared: Arc<Shared>, peer: String, role: Role, meta: PeerMeta, ws: tokio_tungstenite::WebSocketStream<S>)
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
+    let mut ws = ws;
+    // An incoming home link ordinarily stays silent until it receives a credential. Only
+    // nodes already accepting strangers answer a voluntary anonymous address check.
+    let mut first_message = None;
+    if role == Role::Client {
+        let Ok(Some(Ok(first))) = tokio::time::timeout(HELLO, ws.next()).await else { return };
+        if matches!(&first, Message::Binary(b) if b.as_ref() == ADDRESS_CHECK) {
+            if shared.with(|n| n.accepts_members()) {
+                let source = meta.addr.as_deref().and_then(|a| a.parse::<SocketAddr>().ok()).map(|a| a.ip());
+                let _ = tokio::time::timeout(WRITE_TIMEOUT, ws.send(Message::Binary(address_reply(source).into()))).await;
+            }
+            return;
+        }
+        first_message = Some(first);
+    }
     let (mut rx, mut cancelled) = shared.register(&peer);
     let guard = LinkGuard { shared: shared.clone(), peer: peer.clone() };
     if shared
@@ -335,9 +359,13 @@ where
         let mut first = true;
         loop {
             let timeout = if first { HELLO } else { Duration::from_secs(180) };
-            let inc = match tokio::time::timeout(timeout, stream.next()).await {
-                Ok(Some(Ok(inc))) => inc,
-                _ => break,
+            let inc = if let Some(first) = first_message.take() {
+                first
+            } else {
+                match tokio::time::timeout(timeout, stream.next()).await {
+                    Ok(Some(Ok(inc))) => inc,
+                    _ => break,
+                }
             };
             match inc {
                 Message::Binary(b) => {
@@ -396,7 +424,8 @@ impl Drop for LinkGuard {
 /// from the web app this node's pairing links open (its web base) or from one of `origins`;
 /// any other page is refused at the handshake. A request without `Origin` comes from a
 /// native app and goes on to the credential check like any other. A device without a valid
-/// credential hears nothing at all: the link just ends.
+/// credential receives no sync data. While accepting strangers, a node also answers an isolated
+/// address probe with only the requester's transport address.
 pub async fn serve(shared: Arc<Shared>, addr: SocketAddr, origins: &[String]) -> std::io::Result<tokio::task::JoinHandle<()>> {
     let mut allowed = Vec::new();
     for o in origins {
@@ -428,7 +457,15 @@ pub async fn serve(shared: Arc<Shared>, addr: SocketAddr, origins: &[String]) ->
                 // Behind a TLS proxy (a `wss://` public address) loopback is the proxy, not you.
                 let proxied = shared.with(|n| n.serving_url().is_some_and(|u| u.starts_with("wss://")));
                 let local = from.ip().is_loopback() && !proxied;
-                let meta = PeerMeta { transport: "websocket".into(), local, tls: proxied, incoming: true, ..Default::default() };
+                let meta = PeerMeta {
+                    transport: "websocket".into(),
+                    local,
+                    tls: proxied,
+                    incoming: true,
+                    // A reverse proxy observes the client. Its upstream socket and request headers do not identify the client's egress.
+                    addr: (!proxied).then(|| from.to_string()),
+                    ..Default::default()
+                };
                 run_link(shared, peer, Role::Client, meta, ws).await;
             });
         }
@@ -714,11 +751,26 @@ mod tests {
         assert!(back, "reply came back live");
         assert_eq!(home.clients(), 1);
         assert_eq!(web.with(|n| n.net_status().mode), "home-node");
+        assert_eq!(web.with(|n| n.net_status().connections[0].observed_address.clone()).as_deref(), Some("127.0.0.1"));
         let clients = heard.lock().unwrap().iter().rev().find_map(|e| match e {
             Event::Net { status } => status.serving.as_ref().map(|s| s.clients),
             _ => None,
         });
         assert_eq!(clients, Some(1), "the desktop's window heard the browser arrive");
+    }
+
+    #[tokio::test]
+    async fn anonymous_websocket_check_returns_only_the_peer_address_and_does_not_pair() {
+        let home = Shared::new(node("desktop"), Box::new(|_| {}));
+        let listener = serve(home.clone(), "127.0.0.1:0".parse().unwrap(), &[]).await.unwrap();
+        let url = home.with(|n| n.serving_url().unwrap().to_owned());
+        let policy = vpn::NetPolicy::default();
+        home.with(|n| n.set_settings(&hoi_core::dto::SettingsPatch { relay: Some(true), ..Default::default() }).unwrap());
+        assert_eq!(address_check::check(&url, &policy).await.unwrap(), ("127.0.0.1".parse().unwrap(), "websocket"));
+        assert_eq!(home.clients(), 0);
+        home.with(|n| n.set_settings(&hoi_core::dto::SettingsPatch { relay: Some(false), ..Default::default() }).unwrap());
+        assert!(address_check::check(&url, &policy).await.is_err());
+        listener.abort();
     }
 
     #[test]
@@ -775,6 +827,7 @@ mod tests {
             declaration: None,
             holder: None,
             forwards: false,
+            observed_address: None,
             rebuilds: false,
         };
         ws.send(Message::Binary(hello.encode().into())).await.unwrap();

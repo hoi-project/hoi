@@ -69,6 +69,10 @@ pub(crate) struct PeerState {
     pub home: bool,
     pub route: String,
     pub said_hello: bool,
+    /// Ephemeral report from this peer, discarded when the link closes.
+    pub observed_address: Option<std::net::IpAddr>,
+    /// Our transport's current observation of the peer. Display evidence only, never a dial hint.
+    pub observed_peer_ip: Option<std::net::IpAddr>,
     pub sent_have: BTreeSet<Id>,
     /// Catch-ups in progress: community → (when their `have` came, ids we still wait for).
     pub wants: BTreeMap<Id, (u64, BTreeSet<Id>)>,

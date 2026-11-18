@@ -221,18 +221,18 @@ pub(crate) fn udp_socket(addr: SocketAddr, interface: Option<&str>) -> io::Resul
 }
 
 #[cfg(any(target_os = "linux", target_os = "android"))]
-fn pin(socket: &socket2::Socket, name: &str, _addr: SocketAddr) {
+pub(crate) fn pin(socket: &socket2::Socket, name: &str, _addr: SocketAddr) {
     let _ = socket.bind_device(Some(name.as_bytes()));
 }
 
 #[cfg(target_vendor = "apple")]
-fn pin(socket: &socket2::Socket, name: &str, addr: SocketAddr) {
+pub(crate) fn pin(socket: &socket2::Socket, name: &str, addr: SocketAddr) {
     let Some(index) = netdev::get_interfaces().into_iter().find(|i| i.name == name).and_then(|i| std::num::NonZeroU32::new(i.index)) else { return };
     let _ = if addr.is_ipv4() { socket.bind_device_by_index_v4(Some(index)) } else { socket.bind_device_by_index_v6(Some(index)) };
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "android", target_vendor = "apple")))]
-fn pin(_socket: &socket2::Socket, _name: &str, _addr: SocketAddr) {}
+pub(crate) fn pin(_socket: &socket2::Socket, _name: &str, _addr: SocketAddr) {}
 
 #[cfg(test)]
 mod tests {

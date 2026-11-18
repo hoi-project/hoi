@@ -509,3 +509,15 @@ fn scatter_vectors_hold() {
     assert_eq!(u.manifest.hashes.last().unwrap().to_vec(), hex(&pieces[m.n as usize]["hash"]), "the fresh index is the next one");
     assert!(u.manifest.update_to(&m).is_err(), "never back");
 }
+
+#[test]
+fn a_connection_observation_round_trips_in_a_hello() {
+    let v: serde_json::Value = serde_json::from_slice(&std::fs::read(vectors().join("connection-address.json")).unwrap()).unwrap();
+    let wire = unhex(v["hello"].as_str().unwrap());
+    let hello = hoi_sync::Msg::decode(&wire).unwrap();
+    let hoi_sync::Msg::Hello { observed_address: Some(ip), .. } = hello else {
+        panic!("missing observation");
+    };
+    assert_eq!(ip.to_string(), v["observed"]);
+    assert_eq!(hello.encode(), wire);
+}

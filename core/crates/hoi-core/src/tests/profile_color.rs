@@ -147,6 +147,7 @@ fn photo_capable_legacy_peers_receive_photos_and_posts_but_no_color_records() {
         declaration: None,
         holder: None,
         forwards: false,
+        observed_address: None,
         rebuilds: false,
     };
     assert!(a.net_receive("old", &hello.encode()));

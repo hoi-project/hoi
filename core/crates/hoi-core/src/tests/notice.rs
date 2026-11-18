@@ -251,6 +251,7 @@ fn a_hello_that_lies_about_its_notice_is_the_peers_fault() {
         declaration: None,
         holder: None,
         forwards: false,
+        observed_address: None,
         rebuilds: false,
     };
     let mut kept = true;

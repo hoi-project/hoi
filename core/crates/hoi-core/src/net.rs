@@ -99,6 +99,10 @@ pub struct PeerMeta {
 }
 
 impl PeerMeta {
+    /// The connection's transport supplied this socket address. Do not infer one from routes.
+    fn observed_ip(&self) -> Option<std::net::IpAddr> {
+        self.addr.as_ref()?.parse::<std::net::SocketAddr>().ok().map(|a| a.ip().to_canonical()).filter(|ip| !ip.is_unspecified() && !ip.is_multicast())
+    }
     fn for_role(role: Role) -> PeerMeta {
         match role {
             Role::Peer => PeerMeta { transport: "quic".into(), ..Default::default() },
@@ -388,6 +392,9 @@ impl Node {
     /// Route observed by the transport, not inferred from whether a relay is configured.
     pub fn set_peer_route(&mut self, peer: &str, route: &str) {
         if let Some(p) = self.peers.get_mut(peer) {
+            if p.route != route && (route == "relay" || route == "unknown") {
+                p.observed_address = None;
+            }
             p.route = route.to_string();
         }
     }
@@ -697,6 +704,7 @@ impl Node {
             holder: self.holder_hello(),
             forwards: self.forwards_pieces(),
             rebuilds: self.rebuilds_for(peer),
+            observed_address: p.and_then(|p| p.observed_peer_ip),
         }
     }
 
@@ -973,6 +981,8 @@ impl Node {
                 home: role == Role::Home,
                 route: if role == Role::Peer { "unknown" } else { "websocket" }.into(),
                 said_hello: false,
+                observed_address: None,
+                observed_peer_ip: None,
                 sent_have: BTreeSet::new(),
                 wants: BTreeMap::new(),
                 pending_wants: BTreeMap::new(),
@@ -1034,6 +1044,10 @@ impl Node {
         if meta.transport == "webrtc" || (meta.transport == "websocket" && !meta.local) {
             p.route = meta.transport.clone();
         }
+        let observation_changed = p.meta.observed_ip() != meta.observed_ip();
+        if observation_changed {
+            p.observed_peer_ip = meta.observed_ip();
+        }
         let direct = meta.direct.is_some();
         p.meta = meta;
         // a WebRTC link learned its channel after our hello went out: the binding follows it
@@ -1054,7 +1068,21 @@ impl Node {
             return;
         }
         // Now we know where this connection goes: a stranger hears which communities we came for.
-        if p.role() == Role::Peer && self.routed_here(peer) != self.peers[peer].named {
+        if (observation_changed && p.hello_sent) || (p.role() == Role::Peer && self.routed_here(peer) != self.peers[peer].named) {
+            self.rehello(peer);
+        }
+    }
+
+    /// The selected WebRTC remote socket changed. This IP is evidence for this peer only;
+    /// it cannot contribute routing hints or authorize peers, records or joins.
+    pub fn set_rtc_observed_ip(&mut self, peer: &str, ip: Option<std::net::IpAddr>) {
+        let Some(p) = self.peers.get_mut(peer) else { return };
+        let ip = ip.map(|a| a.to_canonical()).filter(|a| !a.is_multicast() && !a.is_unspecified());
+        if p.meta.transport != "webrtc" || ip == p.observed_peer_ip {
+            return;
+        }
+        p.observed_peer_ip = ip;
+        if p.hello_sent {
             self.rehello(peer);
         }
     }
@@ -1180,6 +1208,7 @@ impl Node {
                 holder,
                 forwards,
                 rebuilds,
+                observed_address,
             } => {
                 // A device that dialed us shows its credential before anything else: a missing or
                 // wrong one ends the link without a word, so a web page can't even learn that a
@@ -1309,6 +1338,7 @@ impl Node {
                     p.name = name;
                     p.serves = serves && p.home;
                     p.said_hello = true;
+                    p.observed_address = observed_address.filter(|ip| !ip.is_unspecified() && !ip.is_multicast());
                     p.node_key = Some(node);
                     p.routes = routes;
                     p.features = features.into_iter().collect();
@@ -1926,6 +1956,7 @@ impl Node {
                     .into(),
                     route: p.route.clone(),
                     connected: p.said_hello,
+                    observed_address: p.observed_address.filter(|_| p.route != "relay" && !self.awaits_bind(id)).map(|ip| ip.to_string()),
                     transport: p.meta.transport.clone(),
                     encryption: encryption_words(&p.meta),
                     kind: if p.home {

@@ -1318,6 +1318,9 @@ pub struct TransportStatus {
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]
 pub struct ConnectionStatus {
+    /// A peer reports the IP it sees on this link. It is never used for routing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_address: Option<String>,
     pub peer: String,
     pub role: String,
     pub route: String,

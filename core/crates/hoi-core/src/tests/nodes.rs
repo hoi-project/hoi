@@ -133,6 +133,7 @@ fn a_list_from_a_peer_that_dialed_in_makes_nobody_dial_anyone() {
         declaration: None,
         holder: None,
         forwards: false,
+        observed_address: None,
         rebuilds: false,
     };
     assert!(quiet.net_receive("x", &hello.encode()));

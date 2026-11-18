@@ -309,6 +309,7 @@ fn a_node_binds_its_webrtc_channel_to_its_key() {
         declaration: None,
         holder: None,
         forwards: false,
+        observed_address: None,
         rebuilds: false,
     };
     assert!(web.net_receive("n", &hello.encode()));
@@ -340,4 +341,31 @@ fn a_home_node_binds_after_the_hello_it_holds_for_a_device() {
 
 fn node_(platform: &str, t: &Arc<AtomicU64>) -> Node {
     node(platform, t, &Mem::default())
+}
+
+#[test]
+fn hello_reports_only_the_recipients_endpoint_and_updates_it_after_a_path_change() {
+    let t = Arc::new(AtomicU64::new(T0));
+    let (mut observer, ep) = desktop(&t);
+    let (mut client, cep) = desktop(&t);
+    quic(&mut client, &mut observer, &ep, "203.0.113.8:3000", &cep, "203.0.113.9:4500");
+    let deliver = |sender: &mut Node, recipient: &mut Node| {
+        for (to, bytes) in sender.take_outbox() {
+            if to == "a" && matches!(Msg::decode(&bytes), Ok(Msg::Hello { .. })) {
+                assert!(recipient.net_receive("b", &bytes));
+            }
+        }
+    };
+    deliver(&mut observer, &mut client);
+    let seen = |n: &Node| n.net_status().connections.into_iter().find(|p| p.peer == "b").unwrap().observed_address;
+    assert_eq!(seen(&client).as_deref(), Some("203.0.113.9"));
+    observer
+        .set_peer_meta("a", PeerMeta { transport: "quic".into(), endpoint: Some(cep.clone()), addr: Some("[2001:db8::9]:4000".into()), ..Default::default() });
+    deliver(&mut observer, &mut client);
+    assert_eq!(seen(&client).as_deref(), Some("2001:db8::9"));
+    observer.set_peer_meta("a", PeerMeta { transport: "quic".into(), endpoint: Some(cep), ..Default::default() });
+    deliver(&mut observer, &mut client);
+    assert_eq!(seen(&client), None);
+    client.net_disconnect("b");
+    assert!(client.net_status().connections.is_empty());
 }

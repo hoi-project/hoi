@@ -409,6 +409,19 @@ RFC-0006. A notice (§14.5) is the operator's words; a declaration is what the n
 - **Blocks** are kept across restarts (at most 256; the oldest go first), leave the node out of every dial list, and answer its hellos with silence until the person reconsiders. They name endpoints and certificates, not people: a new key is a new node, and a block is no proof of bad intent.
 - **The assurance policy** is a device setting, or a headless node's `--assurance`: `declared` (the default) uses nodes as above; `verified` uses only participants whose execution was verified under an approved profile, and none can be in this version. Under `verified` a device or node dials nobody on its own initiative, says nothing to a stranger it dialed or to its home node and ends those links (with `bye` when it switches while linked), never falls back to declarations by itself, and reports itself offline with the reason. Strangers that dial in, and its own paired devices, are served as before. A headless node under `declared` checks no declaration and asks nobody, as before.
 
+### 14.8 Local connection address display
+
+An optional `oa` in `hello` reports the recipient's IP literal on this connection, without a
+port. Receivers use it for local display only; they discard it on disconnect or replacement
+by a hello without an observation. A relayed or proxied path may have no direct observation.
+
+A client may check a selected public node before joining. On a separate WS or RTC client
+link it sends the fixed initial ASCII frame `hoi/address-check/1`. A node accepting members
+returns one `hoi/address/1 ` frame followed by the numeric IP (or an empty suffix), and the
+client closes. No sync hello, pairing or community information is sent. Native clients can
+measure the selected node's UDP route with the RTC port's existing STUN service.
+See [RFC-0007](../../rfcs/0007-connection-address.md).
+
 ## 15. The ladder: earning standing
 
 A person's standing in a community is a pure function of the community's signed records (genesis, ledger, vouches, reviews, votes, posts, comments) and the clock. Two nodes holding the same records compute the same standing.

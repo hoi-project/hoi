@@ -415,6 +415,8 @@ pub enum Msg {
         /// `rb`, from a home node to its own devices only: it fetches and rebuilds objects kept
         /// in pieces for them (`rebuild`, SCATTER.md §5.12). Older peers ignore it.
         rebuilds: bool,
+        /// RFC-0007: IP of the recipient as seen on this connection.
+        observed_address: Option<std::net::IpAddr>,
     },
     Have {
         community: Id,
@@ -747,6 +749,7 @@ impl Msg {
                 holder,
                 forwards,
                 rebuilds,
+                observed_address,
             } => {
                 let mut e = vec![
                     ("t", t("hello")),
@@ -792,6 +795,9 @@ impl Msg {
                 }
                 if *forwards {
                     e.push(("fw", Value::Bool(true)));
+                }
+                if let Some(ip) = observed_address {
+                    e.push(("oa", t(&ip.to_string())));
                 }
                 if *rebuilds {
                     e.push(("rb", Value::Bool(true)));
@@ -1001,6 +1007,9 @@ impl Msg {
                     declaration: declaration_from(m.remove("dc"))?,
                     holder: holder_from(m.remove("sk"))?,
                     forwards: matches!(m.remove("fw"), Some(Value::Bool(true))),
+                    observed_address: bounded_text(&mut m, "oa", 45)?
+                        .map(|s| s.parse::<std::net::IpAddr>().map(|ip| ip.to_canonical()).map_err(|_| TypesError::Field("invalid observed IP".into())))
+                        .transpose()?,
                     rebuilds: matches!(m.remove("rb"), Some(Value::Bool(true))),
                 }
             }
@@ -1273,6 +1282,7 @@ mod tests {
             declaration: None,
             holder: None,
             forwards: false,
+            observed_address: None,
             rebuilds: false,
         }
     }
@@ -1299,6 +1309,7 @@ mod tests {
                 declaration: None,
                 holder: None,
                 forwards: false,
+                observed_address: None,
                 rebuilds: false,
             },
             Msg::Hello {
@@ -1320,6 +1331,7 @@ mod tests {
                 declaration: None,
                 holder: None,
                 forwards: false,
+                observed_address: None,
                 rebuilds: false,
             },
             Msg::Have { community: Id([2; 32]), ids: vec![Id([3; 32]), Id([4; 32])] },
