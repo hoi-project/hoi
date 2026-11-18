@@ -1110,3 +1110,33 @@ fn pending_delivery_reports_cannot_follow_a_replacement_pairing_or_snapshot() {
         assert_eq!(node("mobile", &m.t, &disk).scatter.saved.home_delivery[&record], "unknown", "{reset}: invalidation is durable");
     }
 }
+
+#[test]
+fn a_home_with_one_vouched_exit_denies_scatter_and_delivers_the_whole_post() {
+    let (mut m, c) = home_phone();
+    assert!(m.n("phone").peers["home"].features.contains("scatter-store"));
+    for f in ["f0", "f1"] {
+        for i in 0..14 {
+            m.hang_up(f, &format!("h{i}"));
+        }
+        m.n("home").note_vouches(f, Vec::new());
+    }
+    m.hang_up("phone", "home");
+    m.n("phone").net_connect("home", Role::Home);
+    m.n("home").net_connect("phone", Role::Client);
+    m.pump();
+    assert_eq!((m.n("home").scatter_places(), m.n("home").scatter_paths()), (14, 3));
+    assert!(!m.n("phone").peers["home"].features.contains("scatter-store"), "one exit can carry only four of twelve indexes");
+    let expires = m.n("home").now() + 86400;
+    let error = m.n("home").scatter_store(b"cannot dispatch here", 10, expires).unwrap_err();
+    assert_eq!(error.code, "scatter-few-paths");
+    assert!(error.message.contains("4 of the 12"), "{}", error.message);
+    m.log.clear();
+    let post = post(m.n("phone"), &c, "whole delivery when twelve safe paths cannot be assigned");
+    assert!(until(&mut m, 600, |m| m.n("b").post(&post.id).is_ok()));
+    assert!(m.n("phone").post(&post.id).unwrap().checks.home_delivery.is_some_and(|s| s.starts_with("whole-")));
+    assert!(!m.log.iter().any(|(from, _, msg)| from == "phone"
+        && matches!(msg, Msg::HomeScatter {reply:false,payload,..}
+        if serde_json::from_slice::<serde_json::Value>(payload).unwrap()["type"]=="JournalStore")));
+    assert!(m.n("home").home_journal.saved.placements.is_empty(), "no unreachable generation opened a home journal");
+}

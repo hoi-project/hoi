@@ -48,6 +48,19 @@ pub fn count_places(candidates: &[Candidate], exclude: &[usize]) -> usize {
 /// Places are drawn uniformly, each weighing one; a place's node is drawn uniformly among its
 /// candidates that keep the caps. `None` when the caps or the places leave fewer than `want`.
 pub fn place(candidates: &[Candidate], n: usize, want: usize, used: &[usize], pick: &mut dyn FnMut(usize) -> usize) -> Option<Vec<usize>> {
+    place_with(candidates, n, want, used, pick, &mut |_| true)
+}
+
+/// Draw replacements under the same lifetime diversity caps, admitting a node only when
+/// its forwarding route can also be reserved. A rejected node never consumes a quota.
+pub fn place_with(
+    candidates: &[Candidate],
+    n: usize,
+    want: usize,
+    used: &[usize],
+    pick: &mut dyn FnMut(usize) -> usize,
+    admit: &mut dyn FnMut(usize) -> bool,
+) -> Option<Vec<usize>> {
     if want == 0 {
         return Some(Vec::new());
     }
@@ -75,7 +88,7 @@ pub fn place(candidates: &[Candidate], n: usize, want: usize, used: &[usize], pi
     // generation's earlier holders): nothing else changes which places still have a node
     // within the caps.
     let mut capped = !used.is_empty();
-    while chosen.len() < want {
+    'draw: while chosen.len() < want {
         let within = |c: &Candidate, blocks: &BTreeMap<u64, usize>, introducers: &BTreeMap<u64, usize>| {
             c.block.is_none_or(|b| blocks.get(&b).copied().unwrap_or(0) < block_cap) && introducers.get(&c.introducer).copied().unwrap_or(0) < introducer_cap
         };
@@ -87,8 +100,16 @@ pub fn place(candidates: &[Candidate], n: usize, want: usize, used: &[usize], pi
             return None;
         }
         let p = open.swap_remove(pick(open.len()));
-        let fits: Vec<usize> = by_place[&p].iter().copied().filter(|&i| within(&candidates[i], &blocks, &introducers)).collect();
-        let i = fits[pick(fits.len())];
+        let mut fits: Vec<usize> = by_place[&p].iter().copied().filter(|&i| within(&candidates[i], &blocks, &introducers)).collect();
+        let i = loop {
+            if fits.is_empty() {
+                continue 'draw;
+            }
+            let candidate = fits.swap_remove(pick(fits.len()));
+            if admit(candidate) {
+                break candidate;
+            }
+        };
         let c = &candidates[i];
         if let Some(b) = c.block {
             let count = blocks.entry(b).or_default();

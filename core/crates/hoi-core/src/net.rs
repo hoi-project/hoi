@@ -776,9 +776,7 @@ impl Node {
             fx.insert(0, hoi_sync::FEATURE_DROP_JOURNAL.to_string());
         }
         let plan = self.plan();
-        if hoi_crypto::scatter::size::size(10, 0, plan.places() as u32)
-            .is_some_and(|s| plan.forwarder_places() >= 2 && plan.forwarder_places() * (s.k - 1) >= s.n)
-        {
+        if hoi_crypto::scatter::size::size(10, 0, plan.places() as u32).is_some_and(|s| plan.supports_puts(s.k, s.n)) {
             fx.push("scatter-store".into());
         }
         if self.can_relay() {

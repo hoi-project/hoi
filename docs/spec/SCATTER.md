@@ -353,6 +353,12 @@ device's candidates is no larger than its share of real places.
    must be in the forwarder's own node list (`nodes`), so nobody makes a public node dial an
    address of their choosing (a rule the protocol already has). If no forwarder lists a chosen
    holder, choose another holder, never another forwarder in the holder's place.
+   Before the first PUT of a batch, assign all sampled indexes to vouched forwarding places.
+   An assignment can move while it is still private to the sending device. If the sample
+   cannot all be routed, keep the matched holders and sample reserves for the remaining
+   unsent indexes under the same place, block and introducer caps. Only a dispatched index
+   consumes its forwarder's exposure budget. A home counts the simultaneous routes from
+   distinct holder places before advertising placement to its paired devices.
    *Built in S3:* a device's forwarders are its links that say `fw` (every public node); the
    holders it can use are those they vouch for in `nodes.h`, with the holder's signed key (`k`)
    and routes (`r`). A holder is placed by its own link, by routes this device saw itself, or by

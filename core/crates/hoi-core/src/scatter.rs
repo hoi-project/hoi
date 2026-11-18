@@ -26,6 +26,10 @@
 //! long and steadily enough itself, or its own devices or two forwarders in different places
 //! vouch for it (SCATTER.md §5.7). Mailboxes (crate::mailbox) still reach their holders one hop.
 
+#[cfg(test)]
+mod placement_tests;
+mod put_routes;
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use hoi_crypto::envelope::{self, DropAuth, Dropped, Kind, Reply, Request, Stored, XKey};
@@ -379,15 +383,72 @@ impl Plan {
         self.fplace.values().collect::<BTreeSet<_>>().len()
     }
 
+    fn put_choices(&self) -> Vec<Vec<usize>> {
+        self.holders.iter().map(|h| h.via.iter().filter_map(|f| self.fplace.get(f).copied()).collect::<BTreeSet<_>>().into_iter().collect()).collect()
+    }
+
+    /// Count distinct holder places that can be reached simultaneously within k−1 per
+    /// forwarder place. Several links at one place cannot create extra capacity.
+    fn put_capacity(&self, k: usize, want: usize) -> usize {
+        if want == 0 {
+            return 0;
+        }
+        let candidates: Vec<_> = self.holders.iter().map(|h| h.candidate).collect();
+        let mut groups = BTreeMap::<usize, BTreeSet<usize>>::new();
+        for (group, options) in place::places(&candidates).into_iter().zip(self.put_choices()) {
+            groups.entry(group).or_default().extend(options);
+        }
+        let len = groups.len();
+        let mut routes = put_routes::Matching::new(groups.into_values().map(|set| set.into_iter().collect()).collect(), k - 1);
+        (0..len).filter(|&i| routes.add(i)).take(want).count()
+    }
+
+    pub(crate) fn supports_puts(&self, k: usize, want: usize) -> bool {
+        let places = self.forwarder_places();
+        places >= 2 && places * (k - 1) >= want && self.put_capacity(k, want) == want
+    }
+
+    /// Keep every sampled holder when their batch can be routed. Only still-unsent
+    /// holders that cannot be fitted may use a reserve, drawn under the same caps.
+    fn reserve_puts(&self, manifest: &mut Manifest, first: usize) -> Option<Vec<usize>> {
+        let index: BTreeMap<_, _> = self.holders.iter().enumerate().map(|(i, h)| (h.endpoint, i)).collect();
+        let mut selected: Vec<_> = manifest.holders[first..].iter().map(|h| index.get(h).copied()).collect::<Option<_>>()?;
+        let mut choices = self.put_choices();
+        for options in &mut choices {
+            for len in (2..=options.len()).rev() {
+                options.swap(len - 1, uniform(len));
+            }
+        }
+        let mut routes = put_routes::Matching::new(choices, manifest.k as usize - 1);
+        let missing: Vec<_> = selected.iter().enumerate().filter_map(|(slot, i)| (!routes.add(*i)).then_some(slot)).collect();
+        if !missing.is_empty() {
+            let used: BTreeSet<_> = manifest.holders[..first]
+                .iter()
+                .filter_map(|h| index.get(h).copied())
+                .chain(selected.iter().copied().filter(|i| routes.place(*i).is_some()))
+                .collect();
+            let candidates: Vec<_> = self.holders.iter().map(|h| h.candidate).collect();
+            let used: Vec<_> = used.into_iter().collect();
+            let reserves = place::place_with(&candidates, manifest.n as usize, missing.len(), &used, &mut uniform, &mut |i| routes.add(i))?;
+            for (slot, reserve) in missing.into_iter().zip(reserves) {
+                selected[slot] = reserve;
+                manifest.holders[first + slot] = self.holders[reserve].endpoint;
+            }
+        }
+        selected.into_iter().map(|i| routes.place(i)).collect()
+    }
+
     /// At least two forwarder places, and room through them for `n` pieces at k−1 a place.
     fn check_paths(&self, k: usize, n: usize) -> R<()> {
         let places = self.forwarder_places();
-        if places < 2 || places * (k - 1) < n {
+        if places < 2 {
+            return Err(ApiError::new("scatter-few-paths", "Two independent forwarding places must be connected to store this post in pieces."));
+        }
+        let capacity = self.put_capacity(k, n);
+        if capacity < n {
             return Err(ApiError::new(
                 "scatter-few-paths",
-                format!(
-                    "Only {places} independent places to send pieces through are connected: too few to keep this in pieces safely. It stays as it is for now."
-                ),
+                format!("The connected forwarders have independent routes for {capacity} of the {n} pieces needed."),
             ));
         }
         Ok(())
@@ -424,9 +485,16 @@ impl Paths {
     /// A forwarder for index `index` to `holder`, not in `avoid` and not over its place's cap,
     /// the least loaded first (and at random among equals).
     fn choose(&self, holder: &Id, index: u8, avoid: &BTreeSet<String>, live: &BTreeSet<String>) -> Option<String> {
+        self.choose_in(holder, index, avoid, live, None)
+    }
+
+    fn choose_in(&self, holder: &Id, index: u8, avoid: &BTreeSet<String>, live: &BTreeSet<String>, reserved: Option<usize>) -> Option<String> {
         let (_, via) = self.holders.get(holder)?;
         let load = |f: &String| -> Option<usize> {
             let place = self.place.get(f)?;
+            if reserved.is_some_and(|p| p != *place) {
+                return None;
+            }
             let carried = self.carried.get(place).map(|c| (c.len(), c.contains(&index))).unwrap_or((0, false));
             let after = if carried.1 { carried.0 } else { carried.0 + 1 };
             (after <= self.cap).then_some(carried.0)
@@ -1452,7 +1520,7 @@ impl Node {
             keys: Vec::new(),
             ..base.clone()
         };
-        Ok(self.begin_store(manifest, shards, 0, plan, s.k))
+        self.begin_store(manifest, shards, 0, plan, s.k)
     }
 
     /// Places `fresh` new indexes of the generation `manifest` describes (a repair), from its
@@ -1476,10 +1544,11 @@ impl Node {
             manifest.holders.push(plan.holders[c].endpoint);
         }
         let k = manifest.k as usize;
-        Ok(self.begin_store(manifest, shards, first, plan, k))
+        self.begin_store(manifest, shards, first, plan, k)
     }
 
-    fn begin_store(&mut self, manifest: Manifest, shards: Shards, first: usize, plan: Plan, k: usize) -> u64 {
+    fn begin_store(&mut self, mut manifest: Manifest, shards: Shards, first: usize, plan: Plan, k: usize) -> R<u64> {
+        let exits = plan.reserve_puts(&mut manifest, first).ok_or_else(|| ApiError::new("scatter-few-paths", FEW_PATHS))?;
         let expiry_day = manifest.expires_at.div_ceil(DAY) as u32;
         let slots: Vec<Slot> =
             manifest.holders.iter().enumerate().map(|(i, &holder)| Slot { holder, stored: i < first, lost: false, tries: 0, via: BTreeSet::new() }).collect();
@@ -1487,14 +1556,16 @@ impl Node {
         let paths = plan.paths(k);
         let id = self.scatter.next_op;
         self.scatter.next_op += 1;
-        let count = slots.len();
         let drop_key_id = self.scatter.next_drop_key.take().unwrap_or([0; 16]);
         self.scatter.ops.insert(id, Op::Store(Box::new(StoreOp { manifest, shards, expiry_day, drop_key_id, slots, used, paths, candidates: plan.holders })));
-        for index in first..count {
-            self.send_put(id, index as u8, &BTreeSet::new());
+        for (offset, exit) in exits.into_iter().enumerate() {
+            self.send_put(id, (first + offset) as u8, &BTreeSet::new(), Some(exit));
+            if self.op_done(id) {
+                break;
+            }
         }
         self.check_store(id);
-        id
+        Ok(id)
     }
 
     /// Forwarder links linked now.
@@ -1504,7 +1575,7 @@ impl Node {
 
     /// Sends index `index` of a store to its holder, through a forwarder not in `avoid`. Without
     /// one, the index goes elsewhere.
-    fn send_put(&mut self, op: u64, index: u8, avoid: &BTreeSet<String>) {
+    fn send_put(&mut self, op: u64, index: u8, avoid: &BTreeSet<String>, reserved: Option<usize>) {
         if !self.journal_before_put(op) {
             self.finish(op, ScatterOutcome::Failed("Placement authority could not be retained.".into()));
             return;
@@ -1516,7 +1587,7 @@ impl Node {
         let Some(Op::Store(st)) = self.scatter.ops.get_mut(&op) else { return };
         let i = index as usize;
         let holder = st.slots[i].holder;
-        let Some(forwarder) = st.paths.choose(&holder, index, avoid, &live) else {
+        let Some(forwarder) = st.paths.choose_in(&holder, index, avoid, &live, reserved) else {
             if !st.paths.has_room(index, &live) {
                 // every forwarder place carried its share of the generation: no path is left
                 self.finish(op, ScatterOutcome::Failed(FEW_PATHS.into()));
@@ -1641,7 +1712,7 @@ impl Node {
         let live = self.live_forwarders();
         if slot.tries < MAX_TRIES && st.paths.choose(&slot.holder, index, &slot.via, &live).is_some() {
             let avoid = slot.via.clone();
-            self.send_put(op, index, &avoid);
+            self.send_put(op, index, &avoid, None);
         } else {
             self.replace_slot(op, index, false);
         }
@@ -1677,7 +1748,7 @@ impl Node {
                 slot.holder = holder;
                 slot.via.clear();
                 st.manifest.holders[t as usize] = holder;
-                self.send_put(op, t, &BTreeSet::new());
+                self.send_put(op, t, &BTreeSet::new(), None);
             }
             _ => {
                 let places = st.candidates.len();

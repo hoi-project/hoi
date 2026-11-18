@@ -95,7 +95,7 @@ mod hardening;
 mod scatter;
 
 #[path = "tests/forward.rs"]
-mod forward;
+pub(crate) mod forward;
 
 #[path = "tests/members_only.rs"]
 mod members_only;
