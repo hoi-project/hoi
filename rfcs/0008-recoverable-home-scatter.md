@@ -2,7 +2,7 @@
 
 Issue: #117
 
-Status: proposed. This file records the approved implementation scope; it does not assert
+Status: accepted. This file records the approved implementation scope; it does not assert
 repository acceptance before the RFC pull request is merged.
 
 ## Summary
