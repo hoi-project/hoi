@@ -29,6 +29,9 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 serde_json = "1"
 
+[dev-dependencies]
+tauri = { version = "2", features = ["test"] }
+
 [dependencies]
 hoi-core = { path = "../../../core/crates/hoi-core", features = ["sqlite"] }
 hoi-store = { path = "../../../core/crates/hoi-store", features = ["sqlite"] }

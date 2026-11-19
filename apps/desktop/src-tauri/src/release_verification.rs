@@ -35,7 +35,8 @@ pub fn verify(bytes: &[u8], signature: &str, key: &str, minimum: &str, revision:
 }
 
 /// The updater's choice must also be a hashed desktop artifact for this platform.
-pub fn artifact(manifest: &Value, url: &str, platform: &str, arch: &str) -> Result<(u64, String), String> {
+pub fn artifact(manifest: &Value, url: &str, platform: &str, arch: &str, bundle: Option<tauri::utils::config::BundleType>) -> Result<(u64, String), String> {
+    use tauri::utils::config::BundleType;
     let files = manifest["releases"][0]["files"].as_array().ok_or("Release files are missing.")?;
     let matching: Vec<_> = files.iter().filter(|f| f["url"] == url).collect();
     if matching.len() != 1 {
@@ -45,10 +46,25 @@ pub fn artifact(manifest: &Value, url: &str, platform: &str, arch: &str) -> Resu
     let size = file["size"].as_u64().ok_or("Invalid artifact size.")?;
     let hash = file["sha256"].as_str().ok_or("Artifact checksum is missing.")?;
     let url = reqwest::Url::parse(url).map_err(|_| "Invalid artifact address.")?;
+    let linux_package = match bundle {
+        Some(BundleType::Deb) => Some("deb"),
+        Some(BundleType::Rpm) => Some("rpm"),
+        _ => None,
+    };
     let kind_ok = match platform {
         "macos" => file["kind"] == "app.tar.gz",
         "windows" => matches!(file["kind"].as_str(), Some("exe" | "msi")),
-        "linux" => matches!(file["kind"].as_str(), Some("AppImage" | "AppImage.tar.gz")),
+        "linux" => match linux_package {
+            Some(kind) => {
+                // A release with only the generic Linux target points to an AppImage.
+                // Decline it before download on an installation served by a package manager.
+                if file["kind"] != kind || manifest["updater"]["platforms"][format!("linux-{arch}-{kind}")]["url"] != url.as_str() {
+                    return Err(format!("This release does not offer a signed {kind} update for this installation."));
+                }
+                true
+            }
+            None => matches!(file["kind"].as_str(), Some("AppImage" | "AppImage.tar.gz")),
+        },
         _ => false,
     };
     if url.scheme() != "https"
@@ -94,14 +110,37 @@ mod tests {
         assert!(verify(bytes, "", key, "1.0.0", 1).is_err());
         assert!(verify(bytes, signature, "", "1.0.0", 1).is_err());
         let url = manifest["updater"]["platforms"]["linux-x86_64"]["url"].as_str().unwrap();
-        let (size, hash) = artifact(&manifest, url, "linux", "x86_64").unwrap();
+        let (size, hash) = artifact(&manifest, url, "linux", "x86_64", None).unwrap();
         let payload = fixture["artifact"].as_str().unwrap().as_bytes();
         verify_artifact(payload, size, &hash).unwrap();
         assert!(verify_artifact(&payload[1..], size, &hash).is_err());
-        assert!(artifact(&manifest, url, "windows", "x86_64").is_err());
-        assert!(artifact(&manifest, url, "linux", "aarch64").is_err());
+        assert!(artifact(&manifest, url, "windows", "x86_64", None).is_err());
+        assert!(artifact(&manifest, url, "linux", "aarch64", None).is_err());
         let mut wrong_product = manifest.clone();
         wrong_product["releases"][0]["files"][0]["product"] = "setup".into();
-        assert!(artifact(&wrong_product, url, "linux", "x86_64").is_err());
+        assert!(artifact(&wrong_product, url, "linux", "x86_64", None).is_err());
+    }
+
+    #[test]
+    fn linux_installer_accepts_only_its_own_signed_package_target() {
+        use tauri::utils::config::BundleType;
+
+        let url = "https://release.example/package";
+        for (kind, bundle, other) in [("deb", BundleType::Deb, BundleType::Rpm), ("rpm", BundleType::Rpm, BundleType::Deb)] {
+            let target = format!("linux-aarch64-{kind}");
+            let mut manifest = serde_json::json!({
+                "releases": [{ "files": [{ "url": url, "platform": "linux", "arch": "aarch64", "kind": kind, "size": 3, "sha256": "a".repeat(64) }] }],
+                "updater": { "platforms": { (target): { "url": url } } }
+            });
+            assert!(artifact(&manifest, url, "linux", "aarch64", Some(bundle.clone())).is_ok());
+            assert!(artifact(&manifest, url, "linux", "aarch64", Some(other)).is_err());
+            assert!(artifact(&manifest, url, "linux", "aarch64", Some(BundleType::AppImage)).is_err());
+            assert!(artifact(&manifest, url, "linux", "x86_64", Some(bundle.clone())).is_err());
+            manifest["updater"]["platforms"] = serde_json::json!({ "linux-aarch64": { "url": url } });
+            assert!(artifact(&manifest, url, "linux", "aarch64", Some(bundle.clone())).is_err());
+            manifest["releases"][0]["files"][0]["kind"] = "AppImage".into();
+            assert!(artifact(&manifest, url, "linux", "aarch64", Some(BundleType::AppImage)).is_ok());
+            assert!(artifact(&manifest, url, "linux", "aarch64", Some(bundle)).is_err());
+        }
     }
 }
