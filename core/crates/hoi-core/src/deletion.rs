@@ -24,6 +24,8 @@ const PER_TICK: usize = 4;
 const BATCH: usize = 32;
 const DAY: u64 = 86_400;
 
+type CapturedTarget = (Id, Id, Option<[u8; 32]>, u32, Option<Id>);
+
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum Outcome {
@@ -45,6 +47,9 @@ pub(crate) struct Target {
     pub locator: Id,
     pub expiry_day: u32,
     pub token: Option<[u8; 32]>,
+    /// The original delegated-placement pairing, never an arbitrary newly paired home.
+    #[serde(default)]
+    pub home: Option<Id>,
     pub outcome: Outcome,
     pub attempts: u32,
     pub last_attempt: Option<u64>,
@@ -80,6 +85,9 @@ pub(crate) struct Job {
     pub reserved_targets: usize,
     /// Unknown generations cannot be silently counted as removed.
     pub coverage_gaps: BTreeSet<Id>,
+    /// Unknown placements restored without a receipt retain their original holder horizon.
+    #[serde(default)]
+    pub unknown_until: u64,
     pub record_submitted: bool,
     pub next_publication: u64,
 }
@@ -89,12 +97,12 @@ impl Job {
     /// still valid (dissemination, local suppression) or a known piece has not passed its
     /// storage day (drops, late placements). Acknowledgements alone never end it (RFC-0001).
     pub(crate) fn needs_local_state(&self, now: u64) -> bool {
-        self.expires_at > now || self.targets.values().any(|t| now / DAY <= t.expiry_day as u64)
+        self.expires_at > now || self.unknown_until > now || self.targets.values().any(|t| now / DAY <= t.expiry_day as u64)
     }
 
     /// When [`Job::needs_local_state`] ends if nothing new is learned.
     pub(crate) fn local_state_until(&self) -> u64 {
-        self.targets.values().map(|t| (t.expiry_day as u64).saturating_add(1).saturating_mul(DAY)).fold(self.expires_at, u64::max)
+        self.targets.values().map(|t| (t.expiry_day as u64).saturating_add(1).saturating_mul(DAY)).fold(self.expires_at.max(self.unknown_until), u64::max)
     }
 
     /// When the last unfinished piece drop this device holds authority for lapses; `None` once
@@ -242,6 +250,7 @@ impl Node {
         }
         let Some(stored) = self.store.get(&id) else { return };
         let generations = self.deletion_generations(target);
+        let unknown_until = self.journal_unknown_until(target);
         let reserved_targets = generations.iter().map(|(_, m, _)| m.holders.len()).sum::<usize>().saturating_add(self.deletion_placement_reservation(target));
         self.deletions.saved.jobs.insert(
             id,
@@ -254,12 +263,14 @@ impl Node {
                 objects: BTreeSet::new(),
                 targets: BTreeMap::new(),
                 reserved_targets,
-                coverage_gaps: BTreeSet::new(),
+                coverage_gaps: if unknown_until > self.now() { BTreeSet::from([target]) } else { BTreeSet::new() },
+                unknown_until,
                 record_submitted: false,
                 next_publication: self.now(),
             },
         );
         self.deletions.dirty = true;
+        self.journal_release_empty_target(target);
         for (k, m, locally_created) in generations {
             // Admission reserved enough room. A capture error leaves Kept for the
             // suppression scheduler to retry before discarding authority.
@@ -293,7 +304,15 @@ impl Node {
             // legacy cleanup. An absent record may still be arriving in this same batch.
             return Err(ApiError::new("deletion-pending", "This object still carries other records."));
         }
-        let cap = self.scatter.saved.drop_caps.get(&crate::drop_share::cap_id(m)).filter(|cap| cap.read().is_some_and(|old| old == *m)).cloned();
+        let cap = self
+            .scatter
+            .saved
+            .drop_caps
+            .get(&crate::drop_share::cap_id(m))
+            .filter(|cap| cap.read().is_some_and(|old| old == *m))
+            .cloned()
+            .or_else(|| self.journal_capability(m))
+            .or_else(|| locally_created.then(|| self.capability_for(m)).flatten());
         let secret = locally_created.then(|| self.drop_secret()).flatten();
         let entries: Vec<_> = m
             .holders
@@ -303,24 +322,27 @@ impl Node {
             .map(|(i, holder)| {
                 let locator = Id(sc::locator(&m.loc_secret, &m.object, m.generation, i as u8));
                 let token = cap.as_ref().and_then(|c| c.tokens.get(&locator)).copied().or_else(|| secret.as_ref().map(|s| sc::drop_token(s, &locator.0)));
-                (*holder, locator, token, m.expires_at.div_ceil(DAY) as u32)
+                (*holder, locator, token, m.expires_at.div_ceil(DAY) as u32, self.journal_locator_home(m, i))
             })
             .collect();
         self.capture_deletion_targets(&jobs, Id(m.object), &entries)?;
+        self.journal_release_generation(m);
         // The job now retains only locator-level retry authority. Do not keep or share the
         // old object decryption key merely to repeat a drop.
-        if cap.is_some() && self.scatter.saved.drop_caps.remove(&crate::drop_share::cap_id(m)).is_some() {
+        let consumed =
+            cap.is_some() && self.scatter.saved.drop_caps.get(&crate::drop_share::cap_id(m)).is_some_and(|cached| cached.read().is_some_and(|old| old == *m));
+        if consumed && self.scatter.saved.drop_caps.remove(&crate::drop_share::cap_id(m)).is_some() {
             self.scatter.dirty = true;
         }
         Ok(true)
     }
 
-    fn capture_deletion_targets(&mut self, jobs: &[Id], object: Id, entries: &[(Id, Id, Option<[u8; 32]>, u32)]) -> R<()> {
+    fn capture_deletion_targets(&mut self, jobs: &[Id], object: Id, entries: &[CapturedTarget]) -> R<()> {
         let current: usize = self.deletions.saved.jobs.values().map(|j| j.targets.len() + j.reserved_targets).sum();
         let additional: usize = jobs
             .iter()
             .filter_map(|id| self.deletions.saved.jobs.get(id))
-            .map(|j| entries.iter().filter(|(h, l, _, _)| !j.targets.contains_key(&target_id(*h, *l))).count().saturating_sub(j.reserved_targets))
+            .map(|j| entries.iter().filter(|(h, l, _, _, _)| !j.targets.contains_key(&target_id(*h, *l))).count().saturating_sub(j.reserved_targets))
             .sum();
         if current.saturating_add(additional) > MAX_TARGETS {
             return Err(ApiError::new("deletion-full", "Deletion targets are full. Pending placement authority is retained."));
@@ -329,7 +351,7 @@ impl Node {
         for id in jobs {
             let job = self.deletions.saved.jobs.get_mut(id).expect("selected deletion job");
             job.objects.insert(object);
-            for (holder, locator, token, expiry_day) in entries {
+            for (holder, locator, token, expiry_day, home) in entries {
                 if !job.targets.contains_key(&target_id(*holder, *locator)) {
                     job.reserved_targets = job.reserved_targets.saturating_sub(1);
                 }
@@ -338,6 +360,7 @@ impl Node {
                     locator: *locator,
                     expiry_day: *expiry_day,
                     token: *token,
+                    home: *home,
                     outcome: Outcome::Queued,
                     attempts: 0,
                     last_attempt: None,
@@ -385,7 +408,8 @@ impl Node {
         if jobs.is_empty() {
             return Ok(false);
         }
-        let validated_cap = self.scatter.saved.drop_caps.get(&crate::drop_share::cap_id(m)).is_some_and(|c| c.read().is_some_and(|old| old == *m));
+        let validated_cap = self.scatter.saved.drop_caps.get(&crate::drop_share::cap_id(m)).is_some_and(|c| c.read().is_some_and(|old| old == *m))
+            || self.journal_capability(m).is_some();
         if from.is_none() || validated_cap {
             let kept = Kept { community, ..Default::default() };
             return self.queue_deletion_generation(&kept, m, from.is_none());
@@ -598,7 +622,7 @@ impl Node {
                 eligible.sort_by_key(|(key, t)| (t.next_retry, t.attempts, t.last_attempt, **key));
                 let next = eligible.first().map(|(_, t)| t.next_retry);
                 let targets: Vec<_> =
-                    eligible.into_iter().take(BATCH).map(|(key, t)| (*key, (t.holder, t.locator, t.token.expect("selected capability")))).collect();
+                    eligible.into_iter().take(BATCH).map(|(key, t)| (*key, (t.holder, t.locator, t.token.expect("selected capability"), t.home))).collect();
                 next.map(|next| (next, *id, targets))
             })
             .collect();
@@ -655,7 +679,10 @@ impl Node {
         }
         // Status remains briefly after expiry; no capabilities survive their piece horizon.
         let before = self.deletions.saved.jobs.len();
-        self.deletions.saved.jobs.retain(|_, j| j.expires_at.saturating_add(2 * DAY) > now || j.targets.values().any(|t| now / DAY <= t.expiry_day as u64));
+        self.deletions
+            .saved
+            .jobs
+            .retain(|_, j| j.expires_at.saturating_add(2 * DAY) > now || j.unknown_until > now || j.targets.values().any(|t| now / DAY <= t.expiry_day as u64));
         self.deletions.dirty |= before != self.deletions.saved.jobs.len();
     }
 

@@ -240,11 +240,11 @@ fn forwarded_drop_results_distinguish_durability_unknown_refusal_and_silence() {
         (durable, Id([41; 32]), token, DropOutcome::Acknowledged),
         (durable, Id([41; 32]), token, DropOutcome::Acknowledged),
     ] {
-        let op = m.n("a").scatter_drop_targets(&[(holder, loc, credential)]).unwrap();
+        let op = m.n("a").scatter_drop_targets(&[(holder, loc, credential, None)]).unwrap();
         assert_eq!(m.wait("a", op, 120), ScatterOutcome::Dropped(vec![DropResult { index: 0, outcome: expected }]));
     }
     m.cut.insert("h0".into());
-    let op = m.n("a").scatter_drop_targets(&[(durable, Id([41; 32]), token)]).unwrap();
+    let op = m.n("a").scatter_drop_targets(&[(durable, Id([41; 32]), token, None)]).unwrap();
     assert_eq!(m.wait("a", op, 120), ScatterOutcome::Dropped(vec![DropResult { index: 0, outcome: DropOutcome::Unreachable }]));
     drop(m);
     let _ = std::fs::remove_file(path);
@@ -273,7 +273,7 @@ fn delayed_drop_replies_cannot_acknowledge_a_new_attempt() {
     let token = [52; 32];
     let meta = PieceMeta { expiry_day: today + 1, drop_hash: sc::drop_hash(&token), drop_key_id: [0; 16] };
     m.n("h0").scatter.pieces.as_mut().unwrap().put(&[51; 32], meta, &[53; 300], today).unwrap();
-    let target = [(holder, Id([51; 32]), token)];
+    let target = [(holder, Id([51; 32]), token, None)];
     let first = m.n("a").scatter_drop_targets(&target).unwrap();
     let expected = |outcome| ScatterOutcome::Dropped(vec![DropResult { index: 0, outcome }]);
     assert_eq!(m.wait("a", first, 120), expected(DropOutcome::LegacyRemoval));

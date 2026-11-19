@@ -1049,12 +1049,71 @@ timeout and expiry never prove erasure. Duplicate requests/replies cannot inflat
 Local removal, record submission and holder acknowledgements are separate. Home-node submission
 does not transfer the originating device's responsibility or prove per-holder completion.
 
-New clients do not initiate legacy home-delegated scatter placements: that request format does
-not preserve origin correlation and deletion authority across an originating-device restart.
-They use local scatter when eligible, otherwise the existing whole-record delivery fallback.
-Legacy receivers and reply verification remain supported. While an already started legacy
-delegated placement is unresolved, a local author-delete request fails retryably before mutation
-rather than claim recoverable deletion; unknown legacy inventory remains an explicit gap.
+New public-community placements may use an authenticated paired home advertising
+`home-scatter-v2` and current `scatter-store` capacity. The existing bounded `home-scatter`
+message carries JSON `JournalStore {request, community, content, level, expires}` and
+`JournalResult {request, stored, capability}` packets. `request` is BLAKE3 derive mode
+`hoi home placement request v1` over the community ID, one level byte and exact object bytes;
+`content` is base64url. The first recorded expiry remains fixed. The home namespaces requests
+by the digest of the durable pairing credential, independent of connection names and request
+numbers. Duplicates return the same pending/success/fallback result; mismatched parameters
+are rejected. Private groups do not use this plaintext offload path.
+
+Both sides save a versioned `home-scatter-journal` authority blob, which fails closed on
+invalid data. The origin records content, community, level, first expiry and carried record
+IDs before dispatch. The home records every possibly dispatched locator, holder key and
+per-locator deletion token before a PUT leaves, including replacement indexes. Network egress
+waits for the storage transaction; the browser's host-storage barrier applies before sends.
+An origin restart reconstructs its outgoing work with the same request identity. A lost
+successful receipt is returned unchanged. A home restart during uncertain in-flight placement
+returns the recorded partial capability with whole-record fallback, never starts another
+generation for that request. The origin verifies the manifest against its content and fixed
+parameters before signing pointers and retains failed partial placement as deletion inventory.
+
+Each node admits at most 256 journal entries and 8 MiB of origin content; full journals reject
+new work rather than evict live authority. Entries are retained through the original inclusive
+holder expiry day (the existing 400-day maximum), then pruned. Origin deletion stays retryable
+before mutation while the request has unresolved authority. After the deletion journal
+atomically captures its locator-level tokens, the origin clears the request's content and
+manifest and retains only a bounded deduplication tombstone. It sends authenticated
+`JournalRelease {request}`; a completed home clears its saved capability and retains the
+terminal tombstone, and never repeats the placement. Release is retried while the pairing
+remains. An ordinary local wipe can still abandon work explicitly; it never reports erasure.
+Each locator present in the original delegated receipt retains its original pairing digest
+when captured as a durable deletion target; appended locators from another device do not. The origin can obtain
+current holder keys using `CleanupKeys {holders}` (at most 32 endpoints) and
+`CleanupKeyList {keys}`. Each key is `{holder, xk, expires, sig, drop_journal}`; key and signatures
+are base64url, and the optional durable-drop signature can be null. The origin independently
+checks the endpoint's existing holder-key and durable-drop statements. These are current key
+lookups, without historical uptime or first-hand sighting claims. Only an authenticated paired
+v2 client can ask. Neither this reply nor home acceptance counts as a holder acknowledgement.
+The origin seals normal locator/token Drop requests itself, then verifies encrypted holder
+replies relayed by its original authenticated home. Nonpublic homes forward only these Drop
+requests for paired v2 clients. All cleanup envelopes for that delegated generation can use
+the original home, which already knows the sender and generation; unrelated forwarder place
+caps remain unchanged. Persisted scope and egress checks prevent a new pairing from receiving
+old-home lookup endpoints or queued deletion envelopes. Snapshot restore clears all archived
+cleanup routing scopes, preserving tokens for ordinary routes. Missing keys and routes remain queued.
+
+A full member snapshot is distinct from an ordinary restart. Restore drops serving-placement
+receipts for other clients and never resumes archived requests through a newly chosen home.
+Known origin capabilities remain deletion inventory. Requests whose receipts were absent
+become explicit unknown coverage with no payload or new-placement retry. Author deletion
+records that gap and retains its original inclusive holder horizon (`unknown_until`), rather
+than treating the archive as proof that no pieces were stored. Queued messages are also
+filtered against the current pairing before egress, so reusing the connection name cannot
+send an old request to another operator. The post view reports missing archived receipts.
+Client storage format 6 adds this authority journal; format-5 stores migrate empty and older
+software refuses format 6. Legacy reception and reply verification remain supported;
+new code never sends a legacy whole-capability Drop to a currently paired operator, including
+non-author and local-leave cleanup. It retains authority locally and uses sealed holder drops; old
+homes retain local-scatter or whole-record delivery fallback. A still-running legacy placement
+also makes author deletion retryable before mutation. Unknown legacy inventory stays a gap.
+The trusted home sees the sender, community and public object plaintext. Receipts report its
+progress, not anonymity or guarantees of global erasure (proposed RFC-0008).
+Delivery-status polls and replies use the original pairing scope. Replacing or removing that
+pairing, or restoring an archive, discards queued/in-flight polls and marks pending/placing
+reports unknown. Reconnecting or reopening with the same pairing preserves pending reports.
 
 Deletion suppresses queued and in-flight repair. Already dispatched placements are retained as
 cleanup targets; their completion must not publish a replacement for deleted content. Other

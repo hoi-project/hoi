@@ -104,6 +104,8 @@ pub const MAX_DHT_CONTACTS: usize = 4;
 pub const FEATURE_LINK: &str = "link";
 /// Placement and delivery receipts on authenticated home links only.
 pub const FEATURE_HOME_SCATTER: &str = "home-scatter";
+/// Durable paired-home request identities, receipts and deletion authority.
+pub const FEATURE_HOME_SCATTER_JOURNAL: &str = "home-scatter-v2";
 /// Public communities held by the connected node, offered without subscribing to their posts.
 pub const FEATURE_CATALOG: &str = "catalog";
 /// Optional per-community profile sidecars; old peers still exchange ordinary posts.

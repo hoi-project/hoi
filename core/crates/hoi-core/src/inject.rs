@@ -164,7 +164,9 @@ impl Node {
         if states.is_empty() {
             return None;
         }
-        let state = if states.iter().any(|s| s.as_str() == "pending") {
+        let state = if states.iter().any(|s| s.as_str() == "unknown") {
+            "unknown"
+        } else if states.iter().any(|s| s.as_str() == "pending") {
             "pending"
         } else if states.iter().any(|s| s.as_str() == "fallback") {
             "fallback"

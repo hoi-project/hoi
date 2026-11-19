@@ -89,7 +89,12 @@ impl Node {
         let now = self.now();
         let own = self.transport_kp.as_ref().map(|k| k.public());
         let asker_endpoint = self.peers.get(asker).and_then(|p| p.meta.endpoint.clone());
-        if !self.forwards_pieces() || Some(holder) == own || asker_endpoint.as_deref() == Some(holder.hex().as_str()) {
+        let paired_drop = op == PieceOp::Drop
+            && self
+                .peers
+                .get(asker)
+                .is_some_and(|p| p.client && p.client_credential.is_some() && p.said_hello && p.features.contains(hoi_sync::FEATURE_HOME_SCATTER_JOURNAL));
+        if !(self.forwards_pieces() || paired_drop) || Some(holder) == own || asker_endpoint.as_deref() == Some(holder.hex().as_str()) {
             self.say_gone(asker, rid);
             return;
         }

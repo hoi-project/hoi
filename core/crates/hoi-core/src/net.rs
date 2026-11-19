@@ -762,6 +762,7 @@ impl Node {
         let mut fx = vec![
             hoi_sync::FEATURE_LINK.to_string(),
             hoi_sync::FEATURE_HOME_SCATTER.to_string(),
+            hoi_sync::FEATURE_HOME_SCATTER_JOURNAL.to_string(),
             hoi_sync::FEATURE_CATALOG.to_string(),
             hoi_sync::FEATURE_PROFILE.to_string(),
             hoi_sync::FEATURE_PROFILE_COLOR.to_string(),
@@ -775,9 +776,7 @@ impl Node {
             fx.insert(0, hoi_sync::FEATURE_DROP_JOURNAL.to_string());
         }
         let plan = self.plan();
-        if hoi_crypto::scatter::size::size(10, 0, plan.places() as u32)
-            .is_some_and(|s| plan.forwarder_places() >= 2 && plan.forwarder_places() * (s.k - 1) >= s.n)
-        {
+        if hoi_crypto::scatter::size::size(10, 0, plan.places() as u32).is_some_and(|s| plan.supports_puts(s.k, s.n)) {
             fx.push("scatter-store".into());
         }
         if self.can_relay() {
@@ -804,6 +803,10 @@ impl Node {
         }
         if self.takes_direct() {
             fx.push(hoi_sync::FEATURE_DIRECT.to_string());
+        }
+        if fx.len() > hoi_sync::SEND_FEATURES {
+            // New clients use recoverable delegation; older clients safely deliver whole.
+            fx.retain(|feature| feature != hoi_sync::FEATURE_HOME_SCATTER);
         }
         if fx.len() > hoi_sync::SEND_FEATURES {
             // Placement offload is optional; preserve protocol and durability features when
@@ -970,6 +973,7 @@ impl Node {
                 name: None,
                 serves: false,
                 client: role == Role::Client,
+                client_credential: None,
                 home: role == Role::Home,
                 route: if role == Role::Peer { "unknown" } else { "websocket" }.into(),
                 said_hello: false,
@@ -1107,9 +1111,10 @@ impl Node {
 
     pub fn take_outbox(&mut self) -> Vec<(String, Vec<u8>)> {
         // RFC-0001: network deletion cannot outrun its recoverable authority and targets.
-        if self.deletions.dirty && self.commit().is_err() {
+        if (self.deletions.dirty || self.home_journal.dirty) && self.commit().is_err() {
             return Vec::new();
         }
+        self.filter_home_journal_outbox();
         self.filter_rebuilt_outbox();
         std::mem::take(&mut self.outbox)
     }
@@ -1189,6 +1194,7 @@ impl Node {
                     let Some(issued) = self.admit_device(token.as_deref()) else { return false };
                     spent = issued.is_some();
                     if let Some(p) = self.peers.get_mut(peer) {
+                        p.client_credential = issued.as_deref().or(token.as_deref()).map(|t| digest(CREDENTIAL_CONTEXT, t));
                         p.issued = issued;
                     }
                 }
@@ -1857,6 +1863,9 @@ impl Node {
         if self.state.home.as_ref().is_some_and(|h| h.spent == Some(digest(SPENT_LINK_CONTEXT, &p.token))) {
             return Ok(self.net_status());
         }
+        if self.state.home.as_ref().is_none_or(|h| h.token != p.token) {
+            self.invalidate_home_delivery_status();
+        }
         let rtc = p.rtc.into_iter().filter(|r| valid_peer_hint(r)).collect();
         self.state.home = Some(PairInfo { url: p.url, token: p.token, name: p.name, rtc, spent: None, next: None, link_key: None, proven: false });
         self.net_error = None;
@@ -1865,6 +1874,7 @@ impl Node {
     }
 
     pub fn unpair(&mut self) -> NetStatus {
+        self.invalidate_home_delivery_status();
         self.state.home = None;
         self.net_error = None;
         self.mark_state();

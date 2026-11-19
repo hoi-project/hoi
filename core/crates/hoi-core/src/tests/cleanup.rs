@@ -238,6 +238,7 @@ fn someone_elses_deletion_blocks_only_while_this_device_holds_their_drops() {
             locator,
             expiry_day: day,
             token: Some([9; 32]),
+            home: None,
             outcome: crate::deletion::Outcome::Submitted,
             attempts: 1,
             last_attempt: Some(T0),

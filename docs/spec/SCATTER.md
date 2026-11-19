@@ -310,6 +310,11 @@ device's candidates is no larger than its share of real places.
 
 1. **Who can be a candidate.** A node listing `scatter` and `keeps` in `hello.fx`, a public node or
    an opted-in desktop, with a valid signed `xk`, whose notice this device has not declined.
+   The placing device and its authenticated paired devices never count as independent holders,
+   including when other nodes vouch for them. Retain old locator authority and routing metadata
+   for cleanup; excluding a fresh candidate never discards an existing placement (#136).
+   An origin with a scoped cleanup capability for an older index held by its home uses the
+   existing direct holder Drop form (`to` absent); it verifies the holder reply as usual.
 2. **Known first hand or corroborated.** A candidate counts once this device or the person's own
    devices (a paired home node, their desktop) saw it answer at least 80% of probes over 7 days,
    *or* at least two introducers in different places list it: the device's own links' node lists,
@@ -348,6 +353,16 @@ device's candidates is no larger than its share of real places.
    must be in the forwarder's own node list (`nodes`), so nobody makes a public node dial an
    address of their choosing (a rule the protocol already has). If no forwarder lists a chosen
    holder, choose another holder, never another forwarder in the holder's place.
+   Before the first PUT of a batch, assign all sampled indexes to vouched forwarding places.
+   An assignment can move while it is still private to the sending device. If the sample
+   cannot all be routed, keep the matched holders and sample reserves for the remaining
+   unsent indexes under the same place, block and introducer caps. Only a dispatched index
+   consumes its forwarder's exposure budget. A home counts the simultaneous routes from
+   distinct holder places before advertising placement to its paired devices. For example,
+   a 5-of-12 generation can use three forwarding places when each vouches for a different
+   group of four eligible holder places and all twelve satisfy the caps. If only
+   one forwarding place vouches for all fourteen eligible holder places, it can carry four
+   indexes. The home leaves placement out of its hello until enough vouched paths exist.
    *Built in S3:* a device's forwarders are its links that say `fw` (every public node); the
    holders it can use are those they vouch for in `nodes.h`, with the holder's signed key (`k`)
    and routes (`r`). A holder is placed by its own link, by routes this device saw itself, or by
@@ -456,6 +471,13 @@ copy when probes leave fewer than k pieces or neither generation rebuilds: it se
 manifest's hash names, starts the next generation from it; a copy that seals otherwise is never
 published, and the device does not try again. A reader that finds an object unreadable reads its
 pointer records again, so a new generation it refused for coming within a day counts then.
+
+A reader with only a partial set of holder vouches still uses the holder's verified key or
+signed-manifest key. It prefers the vouched routes, then uses another independent forwarding
+place when those routes fill or fail. A known holder's own place is excluded, and every place
+still carries at most k−1 distinct indexes. Knowing one voucher must not make a reconstructable
+object less available than having no vouchers. This GET fallback grants no new placement or
+delegated deletion routes.
 
 ### 5.11 Retention, deletion, abuse
 - Pieces expire with the post's lifespan, at most 400 days; posts kept longer are regenerated
@@ -1094,13 +1116,24 @@ generations keep it at the table's figures. `scatter-params.mjs` computes all of
 
 ## Completion follow-ups · 2026-11-06
 
-`home_scatter.rs` uses a bounded optional `home-scatter` message on paired links only.
-`scatter-store` advertises actual placement capacity; ordinary homes without it retain the
-existing whole-post path. Store operations validate size/expiry and are capped at 16 per
-client under the global operation bound, with a two-minute timeout and ten-minute failure
-backoff. The origin verifies the returned manifest against its own content before signing.
-Receipts are reports from the trusted home, not anonymity proofs or guarantees of erasure.
-Private group delivery continues to use its existing MLS/mailbox path.
+`home_scatter.rs` retains the bounded legacy receiver and negotiates `home-scatter-v2`
+for new public-community offloads to a paired home with `scatter-store` capacity.
+`home_journal.rs` persists content-bound request IDs, record correlation, receipts and every
+potential placement's deletion authority before network egress. Lost replies are recovered
+with the same identity. A home that restarted with uncertain in-flight work returns its
+partial capability and whole-record fallback instead of creating a fresh generation.
+Origins verify manifests before pointer signing; unresolved authority blocks deletion before
+mutation. The journal admits at most 256 entries and 8 MiB of originating content, rejecting
+new work when full; entries expire only after their original inclusive holder expiry day.
+After durable deletion-target capture, origins remove request payloads and manifests and
+retry authenticated release so the home clears its result capability too. Locator-only deletion
+retains the original pairing scope, looks up current signed holder keys after restart and
+relays origin-sealed drops through that home. Only verified holder replies update completion;
+key lookup and home acceptance do not. See PROTOCOL.md
+§21.1 and proposed RFC-0008 for packet fields, storage format 6 and compatibility.
+The post view distinguishes pending placement, pieces and whole-record delivery. The home
+necessarily knows the sender and public content; its receipts prove neither anonymity nor
+erasure. Private groups retain their existing MLS/mailbox path.
 
 `drop_share.rs` exchanges only generation-specific tokens with active, unrevoked,
 unexpired same-person delegations. Payload signatures bind both devices and ciphertext;

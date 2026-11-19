@@ -66,6 +66,8 @@ pub(crate) struct PeerState {
     pub serves: bool,
     /// The peer is a browser or phone we serve (paired with our token).
     pub client: bool,
+    /// Digest of the authenticated durable pairing credential; never a transport peer ID.
+    pub client_credential: Option<Id>,
     pub home: bool,
     pub route: String,
     pub said_hello: bool,
@@ -216,6 +218,7 @@ pub struct Node {
     pub(crate) deletions: crate::deletion::State,
     /// Confirmed lists of known posts and comments to delete (crate::bulk, RFC-0002).
     pub(crate) bulk: crate::bulk::State,
+    pub(crate) home_journal: crate::home_journal::State,
     pub(crate) store: Store,
     pub(crate) communities: HashMap<Id, Community>,
     pub(crate) state: LocalState,
@@ -441,6 +444,7 @@ impl Node {
         }
         node.deletions.dirty = true;
         node.mark_state();
+        node.journal_restore_snapshot();
         node.outbox.clear();
         node.commit()?;
         Ok(node)
@@ -472,6 +476,7 @@ impl Node {
             scatter: Default::default(),
             deletions: Default::default(),
             bulk: Default::default(),
+            home_journal: Default::default(),
             store: Store::new(),
             communities: HashMap::new(),
             state: LocalState::default(),
@@ -582,6 +587,9 @@ impl Node {
                 crate::deletion::BLOB => {
                     node.deletions.saved = crate::deletion::Journal::decode(v).ok_or_else(|| incompatible("deletion journal"))?;
                 }
+                crate::home_journal::BLOB => {
+                    node.home_journal.saved = crate::home_journal::Journal::decode(v).ok_or_else(|| incompatible("home placement journal"))?;
+                }
                 crate::bulk::BLOB => {
                     node.bulk.saved = crate::bulk::Saved::decode(v).ok_or_else(|| incompatible("deletion batches"))?;
                     node.bulk.stale = true;
@@ -640,6 +648,8 @@ impl Node {
                 _ => {}
             }
         }
+        // Authority is recoverable even when the ordinary scatter sightings cache was damaged.
+        node.journal_recover_authority();
         node.load_previews(preview_index.as_deref(), preview_images);
         // Legacy stores migrate after validation. The current guard prevents older clients
         // from bypassing private record and blob provenance on plaintext sync paths.
@@ -789,6 +799,13 @@ impl Node {
                 value: Some(serde_json::to_vec(&self.deletions.saved).map_err(|_| ApiError::new("internal", "Deletion work could not be saved."))?),
             });
         }
+        if self.home_journal.dirty {
+            self.changes.retain(|c| !matches!(c, Change::Blob { key, .. } if key == crate::home_journal::BLOB));
+            self.changes.push(Change::Blob {
+                key: crate::home_journal::BLOB.into(),
+                value: Some(serde_json::to_vec(&self.home_journal.saved).map_err(|_| ApiError::new("internal", "Home placement work could not be saved."))?),
+            });
+        }
         if self.bulk.dirty {
             // Batches are saved in the same transaction as the deletions they signed.
             self.changes.retain(|c| !matches!(c, Change::Blob { key, .. } if key == crate::bulk::BLOB));
@@ -824,6 +841,7 @@ impl Node {
             self.persist.apply(&self.changes).map_err(|e| ApiError::new("internal", format!("storage: {e}")))?;
             self.changes.clear();
         }
+        self.home_journal.dirty = false;
         self.deletions.dirty = false;
         self.deletions.published = self.current_deletion_progress();
         if std::mem::take(&mut self.bulk.dirty) | std::mem::take(&mut self.bulk.stale) {
@@ -854,6 +872,7 @@ impl Node {
         self.deletions = Default::default();
         // A local wipe loses saved batches; it never reports their network deletion as done.
         self.bulk = Default::default();
+        self.home_journal = Default::default();
         self.private.wipe();
         self.store.clear();
         self.communities.clear();

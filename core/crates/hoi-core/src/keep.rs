@@ -234,6 +234,11 @@ pub(crate) enum Job {
         manifest: String,
     },
     /// A rebuild this home node runs for one of its devices (crate::rebuild).
+    StoreJournalled {
+        key: Id,
+        peer: String,
+        rid: u32,
+    },
     StoreForDevice {
         peer: String,
         rid: u32,
@@ -352,6 +357,23 @@ impl Node {
         };
         if from.is_some_and(|f| kept.refused.contains(&f)) {
             return refuse("An earlier update from this member did not rebuild.");
+        }
+        // A recovered home receipt is indexed for cleanup before its pointer is published.
+        // Promote only the identical, verified generation; an unreadable active pointer or a
+        // different cleanup placement must still fail closed.
+        if kept.gens.is_empty() && kept.cleanup_gens.iter().any(|g| g.manifest == fresh.manifest) {
+            kept.cleanup_gens.retain(|g| g.manifest != fresh.manifest);
+            kept.gens.push(fresh);
+            kept.community = community;
+            kept.expires_at = kept.expires_at.max(m.expires_at);
+            kept.since = now;
+            let every = probe_every(0);
+            kept.next_probe = now + every + jitter(every / 6);
+            kept.apply = apply;
+            kept.apply_at = now;
+            kept.mine |= from.is_none();
+            self.scatter.dirty = true;
+            return Ok(true);
         }
         let Some(newest) = kept.newest() else { return refuse("Unreadable pointer kept.") };
         if m.generation < newest.generation {
@@ -544,6 +566,7 @@ impl Node {
                     self.drop_with_keys(community, &m);
                 }
             }
+            Job::StoreJournalled { key, peer, rid } => self.journal_stored(key, &peer, rid, outcome, placement),
             Job::StoreForDevice { peer, rid } => self.stored_for_home_device(&peer, rid, outcome),
             Job::ForDevice { peer, rid, object } => self.rebuilt_for(&peer, rid, object, outcome),
             Job::Apply { object, generation } => {
@@ -918,7 +941,7 @@ impl Node {
         self.scatter.dirty = true;
     }
 
-    fn remember_outgoing_placement(&mut self, community: Id, records: &[Id], media: Option<Id>, manifest: Manifest) {
+    pub(crate) fn remember_outgoing_placement(&mut self, community: Id, records: &[Id], media: Option<Id>, manifest: Manifest) {
         let object = Id(manifest.object);
         self.scatter.saved.kept.entry(object).or_insert(Kept {
             community: Some(community),
@@ -961,6 +984,7 @@ impl Node {
             self.scatter.placing = Some(c);
             match self.scatter_store(&part.content, level, expires_at) {
                 Ok(op) => {
+                    self.attach_home_records(op, &part.records);
                     contents.insert(op, part.content);
                     carries.insert(op, (part.records, part.media));
                 }
@@ -1314,7 +1338,7 @@ impl Node {
         records && media
     }
 
-    fn record_deleted(&self, id: &Id) -> bool {
+    pub(crate) fn record_deleted(&self, id: &Id) -> bool {
         self.store.is_deleted(id) || self.state.skeletons.contains_key(id)
     }
 
@@ -1466,16 +1490,15 @@ impl Node {
             }
             return Ok(());
         }
-        let ask = if let Some(cap) = self.scatter.saved.drop_caps.get(&crate::drop_share::cap_id(m)) {
-            crate::scatter::Ask::DropTokens(cap.tokens.clone())
+        let ask = if let Some(cap) = self.scatter.saved.drop_caps.get(&crate::drop_share::cap_id(m)).cloned().or_else(|| self.journal_capability(m)) {
+            crate::scatter::Ask::DropTokens(cap.tokens)
         } else if let (true, Some(secret)) = (locally_created, self.drop_secret()) {
             crate::scatter::Ask::DropToken(secret)
         } else {
             return Ok(());
         };
-        if self.drop_at_home(m, &ask) {
-            return Ok(());
-        }
+        // A legacy home packet would disclose the complete manifest and all tokens to
+        // whichever operator is paired now. Keep authority local and seal holder requests.
         if let Ok(op) = self.scatter_drop(m, &ask) {
             self.scatter.jobs.insert(op, Job::Dropped);
             if self.op_done(op) {
@@ -1488,7 +1511,7 @@ impl Node {
     /// Whether this device could keep something in pieces now: enough places, and forwarders
     /// in at least two places with room for the pieces.
     pub(crate) fn can_scatter(&self, c: Id) -> bool {
-        self.scattering_home(c).is_some() || self.can_scatter_local(c)
+        self.scattering_home(c).is_some() || self.journal_community_work(c) || self.can_scatter_local(c)
     }
 
     pub(crate) fn can_scatter_local(&self, c: Id) -> bool {

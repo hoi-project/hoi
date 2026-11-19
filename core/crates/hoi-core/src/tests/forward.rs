@@ -25,6 +25,8 @@ pub(crate) struct Mesh {
     pub(crate) log: Vec<(String, String, Msg)>,
     /// Every message that went nowhere because either side was cut: (from, to, decoded).
     pub(crate) lost: Vec<(String, String, Msg)>,
+    /// Capabilities omitted from every Hello on a selected test link, including re-Hellos.
+    pub(crate) omitted_features: BTreeMap<(String, String), BTreeSet<String>>,
 }
 
 impl Mesh {
@@ -37,6 +39,7 @@ impl Mesh {
             cut: BTreeSet::new(),
             log: Vec::new(),
             lost: Vec::new(),
+            omitted_features: BTreeMap::new(),
         }
     }
 
@@ -89,7 +92,7 @@ impl Mesh {
             let names: Vec<String> = self.nodes.keys().cloned().collect();
             for from in &names {
                 let out = self.nodes.get_mut(from).unwrap().take_outbox();
-                for (to, m) in out {
+                for (to, mut m) in out {
                     if self.cut.contains(from) || self.cut.contains(&to) {
                         if let Ok(msg) = Msg::decode(&m) {
                             self.lost.push((from.clone(), to, msg));
@@ -100,7 +103,13 @@ impl Mesh {
                         continue;
                     }
                     quiet = false;
-                    if let Ok(msg) = Msg::decode(&m) {
+                    if let Ok(mut msg) = Msg::decode(&m) {
+                        if let Msg::Hello { features, .. } = &mut msg
+                            && let Some(omitted) = self.omitted_features.get(&(from.clone(), to.clone()))
+                        {
+                            features.retain(|feature| !omitted.contains(feature));
+                            m = msg.encode();
+                        }
                         self.log.push((from.clone(), to.clone(), msg));
                     }
                     self.nodes.get_mut(&to).unwrap().net_receive(from, &m);
@@ -440,6 +449,27 @@ fn a_durable_device_repairs_with_fresh_indexes_then_a_new_generation() {
     for h in &alive[..alive.len() - (k + 1)] {
         m.cut.insert(h.clone());
     }
+    // Model durable data loss independently of temporary availability: the failed holders
+    // rejoin with empty stores. Keeping them silent also makes randomized new-generation
+    // placement fail depending on candidate selection, which this repair test does not test.
+    let failed: Vec<_> = m.cut.iter().cloned().collect();
+    for name in failed {
+        m.n(&name).set_piece_store(Some(Box::new(MemPieces::new(1 << 30))));
+        m.cut.remove(&name);
+    }
+    m.pump();
+    let today = (m.t.load(Ordering::SeqCst) / DAY) as u32;
+    let remaining = repaired
+        .holders
+        .iter()
+        .enumerate()
+        .filter(|(index, holder)| {
+            let name = m.eps.iter().find(|(_, endpoint)| **endpoint == holder.hex()).unwrap().0.clone();
+            let loc = sc::locator(&repaired.loc_secret, &repaired.object, repaired.generation, *index as u8);
+            m.n(&name).scatter.pieces.as_mut().unwrap().has(&loc, today).unwrap().is_some()
+        })
+        .count();
+    assert_eq!(remaining, k + 1, "old generation keeps exactly its required recovery coverage");
     // at most a day after the last repair, once the losses are known
     for _ in 0..10 {
         m.run_every(DAY / 2, 60);
@@ -448,7 +478,18 @@ fn a_durable_device_repairs_with_fresh_indexes_then_a_new_generation() {
         }
     }
     let next = m.n("a").scatter.saved.kept[&object].newest().unwrap();
-    assert_eq!(next.generation, 1, "a new generation");
+    let state = &m.nodes["a"].scatter.saved.kept[&object];
+    assert_eq!(
+        next.generation,
+        1,
+        "new generation: lost={}, cleanup={}, scheduled={}, jobs={}, pending={}, cut={}",
+        state.lost.len(),
+        state.cleanup_gens.len(),
+        state.repair_at.is_some(),
+        m.nodes["a"].scatter.jobs.len(),
+        m.nodes["a"].scatter.pending.len(),
+        m.cut.len()
+    );
     assert_ne!(next.loc_secret, man.loc_secret);
     assert_eq!(next.sealed, man.sealed);
     let s = sc::size::Size { k: next.k as usize, n: next.n as usize, m: next.m as usize };
@@ -1158,4 +1199,88 @@ fn a_reader_whose_forwarders_vouch_for_no_holder_still_rebuilds_through_one_hop_
     assert!(now_keys.iter().zip(&man.keys).all(|(a, b)| a != b), "every holder has a new key since");
     let op = m.n("r").scatter_load(&man).unwrap();
     assert!(matches!(m.wait("r", op, 120), ScatterOutcome::Loaded(_)), "holders open what was sealed to their earlier keys");
+}
+
+#[test]
+fn a_forwarder_vouch_cannot_make_the_placing_device_an_independent_holder() {
+    let mut m = mesh(3, 14);
+    join(&mut m, "a", "198.51.100.10:7843", &[0, 1, 2]);
+    m.n("a").set_piece_store(Some(Box::new(MemPieces::new(1 << 30))));
+    m.n("a").set_settings(&SettingsPatch { public_node: Some(true), ..Default::default() }).unwrap();
+    m.n("a").set_carry_policy(crate::CarryPolicy::Any, 64);
+    assert!(m.n("a").is_public_node());
+    m.pump(); // Deliver the holder hello before the forwarders take their hourly sample.
+    m.t.fetch_add(3600, Ordering::SeqCst);
+    m.run(5);
+    let own = Id::from_hex(&m.eps["a"]).unwrap();
+    let forwarders = m.n("a").forwarders();
+    assert!(m.n("a").reachable_holders(&forwarders, None).iter().any(|h| h.endpoint == own), "exercise a genuine signed vouch of this holder");
+    assert_eq!(m.n("a").scatter_places(), 14, "count only remote independent places");
+    assert!(m.n("a").mail_links().get(&own).is_some_and(|link| !link.qualified), "retain existing mailbox routes without selecting our own copy");
+    let op = m.n("a").scatter_store(b"independent remote holders", 10, T0 + DAY).unwrap();
+    let manifest = stored(m.wait("a", op, 120));
+    assert!(!manifest.holders.contains(&own));
+}
+
+#[test]
+fn partial_holder_vouches_use_alternate_get_routes_without_exceeding_place_caps() {
+    let mut m = mesh(3, 14);
+    join(&mut m, "a", "198.51.100.10:7843", &[0, 1, 2]);
+    let content = b"one preferred voucher must not strand a reconstructable object".to_vec();
+    let op = m.n("a").scatter_store(&content, 10, T0 + DAY).unwrap();
+    let manifest = stored(m.wait("a", op, 120));
+    join(&mut m, "r", "192.0.2.10:7843", &[0, 1, 2]);
+    // Simulate partial post-restart lists. All three real forwarders still reach the holders;
+    // only one preferred voucher is currently known to the reader.
+    for f in ["f1", "f2"] {
+        m.n("r").note_vouches(f, Vec::new());
+    }
+    m.log.clear();
+    let op = m.n("r").scatter_load(&manifest).unwrap();
+    assert_eq!(m.wait("r", op, 120), ScatterOutcome::Loaded(content));
+    let mut asked: BTreeMap<String, BTreeSet<Id>> = BTreeMap::new();
+    for (from, to, msg) in &m.log {
+        if from == "r"
+            && let Msg::Piece { op: PieceOp::Get, to: Some(holder), .. } = msg
+        {
+            asked.entry(to.clone()).or_default().insert(*holder);
+        }
+    }
+    assert!(asked.len() >= 2, "k pieces require independent routes after the preferred k-1");
+    assert_eq!(asked.get("f0").map_or(0, BTreeSet::len), manifest.k as usize - 1, "prefer the actual voucher before alternate relays");
+    assert!(asked.values().all(|indexes| indexes.len() < manifest.k as usize), "never give a place k distinct indexes");
+}
+
+#[test]
+fn get_fallback_excludes_a_known_holder_place_when_no_independent_voucher_remains() {
+    let mut m = mesh(3, 14);
+    join(&mut m, "a", "198.51.100.10:7843", &[0, 1, 2]);
+    let content = b"a same-place voucher cannot become an unsafe preferred fallback".to_vec();
+    let op = m.n("a").scatter_store(&content, 10, T0 + DAY).unwrap();
+    let manifest = stored(m.wait("a", op, 120));
+    join(&mut m, "r", "192.0.2.10:7843", &[0, 1, 2]);
+    for f in ["f1", "f2"] {
+        m.n("r").note_vouches(f, Vec::new());
+    }
+    let mut claims = m.n("r").peers["f0"].scatter.vouches.clone();
+    for (i, v) in claims.iter_mut().enumerate() {
+        // A voucher may conservatively merge places by claiming co-location; even then its
+        // own place must never become a preferred GET route through the manifest fallback.
+        v.routes = vec![format!("{}@44.10.1.{}:7843", v.endpoint.hex(), 20 + i)];
+    }
+    m.n("r").note_vouches("f0", claims);
+    m.log.clear();
+    let op = m.n("r").scatter_load(&manifest).unwrap();
+    assert_eq!(m.wait("r", op, 120), ScatterOutcome::Loaded(content));
+    let mut asked: BTreeMap<String, BTreeSet<Id>> = BTreeMap::new();
+    for (from, to, msg) in &m.log {
+        if from == "r"
+            && let Msg::Piece { op: PieceOp::Get, to: Some(holder), .. } = msg
+        {
+            asked.entry(to.clone()).or_default().insert(*holder);
+        }
+    }
+    assert!(!asked.contains_key("f0"), "exclude every known holder's place from preferred and alternate routes");
+    assert_eq!(asked.len(), 2, "both independent alternate places are used");
+    assert!(asked.values().all(|indexes| indexes.len() < manifest.k as usize));
 }

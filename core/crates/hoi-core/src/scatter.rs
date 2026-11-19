@@ -26,6 +26,10 @@
 //! long and steadily enough itself, or its own devices or two forwarders in different places
 //! vouch for it (SCATTER.md §5.7). Mailboxes (crate::mailbox) still reach their holders one hop.
 
+#[cfg(test)]
+mod placement_tests;
+mod put_routes;
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use hoi_crypto::envelope::{self, DropAuth, Dropped, Kind, Reply, Request, Stored, XKey};
@@ -331,11 +335,14 @@ pub(crate) enum Ask {
     DropKey([u8; 32]),
 }
 
+pub(crate) type DropTarget = (Id, Id, [u8; 32], Option<Id>);
+
 struct AskTarget {
     index: u8,
     holder: Id,
     loc: [u8; 32],
     auth: Option<DropAuth>,
+    home: Option<String>,
 }
 
 /// What a forwarder's place is called across operations: its network, else its operator, else
@@ -376,15 +383,72 @@ impl Plan {
         self.fplace.values().collect::<BTreeSet<_>>().len()
     }
 
+    fn put_choices(&self) -> Vec<Vec<usize>> {
+        self.holders.iter().map(|h| h.via.iter().filter_map(|f| self.fplace.get(f).copied()).collect::<BTreeSet<_>>().into_iter().collect()).collect()
+    }
+
+    /// Count distinct holder places that can be reached simultaneously within k−1 per
+    /// forwarder place. Several links at one place cannot create extra capacity.
+    fn put_capacity(&self, k: usize, want: usize) -> usize {
+        if want == 0 {
+            return 0;
+        }
+        let candidates: Vec<_> = self.holders.iter().map(|h| h.candidate).collect();
+        let mut groups = BTreeMap::<usize, BTreeSet<usize>>::new();
+        for (group, options) in place::places(&candidates).into_iter().zip(self.put_choices()) {
+            groups.entry(group).or_default().extend(options);
+        }
+        let len = groups.len();
+        let mut routes = put_routes::Matching::new(groups.into_values().map(|set| set.into_iter().collect()).collect(), k - 1);
+        (0..len).filter(|&i| routes.add(i)).take(want).count()
+    }
+
+    pub(crate) fn supports_puts(&self, k: usize, want: usize) -> bool {
+        let places = self.forwarder_places();
+        places >= 2 && places * (k - 1) >= want && self.put_capacity(k, want) == want
+    }
+
+    /// Keep every sampled holder when their batch can be routed. Only still-unsent
+    /// holders that cannot be fitted may use a reserve, drawn under the same caps.
+    fn reserve_puts(&self, manifest: &mut Manifest, first: usize) -> Option<Vec<usize>> {
+        let index: BTreeMap<_, _> = self.holders.iter().enumerate().map(|(i, h)| (h.endpoint, i)).collect();
+        let mut selected: Vec<_> = manifest.holders[first..].iter().map(|h| index.get(h).copied()).collect::<Option<_>>()?;
+        let mut choices = self.put_choices();
+        for options in &mut choices {
+            for len in (2..=options.len()).rev() {
+                options.swap(len - 1, uniform(len));
+            }
+        }
+        let mut routes = put_routes::Matching::new(choices, manifest.k as usize - 1);
+        let missing: Vec<_> = selected.iter().enumerate().filter_map(|(slot, i)| (!routes.add(*i)).then_some(slot)).collect();
+        if !missing.is_empty() {
+            let used: BTreeSet<_> = manifest.holders[..first]
+                .iter()
+                .filter_map(|h| index.get(h).copied())
+                .chain(selected.iter().copied().filter(|i| routes.place(*i).is_some()))
+                .collect();
+            let candidates: Vec<_> = self.holders.iter().map(|h| h.candidate).collect();
+            let used: Vec<_> = used.into_iter().collect();
+            let reserves = place::place_with(&candidates, manifest.n as usize, missing.len(), &used, &mut uniform, &mut |i| routes.add(i))?;
+            for (slot, reserve) in missing.into_iter().zip(reserves) {
+                selected[slot] = reserve;
+                manifest.holders[first + slot] = self.holders[reserve].endpoint;
+            }
+        }
+        selected.into_iter().map(|i| routes.place(i)).collect()
+    }
+
     /// At least two forwarder places, and room through them for `n` pieces at k−1 a place.
     fn check_paths(&self, k: usize, n: usize) -> R<()> {
         let places = self.forwarder_places();
-        if places < 2 || places * (k - 1) < n {
+        if places < 2 {
+            return Err(ApiError::new("scatter-few-paths", "Two independent forwarding places must be connected to store this post in pieces."));
+        }
+        let capacity = self.put_capacity(k, n);
+        if capacity < n {
             return Err(ApiError::new(
                 "scatter-few-paths",
-                format!(
-                    "Only {places} independent places to send pieces through are connected: too few to keep this in pieces safely. It stays as it is for now."
-                ),
+                format!("The connected forwarders have independent routes for {capacity} of the {n} pieces needed."),
             ));
         }
         Ok(())
@@ -394,6 +458,7 @@ impl Plan {
         Paths {
             place: self.fplace.clone(),
             carried: BTreeMap::new(),
+            alternates: BTreeMap::new(),
             holders: self.holders.iter().map(|h| (h.endpoint, (h.xk, h.via.iter().filter(|f| self.fplace.contains_key(*f)).cloned().collect()))).collect(),
             cap: k - 1,
         }
@@ -410,6 +475,8 @@ struct Paths {
     carried: BTreeMap<usize, BTreeSet<u8>>,
     /// Holder → its signed key and the forwarders that reach it.
     holders: BTreeMap<Id, (/* xk */ [u8; 32], Vec<String>)>,
+    /// GET-only alternate relays, used after preferred voucher paths fill or fail.
+    alternates: BTreeMap<Id, Vec<String>>,
     /// At most this many indexes through one forwarder place: k−1.
     cap: usize,
 }
@@ -418,18 +485,28 @@ impl Paths {
     /// A forwarder for index `index` to `holder`, not in `avoid` and not over its place's cap,
     /// the least loaded first (and at random among equals).
     fn choose(&self, holder: &Id, index: u8, avoid: &BTreeSet<String>, live: &BTreeSet<String>) -> Option<String> {
+        self.choose_in(holder, index, avoid, live, None)
+    }
+
+    fn choose_in(&self, holder: &Id, index: u8, avoid: &BTreeSet<String>, live: &BTreeSet<String>, reserved: Option<usize>) -> Option<String> {
         let (_, via) = self.holders.get(holder)?;
         let load = |f: &String| -> Option<usize> {
             let place = self.place.get(f)?;
+            if reserved.is_some_and(|p| p != *place) {
+                return None;
+            }
             let carried = self.carried.get(place).map(|c| (c.len(), c.contains(&index))).unwrap_or((0, false));
             let after = if carried.1 { carried.0 } else { carried.0 + 1 };
             (after <= self.cap).then_some(carried.0)
         };
-        let mut options: Vec<(usize, &String)> =
-            via.iter().filter(|f| !avoid.contains(*f) && live.contains(*f)).filter_map(|f| load(f).map(|l| (l, f))).collect();
-        let least = options.iter().map(|(l, _)| *l).min()?;
-        options.retain(|(l, _)| *l == least);
-        Some(options[uniform(options.len())].1.clone())
+        let choose = |via: &[String]| {
+            let mut options: Vec<(usize, &String)> =
+                via.iter().filter(|f| !avoid.contains(*f) && live.contains(*f)).filter_map(|f| load(f).map(|l| (l, f))).collect();
+            let least = options.iter().map(|(l, _)| *l).min()?;
+            options.retain(|(l, _)| *l == least);
+            Some(options[uniform(options.len())].1.clone())
+        };
+        choose(via).or_else(|| self.alternates.get(holder).and_then(|via| choose(via)))
     }
 
     /// Whether any live forwarder's place may still carry `index`.
@@ -453,6 +530,35 @@ impl Paths {
             let via: Vec<String> = forwarders.iter().map(|f| f.peer.clone()).collect();
             if !via.is_empty() {
                 self.holders.insert(*h, (*xk, via));
+            }
+        }
+    }
+
+    /// A holder key is already verified (or came in the signed manifest). Partial voucher
+    /// knowledge must not be worse than no voucher: once preferred routes reach k−1, GETs
+    /// may use another independent relay. Placement and deletion never gain these paths.
+    fn load_routes(&mut self, manifest: &Manifest, forwarders: &[Forwarder], holder_places: &BTreeMap<Id, usize>) {
+        for (index, holder) in manifest.holders.iter().enumerate() {
+            let own = holder_places.get(holder);
+            let place = &self.place;
+            let legal = |peer: &String| own.is_none() || place.get(peer) != own;
+            match self.holders.entry(*holder) {
+                std::collections::btree_map::Entry::Occupied(mut entry) => {
+                    let preferred = &mut entry.get_mut().1;
+                    preferred.retain(legal);
+                    let alternates: Vec<_> = forwarders.iter().filter(|f| legal(&f.peer) && !preferred.contains(&f.peer)).map(|f| f.peer.clone()).collect();
+                    if !alternates.is_empty() {
+                        self.alternates.insert(*holder, alternates);
+                    }
+                }
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    if let Some(key) = manifest.keys.get(index) {
+                        let via: Vec<_> = forwarders.iter().filter(|f| legal(&f.peer)).map(|f| f.peer.clone()).collect();
+                        if !via.is_empty() {
+                            entry.insert((*key, via));
+                        }
+                    }
+                }
             }
         }
     }
@@ -742,7 +848,7 @@ impl Node {
     }
 
     /// Keeps a holder key whose signature checked out, the latest per holder.
-    fn remember_key(&mut self, endpoint: Id, mut key: HolderKey) {
+    pub(crate) fn remember_key(&mut self, endpoint: Id, mut key: HolderKey) {
         let now = self.now();
         key.drop_journal =
             key.drop_journal.filter(|sig| hoi_crypto::verify(&endpoint, &envelope::drop_journal_statement(&endpoint.0, &key.xk, key.expires_at), &Sig(*sig)));
@@ -1280,6 +1386,14 @@ impl Node {
         out
     }
 
+    /// A placing device and its authenticated paired devices are not independent holders.
+    /// Retain their routing metadata for cleanup of older manifests, but never count them
+    /// as fresh candidate places, including when a forwarder vouches for them (#136).
+    pub(crate) fn own_holder(&self, endpoint: &Id) -> bool {
+        Some(*endpoint) == self.own_endpoint()
+            || self.peers.values().any(|p| p.said_hello && (p.home || p.client) && p.meta.endpoint.as_deref() == Some(endpoint.hex().as_str()))
+    }
+
     /// What an object can use now: this device's forwarders, each with its place, and the
     /// holders that may take pieces outside every forwarder's place, each with the forwarders
     /// that reach it.
@@ -1290,7 +1404,11 @@ impl Node {
     /// [`Node::plan`] for an object of community `c`: its rosters count too.
     pub(crate) fn plan_in(&self, c: Option<Id>) -> Plan {
         let forwarders = self.forwarders();
-        let holders: Vec<Reachable> = self.reachable_holders(&forwarders, c).into_iter().filter(|h| h.qualified && !self.unreached(&h.endpoint)).collect();
+        let holders: Vec<Reachable> = self
+            .reachable_holders(&forwarders, c)
+            .into_iter()
+            .filter(|h| h.qualified && !self.own_holder(&h.endpoint) && !self.unreached(&h.endpoint))
+            .collect();
         let mut all: Vec<Candidate> = forwarders.iter().map(|f| f.candidate).collect();
         all.extend(holders.iter().map(|h| h.candidate));
         let place = place::places(&all);
@@ -1326,7 +1444,7 @@ impl Node {
     /// sized for `level` (percent of places), until `expires_at`. Returns the operation's id for
     /// [`Node::scatter_take`].
     pub fn scatter_store(&mut self, content: &[u8], level: u8, expires_at: u64) -> R<u64> {
-        let result = if self.scatter.placing.is_some_and(|c| self.scattering_home(c).is_some()) {
+        let result = if self.scatter.placing.is_some_and(|c| self.scattering_home(c).is_some() || self.journal_has_content(c, content, level)) {
             self.store_at_home(content, level, expires_at)
         } else {
             self.scatter_store_inner(content, level, expires_at)
@@ -1402,7 +1520,7 @@ impl Node {
             keys: Vec::new(),
             ..base.clone()
         };
-        Ok(self.begin_store(manifest, shards, 0, plan, s.k))
+        self.begin_store(manifest, shards, 0, plan, s.k)
     }
 
     /// Places `fresh` new indexes of the generation `manifest` describes (a repair), from its
@@ -1426,10 +1544,11 @@ impl Node {
             manifest.holders.push(plan.holders[c].endpoint);
         }
         let k = manifest.k as usize;
-        Ok(self.begin_store(manifest, shards, first, plan, k))
+        self.begin_store(manifest, shards, first, plan, k)
     }
 
-    fn begin_store(&mut self, manifest: Manifest, shards: Shards, first: usize, plan: Plan, k: usize) -> u64 {
+    fn begin_store(&mut self, mut manifest: Manifest, shards: Shards, first: usize, plan: Plan, k: usize) -> R<u64> {
+        let exits = plan.reserve_puts(&mut manifest, first).ok_or_else(|| ApiError::new("scatter-few-paths", FEW_PATHS))?;
         let expiry_day = manifest.expires_at.div_ceil(DAY) as u32;
         let slots: Vec<Slot> =
             manifest.holders.iter().enumerate().map(|(i, &holder)| Slot { holder, stored: i < first, lost: false, tries: 0, via: BTreeSet::new() }).collect();
@@ -1437,14 +1556,16 @@ impl Node {
         let paths = plan.paths(k);
         let id = self.scatter.next_op;
         self.scatter.next_op += 1;
-        let count = slots.len();
         let drop_key_id = self.scatter.next_drop_key.take().unwrap_or([0; 16]);
         self.scatter.ops.insert(id, Op::Store(Box::new(StoreOp { manifest, shards, expiry_day, drop_key_id, slots, used, paths, candidates: plan.holders })));
-        for index in first..count {
-            self.send_put(id, index as u8, &BTreeSet::new());
+        for (offset, exit) in exits.into_iter().enumerate() {
+            self.send_put(id, (first + offset) as u8, &BTreeSet::new(), Some(exit));
+            if self.op_done(id) {
+                break;
+            }
         }
         self.check_store(id);
-        id
+        Ok(id)
     }
 
     /// Forwarder links linked now.
@@ -1454,7 +1575,11 @@ impl Node {
 
     /// Sends index `index` of a store to its holder, through a forwarder not in `avoid`. Without
     /// one, the index goes elsewhere.
-    fn send_put(&mut self, op: u64, index: u8, avoid: &BTreeSet<String>) {
+    fn send_put(&mut self, op: u64, index: u8, avoid: &BTreeSet<String>, reserved: Option<usize>) {
+        if !self.journal_before_put(op) {
+            self.finish(op, ScatterOutcome::Failed("Placement authority could not be retained.".into()));
+            return;
+        }
         let now = self.now();
         let drop_secret = self.drop_secret();
         let live = self.live_forwarders();
@@ -1462,7 +1587,7 @@ impl Node {
         let Some(Op::Store(st)) = self.scatter.ops.get_mut(&op) else { return };
         let i = index as usize;
         let holder = st.slots[i].holder;
-        let Some(forwarder) = st.paths.choose(&holder, index, avoid, &live) else {
+        let Some(forwarder) = st.paths.choose_in(&holder, index, avoid, &live, reserved) else {
             if !st.paths.has_room(index, &live) {
                 // every forwarder place carried its share of the generation: no path is left
                 self.finish(op, ScatterOutcome::Failed(FEW_PATHS.into()));
@@ -1587,7 +1712,7 @@ impl Node {
         let live = self.live_forwarders();
         if slot.tries < MAX_TRIES && st.paths.choose(&slot.holder, index, &slot.via, &live).is_some() {
             let avoid = slot.via.clone();
-            self.send_put(op, index, &avoid);
+            self.send_put(op, index, &avoid, None);
         } else {
             self.replace_slot(op, index, false);
         }
@@ -1623,7 +1748,7 @@ impl Node {
                 slot.holder = holder;
                 slot.via.clear();
                 st.manifest.holders[t as usize] = holder;
-                self.send_put(op, t, &BTreeSet::new());
+                self.send_put(op, t, &BTreeSet::new(), None);
             }
             _ => {
                 let places = st.candidates.len();
@@ -1663,18 +1788,23 @@ impl Node {
         for (i, f) in forwarders.iter().enumerate() {
             paths.place.insert(f.peer.clone(), place[i]);
         }
+        let mut holder_places = BTreeMap::new();
+        for (i, f) in forwarders.iter().enumerate() {
+            if let Some(endpoint) = self.peers.get(&f.peer).and_then(|p| p.meta.endpoint.as_deref()).and_then(|s| Id::from_hex(s).ok()) {
+                holder_places.insert(endpoint, place[i]);
+            }
+        }
         for (j, h) in reach.iter().enumerate() {
             if !manifest.holders.contains(&h.endpoint) {
                 continue;
             }
             // never through a forwarder in the holder's own place
             let own = place[forwarders.len() + j];
+            holder_places.insert(h.endpoint, own);
             let via: Vec<String> = h.via.iter().filter(|f| paths.place.get(*f) != Some(&own)).cloned().collect();
-            if !via.is_empty() {
-                paths.holders.insert(h.endpoint, (h.xk, via));
-            }
+            paths.holders.insert(h.endpoint, (h.xk, via));
         }
-        paths.relay_unvouched(manifest, &forwarders);
+        paths.load_routes(manifest, &forwarders, &holder_places);
         let id = self.scatter.next_op;
         self.scatter.next_op += 1;
         self.scatter.ops.insert(
@@ -1866,9 +1996,15 @@ impl Node {
 
     /// A durable deletion needs only holder/locator capabilities, never object decryption
     /// keys. Unknown routes remain unresolved until another retry (RFC-0001).
-    pub(crate) fn scatter_drop_targets(&mut self, targets: &[(Id, Id, [u8; 32])]) -> R<u64> {
+    pub(crate) fn scatter_drop_targets(&mut self, targets: &[DropTarget]) -> R<u64> {
         if targets.len() > hoi_types::scatter::MAX_M || targets.len() > 256 {
             return Err(ApiError::invalid("Too many deletion targets in one attempt."));
+        }
+        let home = self.journal_home_peer();
+        let scope = self.journal_home();
+        if let Some(home) = &home {
+            let missing: BTreeSet<_> = targets.iter().filter(|t| t.3.is_some() && t.3 == scope && self.key_of(&t.0).is_none()).map(|t| t.0).collect();
+            self.home_cleanup_keys(home, missing.into_iter().take(32).collect());
         }
         let holders: Vec<_> = targets.iter().map(|t| t.0).collect();
         // Without retaining a generation's manifest, use the conservative cap of one
@@ -1885,7 +2021,13 @@ impl Node {
         let targets = targets
             .iter()
             .enumerate()
-            .map(|(index, &(holder, loc, token))| AskTarget { index: index as u8, holder, loc: loc.0, auth: Some(DropAuth::Token(token)) })
+            .map(|(index, &(holder, loc, token, original_home))| AskTarget {
+                index: index as u8,
+                holder,
+                loc: loc.0,
+                auth: Some(DropAuth::Token(token)),
+                home: (original_home.is_some() && original_home == scope).then(|| home.clone()).flatten(),
+            })
             .collect();
         self.start_asks(targets, paths, fkey, &BTreeMap::new(), true)
     }
@@ -1907,7 +2049,7 @@ impl Node {
                         Some(DropAuth::Signed { key: kp.public().0, sig: kp.sign(&sc::drop_statement(&loc)).0 })
                     }
                 };
-                Some(AskTarget { index, holder, loc, auth })
+                Some(AskTarget { index, holder, loc, auth, home: None })
             })
             .collect();
         self.start_asks(targets, paths, fkey, failed, !matches!(ask, Ask::Has))
@@ -1957,21 +2099,32 @@ impl Node {
             .filter(|t| self.scatter.keys.get(&t.holder).is_some_and(|k| k.expires_at > now && k.drop_journal.is_some()))
             .map(|t| t.index)
             .collect();
-        for AskTarget { index, holder, loc, auth } in targets {
+        for AskTarget { index, holder, loc, auth, home } in targets {
             let before = failed.get(&index);
             let avoid: BTreeSet<String> = fkey.iter().filter(|(_, k)| before.is_some_and(|b| b.contains(k))).map(|(f, _)| f.clone()).collect();
-            let Some(forwarder) = paths.choose(&holder, index, &avoid, &live).or_else(|| paths.choose(&holder, index, &BTreeSet::new(), &live)) else {
+            // The original home already knows this generation. It may relay all cleanup
+            // envelopes; unrelated forwarders still observe their ordinary place cap.
+            let Some(forwarder) =
+                paths.choose(&holder, index, &avoid, &live).or_else(|| paths.choose(&holder, index, &BTreeSet::new(), &live)).or_else(|| home.clone())
+            else {
                 continue;
             };
+            // Older manifests can include an index on the placing home itself. A scoped
+            // cleanup still reaches that exact holder using the ordinary direct request form;
+            // proxying it back to itself would correctly be rejected as a forwarding loop.
+            let direct_home_holder = dropping
+                && home.as_ref().is_some_and(|h| {
+                    h == &forwarder && self.peers.get(h).is_some_and(|p| p.home && p.said_hello && p.meta.endpoint.as_deref() == Some(holder.hex().as_str()))
+                });
+            let Some(xk) = paths.holders.get(&holder).map(|h| h.0).or_else(|| self.key_of(&holder)) else { continue };
             paths.carry(&forwarder, index);
-            let xk = paths.holders[&holder].0;
             let Ok(reply) = XKey::generate() else { continue };
             let request = match auth {
                 None => Request::Has { loc, reply: reply.public() },
                 Some(auth) => Request::Drop { loc, reply: reply.public(), auth },
             };
             let Ok(env) = envelope::seal_request(&holder.0, &xk, &request) else { continue };
-            sent.push((index, forwarder, reply, loc, env, holder));
+            sent.push((index, forwarder, reply, loc, env, holder, direct_home_holder));
         }
         let sent_indexes: BTreeSet<u8> = sent.iter().map(|s| s.0).collect();
         let asked = if dropping { requested } else { sent_indexes.clone() };
@@ -1981,9 +2134,9 @@ impl Node {
         let drops = dropping.then(|| asked.difference(&sent_indexes).map(|&i| (i, DropOutcome::Queued)).collect());
         self.scatter.ops.insert(id, Op::Probe(Box::new(ProbeOp { asked, holders, answers, fkey, drops, durable })));
         let mut shorter = false;
-        for (index, forwarder, reply, loc, env, holder) in sent {
+        for (index, forwarder, reply, loc, env, holder, direct_home_holder) in sent {
             let rid = self.next_rid();
-            let wrapped = if !dropping {
+            let wrapped = if !dropping || direct_home_holder {
                 None
             } else {
                 hops.iter().find(|h| h.peer == forwarder).and_then(|exit| {
@@ -2003,11 +2156,16 @@ impl Node {
                 (entry, Msg::Piece { op: PieceOp::Wrap, rid, to: Some(exit), env })
             } else {
                 shorter |= dropping;
-                (forwarder.clone(), Msg::Piece { op, rid, to: Some(holder), env })
+                (forwarder.clone(), Msg::Piece { op, rid, to: (!direct_home_holder).then_some(holder), env })
             };
             self.scatter
                 .pending
                 .insert((via.clone(), rid), Pending { op: id, index, via: Some(forwarder.clone()), kind, reply, loc, want: 0, sent_at: now, mail: None });
+            if self.peers.get(&via).is_some_and(|p| p.home)
+                && let Some(scope) = self.journal_home()
+            {
+                self.scatter.home_scatter.cleanup_egress.insert((via.clone(), rid), scope);
+            }
             self.send_msg(&via, message);
         }
         if shorter && now >= self.scatter.last_drop_notice.saturating_add(60) {
@@ -2065,6 +2223,13 @@ impl Node {
         }
     }
 
+    pub(crate) fn end_home_wait_op(&mut self, op: u64, manifest: Option<Manifest>, outcome: ScatterOutcome) {
+        if let Some(m) = manifest {
+            self.scatter.placements.insert(op, m);
+        }
+        self.end_wait_op(op, outcome);
+    }
+
     /// Every locator a placement may have stored, including failed and unfinished work.
     pub(crate) fn scatter_placement(&self, op: u64) -> Option<Manifest> {
         match self.scatter.ops.get(&op) {
@@ -2101,6 +2266,7 @@ impl Node {
 
     /// Lets an operation go, with whatever of it is still waiting for answers.
     pub(crate) fn drop_op(&mut self, op: u64) {
+        self.journal_operation_finished(op);
         self.scatter.ops.remove(&op);
         self.scatter.placements.remove(&op);
         self.scatter.jobs.remove(&op);
@@ -2115,6 +2281,7 @@ impl Node {
 
     pub(crate) fn take_outcome(&mut self, op: u64) -> ScatterOutcome {
         if self.op_done(op) {
+            self.journal_operation_finished(op);
             self.scatter.placements.remove(&op);
         }
         match self.scatter.ops.get(&op) {

@@ -223,6 +223,39 @@ fn ladder_scenario() -> Value {
 /// drops, a published holder key, every envelope, and the manifest. Secrets, nonces and
 /// ephemeral seeds are fixed here (hoi-crypto's `deterministic` feature) so the file reproduces;
 /// real devices draw them all from the system.
+/// Recoverable paired-home request IDs and additive JSON packet shapes (RFC-0008).
+fn home_scatter_vectors() -> Value {
+    let community = Id([0x11; 32]);
+    let owner = Id([0x22; 32]);
+    let content = b"recoverable home placement";
+    let level = 10u8;
+    let mut request = blake3::Hasher::new_derive_key("hoi home placement request v1");
+    request.update(community.as_bytes());
+    request.update(&[level]);
+    request.update(content);
+    let request = Id(*request.finalize().as_bytes());
+    let mut owned = blake3::Hasher::new_derive_key("hoi home placement owner v1");
+    owned.update(owner.as_bytes());
+    owned.update(request.as_bytes());
+    let holder = key(0x12);
+    let xk = hoi_crypto::envelope::XKey::from_seed(&[0x13; 32]).expect("xk").public();
+    let expires = T + 30 * DAY;
+    let sig = holder.sign(&hoi_crypto::envelope::xk_statement(&holder.public().0, &xk, expires));
+    let durable = holder.sign(&hoi_crypto::envelope::drop_journal_statement(&holder.public().0, &xk, expires));
+    json!({
+        "note":"Recoverable paired-home placement. The owner is a fixture credential digest, never a raw token. JSON object ordering is insignificant. No author identity or global drop secret is sent to holders.",
+        "feature":hoi_sync::FEATURE_HOME_SCATTER_JOURNAL,
+        "community":community.hex(), "owner":owner.hex(), "content_hex":hex_encode(content),
+        "level":level,"expires":T+DAY,"request":request.hex(),"owned_request":hex_encode(owned.finalize().as_bytes()),
+        "store":{"type":"JournalStore","request":request.hex(),"community":community.hex(),"content":hoi_types::uri::b64(content),"level":level,"expires":T+DAY},
+        "pending":{"type":"JournalResult","request":request.hex(),"stored":null,"capability":null},
+        "fallback":{"type":"JournalResult","request":request.hex(),"stored":false,"capability":null},
+        "release":{"type":"JournalRelease","request":request.hex()},
+        "cleanup_keys":{"type":"CleanupKeys","holders":[holder.public().hex()]},
+        "cleanup_key_list":{"type":"CleanupKeyList","keys":[{"holder":holder.public().hex(),"xk":hoi_types::uri::b64(&xk),"expires":expires,"sig":hoi_types::uri::b64(&sig.0),"drop_journal":hoi_types::uri::b64(&durable.0)}]}
+    })
+}
+
 fn scatter_vectors() -> Value {
     use hoi_crypto::envelope::{self, DropAuth, Reply, Request, Stored, XKey};
     use hoi_crypto::scatter::{self, Shards, size};
@@ -1156,6 +1189,7 @@ fn main() {
         ("hello-salted.json", salted_hello),
         ("warmth.json", warmth),
         ("scatter.json", scatter_vectors()),
+        ("home-scatter.json", home_scatter_vectors()),
         ("carry.json", carry_msgs),
         ("records.json", json!({ "protocol": 1, "pow_bits": bits, "created_at_base": T, "records": records })),
         ("ladder.json", ladder_scenario()),

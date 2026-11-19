@@ -221,7 +221,7 @@ enum Expect {
     Unavailable,
 }
 
-/// One row: the generation's first holders, in index order, fail as listed; `silent_forwarders`
+/// One row: holders in the initial request batch first, then remaining holders, fail as listed; `silent_forwarders`
 /// of the reader's three forwarders swallow everything.
 struct Row {
     case: &'static str,
@@ -271,15 +271,32 @@ fn retrieval_asks_other_holders_and_loads_while_k_valid_pieces_and_paths_remain(
         let reader = format!("r{i}");
         join(&mut m, &reader, &format!("192.0.2.{}:7843", 20 + i), &[0, 1, 2]);
         assert_eq!(fixture(&mut m, &reader, &man), RETRIEVAL, "{}", row.case);
-        for (h, fault) in holders.iter().zip(row.holders) {
-            faults.set(&mut m, h, *fault);
-        }
         for f in 0..row.silent_forwarders {
             m.cut.insert(format!("f{f}"));
         }
         m.log.clear();
         m.lost.clear();
         let op = m.n(&reader).scatter_load(&man).unwrap();
+        // Choose faults after the randomized first batch, before delivering any request.
+        // Otherwise that batch can contain every valid piece: loading with the initial
+        // spares is correct, but does not exercise the replacement requests this row tests.
+        let first = m.n(&reader).take_outbox();
+        let initially_asked: BTreeSet<Id> = first
+            .iter()
+            .filter_map(|(_, bytes)| match Msg::decode(bytes).ok()? {
+                Msg::Piece { op: PieceOp::Get, to: Some(holder), .. } => Some(holder),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(initially_asked.len(), RETRIEVAL.first_asks, "{}: initial spare count", row.case);
+        let first_holders: BTreeSet<String> = holders.iter().filter(|h| initially_asked.contains(&Id::from_hex(&m.eps[*h]).unwrap())).cloned().collect();
+        let fault_order: Vec<_> = holders.iter().filter(|h| first_holders.contains(*h)).chain(holders.iter().filter(|h| !first_holders.contains(*h))).collect();
+        for (h, fault) in fault_order.into_iter().zip(row.holders) {
+            faults.set(&mut m, h, *fault);
+        }
+        for (peer, bytes) in first {
+            m.n(&reader).queue_out(peer, bytes, 0, 0);
+        }
         let outcome = m.wait(&reader, op, deadline);
         let asked = gets_from(&m, &reader);
         let swallowed = m.lost.iter().filter(|(from, _, msg)| *from == reader && matches!(msg, Msg::Piece { op: PieceOp::Get, .. })).count();

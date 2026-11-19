@@ -38,6 +38,38 @@ describe('browser persistence', () => {
     vi.unstubAllGlobals();
   });
 
+  it('keeps home-placement authority with its post through a failed browser write before network dispatch', async () => {
+    vi.stubGlobal('indexedDB', indexedDB);
+    const db = await openStore('durable-home-placement');
+    const vault = testVault();
+    await migrate(db, await snapshot(db), vault);
+    const journal = new TextEncoder().encode(JSON.stringify({ version: 1, origin: { request: { records: ['post'], content: 'public post', capability: null, result: null } }, placements: {} }));
+    let changes: Change[] = [
+      { op: 'put', id: 'post', community: 'community', expiresAt: 123, wire: new Uint8Array([7]) },
+      { op: 'blob', key: 'home-scatter-journal', value: journal },
+    ];
+    const node = { take_changes: () => { const batch = changes; changes = []; return batch; }, take_events: () => '[]' };
+    let fail = true;
+    const send = vi.fn();
+    const settle = createDurableSettler(node, async batch => {
+      if (fail) throw new Error('quota exceeded');
+      await apply(db, batch, vault);
+    }, send, () => {});
+    await expect(settle()).rejects.toThrow('quota exceeded');
+    expect(send).not.toHaveBeenCalled();
+    expect(decodeSnapshot(await snapshot(db), vault).records).toEqual([]);
+    fail = false;
+    await settle();
+    const saved = decodeSnapshot(await snapshot(db), vault);
+    expect(saved.records).toEqual([new Uint8Array([7])]);
+    expect(Object.fromEntries(saved.blobs)['home-scatter-journal']).toEqual(journal);
+    expect(send).toHaveBeenCalledOnce();
+    // The existing vault seals the authority blob; a raw database snapshot has no plaintext.
+    expect((await snapshot(db)).blobs.some(([key]) => key === 'home-scatter-journal')).toBe(false);
+    db.close();
+    vi.unstubAllGlobals();
+  });
+
   it('keeps a confirmed deletion list until storage takes it, and a failed clear leaves it whole', async () => {
     vi.stubGlobal('indexedDB', indexedDB);
     const db = await openStore('durable-bulk-clear');

@@ -20,6 +20,7 @@ pub mod error;
 pub mod find;
 mod forward;
 pub mod handle;
+mod home_journal;
 mod home_scatter;
 mod inject;
 mod keep;
