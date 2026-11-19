@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { watchBrowserIpRoute } from './lib/browser-ip.svelte';
   import { onMount } from 'svelte';
   import { app } from './lib/app.svelte';
   import { router } from './lib/router.svelte';
@@ -56,6 +57,8 @@
       }
     });
   });
+
+  onMount(watchBrowserIpRoute);
 
   function skip() {
     main?.focus();

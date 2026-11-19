@@ -54,10 +54,13 @@ try {
         const original = app.core[method].bind(app.core);
         app.core[method] = async (...args) => { window.joinCalls[method]++; return original(...args); };
       }
-      location.hash = `#/join?${invite.uri.split('?')[1]}`;
+      location.hash = `#/join?${invite.uri.split('?')[1]}&r=${encodeURIComponent('wss://node.example.com/')}`;
       return { id: community.id, name: community.name };
     });
     const warning = page.getByRole('dialog', { name: 'Turn on your VPN before joining' });
+    await page.getByRole('button', { name: 'Check connection', exact: true }).waitFor();
+    assert(await page.getByText(/reveals your source IP to that node/).isVisible(), 'The intended-node disclosure appears before checking');
+    assert.equal(await page.evaluate(() => window.joinCalls.join), 0, 'Showing the connection check never joins');
     const count = method => page.evaluate(method => window.joinCalls[method], method);
     async function dismissThenContinue(trigger, method, before, shot = false) {
       await trigger.click();

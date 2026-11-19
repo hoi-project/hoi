@@ -48,7 +48,7 @@ export const NETWORK_SAFETY = {
       text: `We strongly recommend running a trusted VPN whenever ${APP} is open. Please note:`,
       bullets: [
         'Start the VPN before opening the client, not afterwards.',
-        'Make sure your VPN also routes WebRTC traffic. Some browsers can leak your real IP address through WebRTC even with a VPN active. Test this with a WebRTC leak test.',
+        'Make sure your VPN also routes WebRTC traffic. Some browsers can leak your real IP address through WebRTC even with a VPN active. In hoi, Check public IP asks ipify about your browser’s HTTPS route only when you choose it. Check connection asks the selected node about its route.',
         'A VPN hides your IP address from peers, but your VPN provider can see your traffic. Choose one you trust.',
         'A VPN does not protect what you publish yourself. Do not share personal information you would not want strangers to have.',
       ],
@@ -112,7 +112,7 @@ export const PRIVACY_NOTICE = {
     },
     {
       title: 'No tracking.',
-      text: 'The client contains no analytics, no advertising and no third-party services. The release notice at the top of the app comes from the site that served it. Where whoever hosts a build configured a public registry (for community names) or a relay for private communities, the client contacts them only after you accepted the Network & Safety notice; that host names them in its own privacy policy.',
+      text: 'The client contains no analytics or advertising. If you choose Check public IP, your browser contacts api64.ipify.org (ipify). The service sees the HTTPS source address and normal browser request headers. hoi sends no profile, invite, cookies or referrer with the in-app lookup. The result is held briefly in memory. On desktop you can choose to open the service in your own browser. The release notice at the top of the app comes from the site that served it. Where whoever hosts a build configured a public registry (for community names) or a relay for private communities, the client contacts them only after you accepted the Network & Safety notice; that host names them in its own privacy policy.',
     },
     {
       title: 'Your protection.',

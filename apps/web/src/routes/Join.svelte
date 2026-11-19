@@ -8,6 +8,7 @@
   import { admissionLabel, formatMs, inviteQuery, joinLink, plural } from '../lib/util';
   import { toast, toastError } from '../lib/toast.svelte';
   import JoinWarning from '../lib/ui/JoinWarning.svelte';
+  import ConnectionCheck from '../lib/ui/ConnectionCheck.svelte';
 
   let { query }: { query: string } = $props();
   let pasted = $state('');
@@ -87,6 +88,7 @@
         {#if p.community.limits.admission === 'approve'}
           <p class="callout">A mod says yes here. You can post right away; others see your posts once a mod admits your key.</p>
         {/if}
+        {#if !p.alreadyJoined}<ConnectionCheck routes={[...p.peers, ...p.relays]} />{/if}
         <div class="btnrow">
           {#if p.alreadyJoined}
             <a class="pill pill-ink" href={to.community(p.community.id)}>You're in. Open it →</a>

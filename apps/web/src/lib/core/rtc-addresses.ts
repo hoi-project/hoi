@@ -1,5 +1,5 @@
-// Browser-only observations of existing connections. They never enter the core, storage,
-// signaling, or logs. A selected reflexive candidate is a browser report, not a VPN check.
+// Selected local ICE observations feed this browser’s readout. A direct remote candidate may
+// be reported back to that peer only. Neither observation goes into storage, signaling or logs.
 export interface RtcAddress {
   id: number;
   kind: 'node' | 'browser';
@@ -7,24 +7,35 @@ export interface RtcAddress {
   address: string | null;
 }
 
-function numericAddress(value: unknown): value is string {
+export function numericAddress(value: unknown): value is string {
   if (typeof value !== 'string' || !value) return false;
   if (/^(0|[1-9]\d{0,2})(\.(0|[1-9]\d{0,2})){3}$/.test(value)) {
-    return value !== '0.0.0.0' && value.split('.').every((part) => Number(part) <= 255);
+    return value !== '0.0.0.0' && Number(value.split('.')[0]) < 224 && value.split('.').every((part) => Number(part) <= 255);
   }
   if (!value.includes(':') || !/^[\da-f:.]+$/i.test(value)) return false;
-  try { return new URL(`http://[${value}]/`).hostname !== '[::]'; }
+  try {
+    const ip = new URL(`http://[${value}]/`).hostname;
+    return ip !== '[::]' && !ip.startsWith('[ff');
+  }
   catch { return false; }
 }
 
 /** Only the transport's selected pair is evidence of a current route. Other gathered or
  * nominated candidates may be unused, and a host candidate does not reveal a NAT mapping. */
-export function selectedAddress(report: RTCStatsReport): string | null {
+export function selectedAddress(report: RTCStatsReport, side: 'local' | 'remote' = 'local'): string | null {
   for (const transport of report.values()) {
     if (transport.type !== 'transport' || typeof transport.selectedCandidatePairId !== 'string') continue;
     const pair = report.get(transport.selectedCandidatePairId);
     if (pair?.type !== 'candidate-pair' || pair.state !== 'succeeded' || typeof pair.localCandidateId !== 'string') continue;
     const candidate = report.get(pair.localCandidateId);
+    if (side === 'remote') {
+      const remote = report.get(pair.remoteCandidateId);
+      // Return to this peer only the endpoint of the established direct route. A TURN
+      // candidate or a redacted/mDNS name cannot identify the other browser's egress.
+      if (candidate?.type === 'local-candidate' && candidate.candidateType !== 'relay' && remote?.type === 'remote-candidate'
+          && ['host', 'srflx', 'prflx'].includes(remote.candidateType) && numericAddress(remote.address)) return remote.address;
+      continue;
+    }
     if (candidate?.type === 'local-candidate' && (candidate.candidateType === 'srflx' || candidate.candidateType === 'prflx') && numericAddress(candidate.address)) {
       return candidate.address;
     }
@@ -51,7 +62,7 @@ export function createRtcAddresses() {
         if (!subscribers.size) for (const changed of observers) changed();
       };
     },
-    track(pc: RTCPeerConnection, kind: RtcAddress['kind']) {
+    track(pc: RTCPeerConnection, kind: RtcAddress['kind'], reportRemote?: (ip: string | null) => void) {
       const id = next++;
       let stopped = false;
       let generation = 0;
@@ -60,8 +71,14 @@ export function createRtcAddresses() {
       const deadlines = new Set<ReturnType<typeof setTimeout>>();
       const connected = () => pc.connectionState === 'connected' && (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed');
 
-      function update(address: string | null) {
+      let lastRemote: string | null = null;
+      function update(address: string | null, observedRemote: string | null = null) {
         const live = connected();
+        const currentRemote = live ? observedRemote : null;
+        if (reportRemote && currentRemote !== lastRemote) {
+          lastRemote = currentRemote;
+          reportRemote(currentRemote);
+        }
         const previous = rows.get(id);
         const nextAddress = live ? address : null;
         if (previous?.connected === live && previous.address === nextAddress) return;
@@ -71,7 +88,7 @@ export function createRtcAddresses() {
 
       async function refresh() {
         const current = ++generation;
-        if (stopped || !connected() || !subscribers.size) { if (!stopped) update(null); return; }
+        if (stopped || !connected() || (!subscribers.size && !reportRemote)) { if (!stopped) update(null); return; }
         // A stalled stats read must not leave an old address looking current forever.
         const deadline = setTimeout(() => {
           deadlines.delete(deadline);
@@ -80,7 +97,7 @@ export function createRtcAddresses() {
         deadlines.add(deadline);
         try {
           const report = await pc.getStats();
-          if (!stopped && current === generation) update(selectedAddress(report));
+          if (!stopped && current === generation) update(selectedAddress(report), reportRemote ? selectedAddress(report, 'remote') : null);
         } catch {
           if (!stopped && current === generation) update(null);
         } finally {
@@ -103,7 +120,7 @@ export function createRtcAddresses() {
         interval = undefined;
         for (const deadline of deadlines) clearTimeout(deadline);
         deadlines.clear();
-        if (connected() && subscribers.size) {
+        if (connected() && (subscribers.size || reportRemote)) {
           void refresh();
           // Some browsers omit the selected-pair event; refresh without sending requests.
           interval = setInterval(() => void refresh(), 2000);

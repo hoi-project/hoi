@@ -142,6 +142,8 @@ fn profile_sidecars_are_not_sent_to_legacy_peers() {
         declaration: None,
         holder: None,
         forwards: false,
+        home_egress: Vec::new(),
+        observed_address: None,
         rebuilds: false,
     };
     assert!(a.net_receive("old", &hello.encode()));

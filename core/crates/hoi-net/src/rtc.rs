@@ -191,6 +191,7 @@ struct Session {
     /// Where the browser's first packet came from: in memory only, so the node knows how far
     /// the routes it tells this browser about may reach (hoi-core `nodes`).
     source: SocketAddr,
+    observed: Option<IpAddr>,
     created: Instant,
     open: bool,
     /// Bytes of a frame still arriving.
@@ -656,6 +657,7 @@ impl Loop {
     fn session(&mut self, role: Role, ufrag: String, fp: Vec<u8>, source: SocketAddr, now: Instant) -> Option<Session> {
         let mut rtc = Rtc::builder()
             .set_ice_lite(true)
+            .set_stats_interval(Some(Duration::from_secs(2)))
             .set_dtls_cert(self.cert.clone())
             .set_crypto_provider(self.provider.clone())
             .set_dtls_version(DtlsVersion::Auto)
@@ -690,6 +692,7 @@ impl Loop {
             role,
             peer,
             source,
+            observed: Some(source.ip()),
             created: now,
             open: false,
             rbuf: Vec::new(),
@@ -762,6 +765,13 @@ fn event(s: &mut Session, e: Event, shared: &Arc<Shared>, cmd_tx: &mpsc::Sender<
             let (in_tx, in_rx) = mpsc::channel(INBOUND_FRAMES);
             s.in_tx = Some(in_tx);
             tokio::spawn(link(shared.clone(), s.peer.clone(), s.role, s.id, s.source, s.binding.clone(), in_rx, cmd_tx.clone()));
+        }
+        Event::PeerStats(stats) if s.open => {
+            let current = stats.selected_candidate_pair.map(|p| p.remote.addr.ip());
+            if s.observed != current {
+                s.observed = current;
+                shared.with(|n| n.set_rtc_observed_ip(&s.peer, current));
+            }
         }
         Event::ChannelData(d) if d.id == s.channel => {
             s.rbuf.extend_from_slice(&d.data);
@@ -866,6 +876,18 @@ async fn link(
             }
             got = inbound.recv() => {
                 let Some(m) = got else { break };
+                if first && role == Role::Client && m.bytes.as_slice() == crate::ADDRESS_CHECK {
+                    if shared.with(|n| n.accepts_members()) {
+                        let bytes = crate::address_reply(Some(source.ip()));
+                        // Reuse the bounded incoming frame permit for this single small reply.
+                        if cmd.send(Cmd::Out(id, super::Queued { bytes, _permit: m._permit })).await.is_ok() {
+                            // Keep DTLS open for delivery. A second frame ends the probe and
+                            // can never promote it to an authenticated sync session.
+                            let _ = tokio::time::timeout(HELLO, inbound.recv()).await;
+                        }
+                    }
+                    break;
+                }
                 if first && !matches!(hoi_sync::Msg::decode(&m.bytes), Ok(hoi_sync::Msg::Hello { .. })) { break; }
                 first = false;
                 if !shared.receive(&peer, &m.bytes).await.unwrap_or(false) { break; }
@@ -930,6 +952,9 @@ mod tests {
             None
         };
         assert_eq!(ask().await, Some(sock.local_addr().unwrap()));
+        let target = route(&[1; 32], server);
+        let observed = crate::address_check::check(&target, &crate::vpn::NetPolicy::default()).await.unwrap();
+        assert_eq!(observed, (server.ip(), "udp"));
         // not relaying: no answer
         home.with(|n| n.set_settings(&hoi_core::dto::SettingsPatch { relay: Some(false), ..Default::default() }).unwrap());
         assert_eq!(ask().await, None);
@@ -1170,6 +1195,8 @@ mod tests {
         let ph = browser(phone.clone(), &route, 'c', "home").await;
         until("the phone caught up with the picture", || phone.with(|n| n.post(&pid).is_ok_and(|p| !p.media_missing()))).await;
         assert_eq!(home.with(|n| n.net_status().serving.unwrap().clients), 1);
+        let seen = phone.with(|n| n.net_status().connections.into_iter().find(|c| c.role == "home").and_then(|c| c.observed_address));
+        assert_eq!(seen.as_deref(), Some("127.0.0.1"), "the authenticated DTLS home reports the phone's real UDP socket");
         let t = home.with(|n| n.traffic());
         let c = t.connections.iter().find(|c| c.role == "client").expect("the phone's connection");
         assert_eq!(c.transport, "webrtc");

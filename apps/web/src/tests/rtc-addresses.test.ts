@@ -43,6 +43,18 @@ describe('the source address reported for the selected RTC pair', () => {
     expect(selectedAddress(stats as unknown as RTCStatsReport)).toBeNull();
   });
 
+  it('reports only the remote endpoint of a selected direct route back to the peer', () => {
+    const stats = report() as unknown as Map<string, Record<string, unknown>>;
+    stats.get('pair')!.remoteCandidateId = 'remote';
+    const selected = () => selectedAddress(stats as unknown as RTCStatsReport, 'remote');
+    expect(selected()).toBe('192.0.2.99');
+    stats.get('remote')!.address = 'private.local';
+    expect(selected()).toBeNull();
+    stats.get('remote')!.address = '192.0.2.99';
+    stats.get('local')!.candidateType = 'relay';
+    expect(selected()).toBeNull();
+  });
+
   it('rejects redacted, malformed, and unspecified addresses', () => {
     for (const address of ['', 'hidden.local', '192.0.2.999', '01.2.3.4', '2001:db8:::1', '[2001:db8::1]', '0.0.0.0', '::']) {
       expect(selectedAddress(report(address))).toBeNull();

@@ -52,9 +52,10 @@ async function connect(): Promise<WorkerSession> {
     for (const request of pending.values()) request.reject({ code: 'offline', message: 'This device is locked.' });
     pending.clear();
   }
-  const toWorker = (m: { ev: 'open' | 'msg' | 'close' | 'sig'; id: number; bytes?: Uint8Array; reason?: string; binding?: RtcLink['binding'] }) =>
+  const toWorker = (m: { ev: 'open' | 'msg' | 'close' | 'sig' | 'address'; id: number; ip?: string | null; bytes?: Uint8Array; reason?: string; binding?: RtcLink['binding'] }) =>
     worker.postMessage({ kind: 'rtc', ...m }, m.bytes ? [m.bytes.buffer as ArrayBuffer] : []);
   const directHandlers = (id: number): DirectHandlers => ({
+    observedPeer: ip => toWorker({ ev: 'address', id, ip }),
     open: () => {
       const link = direct.get(id);
       if (!link) return;

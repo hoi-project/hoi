@@ -1251,7 +1251,18 @@ pub struct SettingsPatch {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]
+pub struct ObservedPath {
+    pub transport: String,
+    pub address: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ffi", derive(uniffi::Record))]
 pub struct HomeNode {
+    /// The home node’s own active egress, as reported to this paired device.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub onward: Vec<ObservedPath>,
     pub url: String,
     pub connected: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1318,6 +1329,9 @@ pub struct TransportStatus {
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]
 pub struct ConnectionStatus {
+    /// A peer reports the IP it sees on this link. It is never used for routing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_address: Option<String>,
     pub peer: String,
     pub role: String,
     pub route: String,

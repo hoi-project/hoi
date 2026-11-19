@@ -74,6 +74,11 @@ pub(crate) struct PeerState {
     pub home: bool,
     pub route: String,
     pub said_hello: bool,
+    pub home_egress: Vec<(String, std::net::IpAddr)>,
+    /// Ephemeral report from this peer, discarded when the link closes.
+    pub observed_address: Option<std::net::IpAddr>,
+    /// Our transport's current observation of the peer. Display evidence only, never a dial hint.
+    pub observed_peer_ip: Option<std::net::IpAddr>,
     pub sent_have: BTreeSet<Id>,
     /// Catch-ups in progress: community → (when their `have` came, ids we still wait for).
     pub wants: BTreeMap<Id, (u64, BTreeSet<Id>)>,
@@ -295,6 +300,7 @@ pub struct Node {
     pub(crate) transport: Option<crate::dto::TransportStatus>,
     /// The network status last reported in a `net` event.
     last_net: Option<NetStatus>,
+    pub(crate) last_shared_egress: Vec<(String, std::net::IpAddr)>,
     /// Media hashes asked for, and when.
     pub(crate) media_wanted: HashMap<Id, u64>,
     /// Identity work a new identity is mined to.
@@ -535,6 +541,7 @@ impl Node {
             vpn_status: None,
             transport: None,
             last_net: None,
+            last_shared_egress: Vec::new(),
             media_wanted: HashMap::new(),
             identity_bits: hoi_crypto::identity::DEFAULT_BITS,
             loading: false,
@@ -858,6 +865,7 @@ impl Node {
             let cs = std::mem::take(&mut self.changed).into_iter().map(|c| c.hex()).collect();
             self.events.push(Event::Changed { communities: cs });
         }
+        self.refresh_shared_egress();
         let net = self.net_status();
         if self.last_net.as_ref() != Some(&net) {
             self.last_net = Some(net.clone());

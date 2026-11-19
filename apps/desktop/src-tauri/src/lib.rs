@@ -368,6 +368,16 @@ fn internal(e: impl std::fmt::Display) -> Value {
 
 /// Every API call from the UI. Same JSON surface as the web worker (`Node::call`).
 #[tauri::command]
+async fn hoi_check_connection(hoi: State<'_, Hoi>, route: String) -> Result<Value, String> {
+    let policy = net_policy(&hoi.shared);
+    let (ip, transport) = hoi_net::address_check::check(&route, &policy).await.map_err(str::to_owned)?;
+    if net_policy(&hoi.shared) != policy {
+        return Err("The network setting changed. Check the connection again.".into());
+    }
+    Ok(json!({ "address": ip.to_string(), "transport": transport }))
+}
+
+#[tauri::command]
 async fn hoi_call(app: AppHandle, hoi: State<'_, Hoi>, method: String, args: Value) -> Result<Value, Value> {
     if method == "vpnInterfaces" {
         // The host's own call: what the person can pick for "Only through my VPN".
@@ -1148,6 +1158,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             hoi_call,
+            hoi_check_connection,
             hoi_mine,
             hoi_mine_identity,
             hoi_identity_progress,

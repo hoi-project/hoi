@@ -12,6 +12,8 @@ const MAX_MESSAGE = 16 * 1024 * 1024 + 64 * 1024;
 const HIGH_WATER = 4 * 1024 * 1024;
 
 export interface FrameHandlers {
+  /** Report the other browser's current address only back to that same peer. */
+  observedPeer?(ip: string | null): void;
   message(bytes: Uint8Array): void;
   close(reason: string): void;
 }
@@ -23,8 +25,8 @@ export interface Framed {
 }
 
 /** Wires framing onto `dc`; closing either side closes both and calls `on.close` once. */
-export function frame(pc: RTCPeerConnection, dc: RTCDataChannel, on: FrameHandlers, kind: RtcAddress['kind'] = 'node'): Framed {
-  const stopAddress = rtcAddresses.track(pc, kind);
+export function frame(pc: RTCPeerConnection, dc: RTCDataChannel, on: FrameHandlers, kind: RtcAddress['kind'] | 'probe' = 'node'): Framed {
+  const stopAddress = kind === 'probe' ? () => {} : rtcAddresses.track(pc, kind, on.observedPeer);
   dc.binaryType = 'arraybuffer';
   dc.bufferedAmountLowThreshold = 1024 * 1024;
   let closed = false;
@@ -71,7 +73,7 @@ export function frame(pc: RTCPeerConnection, dc: RTCDataChannel, on: FrameHandle
         if (headLen < 4) break;
         const len = new DataView(head.buffer).getUint32(0);
         headLen = 0;
-        if (len === 0 || len > MAX_MESSAGE) return shut('bad frame');
+        if (len === 0 || len > (kind === 'probe' ? 64 : MAX_MESSAGE)) return shut('bad frame');
         buf = new Uint8Array(len);
         filled = 0;
       }

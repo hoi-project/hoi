@@ -196,6 +196,8 @@ impl Battle {
             declaration: None,
             holder: None,
             forwards: false,
+            home_egress: Vec::new(),
+            observed_address: None,
             rebuilds: false,
         };
         self.hub.net_receive(&peer, &hello.encode());
@@ -419,6 +421,8 @@ pub fn siege_with_churn(honest: usize, attackers: usize, days: u64, pow_bits: Op
                 declaration: None,
                 holder: None,
                 forwards: false,
+                home_egress: Vec::new(),
+                observed_address: None,
                 rebuilds: false,
             };
             b.hub.net_receive(&peer, &hello.encode());
@@ -492,6 +496,8 @@ pub fn siege_with_churn(honest: usize, attackers: usize, days: u64, pow_bits: Op
                 declaration: None,
                 holder: None,
                 forwards: false,
+                home_egress: Vec::new(),
+                observed_address: None,
                 rebuilds: false,
             };
             b.hub.net_receive(&peer, &hello.encode());
@@ -560,6 +566,8 @@ pub fn siege_with_churn(honest: usize, attackers: usize, days: u64, pow_bits: Op
                 declaration: None,
                 holder: None,
                 forwards: false,
+                home_egress: Vec::new(),
+                observed_address: None,
                 rebuilds: false,
             };
             b.hub.net_receive(&peer, &hello.encode());

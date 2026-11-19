@@ -167,6 +167,8 @@ fn legacy_peers_do_not_receive_catalog_messages() {
         declaration: None,
         holder: None,
         forwards: false,
+        home_egress: Vec::new(),
+        observed_address: None,
         rebuilds: false,
     };
     assert!(n.net_receive("old", &hello.encode()));

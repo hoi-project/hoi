@@ -1,4 +1,5 @@
 <script lang="ts">
+  import PublicIpCheck from '../lib/ui/PublicIpCheck.svelte';
   // First run, drawn like the website hero: pick a name, then start / open an invite / bring your key.
   // Making a key opens "say hoi" (SayHoi.svelte), the three acts of what making it really does.
   import type { InvitePreview, Me } from '@hoi/core-api';
@@ -218,7 +219,7 @@
 <div class="first" use:enterView>
   <header class="ftop gutter">
     <span class="logo"><Logo size={30} /><span>hoi<span class="sh">.sh</span></span></span>
-    <span class="tag tag-soft">nothing leaves this {app.platformName} yet</span> <a class="textlink" href="#/privacy">Privacy notice</a>
+    <a class="textlink" href="#/privacy">Privacy notice</a>
   </header>
 
   <main id="main" class="wrap gutter">
@@ -229,6 +230,8 @@
         Anyone can pick any name, even one somebody else already uses. What counts is your key: it's made right here, on this
         {app.platformName}, and it signs everything you post. No email or phone number. Your vault password protects this device; your key is your identity.
       </p>
+
+      <PublicIpCheck />
 
       <section class="returning frame" aria-labelledby="returning-title">
         <div class="rhead">
@@ -364,7 +367,7 @@
   .ftop { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; height: 72px; max-width: 1120px; margin: 0 auto; border-bottom: 2px solid var(--ink); }
   .logo { display: inline-flex; align-items: center; gap: 10px; font-weight: 900; font-size: 21px; letter-spacing: -0.02em; }
   .sh { color: var(--mute); font-weight: 600; }
-  .ftop .tag { margin-left: auto; }
+  .ftop .textlink { margin-left: auto; }
   .wrap { max-width: 1120px; margin: 0 auto; }
   .hero { padding-block: clamp(40px, 7vw, 88px) 28px; display: flex; flex-direction: column; gap: 26px; align-items: flex-start; }
   h1 { font-size: var(--type-hero-size); line-height: var(--type-hero-lh); letter-spacing: var(--type-hero-tracking); max-width: 11em; }
@@ -402,8 +405,5 @@
   @media (max-width: 860px) {
     .trio { grid-template-columns: 1fr; }
     .returning { grid-template-columns: 1fr; }
-  }
-  @media (max-width: 480px) {
-    .ftop .tag { display: none; }
   }
 </style>

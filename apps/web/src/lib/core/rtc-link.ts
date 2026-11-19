@@ -98,21 +98,28 @@ export function answerSdp(routes: Route[], ufrag: string, mid: string): string {
 }
 
 /** Opens a data channel to the node behind `routes` (all with the same fingerprint). */
-export async function openRtc(routes: string[], mode: RtcMode, on: RtcHandlers): Promise<RtcLink> {
+export async function openRtc(routes: string[], mode: RtcMode, on: RtcHandlers, probe?: AbortSignal): Promise<RtcLink> {
   if (typeof RTCPeerConnection === 'undefined') throw new Error('This browser has no WebRTC.');
   const parsed = routes.map(parseRoute).filter((r): r is Route => !!r);
   if (!parsed.length) throw new Error('No usable route.');
   const node = parsed.filter((r) => hex(r.fp) === hex(parsed[0].fp));
 
+  probe?.throwIfAborted();
   const cert = await RTCPeerConnection.generateCertificate({ name: 'ECDSA', namedCurve: 'P-256' } as EcKeyGenParams);
   const mine = cert.getFingerprints().find((f) => f.algorithm === 'sha-256');
   if (!mine?.value) throw new Error('No certificate fingerprint.');
   const fp = Uint8Array.from(mine.value.split(':'), (h) => parseInt(h, 16));
   const ufrag = `h1${mode}${b64(fp)}${randomIceChars(10)}`;
 
+  probe?.throwIfAborted();
   const pc = new RTCPeerConnection({ certificates: [cert], iceServers: [] });
   const dc = pc.createDataChannel('hoi', { negotiated: true, id: 0, ordered: true });
-  const ch = frame(pc, dc, on);
+  const abort = () => ch.shut('check cancelled');
+  const ch = frame(pc, dc, {
+    message: on.message,
+    close(reason) { probe?.removeEventListener('abort', abort); on.close(reason); },
+  }, probe ? 'probe' : 'node');
+  probe?.addEventListener('abort', abort, { once: true });
 
   try {
     const offer = await pc.createOffer();
@@ -125,6 +132,7 @@ export async function openRtc(routes: string[], mode: RtcMode, on: RtcHandlers):
     throw error;
   }
 
+  probe?.throwIfAborted();
   await new Promise<void>((resolve, reject) => {
     const t = setTimeout(() => {
       ch.shut('timeout');

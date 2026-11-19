@@ -65,11 +65,38 @@ node ../../scripts/e2e-rtc.mjs --shots <dir>       # a phone pairs and links ove
 
 ## Rules this app keeps
 
-- No third-party requests: fonts and Anime.js are bundled; `connect-src` allows `ws:`/`wss:` only for home nodes and relays you choose.
+- Fonts and Anime.js are bundled. Only the explicit **Check public IP** action contacts the named external HTTPS observer.
 - Honest about being a browser: the relay pill says "only in this browser" until you pair with your home node, then "via <its name>".
 - Every signed action gets a toast; removed things show "Poof." with the reason and the ledger; hidden things can be peeked.
 - Reduced motion and the motion setting are respected; every view is complete at rest; no horizontal scroll at 320px.
 - Use short sentences and clear labels.
+
+## Connection IP and checking before joining
+
+After a successful HTTPS check the header shows **Browser public IP**. If a peer observes a
+different address, the header also shows **Your IP on peer connections**. Matching addresses
+appear once. **Details** names each observer and shows what current nodes and the browser's
+selected WebRTC path report. A missing peer report appears in the peer status.
+
+Listening routes, router forwards and VPN interface addresses describe other parts of the
+connection. An observed IP alone cannot verify VPN use or anonymity. A home node's onward
+traffic is a separate path. Reports stay in memory and opening the panel makes no lookup or
+new connection.
+
+Invite and public-join screens offer **Check connection** for supported routes. Before the
+click they name the intended destination and explain that contacting it exposes the source IP.
+Only the selected node is checked; no generic IP service is used. A successful answer says
+**This node sees you as …**, with its destination and transport. The check sends no profile
+or community membership and does not join. Missing/unsupported routes and failures remain
+unknown; change a VPN or network and check again before deciding to join. Joining still needs
+the separate VPN warning and confirmation.
+
+After acknowledging Network & Safety, you can choose **Check public IP** on the vault screen,
+during onboarding, in connection details or settings, and before joining. That separate
+button asks `api64.ipify.org` which IP it saw on the browser’s HTTPS request. It works
+without a peer or invitation. A failed peer check never invokes the service. Changing
+networks, hiding the tab or an expired sample clears the display. Check again to compare
+VPN routes. The desktop app offers to open the service in your default browser.
 
 ## Known gaps
 

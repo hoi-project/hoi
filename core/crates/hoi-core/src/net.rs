@@ -20,7 +20,7 @@ use hoi_types::{Id, Kind, Pair, Wire};
 use hoi_validate::Strike;
 
 use crate::api::R;
-use crate::dto::{CommunitySyncStatus, ConnectionStatus, HomeNode, NetStatus, PairPreview, Serving, TransportStatus};
+use crate::dto::{CommunitySyncStatus, ConnectionStatus, HomeNode, NetStatus, ObservedPath, PairPreview, Serving, TransportStatus};
 use crate::error::ApiError;
 use crate::node::{Node, PeerState, Source, priority};
 use crate::state::{LearnedRoute, PairedDevice};
@@ -91,6 +91,8 @@ pub struct PeerMeta {
     /// The authenticated iroh endpoint, and the UDP address it came from, when direct.
     pub endpoint: Option<String>,
     pub addr: Option<String>,
+    /// The upstream TLS proxy observed this IP. Display only, never a dial or identity hint.
+    pub websocket_proxy_ip: Option<std::net::IpAddr>,
     /// The `rtc:` routes the host dialed for this connection: one node's addresses, sharing the
     /// certificate fingerprint the DTLS handshake pinned. Says which communities' routes led here.
     pub dialed: Vec<String>,
@@ -119,6 +121,17 @@ impl PeerMeta {
     pub(crate) fn reaches(&self) -> BTreeSet<Reach> {
         let endpoint = self.endpoint.iter().filter_map(|e| Id::from_hex(e).ok()).map(Reach::Endpoint);
         endpoint.chain(self.dialed.iter().filter(|r| r.starts_with("rtc:")).filter_map(|r| reach(r))).collect()
+    }
+
+    /// Source observed on this connection. A proxy report only contributes to this display value.
+    pub fn observed_ip(&self) -> Option<std::net::IpAddr> {
+        self.addr
+            .as_ref()
+            .and_then(|a| a.parse::<std::net::SocketAddr>().ok())
+            .map(|a| a.ip())
+            .or(self.websocket_proxy_ip)
+            .map(|a| a.to_canonical())
+            .filter(|ip| !ip.is_unspecified() && !ip.is_multicast())
     }
 }
 
@@ -392,9 +405,19 @@ impl Node {
         }
     }
 
+    /// A newly selected path has no current report until its peer supplies one.
+    pub fn invalidate_address_report(&mut self, peer: &str) {
+        if let Some(p) = self.peers.get_mut(peer) {
+            p.observed_address = None;
+        }
+    }
+
     /// Route observed by the transport, not inferred from whether a relay is configured.
     pub fn set_peer_route(&mut self, peer: &str, route: &str) {
         if let Some(p) = self.peers.get_mut(peer) {
+            if p.route != route && (route == "relay" || route == "unknown") {
+                p.observed_address = None;
+            }
             p.route = route.to_string();
         }
     }
@@ -627,6 +650,43 @@ impl Node {
             .collect()
     }
 
+    /// Distinct source addresses that other nodes reported for this home node. Peer addresses,
+    /// peer handles and community membership are deliberately absent from the paired-device view.
+    fn own_egress(&self) -> Vec<(String, std::net::IpAddr)> {
+        self.peers
+            .iter()
+            .filter_map(|(id, p)| {
+                if !p.said_hello
+                    || p.role() != Role::Peer
+                    || p.route == "relay"
+                    || self.awaits_bind(id)
+                    || !matches!(p.meta.transport.as_str(), "quic" | "websocket" | "webrtc")
+                {
+                    return None;
+                }
+                p.observed_address.map(|ip| (p.meta.transport.clone(), ip))
+            })
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .take(16)
+            .collect()
+    }
+
+    pub(crate) fn refresh_shared_egress(&mut self) {
+        let clients: Vec<String> = self.peers.iter().filter(|(_, p)| p.client && p.said_hello).map(|(id, _)| id.clone()).collect();
+        if clients.is_empty() {
+            self.last_shared_egress.clear();
+            return;
+        }
+        let observed = self.own_egress();
+        if self.last_shared_egress != observed {
+            self.last_shared_egress = observed;
+            for id in clients {
+                self.rehello(&id);
+            }
+        }
+    }
+
     /// Our hello to `peer`; `named` is what [`Node::routed_here`] found for it.
     fn hello(&self, peer: &str, named: &BTreeSet<Id>) -> Msg {
         let p = self.peers.get(peer);
@@ -704,6 +764,8 @@ impl Node {
             holder: self.holder_hello(),
             forwards: self.forwards_pieces(),
             rebuilds: self.rebuilds_for(peer),
+            home_egress: if p.is_some_and(|p| p.client && p.said_hello) { self.own_egress() } else { Vec::new() },
+            observed_address: p.and_then(|p| p.observed_peer_ip),
         }
     }
 
@@ -973,6 +1035,9 @@ impl Node {
                 home: role == Role::Home,
                 route: if role == Role::Peer { "unknown" } else { "websocket" }.into(),
                 said_hello: false,
+                home_egress: Vec::new(),
+                observed_address: None,
+                observed_peer_ip: None,
                 sent_have: BTreeSet::new(),
                 wants: BTreeMap::new(),
                 pending_wants: BTreeMap::new(),
@@ -1035,6 +1100,10 @@ impl Node {
         if meta.transport == "webrtc" || (meta.transport == "websocket" && !meta.local) {
             p.route = meta.transport.clone();
         }
+        let observation_changed = p.meta.observed_ip() != meta.observed_ip();
+        if observation_changed {
+            p.observed_peer_ip = meta.observed_ip();
+        }
         let direct = meta.direct.is_some();
         p.meta = meta;
         // a WebRTC link learned its channel after our hello went out: the binding follows it
@@ -1057,7 +1126,24 @@ impl Node {
             return;
         }
         // Now we know where this connection goes: a stranger hears which communities we came for.
-        if p.role() == Role::Peer && self.routed_here(peer) != self.peers[peer].named {
+        if (observation_changed && p.hello_sent) || (p.role() == Role::Peer && self.routed_here(peer) != self.peers[peer].named) {
+            self.rehello(peer);
+        }
+    }
+
+    /// The selected WebRTC remote socket changed. This IP is evidence for this peer only;
+    /// it cannot contribute routing hints or authorize peers, records or joins.
+    pub fn set_rtc_observed_ip(&mut self, peer: &str, ip: Option<std::net::IpAddr>) {
+        let Some(p) = self.peers.get_mut(peer) else { return };
+        let ip = ip.map(|a| a.to_canonical()).filter(|a| !a.is_multicast() && !a.is_unspecified());
+        if p.meta.transport != "webrtc" || ip == p.observed_peer_ip {
+            return;
+        }
+        if p.observed_peer_ip.is_some() {
+            p.observed_address = None;
+        }
+        p.observed_peer_ip = ip;
+        if p.hello_sent {
             self.rehello(peer);
         }
     }
@@ -1184,6 +1270,8 @@ impl Node {
                 holder,
                 forwards,
                 rebuilds,
+                observed_address,
+                home_egress,
             } => {
                 // A device that dialed us shows its credential before anything else: a missing or
                 // wrong one ends the link without a word, so a web page can't even learn that a
@@ -1264,6 +1352,9 @@ impl Node {
                     }
                     // The device showed its credential: now it gets our hello (with its own
                     // credential if it just spent the link), with whatever it made us join.
+                    if let Some(p) = self.peers.get_mut(peer) {
+                        p.said_hello = true;
+                    }
                     self.send_hello(peer);
                     if joined_any {
                         self.announce();
@@ -1314,6 +1405,10 @@ impl Node {
                     p.name = name;
                     p.serves = serves && p.home;
                     p.said_hello = true;
+                    if p.home {
+                        p.home_egress = home_egress;
+                    }
+                    p.observed_address = observed_address.filter(|ip| !ip.is_unspecified() && !ip.is_multicast());
                     p.node_key = Some(node);
                     p.routes = routes;
                     p.features = features.into_iter().collect();
@@ -1935,6 +2030,7 @@ impl Node {
                     .into(),
                     route: p.route.clone(),
                     connected: p.said_hello,
+                    observed_address: p.observed_address.filter(|_| p.route != "relay" && !self.awaits_bind(id)).map(|ip| ip.to_string()),
                     transport: p.meta.transport.clone(),
                     encryption: encryption_words(&p.meta),
                     kind: if p.home {
@@ -1976,6 +2072,12 @@ impl Node {
                     .map(|next| Pair { url: h.url.clone(), token: next.clone(), name: h.name.clone(), rtc: h.rtc.clone() }.to_web(&self.web_base))
                     .unwrap_or_default(),
                 phone_can_reach: phone_can_reach(&h.url, &h.rtc),
+                onward: self
+                    .peers
+                    .iter()
+                    .find(|(id, p)| p.home && p.serves && p.said_hello && !self.awaits_bind(id))
+                    .map(|(_, p)| p.home_egress.iter().map(|(transport, ip)| ObservedPath { transport: transport.clone(), address: ip.to_string() }).collect())
+                    .unwrap_or_default(),
                 via: home_peer.map(|p| p.meta.transport.clone()),
             }),
             serving: self.serving.as_ref().map(|url| {

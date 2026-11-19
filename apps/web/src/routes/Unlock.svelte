@@ -1,4 +1,5 @@
 <script lang="ts">
+  import PublicIpCheck from '../lib/ui/PublicIpCheck.svelte';
   import { app } from '../lib/app.svelte';
   import { errorText } from '../lib/toast.svelte';
   import Logo from '../lib/ui/Logo.svelte';
@@ -73,7 +74,10 @@
   <p>{creating ? 'Choose a vault password to encrypt your keys and saved content here. Your password manager can generate and save it.' : 'Use this device’s saved vault password, or select it in your password manager.'}</p>
   {#if app.vaultState === 'create'}<p class="help">Already use hoi? Protect this device first, then import your key backup or link a signed-in device. This step does not create a new identity.</p>{/if}
   {#if app.vaultState === 'migrate'}<p>Your existing identity and communities will be kept and encrypted.</p>{/if}
-  <form id="vault-login" onsubmit={submit} aria-busy={busy} autocomplete="on">
+  <div class="vault-column">
+    <PublicIpCheck />
+  </div>
+  <form class="vault-column" id="vault-login" onsubmit={submit} aria-busy={busy} autocomplete="on">
     <label for="vault-username">Password-manager entry</label>
     <input id="vault-username" name="username" type="text" autocomplete="username" bind:value={loginLabel} maxlength="200" disabled={busy} spellcheck="false" autocapitalize="none" />
     <label for="vault-passphrase">{creating ? 'New vault password' : 'Vault password'}</label>
@@ -99,7 +103,8 @@
   .unlock { min-height: 100dvh; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px; padding-block: 40px; }
   h1 { font-size: var(--type-h1-size); text-align: center; }
   p { max-width: 34em; color: var(--mute); line-height: 1.5; text-align: center; }
-  form { display: flex; flex-direction: column; gap: 12px; width: min(100%, 420px); }
+  .vault-column { width: min(100%, 420px); }
+  form { display: flex; flex-direction: column; gap: 12px; }
   label { font-weight: 700; }
   input { width: 100%; border: 2px solid var(--ink); border-radius: 12px; padding: 12px; background: var(--card); color: var(--ink); font-size: 16px; }
   input:focus-visible { outline: 3px solid var(--cobalt); outline-offset: 2px; }

@@ -1768,6 +1768,8 @@ fn a_fresh_home_node_steers_no_routes_until_it_delivers_records() {
         declaration: None,
         holder: None,
         forwards: false,
+        home_egress: Vec::new(),
+        observed_address: None,
         rebuilds: false,
     };
     let steer = hoi_sync::Hints { community: cid, peers: vec![Id([66; 32]).hex(), elsewhere.clone()], relays: vec!["https://relay.example".into()] };
@@ -1813,6 +1815,8 @@ fn internet_peer_cannot_claim_to_be_home_or_inject_routes() {
         declaration: None,
         holder: None,
         forwards: false,
+        home_egress: Vec::new(),
+        observed_address: None,
         rebuilds: false,
     };
     assert!(n.net_receive("peer-test", &hello.encode()));
@@ -1928,6 +1932,8 @@ fn catch_up_requests_every_id_beyond_old_five_thousand_limit() {
         declaration: None,
         holder: None,
         forwards: false,
+        home_egress: Vec::new(),
+        observed_address: None,
         rebuilds: false,
     };
     assert!(n.net_receive("peer", &hello.encode()));
@@ -1991,6 +1997,8 @@ fn communities_share_one_catch_up_request_budget_per_peer() {
         declaration: None,
         holder: None,
         forwards: false,
+        home_egress: Vec::new(),
+        observed_address: None,
         rebuilds: false,
     };
     assert!(n.net_receive("peer", &hello.encode()));
@@ -2172,6 +2180,8 @@ fn a_home_node_says_nothing_before_the_credential_and_strangers_get_no_name() {
             declaration: None,
             holder: None,
             forwards: false,
+            home_egress: Vec::new(),
+            observed_address: None,
             rebuilds: false,
         }
         .encode()
@@ -2318,6 +2328,8 @@ fn stalled_sync_watchdog_tracks_requested_records_not_unrelated_traffic() {
         declaration: None,
         holder: None,
         forwards: false,
+        home_egress: Vec::new(),
+        observed_address: None,
         rebuilds: false,
     };
     assert!(n.net_receive("peer", &hello.encode()));
@@ -2593,6 +2605,8 @@ fn a_stranger_cannot_ask_or_answer_for_your_devices() {
         declaration: None,
         holder: None,
         forwards: false,
+        home_egress: Vec::new(),
+        observed_address: None,
         rebuilds: false,
     };
     assert!(desk.net_receive("x", &hello.encode()));

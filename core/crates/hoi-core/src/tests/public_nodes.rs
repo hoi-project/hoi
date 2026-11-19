@@ -309,6 +309,8 @@ fn a_node_binds_its_webrtc_channel_to_its_key() {
         declaration: None,
         holder: None,
         forwards: false,
+        home_egress: Vec::new(),
+        observed_address: None,
         rebuilds: false,
     };
     assert!(web.net_receive("n", &hello.encode()));
@@ -340,4 +342,61 @@ fn a_home_node_binds_after_the_hello_it_holds_for_a_device() {
 
 fn node_(platform: &str, t: &Arc<AtomicU64>) -> Node {
     node(platform, t, &Mem::default())
+}
+
+#[test]
+fn hello_reports_only_the_recipients_endpoint_and_updates_it_after_a_path_change() {
+    let t = Arc::new(AtomicU64::new(T0));
+    let (mut observer, ep) = desktop(&t);
+    let (mut client, cep) = desktop(&t);
+    quic(&mut client, &mut observer, &ep, "203.0.113.8:3000", &cep, "203.0.113.9:4500");
+    let deliver = |sender: &mut Node, recipient: &mut Node| {
+        for (to, bytes) in sender.take_outbox() {
+            if to == "a" && matches!(Msg::decode(&bytes), Ok(Msg::Hello { .. })) {
+                assert!(recipient.net_receive("b", &bytes));
+            }
+        }
+    };
+    deliver(&mut observer, &mut client);
+    let seen = |n: &Node| n.net_status().connections.into_iter().find(|p| p.peer == "b").unwrap().observed_address;
+    assert_eq!(seen(&client).as_deref(), Some("203.0.113.9"));
+    observer
+        .set_peer_meta("a", PeerMeta { transport: "quic".into(), endpoint: Some(cep.clone()), addr: Some("[2001:db8::9]:4000".into()), ..Default::default() });
+    deliver(&mut observer, &mut client);
+    assert_eq!(seen(&client).as_deref(), Some("2001:db8::9"));
+    observer.set_peer_meta("a", PeerMeta { transport: "quic".into(), endpoint: Some(cep), ..Default::default() });
+    deliver(&mut observer, &mut client);
+    assert_eq!(seen(&client), None);
+    client.net_disconnect("b");
+    assert!(client.net_status().connections.is_empty());
+}
+
+#[test]
+fn paired_device_sees_its_home_nodes_egress_separately_and_it_clears_on_path_changes() {
+    let t = Arc::new(AtomicU64::new(T0));
+    let (mut home, home_ep) = desktop(&t);
+    home.set_serving(Some("ws://127.0.0.1:7842")).unwrap();
+    let (mut observer, ep) = public(&t, "198.51.100.24", 'e');
+    quic(&mut home, &mut observer, &ep, "198.51.100.24:3000", &home_ep, "203.0.113.14:4500");
+    pump(&mut home, &mut observer);
+    let mut phone = node_("web", &t);
+    pair_now(&mut home, &mut phone, "h", "phone");
+    let observed = |phone: &Node| phone.net_status().home_node.unwrap().onward;
+    let onward = observed(&phone);
+    assert_eq!(onward.len(), 1);
+    assert_eq!(onward[0].transport, "quic");
+    assert_eq!(onward[0].address, "203.0.113.14");
+    assert!(phone.net_status().connections.iter().all(|p| p.observed_address.is_none()));
+    home.net_connect("unknown-device", Role::Client);
+    home.rehello("b");
+    let messages = home.take_outbox();
+    assert!(messages.iter().all(|(to, _)| to != "unknown-device"));
+    assert!(messages.iter().any(|(to, msg)| to == "b" && matches!(Msg::decode(msg), Ok(Msg::Hello { home_egress, .. }) if home_egress.is_empty())));
+    home.commit().unwrap();
+    home.invalidate_address_report("b");
+    home.commit().unwrap();
+    pump_named(&mut phone, "h", &mut home, "phone");
+    assert!(observed(&phone).is_empty());
+    phone.net_disconnect("h");
+    assert!(observed(&phone).is_empty());
 }

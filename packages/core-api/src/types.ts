@@ -1148,6 +1148,8 @@ export interface NetStatus {
     role: 'peer' | 'home' | 'client';
     route: string;
     connected: boolean;
+    /** The address this peer reports seeing on this connection, for local display only. */
+    observedAddress?: string | null;
     /** quic, webrtc or websocket. */
     transport: string;
     /** How the bytes travel, in words: "encrypted · WebRTC, DTLS", "stays on this device". */
@@ -1176,6 +1178,8 @@ export interface NetStatus {
   label: string;
   peers: number;
   homeNode?: {
+    /** Current egress of the paired home node, grouped by transport and source address. */
+    onward?: { transport: string; address: string }[];
     url: string;
     connected: boolean;
     name?: string;

@@ -516,7 +516,7 @@ type DirectEvent =
   | { t: 'offer'; via: string; to: string; stun: string[] }
   | { t: 'signal'; via: string; from: string; stun: string[]; data: number[] }
   | { t: 'close'; peer: string };
-const directs = new Map<number, { via: string; handle: string; incoming: boolean; peer: string; link: Link; opened: boolean }>();
+const directs = new Map<number, { via: string; handle: string; incoming: boolean; peer: string; link: Link; opened: boolean; observed?: string | null }>();
 
 function directLink(id: number): Link {
   return {
@@ -562,10 +562,13 @@ function dropDirect(id: number) {
   else d.link.close();
 }
 
-function onDirectEvent(e: { ev: 'open' | 'msg' | 'close' | 'sig'; id: number; bytes?: Uint8Array }) {
+function onDirectEvent(e: { ev: 'open' | 'msg' | 'close' | 'sig' | 'address'; ip?: string | null; id: number; bytes?: Uint8Array }) {
   const d = directs.get(e.id);
   if (!d) return;
-  if (e.ev === 'sig' && e.bytes) {
+  if (e.ev === 'address') {
+    d.observed = e.ip ?? null;
+    if (d.opened) void run(() => node?.set_rtc_observed_ip(d.peer, d.observed ?? undefined)).catch(() => undefined);
+  } else if (e.ev === 'sig' && e.bytes) {
     const bytes = e.bytes;
     void run(() => node?.signal(d.via, d.handle, bytes)).catch(() => undefined);
   } else if (e.ev === 'open') {
@@ -574,6 +577,7 @@ function onDirectEvent(e: { ev: 'open' | 'msg' | 'close' | 'sig'; id: number; by
     void run(() => {
       node?.net_connect(d.peer, 'peer');
       node?.setDirectMeta(d.peer, d.via, d.handle, d.incoming);
+      if (d.observed) node?.set_rtc_observed_ip(d.peer, d.observed);
     }).then(netStatus, () => undefined);
   } else if (e.ev === 'msg' && e.bytes) {
     received(d.peer, d.link, e.bytes);
@@ -583,7 +587,7 @@ function onDirectEvent(e: { ev: 'open' | 'msg' | 'close' | 'sig'; id: number; by
   }
 }
 
-function onRtcEvent(e: { ev: 'open' | 'msg' | 'close' | 'sig'; id: number; bytes?: Uint8Array; reason?: string; binding?: RtcBinding }) {
+function onRtcEvent(e: { ev: 'open' | 'msg' | 'close' | 'sig' | 'address'; ip?: string | null; id: number; bytes?: Uint8Array; reason?: string; binding?: RtcBinding }) {
   if (directs.has(e.id)) return onDirectEvent(e);
   const w = rtcWaiting.get(e.id);
   if (!w) return;
