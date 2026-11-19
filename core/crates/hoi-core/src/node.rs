@@ -19,6 +19,9 @@ use crate::dto::{Event, NetStatus};
 use crate::error::ApiError;
 use crate::state::{Bounce, LocalState, STORAGE_FORMAT_VERSION, Secrets, Skeleton, StorageFormat};
 
+#[path = "snapshot.rs"]
+mod snapshot;
+
 pub type Clock = Box<dyn Fn() -> u64 + Send>;
 
 /// Media this device keeps at most, bytes. Beyond it new media isn't stored (it can be fetched
@@ -445,6 +448,7 @@ impl Node {
                 node.private_discard_snapshot_content(community)?;
             }
         }
+        node.forget_snapshot_epochs();
         node.deletions.dirty = true;
         node.mark_state();
         node.journal_restore_snapshot();

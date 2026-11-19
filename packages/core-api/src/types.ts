@@ -1082,8 +1082,8 @@ export interface Settings {
   /** Desktop, while a public node: keep mailboxes and encrypted pieces for others, up to this many
    * gigabytes (0.5 to 100); 0 is off, and turning it off deletes what was kept. Absent from older cores. */
   holdPiecesGb?: number;
-  /** Communities marked as favorites in this app's list, in the order shown. This device only:
-   * never sent, never in a backup. Absent from older cores. */
+  /** Communities marked as favorites in this app's list, in the order shown.
+   * Encrypted member snapshots preserve this local preference. Absent from older cores. */
   favorites?: Hex[];
   /** The order the person put their other communities in, this device only. */
   communityOrder?: Hex[];
@@ -1515,6 +1515,14 @@ export interface HoiCore {
   /** Encrypted with Argon2id + XChaCha20-Poly1305 under a passphrase of at least 15 characters. */
   exportIdentity(passphrase: string): Promise<Uint8Array>;
   importIdentity(data: Uint8Array, passphrase: string): Promise<Me>;
+  /** Encrypted full member snapshot, at most 32 MiB, for replacing this installation.
+   * Import requires a fresh installation and does not preserve private message caches. */
+  exportSnapshot(passphrase: string): Promise<Uint8Array>;
+  importSnapshot(data: Uint8Array, passphrase: string): Promise<Me>;
+  /** Restored private communities awaiting fresh authorized membership, [key, display name]. */
+  snapshotRejoins(): Promise<[string, string][]>;
+  /** Explicitly prepare one restored community for fresh membership and make its request. */
+  snapshotRejoinRequest(community: string): Promise<string>;
   /** Your recovery line (`hoi-key-1-…`) for a password manager or paper, while this device still
    * keeps it. Whoever holds it can always replace your root and keep your standing. */
   recoveryKey(): Promise<string>;

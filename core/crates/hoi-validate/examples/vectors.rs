@@ -1206,6 +1206,14 @@ fn main() {
         ("media.json", media),
         ("pdq.json", pdq_vectors()),
         ("delegation-chain.json", chain),
+        (
+            "snapshot-rejoin.json",
+            json!({
+                "group": Id([1;32]).hex(), "old_leaf_encryption_key": hex_encode(&[2;32]),
+                "new_leaf_encryption_key": hex_encode(&[3;32]),
+                "replaces": [Id([1;32]).hex(), Id::hash(&[2;32]).hex()],
+            }),
+        ),
         ("tombstone.json", tomb),
         ("threshold.json", threshold),
         ("sync-transcript.json", sync),

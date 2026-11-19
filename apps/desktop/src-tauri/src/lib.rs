@@ -380,7 +380,7 @@ async fn hoi_call(app: AppHandle, hoi: State<'_, Hoi>, method: String, args: Val
         sync_forwarding(&hoi, Some(args.get(0).and_then(Value::as_bool).unwrap_or(false))).await;
         return serde_json::to_value(hoi.shared.with(|n| n.net_status())).map_err(internal);
     }
-    let clearing = clears_local_data(&method);
+    let clearing = clears_local_data(&method) || method == "importSnapshot";
     if clearing {
         // The router's forwards point at ports about to close.
         stop_forwarding(&hoi).await;

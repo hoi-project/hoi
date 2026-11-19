@@ -7,6 +7,7 @@ import init, { WasmNode, WasmVault } from './wasm/pkg/hoi_wasm.js';
 import { apply, snapshot, vaultHeader, decodeSnapshot, migrate, openStore, resetStore, saveHeader, type Change, type Db } from './idb';
 import { createDurableSettler } from './durable-settle';
 import { StoreLost } from './opfs';
+import { toBase64Url as b64url } from './rpc-core';
 import { groupRoutes } from './rtc-link';
 
 declare const self: DedicatedWorkerGlobalScope;
@@ -37,7 +38,6 @@ let storageFailed = false;
 let headerDirty = false;
 let vault: WasmVault | null = null;
 
-const b64url = (b: Uint8Array) => btoa(String.fromCharCode(...b)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 const unb64url = (s: string) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0));
 let sweepTimer: ReturnType<typeof setInterval> | null = null;
 let rounds = 0;
@@ -833,6 +833,16 @@ async function handle(r: Req): Promise<unknown> {
       }
       return run(() => call('boot', []));
     }
+    case 'exportSnapshot': return run(async () => {
+      if (!node || !db || !vault) throw new Error('Unlock this device first.');
+      await settle();
+      const { records, blobs } = decodeSnapshot(await snapshot(db), vault);
+      try {
+        return b64url(node.export_snapshot(records, blobs, String(r.args[0] ?? '')));
+      } finally {
+        for (const [, bytes] of blobs) bytes.fill(0);
+      }
+    });
     case 'pair':
     case 'unpair': {
       const res = await run(() => call(r.method, r.args));
@@ -880,6 +890,7 @@ async function handle(r: Req): Promise<unknown> {
       if (!res.directLinks) for (const id of [...directs.keys()]) dropDirect(id);
       return res;
     }
+    case 'importSnapshot':
     case 'wipe':
     case 'clearAfterDeletion': {
       // A refused clear changed nothing, so its links stay open.

@@ -1403,6 +1403,10 @@ export function createMockCore(): HoiCore {
       changed();
       return structuredClone(identity!.me);
     },
+    async exportSnapshot() { throw err('not-allowed', 'Member snapshots require the secure core.'); },
+    async importSnapshot() { throw err('not-allowed', 'Member snapshots require the secure core.'); },
+    async snapshotRejoins() { return []; },
+    async snapshotRejoinRequest() { throw err('not-allowed', 'Member snapshots require the secure core.'); },
     async exportIdentity(passphrase) {
       await sleep(400);
       meKey();

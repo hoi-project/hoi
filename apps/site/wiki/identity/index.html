@@ -293,7 +293,14 @@ New device: restores as from the line, a rotation included
   </section>
 
   <section class="wk-sec" id="backups">
-    <h2>The key file</h2>
+    <h2>Back up and restore a member</h2>
+    <p>Open <b>You → Back up my identity</b>. <b>Recovery key</b> gives you the recovery line for your identity. To save an encrypted file, choose the backup that fits the device you want to recover.</p>
+    <ul>
+      <li><b>Encrypted file</b> saves a <code>.hoikey</code> with your identity, profile, public community list, friends and selected settings. To bring that identity to a fresh installation, choose <b>Restore my identity → Use backup file</b>.</li>
+      <li><b>Member snapshot</b> saves the member installation in a <code>.hoisnapshot</code> file of up to 32 MiB. Choose a password, save it separately, then select <b>Download .hoisnapshot</b>. On the replacement device, create a fresh local vault and select <b>Restore my identity → Use member snapshot</b>. Choose the file, enter its snapshot password, confirm the replacement and select <b>Restore member snapshot</b>. Stop using the original copy. Both represent the same device.</li>
+    </ul>
+    <p>After a snapshot restore, public posts wait for synchronization with peers so deletions can take effect. Restoration discards old private group keys, private message caches and pending private messages. In <b>Private communities → Restore private access</b>, request access to each named group and send the request to an authorized member. Fresh approval and an invitation are required. Pair your devices again and review network and serving settings. The replacement installation keeps the vault password you chose for it.</p>
+    <h3 id="key-file">Inside the identity file</h3>
     <p>The <code>.hoikey</code> file is the passphrase-protected backup, for a disk or a cloud (<code>export_identity</code>). Its passphrase must be at least 15 characters (at most 1,024 bytes). It is sealed with <a href="{{REPO_URL}}/blob/main/core/crates/hoi-crypto/src/keystore.rs">keystore.rs</a>:</p>
     <div class="wk-bytes" data-title="A sealed key file (keystore)">
 HOIK | 4 B | sun | 2 | magic

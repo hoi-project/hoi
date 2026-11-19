@@ -76,6 +76,14 @@ impl Node {
             "setAvatarColor" => ok(self.set_avatar_color(a.get::<Option<String>>(0, "color")?.as_deref())?),
             "exportIdentity" => ok(b64(&self.export_identity(&a.str(0, "passphrase")?)?)),
             "importIdentity" => ok(self.import_identity(&a.bytes(0, "data")?, &a.str(1, "passphrase")?)?),
+            "exportSnapshot" => ok(b64(&self.export_snapshot(&a.str(0, "passphrase")?)?)),
+            "importSnapshot" => {
+                let encoded = a.0.first().and_then(Value::as_str).ok_or_else(|| ApiError::invalid("Select a member snapshot file."))?;
+                if encoded.len() > (Node::MAX_SNAPSHOT * 4).div_ceil(3) {
+                    return Err(ApiError::invalid("Member snapshots support files up to 32 MiB."));
+                }
+                ok(self.import_snapshot(&unb64(encoded).map_err(|_| ApiError::invalid("Invalid member snapshot."))?, &a.str(1, "passphrase")?)?)
+            }
             "recoveryKey" => ok(self.recovery_key()?),
             "restoreIdentity" => ok(self.restore_identity(&a.str(0, "recoveryKey")?, &a.str(1, "name")?)?),
             "forgetRecoveryKey" => ok(self.forget_recovery_key()?),
@@ -127,6 +135,8 @@ impl Node {
             "createPrivateCommunity" => ok(self.create_private_community(a.get(0, "draft")?)?),
             "privateGroups" => ok(self.private_groups()?),
             "privateGroup" => ok(self.private_group(&a.str(0, "community")?)?),
+            "snapshotRejoins" => ok(self.snapshot_rejoins()),
+            "snapshotRejoinRequest" => ok(self.snapshot_rejoin_request(&a.str(0, "community")?)?),
             "privateJoinRequest" => ok(self.private_join_request()?),
             "privatePreviewRequest" => ok(self.private_preview_request(&a.str(0, "request")?)?),
             "privateInvite" => ok(self.private_invite(&a.str(0, "community")?, &a.str(1, "request")?)?),

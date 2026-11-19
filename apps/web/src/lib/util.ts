@@ -367,6 +367,8 @@ export async function saveFile(name: string, bytes: Uint8Array): Promise<void> {
 
 /** A .hoikey is a few kilobytes (keys, a tiny picture, some geneses); anything bigger isn't one. */
 export const MAX_KEY_FILE = 1024 * 1024;
+/** Wrapped encrypted member snapshot, bounded before reading the file into UI memory. */
+export const MAX_SNAPSHOT_FILE = 32 * 1024 * 1024;
 /** A community bundle: records and their media, well under this. */
 export const MAX_BUNDLE_FILE = 64 * 1024 * 1024;
 

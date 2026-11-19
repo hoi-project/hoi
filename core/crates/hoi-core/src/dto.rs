@@ -1131,7 +1131,7 @@ pub struct Settings {
     /// store and turns the role on (SCATTER.md §5.7). `hoi-node` uses `--hold-pieces` instead.
     pub hold_pieces_gb: f64,
     /// Communities marked as favorites in this app's list, in the order shown (community IDs).
-    /// A view of this device only: never sent, never in a backup.
+    /// Local preferences included in an encrypted member snapshot.
     pub favorites: Vec<String>,
     /// The order the person put the other communities in (community IDs), this device only.
     pub community_order: Vec<String>,

@@ -115,6 +115,8 @@ pub(crate) struct PrivateState {
     storage: Vec<(Vec<u8>, Vec<u8>)>,
     groups: BTreeMap<Id, SavedGroup>,
     pending_request: Option<PendingRequest>,
+    /// Public fingerprint of this device’s previous MLS leaf, used only for an explicit restored-group rejoin.
+    recovery_leaves: BTreeMap<Id, Id>,
     /// In a group whose membership follows its records, on each committing device (the
     /// owner's and moderators'): join requests members passed on, by group, with when they came.
     #[serde(default)]
@@ -159,6 +161,8 @@ struct PendingRequest {
     code: String,
     created: u64,
     key_ref: KeyPackageRef,
+    #[serde(default)]
+    recovery_group: Option<Id>,
     /// The seed of the one-time key the invitation is sealed to, and the holders this device
     /// looks for it on (crate::pickup).
     pickup: String,
@@ -375,6 +379,9 @@ pub struct PrivateMember {
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct BoundCredential {
+    /// RFC-0009 ties an explicit replacement to the previous MLS leaf in exactly one group.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    replaces: Option<(Id, Id)>,
     device: String,
     root: String,
     delegation: String,
@@ -731,8 +738,13 @@ impl Node {
         let key = self.device_kp.as_ref().ok_or_else(ApiError::no_identity)?;
         let signer = SignatureKeyPair::from_raw(SignatureScheme::ED25519, key.secret().to_vec(), key.public().0.to_vec());
         let delegation = self.store.delegation(&me.device).and_then(|d| self.store.get(&d.record)).ok_or_else(fail)?;
-        let credential =
-            BasicCredential::new(encoded(&BoundCredential { device: me.device.hex(), root: me.root.hex(), delegation: b64(&delegation.wire) })?).into();
+        let credential = BasicCredential::new(encoded(&BoundCredential {
+            replaces: None,
+            device: me.device.hex(),
+            root: me.root.hex(),
+            delegation: b64(&delegation.wire),
+        })?)
+        .into();
         self.private_sender(&credential)?;
         let with_key = CredentialWithKey { credential, signature_key: me.device.0.to_vec().into() };
         Ok((signer, with_key))
@@ -1222,12 +1234,47 @@ impl Node {
         secret.zeroize();
         Ok(())
     }
+    /// Erase snapshot epochs, queued invites and key packages. Retain only the
+    /// public leaf fingerprint needed to request a newly authorized membership.
+    pub(crate) fn forget_snapshot_epochs(&mut self) {
+        let p = self.private.provider();
+        let mut leaves = std::mem::take(&mut self.private.recovery_leaves);
+        for c in self.private.groups.keys() {
+            self.state.private_communities.insert(*c);
+            if let Ok(g) = load(&p, *c)
+                && g.is_active()
+                && let Some(own) = g.member_at(g.own_leaf_index())
+            {
+                leaves.insert(*c, Id::hash(&own.encryption_key));
+            }
+        }
+        self.private.wipe();
+        self.private.recovery_leaves = leaves;
+        self.private.dirty = true;
+    }
+    pub fn snapshot_rejoins(&self) -> Vec<(String, String)> {
+        self.private.recovery_leaves.keys().filter_map(|c| self.community(&c.hex()).ok().map(|view| (c.hex(), view.name))).collect()
+    }
+    pub fn snapshot_rejoin_request(&mut self, community: &str) -> R<String> {
+        let c = parse(community)?;
+        let leaf = *self.private.recovery_leaves.get(&c).ok_or_else(|| ApiError::not_found("restored membership"))?;
+        self.make_private_request(Some((c, leaf)))
+    }
     pub fn private_join_request(&mut self) -> R<String> {
+        self.make_private_request(None)
+    }
+
+    fn make_private_request(&mut self, replaces: Option<(Id, Id)>) -> R<String> {
         self.renew_delegation();
-        let (signer, credential) = self.private_signer()?;
+        let (signer, mut credential) = self.private_signer()?;
+        if replaces.is_some() {
+            let mut bound: BoundCredential = decoded(credential.credential.serialized_content())?;
+            bound.replaces = replaces;
+            credential.credential = BasicCredential::new(encoded(&bound)?).into();
+        }
         let p = self.private.provider();
         if let Some(pending) = &self.private.pending_request {
-            if pending.created.saturating_add(7 * 86400) > self.now() {
+            if pending.recovery_group == replaces.map(|(group, _)| group) && pending.created.saturating_add(7 * 86400) > self.now() {
                 return Ok(pending.code.clone());
             }
             p.storage().delete_key_package(&pending.key_ref).map_err(mls)?;
@@ -1247,6 +1294,7 @@ impl Node {
         let code = format!("hoi:private-request:{}", b64(&encoded(&request)?));
         self.private.pending_request = Some(PendingRequest {
             code: code.clone(),
+            recovery_group: replaces.map(|(group, _)| group),
             created: self.now(),
             key_ref: package.key_package().hash_ref(p.crypto()).map_err(mls)?,
             pickup: b64(&seed),
@@ -1307,14 +1355,37 @@ impl Node {
     pub fn private_invite(&mut self, community: &str, request: &str) -> R<String> {
         let c = parse(community)?;
         self.require_private_committer(c)?;
+        let p = self.private.provider();
+        let (kp, who, carriers) = self.checked_request(request, &p)?;
+        let mut g = load(&p, c)?;
+        let device = parse(&who.device)?;
+        let root = parse(&who.root)?;
+        let bound: BoundCredential = decoded(kp.leaf_node().credential().serialized_content())?;
+        let previous = g.members().find(|m| m.signature_key == device.0);
+        let replacement = match (bound.replaces, previous) {
+            (Some((group, fingerprint)), Some(old))
+                if group == c
+                    && fingerprint == Id::hash(&old.encryption_key)
+                    && member(&old.credential, Some(&old.signature_key))?.root == who.root
+                    && !self.excluded(c, root, device)
+                    && old.index != g.own_leaf_index() =>
+            {
+                Some(old.index)
+            }
+            (None, None) if g.members().count() < 128 => None,
+            _ => {
+                return Err(ApiError::not_allowed("This request does not match the current membership, or the community is full."));
+            }
+        };
+        let me_owner = self.private_owner(c, self.me_root().ok_or_else(ApiError::no_identity)?);
+        let mut saved = self.private.groups.get(&c).cloned().ok_or_else(fail)?;
+        if !self.ready_for_commit(c, &saved) {
+            return Err(ApiError::new("private-pending", "Synchronize pending encrypted data before inviting someone."));
+        }
         // Where membership follows the records, an owner's or moderator's choice goes in the ledger first,
         // as an `admit` every member sees before the commit that follows it.
         let mut admit = None;
         if self.follows_records(c) {
-            let p = self.private.provider();
-            let (_, who, _) = self.checked_request(request, &p)?;
-            drop(p);
-            let root = parse(&who.root)?;
             let st = self.communities.get(&c).ok_or_else(fail)?;
             if st.is_banned(&root) {
                 return Err(ApiError::not_allowed("This community banned this person."));
@@ -1323,17 +1394,6 @@ impl Node {
                 let entry = self.admit(community, &who.root)?;
                 admit = Some(parse(&entry.id)?);
             }
-        }
-        let p = self.private.provider();
-        let (kp, who, carriers) = self.checked_request(request, &p)?;
-        let mut g = load(&p, c)?;
-        if g.members().count() >= 128 || g.members().any(|m| m.signature_key == parse(&who.device).unwrap().0) {
-            return Err(ApiError::not_allowed("This device is already a member, or the community is full."));
-        }
-        let me_owner = self.private_owner(c, self.me_root().ok_or_else(ApiError::no_identity)?);
-        let mut saved = self.private.groups.get(&c).cloned().ok_or_else(fail)?;
-        if !self.ready_for_commit(c, &saved) {
-            return Err(ApiError::new("private-pending", "Synchronize pending encrypted data before inviting someone."));
         }
         let (signer, _) = self.private_signer()?;
         self.queue_membership_renewal(&p, &mut g, &signer, &mut saved, c)?;
@@ -1350,7 +1410,13 @@ impl Node {
         }
         let before = self.epoch_of(&p, &g, &saved)?;
         let contest = self.contest_point(&p, &g, c, before.rank);
-        let (commit, welcome, _) = g.add_members(&p, &signer, &[kp]).map_err(mls)?;
+        let (commit, welcome) = if let Some(old) = replacement {
+            let messages = g.swap_members(&p, &signer, &[old], &[kp]).map_err(mls)?;
+            (messages.commit, messages.welcome)
+        } else {
+            let (commit, welcome, _) = g.add_members(&p, &signer, &[kp]).map_err(mls)?;
+            (commit, welcome)
+        };
         self.queue_private(&mut saved, &leaving, &commit.tls_serialize_detached().map_err(mls)?)?;
         self.assign_slots(c, &before, &saved.objects);
         g.merge_pending_commit(&p).map_err(mls)?;
@@ -1392,6 +1458,9 @@ impl Node {
         };
         let processed = ProcessedWelcome::new_from_welcome(&p, config().join_config(), welcome).map_err(mls)?;
         let c = Id::from_slice(processed.unverified_group_info().group_id().as_slice()).map_err(mls)?;
+        if self.private.pending_request.as_ref().and_then(|request| request.recovery_group).is_some_and(|expected| expected != c) {
+            return Err(ApiError::not_allowed("This invitation is for a different community than your recovery request."));
+        }
         let known = self.state.joined.contains_key(&c) || self.store.genesis_of(&c).is_some();
         let already_active = self.private.groups.contains_key(&c) && load(&self.private.provider(), c).is_ok_and(|g| g.is_active());
         // A device that joined lately takes a newer invitation: the commit that added it may have
@@ -1448,10 +1517,11 @@ impl Node {
         } else {
             self.validate_moderator_bootstrap(c, &sender, genesis_body.owners[0], &wires)?;
         }
+        let recovering = self.private.recovery_leaves.contains_key(&c);
         let existing_records: BTreeSet<Id> = self.store.in_community(&c).map(|s| s.id).collect();
         self.state.private_communities.insert(c);
         let now = self.now();
-        if rejoin {
+        if rejoin || recovering {
             // the day to take a newer invitation runs from the first join
             self.state.joined.entry(c).or_insert(Joined { at: now, pinning: false });
         } else {
@@ -1465,19 +1535,20 @@ impl Node {
                 self.store.remove(&id);
                 self.push_change(hoi_store::Change::Delete { id });
             }
-            if !rejoin {
+            if !rejoin && !recovering {
                 self.state.joined.remove(&c);
                 self.communities.remove(&c);
             }
             self.mark_state();
             return Err(error);
         }
-        if rejoin {
+        if rejoin || recovering {
             self.mail_restart(c);
             self.private.contests.remove(&c);
         }
         let saved = SavedGroup { received: vec![hex_encode(&Sha256::digest(&sealed))], ..SavedGroup::new(false) };
         self.private.groups.insert(c, saved);
+        self.private.recovery_leaves.remove(&c);
         self.deletion_private_caught_up(c);
         self.private.pending_request = None;
         self.private.save(&p);
@@ -2279,8 +2350,22 @@ impl Node {
     /// is never followed if they do not come.
     fn check_record_commit(&self, c: Id, g: &MlsGroup, commit: &StagedCommit) -> R<()> {
         let st = self.communities.get(&c).ok_or_else(fail)?;
+        let mut replacements = BTreeSet::new();
         for add in commit.add_proposals() {
-            let who = member(add.add_proposal().key_package().leaf_node().credential(), None)?;
+            let leaf = add.add_proposal().key_package().leaf_node();
+            let bound: BoundCredential = decoded(leaf.credential().serialized_content())?;
+            if let Some((group, fingerprint)) = bound.replaces {
+                let device = parse(&bound.device)?;
+                let old = g.members().find(|m| group == c && m.signature_key == device.0 && Id::hash(&m.encryption_key) == fingerprint).ok_or_else(fail)?;
+                if !commit.remove_proposals().any(|r| r.remove_proposal().removed() == old.index)
+                    || member(&old.credential, Some(&old.signature_key))?.root != bound.root
+                    || self.excluded(c, parse(&bound.root)?, device)
+                {
+                    return Err(fail());
+                }
+                replacements.insert(device);
+            }
+            let who = member(leaf.credential(), Some(leaf.signature_key().as_slice()))?;
             let root = parse(&who.root)?;
             if !st.is_admitted(&root) || st.is_banned(&root) {
                 return Err(ApiError::new("private-pending", "Someone was added whom this community has not admitted (yet)."));
@@ -2289,7 +2374,7 @@ impl Node {
         for rm in commit.remove_proposals() {
             let Some(m) = g.member_at(rm.remove_proposal().removed()) else { continue };
             let who = member(&m.credential, None)?;
-            if !self.excluded(c, parse(&who.root)?, parse(&who.device)?) {
+            if !replacements.contains(&parse(&who.device)?) && !self.excluded(c, parse(&who.root)?, parse(&who.device)?) {
                 return Err(ApiError::new("private-pending", "Someone was removed whom this community has not banned."));
             }
         }
@@ -3204,7 +3289,7 @@ mod adversarial {
         let me = b.state.me.as_ref().unwrap();
         let records = b.identity_wires(me.root, me.device).unwrap();
         let credential = BasicCredential::new(
-            encoded(&BoundCredential { root: a.me_root().unwrap().hex(), device: me.device.hex(), delegation: records[1].clone() }).unwrap(),
+            encoded(&BoundCredential { replaces: None, root: a.me_root().unwrap().hex(), device: me.device.hex(), delegation: records[1].clone() }).unwrap(),
         )
         .into();
         let kp = KeyPackage::builder().build(SUITE, &p, &signer, CredentialWithKey { credential, signature_key: me.device.0.to_vec().into() }).unwrap();
@@ -3434,7 +3519,7 @@ mod adversarial {
         let wire = root.sign_record(revoke).0.encode();
         a.ingest(&wire, &Source::PrivateRelay).unwrap();
         assert!(a.private_outbox(&c).is_err());
-        let d = BoundCredential { device: device.hex(), root: a.me_root().unwrap().hex(), delegation: b64(&original) };
+        let d = BoundCredential { replaces: None, device: device.hex(), root: a.me_root().unwrap().hex(), delegation: b64(&original) };
         let cred = BasicCredential::new(encoded(&d).unwrap()).into();
         assert!(a.private_sender(&cred).is_err());
     }
@@ -3473,7 +3558,7 @@ mod adversarial {
             nonce: 0,
         };
         let wire = a.device_kp.as_ref().unwrap().sign_record(record).0.encode();
-        let bound = BoundCredential { root: me.root.hex(), device: me.device.hex(), delegation: b64(&wire) };
+        let bound = BoundCredential { replaces: None, root: me.root.hex(), device: me.device.hex(), delegation: b64(&wire) };
         let cred = BasicCredential::new(encoded(&bound).unwrap()).into();
         assert!(a.private_sender(&cred).is_ok());
         assert!(a.private_membership_author(parse(&c).unwrap(), &cred).is_err());
@@ -3537,7 +3622,9 @@ mod adversarial {
             nonce: 0,
         };
         let wire = a.device_kp.as_ref().unwrap().sign_record(record).0.encode();
-        let cred = BasicCredential::new(encoded(&BoundCredential { root: me.root.hex(), device: me.device.hex(), delegation: b64(&wire) }).unwrap()).into();
+        let cred =
+            BasicCredential::new(encoded(&BoundCredential { replaces: None, root: me.root.hex(), device: me.device.hex(), delegation: b64(&wire) }).unwrap())
+                .into();
         now.fetch_add(crate::api::DELEGATION_LIFETIME + 1, Ordering::SeqCst);
         a.renew_delegation();
         assert!(a.private_sender(&cred).is_ok());

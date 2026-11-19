@@ -1,14 +1,14 @@
 <script lang="ts">
-  // Two backup choices: the recovery key, one line from which every root you will ever
+  // Identity backup choices: the recovery key, one line from which every root you will ever
   // sign with is derived, for a password manager (which is encrypted) or a drawer; and
   // the .hoikey file, this root under its own passphrase, for a disk or a cloud. The device keeps
   // the line until you say it is saved, then forgets it, so a stolen device can't replace your
   // root. The page holds it only in this form until the modal closes.
   import type { Me } from '@hoi/core-api';
-  import { onDestroy } from 'svelte';
+  import { onDestroy, tick } from 'svelte';
   import { app } from '../app.svelte';
   import { isDesktopShell } from '../host';
-  import { backupLogin, canStoreCredential, credentialValue, recoveryLogin, sameRecoveryKey, storeCredential } from '../password-manager';
+  import { backupLogin, canStoreCredential, credentialValue, recoveryLogin, sameRecoveryKey, snapshotLogin, storeCredential } from '../password-manager';
   import { errorText, toast } from '../toast.svelte';
   import { copyText, saveFile, slug } from '../util';
 
@@ -21,8 +21,8 @@
   let entryLabel = $state('');
   $effect(() => { entryLabel = login; });
   const fileId = crypto.randomUUID().slice(0, 8);
-  const filename = $derived(`${slug(me.name)}-${fileId}.hoikey`);
-  let method = $state<'recovery' | 'file'>('recovery');
+  let method = $state<'recovery' | 'file' | 'snapshot'>('recovery');
+  const filename = $derived(`${slug(me.name)}-${fileId}.${method === 'snapshot' ? 'hoisnapshot' : 'hoikey'}`);
   let checking = $state(false);
   let verified = $state(false);
   let checkKey = $state('');
@@ -103,7 +103,7 @@
     error = verified ? '' : 'That is not this identity’s recovery key. Select the matching hoi key entry in your manager and try again.';
   }
 
-  function choose(next: 'recovery' | 'file') {
+  function choose(next: 'recovery' | 'file' | 'snapshot') {
     method = next;
     key = checkKey = pass1 = pass2 = error = '';
     checking = verified = shown = showFilePassword = false;
@@ -122,9 +122,10 @@
     pass2 = credentialValue(form, 'password-confirmation');
     if ([...pass1].length < 15) { error = 'Use at least 15 characters. Your password manager can generate this password.'; return; }
     if (pass1 !== pass2) { error = "The two passwords don't match."; return; }
+    const hadFocus = form.contains(document.activeElement);
     busy = true;
     try {
-      const data = await app.core.exportIdentity(pass1);
+      const data = method === 'snapshot' ? await app.core.exportSnapshot(pass1) : await app.core.exportIdentity(pass1);
       await saveFile(filename, data);
       toast(desktop ? 'Backup file saved. Keep its password separately.' : 'Backup download started. Check Downloads and keep the file’s password separately.');
       ondone?.();
@@ -133,6 +134,12 @@
     } finally {
       pass1 = pass2 = '';
       busy = false;
+    }
+    if (error && hadFocus) {
+      await tick();
+      if (form.isConnected && (document.activeElement === document.body || document.activeElement === e.submitter)) {
+        form.querySelector<HTMLInputElement>('input[name="password"]')?.focus();
+      }
     }
   }
 
@@ -148,6 +155,7 @@
   <div class="btnrow" role="group" aria-label="Choose an identity backup">
     <button type="button" class="pill" aria-pressed={method === 'recovery'} onclick={() => choose('recovery')} disabled={busy}>Recovery key</button>
     <button type="button" class="pill" aria-pressed={method === 'file'} onclick={() => choose('file')} disabled={busy}>Encrypted file</button>
+    <button type="button" class="pill" aria-pressed={method === 'snapshot'} onclick={() => choose('snapshot')} disabled={busy}>Member snapshot</button>
   </div>
   {#if error}<p class="pmnote warn" role="alert">{error}</p>{/if}
 
@@ -204,7 +212,11 @@
 
   {:else}
   <section class="way" aria-labelledby="kb-file">
-    <h3 id="kb-file">Encrypted file <span class="for">for a disk or a cloud</span></h3>
+    <h3 id="kb-file">{method === 'snapshot' ? 'Member snapshot' : 'Encrypted file'} <span class="for">for a disk or a cloud</span></h3>
+    {#if method === 'snapshot'}
+      <p class="help">An encrypted copy of this member installation, up to 32 MiB. Keep its password separately. Restore it only on a fresh installation to replace this device; do not run both copies.</p>
+      <p class="help">Restoration keeps your identity and saved member state. Public posts wait for synchronization before appearing. Old private message caches are discarded and each private community needs fresh approval and an invitation. Node addresses, serving settings and pairing credentials are reset.</p>
+    {:else}
     <dl class="inside">
       <div><dt>Inside</dt><dd class="tags">
         <span class="tag tag-coral">your key</span>
@@ -217,19 +229,20 @@
       <div><dt>Locked with</dt><dd>its own password, 15 characters or more</dd></div>
       <div><dt>Keep</dt><dd>the file and the password <b>in different places</b>: you need both</dd></div>
     </dl>
+    {/if}
     <form id="export-backup" class="mform" onsubmit={exportKey} autocomplete="on">
-      <label class="field" for="kb-file-login"><span>Password-manager entry</span><input id="kb-file-login" class="input" type="text" name="username" autocomplete="username" value={backupLogin(filename)} spellcheck="false" autocapitalize="none" disabled={busy} /></label>
+      <label class="field" for="kb-file-login"><span>Password-manager entry</span><input id="kb-file-login" class="input" type="text" name="username" autocomplete="username" value={method === 'snapshot' ? snapshotLogin(filename) : backupLogin(filename)} spellcheck="false" autocapitalize="none" disabled={busy} /></label>
       <p class="help">Save the password for <b>{filename}</b> in this entry. A new backup gets its own filename, so older file passwords remain usable.</p>
       <label class="field" for="kb-pass1"><span>New backup-file password</span><input id="kb-pass1" name="password" class="input" type={showFilePassword ? 'text' : 'password'} bind:value={pass1} minlength="15" autocomplete="new-password" required disabled={busy} /></label>
       <label class="field" for="kb-pass2"><span>Repeat backup-file password</span><input id="kb-pass2" name="password-confirmation" class="input" type={showFilePassword ? 'text' : 'password'} bind:value={pass2} minlength="15" autocomplete="new-password" required disabled={busy} /></label>
       <label class="show"><input type="checkbox" bind:checked={showFilePassword} disabled={busy} /> Show backup-file password</label>
       {#if pass2 && pass1 !== pass2}<p class="help bad">Those don't match yet.</p>{/if}
-      <div class="btnrow"><button class="pill" type="submit" disabled={busy}>{busy ? 'Encrypting…' : 'Download .hoikey'}</button></div>
+      <div class="btnrow"><button class="pill" type="submit" aria-disabled={busy}>{busy ? 'Encrypting…' : method === 'snapshot' ? 'Download .hoisnapshot' : 'Download .hoikey'}</button></div>
     </form>
   </section>
   {/if}
 
-  <p class="help">On a fresh device, protect its local vault, then choose <b>Restore my identity</b>. Select your recovery-key entry, or your file and its saved password. Lost a device? Revoke it under <b>Your devices</b>.</p>
+  <p class="help">On a fresh device, protect its local vault, then choose <b>Restore my identity</b>. Select the matching backup type and its saved password. Lost a device? Revoke it under <b>Your devices</b>.</p>
 </div>
 
 <style>

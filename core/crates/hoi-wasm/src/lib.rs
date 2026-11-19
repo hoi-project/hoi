@@ -99,6 +99,20 @@ fn err(e: hoi_core::ApiError) -> JsValue {
     JsValue::from_str(&serde_json::to_string(&e).unwrap_or_else(|_| "{\"code\":\"internal\",\"message\":\"?\"}".into()))
 }
 
+fn logical_storage(records: Array, blobs: Array) -> Loaded {
+    let mut loaded = Loaded::default();
+    for r in records.iter() {
+        loaded.records.push(Uint8Array::new(&r).to_vec());
+    }
+    for b in blobs.iter() {
+        let pair = Array::from(&b);
+        if let Some(k) = pair.get(0).as_string() {
+            loaded.blobs.push((k, Uint8Array::new(&pair.get(1)).to_vec()));
+        }
+    }
+    loaded
+}
+
 #[wasm_bindgen]
 pub struct WasmNode {
     node: Node,
@@ -110,16 +124,7 @@ impl WasmNode {
     /// `records`: stored wire records (Uint8Array[]); `blobs`: [key, Uint8Array][] from IndexedDB.
     #[wasm_bindgen(constructor)]
     pub fn new(platform: &str, web_base: &str, records: Array, blobs: Array) -> Result<WasmNode, JsValue> {
-        let mut loaded = Loaded::default();
-        for r in records.iter() {
-            loaded.records.push(Uint8Array::new(&r).to_vec());
-        }
-        for b in blobs.iter() {
-            let pair = Array::from(&b);
-            if let Some(k) = pair.get(0).as_string() {
-                loaded.blobs.push((k, Uint8Array::new(&pair.get(1)).to_vec()));
-            }
-        }
+        let loaded = logical_storage(records, blobs);
         let pending = Pending(Arc::default(), Arc::new(Mutex::new(Some(loaded))));
         let mut node = Node::open(Box::new(pending.clone()), platform, web_base, Box::new(now)).map_err(err)?;
         // A person's browser: operators' notices are read before it says anything.
@@ -128,6 +133,10 @@ impl WasmNode {
         // under panic = "abort" a decoder bug here would take the whole node down.
         node.set_look_elsewhere(true);
         Ok(WasmNode { node, pending })
+    }
+
+    pub fn export_snapshot(&self, records: Array, blobs: Array, password: &str) -> Result<Vec<u8>, JsValue> {
+        self.node.seal_member_snapshot(&logical_storage(records, blobs), password).map_err(err)
     }
 
     /// Calls an API method with a JSON array of arguments; returns JSON. Errors are JSON

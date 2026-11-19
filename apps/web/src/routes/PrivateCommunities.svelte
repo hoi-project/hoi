@@ -6,6 +6,7 @@
   import { readFile } from '../lib/util';
   import CopyField from '../lib/ui/CopyField.svelte';
   import JoinWarning from '../lib/ui/JoinWarning.svelte';
+  import { resource } from '../lib/resource.svelte';
 
   setTitle('Private communities');
   let request = $state('');
@@ -13,11 +14,28 @@
   let busy = $state(false);
   let joinWarning = $state(false);
   let askWarning = $state(false);
+  let restoreWarning = $state(false);
+  let restoringCommunity = $state('');
+  let restoreRequests = $state<Record<string, string>>({});
+  const rejoins = resource(() => { void app.rev; return app.core.snapshotRejoins(); });
+
+  async function requestRestoredAccess() {
+    if (busy || !restoringCommunity) return;
+    const community = restoringCommunity;
+    busy = true;
+    try {
+      const code = await app.core.snapshotRejoinRequest(community);
+      restoreRequests = { [community]: code };
+      request = '';
+      await app.refresh();
+    } catch (error) { toastError(error); }
+    finally { busy = false; }
+  }
 
   async function ask() {
     askWarning = false;
     busy = true;
-    try { request = await app.core.privateJoinRequest(); }
+    try { request = await app.core.privateJoinRequest(); restoreRequests = {}; }
     catch (error) { toastError(error); }
     finally { busy = false; }
   }
@@ -35,7 +53,9 @@
       const c = await app.core.privateJoin(invite.trim());
       invite = '';
       request = '';
+      restoreRequests = {};
       await app.refresh();
+      rejoins.reload();
       await app.syncPrivate(c.id);
       router.go(to.community(c.id));
       toast('Private invitation verified. This device is now a member.');
@@ -54,10 +74,28 @@
   }
 </script>
 
+<JoinWarning bind:open={restoreWarning} oncontinue={requestRestoredAccess} />
+
 <section class="view private-page" aria-labelledby="private-title">
   <div class="vh"><h1 id="private-title">Private communities</h1><a class="pill pill-ink" href={to.start('private')}>+ Start a private community</a></div>
   <p class="lead">Invite only. Posts and media are encrypted on your device, and only devices you approve can read them.</p>
   <p class="help">Messages wait in mailboxes on a few public nodes in different places. Those nodes keep them sealed and can’t read them; only members can even find them. Members can keep what they read. Removing a device protects new posts, not copies already received.</p>
+
+  {#if rejoins.error}<p class="callout" role="alert">Restored community status is unavailable. {rejoins.error}</p>{/if}
+  {#if rejoins.value?.length}
+    <section class="frame box" aria-labelledby="snapshot-private-title">
+      <h2 id="snapshot-private-title">Restore private access</h2>
+      <p>Your snapshot kept these community names, but its old private messages were discarded. Request fresh access separately for each community; an authorized member must approve it. Nothing here approves your own membership.</p>
+      {#each rejoins.value as [id, name] (id)}
+        <div class="restore-community">
+          <h3>{name}</h3>
+          <button type="button" class="pill" disabled={busy} onclick={() => { restoringCommunity = id; restoreWarning = true; }}>Request access to {name}</button>
+          {#if restoreRequests[id]}<CopyField label={`Send the request for ${name} to an authorized member`} value={restoreRequests[id]} what="Restored-community request copied" />{/if}
+        </div>
+      {/each}
+      <p class="help">Keep hoi open for the invitation, or paste the one the member sends in Join by invitation below. Make one request at a time: requesting another community replaces the earlier request. Fresh approval allows new deliveries. Private history is not restored from the snapshot; another member may supply still-valid content again.</p>
+    </section>
+  {/if}
 
   <section class="frame box" aria-labelledby="private-join-title">
     <h2 id="private-join-title">Join by invitation</h2>
@@ -95,5 +133,6 @@
   .vh { padding-bottom: 0; }
   .steps { margin: 0; padding-left: 22px; display: flex; flex-direction: column; gap: 4px; line-height: 1.5; }
   textarea { resize: vertical; overflow-wrap: anywhere; }
+  .restore-community { display: grid; gap: var(--space-3); min-width: 0; }
   @media (max-width: 640px) { .box { padding: 16px; } }
 </style>

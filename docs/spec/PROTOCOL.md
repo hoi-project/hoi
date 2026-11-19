@@ -1157,11 +1157,21 @@ its job before cache disposal; insufficient capacity or unresolved shared refere
 restoration without discarding that authority. Cache disposal creates no author tombstones, so
 fresh authenticated delivery can recover still-valid content. Private output stays quarantined
 until an accepted fresh authenticated join; a bootstrap alone is not historical catch-up.
-An already active restored MLS membership has no general reset/rejoin operation, so it remains
-quarantined. Usable recovery in that case requires a fresh device and an authorized private join.
-These are Rust snapshot-restoration APIs, not a shipped backup import UI or command. Key-file
-import and recovery-line restoration are separate identity recovery paths and contain no MLS
-snapshot state. Ordinary restarts continue to use `Node::open` and retain their caches.
+Member snapshot files (.hoisnapshot, RFC-0009) restore through the browser and desktop apps
+on an empty installation with a newly protected local vault. Restoring erases saved MLS epochs,
+pending Welcome keys and queued messages. For a private community, the restored device can
+request an authorized replacement of its own previous MLS leaf. The signed KeyPackage's
+BasicCredential adds an optional `replaces` pair of hex strings: group ID and BLAKE3 of that
+leaf's public encryption key. The committer matches the root, device signing key, group ID
+and previous encryption-key hash against the current tree, enforces current membership
+policy, then removes that leaf and adds the new KeyPackage in the same commit. In record-governed
+groups other members check the same binding before accepting a replacement removal.
+A fresh Welcome and authenticated owner/moderator bootstrap are required. A previously used
+replacement request cannot replace a different leaf. When the old leaf no longer exists,
+a person may request ordinary admission if current community rules allow it.
+The holder database, platform vault credentials and OS unlock settings are separate.
+Key-file import and recovery-line restoration remain independent identity recovery paths.
+Ordinary restarts continue to use `Node::open` and retain their caches.
 
 ### 21.2 Deleting known posts and comments (RFC-0002)
 
