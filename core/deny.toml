@@ -6,6 +6,9 @@ all-features = true
 version = 2
 yanked = "deny"
 ignore = [
+  # Checked 2026-11-18 (#11): iroh-blobs, tokio-rustls-acme and Windows wmi require chrono.
+  # All chrono versions have the maintenance advisory; reevaluate when these parents update.
+  { id = "RUSTSEC-2026-0543", reason = "chrono is transitive through the pinned networking stack; no maintained chrono release" },
   # Compile-time macro through iroh 1.4.1 -> netwatch -> netlink-packet-core.
   # Unmaintained advisory, not a reported vulnerability; revisit when iroh drops this chain.
   { id = "RUSTSEC-2024-0436", reason = "paste is a transitive build-time macro in pinned iroh's Linux network monitor" },
@@ -13,9 +16,9 @@ ignore = [
   { id = "RUSTSEC-2026-0374", reason = "basic-toml via uniffi build tooling" },
   # Unmaintained, not vulnerable: loro's persistent maps (loro-internal -> im -> sized-chunks,
   # bitmaps), chosen for rules and wiki text. Revisit when loro moves off im.
-  { id = "RUSTSEC-2026-0247", reason = "im via loro-internal" },
-  { id = "RUSTSEC-2026-0248", reason = "sized-chunks via im via loro-internal" },
-  { id = "RUSTSEC-2026-0251", reason = "bitmaps via im via loro-internal" },
+  { id = "RUSTSEC-2026-0248", reason = "im via loro-internal" },
+  { id = "RUSTSEC-2026-0251", reason = "sized-chunks via im via loro-internal" },
+  { id = "RUSTSEC-2026-0247", reason = "bitmaps via im via loro-internal" },
   # Unmaintained, not vulnerable: heapless 0.7 through postcard in loro's serde_columnar; on the
   # targets hoi builds for the polyfill passes straight through to the native atomics.
   { id = "RUSTSEC-2023-0089", reason = "atomic-polyfill via postcard's heapless 0.7" },
