@@ -285,6 +285,12 @@ Transport:
     std::process::exit(2)
 }
 
+/// Called only after the core accepted the operator's node link. Its primary endpoint is
+/// what the notice signs; extra peer routes do not grant selection to another identity.
+fn selected_node_endpoint(link: &str) -> Option<hoi_types::Id> {
+    hoi_types::NodeLink::parse(link).ok()?.endpoint()
+}
+
 fn args() -> Args {
     let mut a = Args {
         data: PathBuf::from("hoi-node-data"),
@@ -642,10 +648,16 @@ async fn main() {
             std::process::exit(1);
         }
     }
+    let mut selected_peers = std::collections::BTreeSet::new();
     for link in &a.nodes {
         if let Err(e) = node.open_node_link(link) {
             eprintln!("hoi-node: --node: {}", e.message);
             std::process::exit(1);
+        }
+        // open_node_link validated/accepted this exact link and its primary notice identity.
+        // Other native IDs that a link carries are routes, not additional operator choices.
+        if let Some(endpoint) = selected_node_endpoint(link) {
+            selected_peers.insert(endpoint);
         }
     }
     // The registry opens its database before any socket, so a bad configuration stops here.
@@ -722,13 +734,14 @@ async fn main() {
             }
         }
     };
-    let p2p = match hoi_net::start_p2p(shared.clone(), hoi_net::P2pConfig { bind: peer_bind, relays }).await {
-        Ok(p2p) => p2p,
-        Err(e) => {
-            eprintln!("hoi-node: peer transport could not start: {e}");
-            std::process::exit(1);
-        }
-    };
+    let p2p =
+        match hoi_net::start_p2p(shared.clone(), hoi_net::P2pConfig { bind: peer_bind, relays, selected_peers: selected_peers.into_iter().collect() }).await {
+            Ok(p2p) => p2p,
+            Err(e) => {
+                eprintln!("hoi-node: peer transport could not start: {e}");
+                std::process::exit(1);
+            }
+        };
     let server = if a.peer_only {
         None
     } else {
@@ -1281,6 +1294,36 @@ mod tests {
         tokio::fs::remove_dir(dir).await.unwrap();
     }
 
+    #[test]
+    fn operator_selection_covers_only_the_notice_identity_of_a_native_node_link() {
+        let first_key = hoi_crypto::Keypair::from_secret(&[51; 32]);
+        let first = first_key.public();
+        let second = hoi_crypto::Keypair::from_secret(&[52; 32]).public();
+        let notice = hoi_types::NodeNotice {
+            node: "selected fixture".into(),
+            processes: "Public test data.".into(),
+            updated: "2026-11-18".into(),
+            ..Default::default()
+        }
+        .canonical();
+        let statement = hoi_types::notice::statement(&first, &hoi_types::notice::hash_of(&notice));
+        let link = hoi_types::NodeLink {
+            rtc: vec![],
+            peers: vec![format!("{}@192.0.2.1:7843", first.hex()), format!("{}@192.0.2.1:7843", second.hex())],
+            notice: Some(notice),
+            signature: Some(first_key.sign(statement.as_bytes())),
+        }
+        .to_web("https://example.com/app/");
+        let mut node = Node::open(Box::new(hoi_store::Ephemeral), "node", "https://example.com/app/", hoi_core::system_clock()).unwrap();
+        node.open_node_link(&link).unwrap();
+        assert_eq!(selected_node_endpoint(&link), Some(first));
+        assert_ne!(selected_node_endpoint(&link), Some(second), "an additional endpoint sharing an IP is not independently selected");
+        let rtc = hoi_types::NodeLink { rtc: vec![format!("rtc:{}@192.0.2.1:7844", "a".repeat(43))], peers: vec![], notice: None, signature: None }
+            .to_web("https://example.com/app/");
+        assert_eq!(selected_node_endpoint(&rtc), None, "a certificate-only route grants no native endpoint identity");
+        assert_eq!(selected_node_endpoint("192.0.2.1:7843"), None);
+        assert_eq!(selected_node_endpoint("a-node.example"), None);
+    }
     #[test]
     fn the_operator_reads_which_address_goes_to_whom() {
         let e = |address: &str, scope: &str, from_router: bool, told: &[&str]| hoi_core::dto::Exposure {

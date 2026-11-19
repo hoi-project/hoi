@@ -170,7 +170,7 @@ mod tests {
             .unwrap()
             .id
         });
-        let cfg = hoi_net::P2pConfig { bind: Some("127.0.0.1:0".parse().unwrap()), relays: vec![url.clone()] };
+        let cfg = hoi_net::P2pConfig { bind: Some("127.0.0.1:0".parse().unwrap()), relays: vec![url.clone()], ..Default::default() };
         let _first = hoi_net::start_p2p(a.clone(), cfg.clone()).await.unwrap();
         let endpoint = a.with(|n| hoi_crypto::Keypair::from_secret(&n.transport_secret().unwrap()).public().hex());
         // an invite naming only the endpoint key and the relay: no address to dial
@@ -237,7 +237,7 @@ mod tests {
             .unwrap()
             .id
         });
-        let cfg = hoi_net::P2pConfig { bind: Some("127.0.0.1:0".parse().unwrap()), relays: vec![url.clone()] };
+        let cfg = hoi_net::P2pConfig { bind: Some("127.0.0.1:0".parse().unwrap()), relays: vec![url.clone()], ..Default::default() };
         let _first = hoi_net::start_p2p(a.clone(), cfg.clone()).await.unwrap();
         let endpoint = a.with(|n| hoi_crypto::Keypair::from_secret(&n.transport_secret().unwrap()).public().hex());
         let mut inv = hoi_types::Invite::parse(&a.with(|n| n.invite(&cid).unwrap().uri)).unwrap();

@@ -84,6 +84,10 @@ pub struct PeerMeta {
     pub tls: bool,
     /// The other side dialed us.
     pub incoming: bool,
+    /// A native endpoint explicitly selected in the host's current operator configuration.
+    /// The host must bind this to the authenticated remote endpoint, never a name or address.
+    /// It grants holder-vouch reliance only; it does not change physical direction.
+    pub selected_endpoint: Option<Id>,
     /// The authenticated iroh endpoint, and the UDP address it came from, when direct.
     pub endpoint: Option<String>,
     pub addr: Option<String>,
@@ -99,6 +103,9 @@ pub struct PeerMeta {
 }
 
 impl PeerMeta {
+    pub(crate) fn selected_native_peer(&self) -> bool {
+        self.transport == "quic" && self.selected_endpoint.is_some_and(|selected| self.endpoint.as_deref().and_then(|s| Id::from_hex(s).ok()) == Some(selected))
+    }
     fn for_role(role: Role) -> PeerMeta {
         match role {
             Role::Peer => PeerMeta { transport: "quic".into(), ..Default::default() },
@@ -1023,6 +1030,7 @@ impl Node {
 
     /// What the host knows about a connection; call right after [`Node::net_connect`].
     pub fn set_peer_meta(&mut self, peer: &str, meta: PeerMeta) {
+        let strict = self.strict();
         let Some(p) = self.peers.get_mut(peer) else { return };
         if meta.transport == "webrtc" || (meta.transport == "websocket" && !meta.local) {
             p.route = meta.transport.clone();
@@ -1038,8 +1046,10 @@ impl Node {
         }
         let Some(p) = self.peers.get_mut(peer) else { return };
         if p.awaiting_hello {
-            if p.meta.incoming {
+            if p.meta.incoming && !(strict && p.meta.selected_native_peer()) {
                 // It dialed us: we are the node here, and it hears our hello at once.
+                // A selected native voucher is relied upon even on an incoming session:
+                // under verified policy, it must hear nothing before verification (#143).
                 p.awaiting_hello = false;
                 self.send_hello(peer);
             }

@@ -114,7 +114,7 @@
       <table>
         <thead><tr><th>Flag</th><th>Value</th><th>Default</th><th>Effect</th></tr></thead>
         <tbody>
-          <tr><td><code>--node</code> ×</td><td>node link</td><td>none</td><td>A public node to look at first: <code>hoi://node?…</code> or <code>…#/node?…</code>, checked with <code>NodeLink::parse</code>. Opened with <code>open_node_link</code> at start.</td></tr>
+          <tr><td><code>--node</code> ×</td><td>node link</td><td>none</td><td>A public node to look at first: <code>hoi://node?…</code> or <code>…#/node?…</code>, checked with <code>NodeLink::parse</code>. Opened with <code>open_node_link</code> at start. Its primary native identity remains an operator-selected holder voucher when authenticated connection deduplication keeps an incoming session; other incoming restrictions remain in force. This selection comes from the current service flags, not saved discovery.</td></tr>
           <tr><td><code>--index</code> ×</td><td>registry URL</td><td>none</td><td>Announce this node's public routes to that registry and carry what it lists. <code>https://</code>, or plain <code>http://</code> only on <code>localhost</code>, <code>127.0.0.1</code> or <code>[::1]</code>; no credentials, query or fragment; a trailing slash is dropped; duplicates are dropped.</td></tr>
           <tr><td><code>--join</code> ×</td><td>invite</td><td>none</td><td>Join a community and keep its routes. A bad invite stops the node (exit 1).</td></tr>
         </tbody>
