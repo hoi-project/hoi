@@ -21,7 +21,7 @@ async function vaultCall(command: 'status' | 'unlock' | 'lock' | 'takeOver' | 'r
   } else {
     const { workerVaultCall } = await import('./worker-core');
     const method = { status: '__vaultStatus', unlock: '__unlock', lock: '__lock', takeOver: '__takeOver', reset: '__resetVault' }[command];
-    return workerVaultCall(method, command === 'unlock' || command === 'reset' ? [input] : []);
+    return workerVaultCall(method, input === undefined ? [] : [input]);
   }
 }
 
@@ -64,7 +64,13 @@ export async function resetVault(confirmation: string): Promise<void> {
   location.reload();
 }
 export async function lockVault(): Promise<void> {
-  await vaultCall('lock');
+  try {
+    await vaultCall('lock');
+  } catch (error) {
+    if (!(error && typeof error === 'object' && 'code' in error && error.code === 'lock-unsaved')) throw error;
+    if (!window.confirm('The browser could not save your latest changes. Lock now and discard any unsaved changes? Choose Cancel to keep the vault open and retry.')) throw error;
+    await vaultCall('lock', 'discard-unsaved');
+  }
   // Destroy page state, rendered content and workers. Never retain a password in session storage.
   location.reload();
 }

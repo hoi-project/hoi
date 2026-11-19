@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { IDBFactory } from 'fake-indexeddb';
-import { apply, decodeSnapshot, migrate, openIdb, resetStore, snapshot, vaultHeader, type Snapshot } from '../lib/core/idb';
+import { apply, decodeSnapshot, migrate, openIdb, resetStore, saveHeader, snapshot, vaultHeader, type Snapshot } from '../lib/core/idb';
+import { StoreLost } from '../lib/core/opfs';
 import { testVault } from './fixtures/vault.mjs';
 
 const bytes = (s: string) => new TextEncoder().encode(s);
@@ -124,6 +125,20 @@ describe('encrypted browser storage', () => {
     fresh.close();
     expect(await snapshot(other)).toEqual(untouched);
     other.close();
+  });
+
+  it('reports a closed IndexedDB connection and keeps the replacement vault intact', async () => {
+    const original = await openIdb();
+    const prior = testVault();
+    await migrate(original, legacy, prior);
+    await resetStore('hoi', 'RESET'); // versionchange closes the worker's original connection.
+    const replacement = await openIdb();
+    await migrate(replacement, await snapshot(replacement), testVault());
+    const before = await snapshot(replacement);
+    await expect(saveHeader(original, prior)).rejects.toBeInstanceOf(StoreLost);
+    await expect(apply(original, [{ op: 'wipe' }], prior)).rejects.toBeInstanceOf(StoreLost);
+    expect(await snapshot(replacement)).toEqual(before);
+    replacement.close();
   });
 
   it('requires exact confirmation to reset a locked store, including damaged metadata', async () => {
