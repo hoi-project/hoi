@@ -211,20 +211,47 @@ async function until(what, seconds, check, page) {
 
 /** Opens a node link as the app does: its notice is read and accepted first. */
 async function openNodeLink(page, query) {
-  await page.evaluate(async (link) => {
+  return page.evaluate(async (link) => {
     const { app } = await import('/src/lib/app.svelte.ts');
     const preview = await app.core.previewNodeLink(link);
-    if (preview.notice) await app.core.acceptNotice(preview.notice.node, preview.notice.hash);
+    if (!preview.verified || !preview.notice) throw new Error('The holder must provide a signed notice in its node link.');
+    await app.core.acceptNotice(preview.notice.node, preview.notice.hash);
     await app.core.openNodeLink(link);
+    return [preview.notice.node, preview.notice.noticeHash];
   }, `${origin}/#/node?${query}`);
+}
+
+// A signed node link names the notice. Its live hello also declares what the node runs
+// and holds. Read that declaration through the same dialog a member must answer.
+async function acceptHolderDeclarations(page, expected) {
+  const reviewed = new Set();
+  const dialog = page.getByRole('dialog', { name: 'Before this node serves you' });
+  while (reviewed.size < expected.size) {
+    await dialog.waitFor({ timeout: 180_000 });
+    const displayed = await dialog.getByRole('article').evaluate(article => ({
+      title: article.getAttribute('aria-label'), text: article.innerText,
+    }));
+    const current = (await call(page, 'nodeNotices')).find(notice =>
+      notice.state === 'pending' && notice.title === displayed.title && displayed.text.includes(notice.footer));
+    assert.ok(current && expected.has(current.node), 'Only the signed holder whose current notice is displayed may be accepted');
+    assert.equal(current.noticeHash, expected.get(current.node), 'The live notice matches the signed link');
+    assert.ok(current.declaration && current.declaration === current.hash, 'Consent names the current signed declaration');
+    assert.ok(!reviewed.has(current.node), 'Each holder is reviewed once per browser');
+    assert.ok(displayed.text.includes('Roles and limits.') && displayed.text.includes(`Configuration ${current.declaration.slice(0, 12)}.`));
+    const notice = page.getByRole('article', { name: current.title, exact: true }).filter({ hasText: current.footer });
+    await dialog.filter({ has: notice }).getByRole('button', { name: 'Accept and join', exact: true }).click();
+    await notice.waitFor({ state: 'hidden' });
+    reviewed.add(current.node);
+  }
 }
 
 try {
   // ---------------------------------------------------------------- mira starts a private group
   const mira = await person('mira');
-  await openNodeLink(mira, one.link);
-  await openNodeLink(mira, two.link);
+  const holders = new Map([await openNodeLink(mira, one.link), await openNodeLink(mira, two.link)]);
+  assert.equal(holders.size, 2, 'Each holder has its own endpoint key');
   const community = await call(mira, 'createPrivateCommunity', { name: 'mailbox-test', description: 'Only invited devices read this.', color: 'mint', limits: { powBits: 12 } });
+  await acceptHolderDeclarations(mira, holders);
   const chosen = await until("mira's browser to choose two mailboxes", 180, async () => {
     const g = await call(mira, 'privateGroup', community.id);
     return g.transport === 'mailboxes' && g.mailboxes.length >= 2 && g.mailboxes.every((m) => m.linked) ? g : null;
@@ -242,17 +269,9 @@ try {
   assert.deepEqual(kimGroup.mailboxes.map((m) => m.endpoint).sort(), chosen.mailboxes.map((m) => m.endpoint).sort());
   // Kim's browser dials the mailboxes the invitation named; each holder's notice comes first, and
   // kim reads and accepts it, as the app asks.
-  const accepted = new Set();
-  await until("kim's browser to link to the mailboxes", 180, async () => {
-    for (const n of await call(kim, 'nodeNotices')) {
-      if (n.state === 'pending') {
-        await call(kim, 'acceptNotice', n.node, n.hash);
-        accepted.add(n.node);
-      }
-    }
-    return (await call(kim, 'privateGroup', community.id)).mailboxes.every((m) => m.linked);
-  }, kim);
-  assert.equal(accepted.size, 2, "kim was asked about both holders' notices, and nothing else");
+  await acceptHolderDeclarations(kim, holders);
+  await until("kim's browser to link to the mailboxes", 180, async () =>
+    (await call(kim, 'privateGroup', community.id)).mailboxes.every((m) => m.linked), kim);
   await until("mira's addition of kim to reach the mailboxes", 120, async () => (await call(mira, 'privateGroup', community.id)).pending === 0, mira);
   console.log("✓ kim joined with mira's invitation, and kim's browser found the mailboxes from it alone");
 
