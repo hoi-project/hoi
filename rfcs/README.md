@@ -48,4 +48,7 @@ merged.
 | [0004](0004-holder-privacy-validation.md) | Holder privacy validation | accepted |
 | [0005](0005-scatter-failure-validation.md) | Scatter failure validation | accepted |
 | [0006](0006-node-verification.md)    | Node declarations and verification | accepted |
-| [0009](0009-member-snapshots.md) | Member snapshots and authorized private rejoin | proposed |
+| [0007](0007-connection-address.md) | Connection source addresses | accepted |
+| [0008](0008-recoverable-home-scatter.md) | Recoverable home scatter | accepted |
+| [0009](0009-member-snapshots.md) | Member snapshots and authorized private rejoin | accepted |
+| [0010](0010-hello-feature-limit.md) | Advertise all active services in the preview hello | accepted |
