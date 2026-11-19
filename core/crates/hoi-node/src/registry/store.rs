@@ -678,29 +678,31 @@ mod tests {
     fn publications_bind_versions_keep_names_across_index_changes_and_never_mutate_metadata() {
         let mut store = Store::memory().unwrap();
         let release = release();
-        let garden = publication("garden", 3, "0.3", 1);
+        let garden = publication("garden", 3, &release.protocol_version, release.index_version);
         let reserved = json!({
-            "name": "garden", "community": garden.community, "proof": { "version": 2, "signature": garden.signature, "protocolVersion": "0.3", "indexVersion": 1 },
-            "protocolVersion": "0.3", "indexVersion": 1, "compatible": true, "indexed": true,
+            "name": "garden", "community": garden.community, "proof": { "version": 2, "signature": garden.signature, "protocolVersion": release.protocol_version, "indexVersion": release.index_version },
+            "protocolVersion": release.protocol_version, "indexVersion": release.index_version, "compatible": true, "indexed": true,
         });
         assert_eq!(store.publish(&garden, &release).unwrap(), Outcome { status: 200, body: reserved.clone() });
         assert_eq!(store.publish(&garden, &release).unwrap().body, reserved);
         assert_eq!(store.list_publications("", "", &release).unwrap(), vec![reserved.clone()]);
-        let conflict = store.publish(&publication("garden", 4, "0.3", 1), &release).unwrap();
+        let conflict = store.publish(&publication("garden", 4, &release.protocol_version, release.index_version), &release).unwrap();
         assert_eq!(conflict.status, 409);
         assert_eq!(
             conflict.body,
             Store::merged(&json!({ "error": "name-taken", "message": "This public name belongs to another community." }), reserved.clone())
         );
-        assert_eq!(store.publish(&publication("other-name", 3, "0.3", 1), &release).unwrap().status, 409);
-        let mutated = store.publish(&publication("garden", 3, "0.4", 2), &release).unwrap();
+        assert_eq!(store.publish(&publication("other-name", 3, &release.protocol_version, release.index_version), &release).unwrap().status, 409);
+        let future = format!("{}.next", release.protocol_version);
+        let next_index = release.index_version + 1;
+        let mutated = store.publish(&publication("garden", 3, &future, next_index), &release).unwrap();
         assert_eq!(mutated.status, 409, "a proof cannot mutate a previous index binding");
         assert_eq!(mutated.body["error"], "index-version-conflict");
-        let next = Release { index_version: 2, protocol_version: "0.4".into(), supported_protocols: vec!["0.4".into()], ..release.clone() };
+        let next = Release { index_version: next_index, protocol_version: future.clone(), supported_protocols: vec![future.clone()], ..release.clone() };
         assert!(store.list_publications("", "", &next).unwrap().is_empty());
         let hidden = store.find_publication("garden", &next).unwrap().unwrap();
         assert_eq!((hidden["compatible"].as_bool(), hidden["indexed"].as_bool()), (Some(false), Some(false)));
-        assert_eq!(store.publish(&publication("garden", 5, "0.4", 2), &next).unwrap().status, 409, "hiding old discovery never frees its name");
+        assert_eq!(store.publish(&publication("garden", 5, &future, next_index), &next).unwrap().status, 409, "hiding old discovery never frees its name");
         assert_eq!(store.find("garden").unwrap().unwrap()["proof"]["version"], 2, "v1 includes the retained proof");
         assert_eq!(store.find_publication_by_key(&garden.community, &release).unwrap().unwrap(), reserved);
         assert!(store.find_publication_by_key(&"0".repeat(64), &release).unwrap().is_none());
@@ -718,8 +720,8 @@ mod tests {
             json!({ "name": "legacy", "community": legacy.community, "protocolVersion": null, "indexVersion": null, "compatible": false, "indexed": false, "proof": null })
         );
         assert!(store.list_publications("legacy", "", &release).unwrap().is_empty());
-        assert_eq!(store.publish(&publication("legacy", 7, "0.3", 1), &release).unwrap().status, 409);
-        assert_eq!(store.publish(&publication("legacy", 6, "0.3", 1), &release).unwrap().status, 200);
+        assert_eq!(store.publish(&publication("legacy", 7, &release.protocol_version, release.index_version), &release).unwrap().status, 409);
+        assert_eq!(store.publish(&publication("legacy", 6, &release.protocol_version, release.index_version), &release).unwrap().status, 200);
         assert_eq!(store.list_publications("legacy", "", &release).unwrap().len(), 1);
     }
 
@@ -728,8 +730,11 @@ mod tests {
         let mut store = Store::memory().unwrap();
         let release = release();
         for i in 0..52u8 {
-            assert_eq!(store.publish(&publication(&format!("a-old-{i}"), 100 + i, "0.2", 1), &release).unwrap().status, 200);
-            assert_eq!(store.publish(&publication(&format!("garden-{i:02}"), 20 + i, "0.3", 1), &release).unwrap().status, 200);
+            assert_eq!(store.publish(&publication(&format!("a-old-{i}"), 100 + i, "test-old", release.index_version), &release).unwrap().status, 200);
+            assert_eq!(
+                store.publish(&publication(&format!("garden-{i:02}"), 20 + i, &release.protocol_version, release.index_version), &release).unwrap().status,
+                200
+            );
         }
         let page = store.list_publications("", "", &release).unwrap();
         assert_eq!(page.len(), 50);
@@ -776,8 +781,8 @@ mod tests {
     fn the_operator_withholds_listings_and_drops_nodes_and_reservations_stay() {
         let mut store = Store::memory().unwrap();
         let release = release();
-        let garden = publication("garden", 3, "0.3", 1);
-        let kept = publication("meadow", 4, "0.3", 1);
+        let garden = publication("garden", 3, &release.protocol_version, release.index_version);
+        let kept = publication("meadow", 4, &release.protocol_version, release.index_version);
         store.publish(&garden, &release).unwrap();
         store.publish(&kept, &release).unwrap();
         let carrier = announcement(5, &[&garden.community], 1_000_000);
@@ -792,7 +797,11 @@ mod tests {
             assert_eq!(store.list_publications("", "", &release).unwrap().len(), 1);
             // Still reserved: nobody else gets the name, the owner cannot list it again, and the
             // answer names no key.
-            for claim in [garden.clone(), publication("garden", 6, "0.3", 1), publication("renamed", 3, "0.3", 1)] {
+            for claim in [
+                garden.clone(),
+                publication("garden", 6, &release.protocol_version, release.index_version),
+                publication("renamed", 3, &release.protocol_version, release.index_version),
+            ] {
                 let refused = store.publish(&claim, &release).unwrap();
                 assert_eq!((refused.status, refused.body["error"].as_str()), (409, Some("withheld")));
                 assert!(!refused.body.to_string().contains(&garden.community));
@@ -807,7 +816,7 @@ mod tests {
         assert_eq!(store.hide("Not A Name!", 1).unwrap(), None);
         // A name withheld before anyone claimed it cannot be claimed.
         store.hide("later", 1).unwrap();
-        assert_eq!(store.publish(&publication("later", 8, "0.3", 1), &release).unwrap().status, 409);
+        assert_eq!(store.publish(&publication("later", 8, &release.protocol_version, release.index_version), &release).unwrap().status, 409);
         assert!(store.find("later").unwrap().is_none());
 
         assert_eq!(store.operator_view(1_000_000).unwrap().announced.len(), 1);

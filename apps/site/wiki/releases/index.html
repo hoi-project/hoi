@@ -15,7 +15,7 @@
 
   <section class="wk-sec" id="versions">
     <h2>Versions</h2>
-    <p>Three numbers travel separately. The <b>product version</b> (now <code>1.0.0-preview.1</code>) names a build of every program. The <b>protocol version</b> (now <code>"0.3"</code>) names the family of formats a build speaks. The <b>index version</b> (now <code>1</code>) names the registry index edition. A release changes the product version every time; it changes the other two only when someone asks for it explicitly.</p>
+    <p>The first public preview targets product version <code>0.1.0</code>. Every program carries that version. Protocol edition <code>0.4</code> identifies the formats and behavior peers support. The registry index uses edition <code>1</code>.</p>
     <h3 id="product-version">The product version</h3>
     <p>A release's tag is <code>v</code> plus the product version, and every first-party manifest must carry exactly that version. <code>versionFiles()</code> in <code>scripts/release-version.mjs</code> lists them:</p>
     <div class="wk-table" tabindex="0" role="region" aria-label="Files that carry the product version">
@@ -23,14 +23,14 @@
         <thead><tr><th>File</th><th>Where the version is</th></tr></thead>
         <tbody>
           <tr><td><code>core/Cargo.toml</code></td><td><code>[workspace.package] version</code>: the one read first, and the one whose change starts an automatic release</td></tr>
-          <tr><td><code>apps/desktop/src-tauri/Cargo.toml</code>, <code>apps/setup/src-tauri/Cargo.toml</code></td><td><code>[package] version</code></td></tr>
+          <tr><td><code>apps/desktop/src-tauri/Cargo.toml</code>, <code>apps/setup/src-tauri/Cargo.toml</code>, <code>apps/setup/src-tauri/engine/Cargo.toml</code></td><td><code>[package] version</code></td></tr>
           <tr><td><code>apps/desktop/src-tauri/tauri.conf.json</code>, <code>apps/setup/src-tauri/tauri.conf.json</code></td><td>top-level <code>"version"</code></td></tr>
           <tr><td><code>apps/*/package.json</code>, <code>packages/*/package.json</code></td><td>top-level <code>"version"</code>, for every one that has a version (the root <code>package.json</code> has none)</td></tr>
-          <tr><td><code>core/Cargo.lock</code>, <code>apps/desktop/src-tauri/Cargo.lock</code>, <code>apps/setup/src-tauri/Cargo.lock</code></td><td>the <code>version</code> of every local <code>hoi-*</code> package (those without a <code>source</code>); external and vendored crates keep theirs</td></tr>
+          <tr><td><code>core/Cargo.lock</code>, <code>core/fuzz/Cargo.lock</code>, <code>apps/desktop/src-tauri/Cargo.lock</code>, <code>apps/setup/src-tauri/Cargo.lock</code></td><td>the <code>version</code> of every local <code>hoi-*</code> package (those without a <code>source</code>); external and vendored crates keep theirs</td></tr>
         </tbody>
       </table>
     </div>
-    <p>The pnpm lockfile uses workspace links and needs no edit. The mobile wrappers use the Rust workspace version and have no version of their own. Versions are SemVer; prereleases and <code>0.x</code> versions default to the <code>preview</code> channel, everything else to <code>stable</code>, and a prerelease can never be <code>stable</code>. The intended sequence is <code>1.0.0-preview.1</code>, <code>1.0.0-preview.2</code>, …, optionally <code>1.0.0-rc.1</code>, then <code>1.0.0</code>, with a new version for every published release.</p>
+    <p>The pnpm lockfile uses workspace links and needs no edit. The mobile wrappers use the Rust workspace version and have no version of their own. Versions are SemVer; prereleases and <code>0.x</code> versions default to the <code>preview</code> channel, everything else to <code>stable</code>, and a prerelease can never be <code>stable</code>. The signing workflow runs the full cross-platform and security suites for 0.1.0. Each subsequent public preview uses a fresh version. Internal 1.x preview installations need a clean install when moving to 0.1.0.</p>
   </section>
 
   <section class="wk-sec" id="release-json">
@@ -38,11 +38,11 @@
     <p>The root <code>release.json</code> is the one manifest every surface reads: the channel, the notice everyone sees, and the compatibility it declares. It is compiled into the site, the app and the Rust core, so a build always knows what it is even offline.</p>
     <div class="wk-code" data-lang="json" data-title="release.json"><pre><code>{
   "schemaVersion": 1,
-  "revision": 1,
+  "revision": 2,
   "channel": "preview",
-  "protocolVersion": "0.3",
+  "protocolVersion": "0.4",
   "indexVersion": 1,
-  "supportedProtocols": ["0.3"],
+  "supportedProtocols": ["0.4"],
   "notice": {
     "title": "Preview — unstable",
     "message": "hoi is in development. Protocol changes may cause data loss. Do not rely on this preview to preserve data."
@@ -64,7 +64,7 @@
       <table>
         <thead><tr><th>Reader</th><th>How</th></tr></thead>
         <tbody>
-          <tr><td>The website build</td><td><code>loadBuildRelease()</code>; every page's banner shows the title, message and "This build: preview · protocol 0.3 · index 1", and the build emits <code>release.json</code></td></tr>
+          <tr><td>The website build</td><td><code>loadBuildRelease()</code>; every page's banner shows the title, message and "This build: preview · protocol 0.4 · index 1", and the build emits <code>release.json</code></td></tr>
           <tr><td>The app build</td><td>compiled in as <code>__HOI_RELEASE__</code> (browser and desktop); the build emits <code>release.json</code> beside the app</td></tr>
           <tr><td><code>assemble-static.mjs</code></td><td>refuses to assemble when either build's copy differs; writes <code>dist/release.json</code> and <code>dist/preview.json</code></td></tr>
           <tr><td>The Rust core</td><td><code>include_str!("../../../../release.json")</code> in <code>hoi-core/src/registration.rs</code>: the protocol and index a publication proof binds, and what a carrier mirrors</td></tr>
@@ -80,11 +80,10 @@
     <h2>Preparing a version</h2>
     <p><code>pnpm release:version</code> (<code>scripts/release-version.mjs</code>) edits files and nothing else: no build, commit, tag, push, deployment or network access.</p>
     <div class="wk-code" data-lang="sh" data-title="docs/RELEASES.md"><pre><code>pnpm release:version                              # show and check the current version
-pnpm release:version 1.0.0-preview.1 --dry-run    # preview the edits
-pnpm release:version 1.0.0-preview.1              # prepare it
-pnpm release:version --check 1.0.0-preview.1      # verify all manifests and lockfiles
-pnpm release:version 1.0.0-preview.2 --protocol 0.4 --index 2
-pnpm release:version 1.0.0-preview.2 --protocol 0.4 --supported-protocols 0.3,0.4</code></pre></div>
+pnpm release:version 0.1.0 --dry-run    # preview the edits
+pnpm release:version 0.1.0              # prepare it
+pnpm release:version --check 0.1.0      # verify all manifests and lockfiles
+pnpm release:version 0.1.1 --dry-run             # prepare the next preview</code></pre></div>
     <div class="wk-table" tabindex="0" role="region" aria-label="release:version options">
       <table>
         <thead><tr><th>Option</th><th>Effect</th></tr></thead>
@@ -103,7 +102,7 @@ pnpm release:version 1.0.0-preview.2 --protocol 0.4 --supported-protocols 0.3,0.
       </table>
     </div>
     <p><code>planVersion()</code> reads and validates every file before it writes any of them, so a malformed manifest late in the list prevents every earlier write. Any change to the release metadata raises <code>revision</code> by exactly one; repeating an identical command changes nothing. Line endings are preserved (a Windows checkout's CRLF stays CRLF). The default notices are <code>"Preview — unstable"</code> (the text above) and <code>"Stable release"</code> / <code>"This build is on the stable release channel."</code></p>
-    <p>Then review the edits, run <code>pnpm check:quick</code>, and commit only the intended changes, for example as <code>chore(release): v1.0.0-preview.1</code>, and push to <code>main</code>. With automatic releases on, that push starts the pipeline; there is no separate local tagging step.</p>
+    <p>Then review the edits, run <code>pnpm check:quick</code>, and commit only the intended changes, for example as <code>chore(release): v0.1.0</code>, and push to <code>main</code>. With automatic releases on, that push starts the pipeline; there is no separate local tagging step.</p>
   </section>
 
   <section class="wk-sec" id="scripts">
@@ -167,9 +166,9 @@ Maintainer -> GitHub release: publish the draft by hand
         <tbody>
           <tr><td><code>plan</code></td><td>—</td><td>the tag matches <code>^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$</code>; checks out the tag; <code>release-version.mjs --check "$TAG" --github-output</code>; outputs the tier, the prerelease flag and the commit SHA that every later job checks out</td></tr>
           <tr><td><code>checks</code></td><td>plan</td><td><code>release-checks.yml</code> on that commit</td></tr>
-          <tr><td><code>long</code></td><td>plan; major only</td><td><code>release-major.yml</code></td></tr>
-          <tr><td><code>security</code></td><td>plan; major only</td><td>for each of the three Cargo manifests: the dependency gate, cargo-deny with <code>--all-features</code>, <code>cargo audit</code> of the lockfile</td></tr>
-          <tr><td><code>npm-audit</code></td><td>plan; major only</td><td><code>pnpm audit --audit-level low</code></td></tr>
+          <tr><td><code>long</code></td><td>plan; full test tier</td><td><code>release-major.yml</code></td></tr>
+          <tr><td><code>security</code></td><td>plan; full test tier</td><td>for each audited Cargo manifest: the dependency gate, cargo-deny with <code>--all-features</code>, <code>cargo audit</code> of the lockfile</td></tr>
+          <tr><td><code>npm-audit</code></td><td>plan; full test tier</td><td><code>pnpm audit --audit-level low</code></td></tr>
           <tr><td><code>signing</code></td><td>all of the above</td><td>runs only if plan and checks succeeded and, for a major, long, security and npm-audit succeeded (for others they must be skipped). Checks the tree carries the tag's version and that the signing secrets exist</td></tr>
           <tr><td><code>draft</code></td><td>plan, signing</td><td>creates the draft with <code>gh release create "$TAG" --draft --verify-tag --prerelease=… --title "hoi $TAG"</code>, or reuses a draft already there (one uploaded by <code>release-local.mjs --upload</code>); a published release with that tag stops it: "use a new version"</td></tr>
           <tr><td><code>desktop</code>, <code>setup</code></td><td>plan, draft; <code>desktop</code> on</td><td><code>tauri-apps/tauri-action</code> for <code>apps/desktop</code> and <code>apps/setup</code> on macOS (<code>--target universal-apple-darwin</code>), Ubuntu 22.04, Ubuntu 22.04 ARM and Windows, uploading into the draft</td></tr>

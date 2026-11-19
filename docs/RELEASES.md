@@ -1,7 +1,7 @@
 # Releases
 
-A release uses a tag matching all package versions, for example `v1.0.0-preview.1`
-or `v1.0.0`. `release.json` controls the preview/stable channel; compatibility
+A release uses a tag matching all package versions, for example `v0.1.0`
+or `v0.1.1`. `release.json` controls the preview/stable channel; compatibility
 changes can cause data loss.
 
 ## Configure publication
@@ -34,7 +34,7 @@ reject rollbacks. Static hosting is sufficient; no update backend is required.
 After producing a candidate folder, verify it without installing or publishing:
 
 ```sh
-node scripts/release-check.mjs dist/release/v1.0.0-preview.1
+node scripts/release-check.mjs dist/release/v0.1.0
 ```
 
 This checks the manifest signature, every listed file's size/hash, and every updater
@@ -59,18 +59,18 @@ claim cryptographic verification of browser assets. A failed download keeps the 
 
 ```sh
 pnpm release:version                              # show and check the current version
-pnpm release:version 1.0.0-preview.1 --dry-run      # preview the edits
-pnpm release:version 1.0.0-preview.1               # prepare the first preview
-pnpm release:version --check 1.0.0-preview.1       # verify all manifests and lockfiles
+pnpm release:version 0.1.0 --dry-run      # preview the edits
+pnpm release:version 0.1.0               # prepare the first preview
+pnpm release:version --check 0.1.0       # verify all manifests and lockfiles
 ```
 
 The helper updates the Rust workspace, the desktop and node setup apps' Cargo/Tauri
-manifests, versioned first-party JS packages and all three Rust lockfiles. It does not run a build, commit,
+manifests, versioned first-party JS packages and all four Rust lockfiles, including the fuzz harness’s local product dependencies. It does not run a build, commit,
 tag, push or deploy. Dependency versions stay unchanged; the pnpm lockfile uses
 workspace links and needs no product-version edit. Mobile wrappers use the Rust
 workspace version and currently have no separate application version.
 
-Use `1.0.0-preview.2`, `1.0.0-preview.3`, optionally `1.0.0-rc.1`, then `1.0.0`.
+The first public preview targets `0.1.0` and protocol edition `0.4`. Upgrade participating private-group devices together: the fresh rejoin credential and membership change require the new edition. Use a fresh version for later releases, such as `0.1.1`.
 Prereleases and `0.x` versions default to the preview channel; other versions default
 to stable. `--channel preview` can explicitly keep a numeric release in preview.
 A prerelease cannot use the stable channel. Channel changes refresh the notice;
@@ -80,28 +80,33 @@ increments `revision` once; repeating an identical command makes no changes.
 Protocol and index versions stay unchanged unless explicitly requested:
 
 ```sh
-pnpm release:version 1.0.0-preview.2 --protocol 0.4 --index 2
+pnpm release:version 0.2.0 --protocol 0.5 --index 2
 # Only if this build really supports both formats:
-pnpm release:version 1.0.0-preview.2 --protocol 0.4 --supported-protocols 0.3,0.4
+pnpm release:version 0.2.0 --protocol 0.5 --supported-protocols 0.4,0.5
 ```
 
 A changed protocol defaults to supporting only itself. List older protocols explicitly
 only after testing them. `--index` sets a positive registry index edition; it is
 independent of the product version. `--help` lists every option.
 
-Review the edits and run `pnpm check:quick`, then commit and push to `main`:
+Open a release PR with the intended version changes and run `pnpm check:quick`. When automatic
+releases are enabled, merging it into `main` starts **Release: version**, creates the tag and
+starts the draft build. Merge this PR after the intended features are on the release branch.
 
-```sh
-git add -u
-git commit -s -m "chore(release): v1.0.0-preview.1"
-git push origin HEAD
-```
+### Qualify the first public preview
 
-Commit only the intended release changes. With automatic releases enabled, a changed
-product version pushed or merged into `main` starts **Release: version**. It validates
-all versions, creates the matching tag on the pushed commit, then starts **Draft
-release** to build and upload the artifacts. There is no separate local tagging step.
-A local commit must be pushed before GitHub can see it.
+Use a fresh installation for `0.1.0` if you previously ran an internal `1.x` preview.
+The signed updater refuses a lower version. Before changing installations, save a recovery
+key or export an encrypted identity backup and verify that you can read it. Keep the old
+installation until you confirm recovery in a clean profile. An identity backup does not
+contain private-group history. The preview data-loss notice applies.
+
+Run **Weekly** on the exact candidate commit with all platforms enabled. The signing
+workflow also requires the full major test tier for the first public preview. Verify the artifact
+list and signatures for the same commit, then test a clean install and a signed upgrade from
+an earlier 0.x test build, including a download interrupted before installation. Keep the
+release draft until real-device, field-network and independent-review results have been
+recorded and release issues have been resolved.
 
 Ordinary pushes with the same product version are ignored. The initial creation of
 `main` does not release an imported repository automatically; use a manual run for
@@ -159,7 +164,7 @@ the built-in GitHub token to create its tag and explicitly dispatch the build:
 [token-created tags do not trigger push workflows](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow).
 
 Validation is selected automatically from the tag: patch = quick, minor = limited,
-major = full. Prereleases inherit their numeric version's tier. See [CI](CI.md).
+major = full. The first public preview, 0.1.0, also uses the full tier. Prereleases inherit their numeric version's tier. See [CI](CI.md).
 Validation runs on the pinned source commit and must pass before artifact creation.
 
 ### Resume a failed run
@@ -260,7 +265,7 @@ Local builds use the same patch/minor/major tiers. Major versions also run the l
 browser suites; platform-specific checks still require their respective platforms.
 `--quick` selects only quick checks for a local build; `--no-audit` omits online audits.
 Neither option replaces full major-release CI validation. `--long` is accepted only
-for major versions.
+for versions assigned the full major test tier.
 
 Output goes to `dist/release/vX.Y.Z/`, flat, as a GitHub release and `install.sh --from`
 take it. To build every part into a folder per tool for trying and posting, without checks

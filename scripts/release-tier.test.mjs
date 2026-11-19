@@ -2,10 +2,10 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { releaseTier } from './release-tier.mjs';
 
-test('only numeric major releases select the expensive suites', () => {
+test('the first public preview and major releases select the full suites', () => {
   for (const [version, tier] of [
     ['v1.0.1', 'patch'], ['0.1.2', 'patch'], ['v1.2.0', 'minor'],
-    ['v0.1.0', 'minor'], ['v2.0.0', 'major'], ['v2.0.0-rc.1', 'major'],
+    ['v0.1.0', 'major'], ['0.1.0-rc.1', 'major'], ['v0.2.0', 'minor'], ['v2.0.0', 'major'], ['v2.0.0-rc.1', 'major'],
     ['v2.1.0-beta.2', 'minor'], ['v2.1.1-rc.1', 'patch'], ['v0.0.0', 'patch'], ['v1.0.0-preview.2', 'major'],
   ]) assert.equal(releaseTier(version), tier, version);
 });

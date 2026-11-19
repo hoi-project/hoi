@@ -1,10 +1,10 @@
 # hoi protocol specification
 
-Version 0.3 (draft) · October 2026 · Wire-level companion to `TECHNICAL.md`. Supersedes 0.2.
+Version 0.4 (draft) · November 2026 · Wire-level companion to `TECHNICAL.md`.
 
 This document is normative where it says MUST. Everything is a signed, content-addressed **record**; identities are keys that did memory-hard work once; communities are keys; standing in a community is earned from the community's own signed records; decisions weigh voices, and voices thin out when someone vouches in many people at once; owners propose rules and limits and the community decides them; sync is set reconciliation; moderation is a signed ledger that the community can overturn; deletion is expiry.
 
-> **Pre-release.** 0.2 changed the delegation format and added required fields (`Limits.ladder`, identity records); 0.3 changes no bytes on the wire, only what records mean (§6.1, §15.4, §15.5). Nothing was deployed, so the envelope stays `v: 1` until the first release. Stored records a device can no longer decode are deleted at startup and counted, so the app can say so.
+> **Pre-release.** 0.2 changed the delegation format and added required fields (`Limits.ladder`, identity records); 0.3 changes no bytes on the wire, only what records mean (§6.1, §15.4, §15.5). Edition 0.4 introduces fresh MLS authorization for a restored private member. Devices participating in the same private group should upgrade together. The record envelope remains `v: 1`. Stored records a device can no longer decode are deleted at startup and counted, so the app can say so.
 
 ## 1. Primitives
 

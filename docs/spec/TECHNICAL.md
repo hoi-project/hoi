@@ -1,6 +1,6 @@
 # hoi technical document
 
-Version 0.3 · October 2026 · Read with `PROTOCOL.md` (the wire format, 0.3).
+Version 0.4 · November 2026 · Read with `PROTOCOL.md` for the wire format.
 
 ## 1. Constraints that shape everything
 

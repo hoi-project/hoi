@@ -7,7 +7,7 @@ import { loadRelease, validateRelease } from './release-config.mjs';
 import { releaseTier } from './release-tier.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
-export const LOCKFILES = ['core/Cargo.lock', 'apps/desktop/src-tauri/Cargo.lock', 'apps/setup/src-tauri/Cargo.lock'];
+export const LOCKFILES = ['core/Cargo.lock', 'core/fuzz/Cargo.lock', 'apps/desktop/src-tauri/Cargo.lock', 'apps/setup/src-tauri/Cargo.lock'];
 
 /** Every first-party manifest that carries the product version. */
 export function versionFiles(base = root) {
@@ -16,6 +16,7 @@ export function versionFiles(base = root) {
     { path: 'apps/desktop/src-tauri/Cargo.toml', kind: 'cargo', section: 'package' },
     { path: 'apps/desktop/src-tauri/tauri.conf.json', kind: 'json' },
     { path: 'apps/setup/src-tauri/Cargo.toml', kind: 'cargo', section: 'package' },
+    { path: 'apps/setup/src-tauri/engine/Cargo.toml', kind: 'cargo', section: 'package' },
     { path: 'apps/setup/src-tauri/tauri.conf.json', kind: 'json' },
   ];
   if ('version' in JSON.parse(readFileSync(join(base, 'package.json'), 'utf8'))) {
@@ -66,10 +67,10 @@ export function writeVersion(file, version, base = root) {
   writeFileSync(path, versionedText(file, readFileSync(path, 'utf8'), version));
 }
 
-/** Update only local hoi crates; external and vendored dependency versions stay unchanged. */
+/** The fuzz harness has its own fixed version. Its local product dependencies follow the release. */
 export function lockWithVersion(text, version) {
   return text.replace(/^name = "(hoi-[a-z-]+)"(\r?\n)version = "[^"]*"\2(?!source = )/gm,
-    (_, name, newline) => `name = "${name}"${newline}version = "${version}"${newline}`);
+    (original, name, newline) => name === 'hoi-fuzz' ? original : `name = "${name}"${newline}version = "${version}"${newline}`);
 }
 
 export function mismatches(version, base = root) {
