@@ -57,6 +57,15 @@ fn ws_config() -> WebSocketConfig {
     WebSocketConfig::default().max_message_size(Some(hoi_sync::MAX_MESSAGE)).max_frame_size(Some(hoi_sync::MAX_MESSAGE))
 }
 
+/// Builds a native HTTP client with hoi's ring provider and public WebPKI roots.
+/// The process has no default TLS provider, including before the first peer connection.
+pub fn public_http_client_builder() -> Result<reqwest::ClientBuilder, rustls::Error> {
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let roots = rustls::RootCertStore { roots: webpki_roots::TLS_SERVER_ROOTS.to_vec() };
+    let tls = rustls::ClientConfig::builder_with_provider(provider).with_safe_default_protocol_versions()?.with_root_certificates(roots).with_no_client_auth();
+    Ok(reqwest::Client::builder().tls_backend_preconfigured(tls))
+}
+
 /// What a browser sends as `Origin` for a page at `url`: `https://Hoi.sh:443/app/` is
 /// `https://hoi.sh`. Only http(s) addresses have one worth allowing; `null` and the rest don't.
 pub fn web_origin(url: &str) -> Option<String> {
