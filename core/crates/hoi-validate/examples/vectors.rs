@@ -754,6 +754,15 @@ fn main() {
         "h": 1,
     });
 
+    // Wire-limit fixtures use short unknown names so feature support cannot affect decoding.
+    let hello_with_features = |count| {
+        let mut msg = hello.clone();
+        if let hoi_sync::Msg::Hello { features, .. } = &mut msg {
+            *features = (0..count).map(|i| format!("f{i}")).collect();
+        }
+        hex_encode(&msg.encode())
+    };
+
     let hello_hints = hoi_sync::Msg::Hello {
         v: hoi_sync::SYNC_VERSION,
         node: Id([1; 32]),
@@ -1186,6 +1195,7 @@ fn main() {
             "hello-hints.json",
             json!({ "msg": hex_encode(&hello_hints.encode()), "note": "Optional hello routing extension, accepted only on paired home-node links (a home node's own once it delivered records)." }),
         ),
+        ("hello-features.json", json!({ "accept_32": hello_with_features(32), "reject_33": hello_with_features(33) })),
         ("hello-salted.json", salted_hello),
         ("warmth.json", warmth),
         ("scatter.json", scatter_vectors()),

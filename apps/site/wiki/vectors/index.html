@@ -26,6 +26,7 @@
           <tr><td><a href="#threshold"><code>threshold.json</code></a></td><td>a 2-of-3 cosigned rules entry and its <code>proposal_id</code></td><td>generator</td><td><code>threshold_entry_cosigns_verify</code></td></tr>
           <tr><td><a href="#ladder"><code>ladder.json</code></a></td><td>a community's standing, hides, quorums and a proposal, then a retirement</td><td>generator</td><td>generator check</td></tr>
           <tr><td><a href="#sync-transcript"><code>sync-transcript.json</code></a></td><td>a five-message sync between two nodes</td><td>generator</td><td>generator check</td></tr>
+          <tr><td><a href="#hello-features"><code>hello-features.json</code></a></td><td>feature-list receive limit</td><td>generator</td><td><code>edition_04_hello_feature_limits</code></td></tr>
           <tr><td><a href="#hello-hints"><code>hello-hints.json</code></a></td><td>a hello with routing hints</td><td>generator</td><td><code>hello_hint_conformance_vector</code> (hoi-core)</td></tr>
           <tr><td><a href="#hello-salted"><code>hello-salted.json</code></a></td><td>a stranger's salted hello and a home node's hello to its device</td><td>generator</td><td><code>salted_hellos_match_only_known_keys</code></td></tr>
           <tr><td><a href="#carry"><code>carry.json</code></a></td><td><code>carry</code>, <code>carried</code> and a catalog entry with warmth</td><td>generator</td><td><code>carry_messages_decode_as_committed</code></td></tr>
@@ -244,6 +245,8 @@ a --> b: <code>want</code> {ids: the 10 a lacks}
 a .. b: each answers the other's <code>want</code> with <code>recs</code>
     </div>
     <p>Every message is a CBOR map with its type in <code>t</code>; see <a href="/wiki/sync/">Sync &amp; gossip</a> for the message set.</p>
+    <h3 id="hello-features">hello-features.json</h3>
+    <p>Decode the two hello messages. The 32-name list is valid. A receiver rejects the 33-name list.</p>
     <h3 id="hello-hints">hello-hints.json</h3>
     <p>Keys: <code>msg</code> and <code>note</code>. A hello from node <code>01…</code> naming community <code>02…</code>, with one <code>hints</code> entry: <code>{c: 02…, p: ["0303…03"], r: ["https://relay.example"]}</code>. The note: an optional routing extension, accepted only on paired home-node links (a home node's own once it delivered records). hoi-core's test checks it round-trips and carries one hint with that peer.</p>
     <h3 id="hello-salted">hello-salted.json</h3>

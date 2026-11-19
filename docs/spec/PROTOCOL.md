@@ -195,6 +195,8 @@ A `limits` proposal changes only the fields in which its `limits` differ from th
 
 ## 7. Sync
 
+The edition 0.4 hello advertises every currently active service in `fx` (RFC-0010). A receiver rejects more than 32 feature names or a name longer than 16 bytes. Older preview decoders with a sixteen-name limit can reject a fully configured node’s hello.
+
 **Live:** one gossip topic per community, `BLAKE3("hoi/gossip/1" ‖ community)`. Nodes forward valid records they haven't seen, each preceded by the author's identity record and, for device-signed records, the delegation.
 
 **Carriers travel with company.** Identity, delegation and revoke records have no community and are kept for years. From a peer that is not one of its own paired devices or its home node, a receiver takes one only for a root it has heard from (it holds records of theirs in a community it carries, or their identity, or a device of theirs), or whose community record the same `recs` batch carries. A stranger's identities, devices or revocations on their own are dropped without penalty: otherwise anyone could fill every node with keys nobody uses, for good.
@@ -296,7 +298,7 @@ Canonical CBOR maps with a `t` field, one per WebSocket binary frame or one leng
 
 ```
 hello { t:"hello", v:2, node: bytes32, name: str?, token: str?, c: [bytes32] (≤ 1024), n: bytes16?, ch: [bytes32]? (≤ 1024, only with n),
-        serves: bool, hints: [{c:bytes32,p:[str],r:[str]}]?, routes: [str]? (≤ 8, ≤ 128 bytes each), fx: [str]? (≤ 16, ≤ 16 bytes each),
+        serves: bool, hints: [{c:bytes32,p:[str],r:[str]}]?, routes: [str]? (≤ 8, ≤ 128 bytes each), fx: [str]? (≤ 32, ≤ 16 bytes each),
         pt: str? (≤ 256 bytes), lk: bytes32?, nh: bytes32?, nt: bytes? (≤ 2048, §14.5) }
 have  { t:"have", c: bytes32, ids: [bytes32] (≤ 100000) }
 want  { t:"want", ids: [bytes32] (≤ 5000) }

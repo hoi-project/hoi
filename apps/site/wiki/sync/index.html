@@ -71,7 +71,7 @@ B → A  blob  { id, data } (one item per message; A checks the hash and the byt
           <tr><td><code>MAX_MESSAGE</code></td><td>16 MiB + 64 KiB</td><td>any message, a full <code>blob</code> plus framing</td></tr>
           <tr><td><code>MAX_HINT_COMMUNITIES</code>, <code>MAX_HINT_PEERS</code>, <code>MAX_HINT_RELAYS</code></td><td>64, 16, 8</td><td>route hints in a hello, between a home node and its devices</td></tr>
           <tr><td><code>MAX_ROUTES</code></td><td>8</td><td>the sender's own routes in a hello</td></tr>
-          <tr><td><code>MAX_FEATURES</code>, <code>SEND_FEATURES</code></td><td>16, 16</td><td>feature names read and sent</td></tr>
+          <tr><td><code>MAX_FEATURES</code></td><td>32</td><td>feature names read and sent</td></tr>
           <tr><td><code>MAX_HERE</code>, <code>MAX_SIG</code></td><td>16, 8 KiB</td><td>handles in <code>here</code>, a <code>sig</code> payload</td></tr>
           <tr><td><code>MAX_FOUND_ROUTES</code>, <code>MAX_DHT_CONTACTS</code></td><td>16, 4</td><td>routes in <code>found</code>, contacts in <code>dht</code></td></tr>
           <tr><td><code>MAX_NODE_ROUTES</code>, <code>MAX_VOUCHES</code>, <code>MAX_VOUCH_DAYS</code>, <code>MAX_VOUCH_ROUTES</code></td><td>32, 32, 30, 2</td><td>a <code>nodes</code> list</td></tr>
@@ -105,7 +105,7 @@ B → A  blob  { id, data } (one item per message; A checks the hash and the byt
           <tr><td><code>serves</code></td><td>bool</td><td>the sender serves paired devices; believed only from your own home node</td><td>always</td></tr>
           <tr><td><code>hints</code></td><td>≤ 64 × <code>{c, p ≤ 16, r ≤ 8}</code></td><td>routes and relays per community, for a device to dial</td><td>to your own devices and home node only; taken only from a credentialed device, or from the home node once it delivered records</td></tr>
           <tr><td><code>routes</code></td><td>≤ 8 texts ≤ 128</td><td>the sender's own routes: all of them to your devices, what it publishes to anyone else</td><td>when it has any</td></tr>
-          <tr><td><code>fx</code></td><td>≤ 16 texts ≤ 16</td><td><a href="#features">features</a></td><td>always</td></tr>
+          <tr><td><code>fx</code></td><td>≤ 32 texts, each ≤ 16 bytes</td><td><a href="#features">features</a></td><td>always</td></tr>
           <tr><td><code>pt</code></td><td>text ≤ 256</td><td>the token of the home node's current pairing link, so a device can show it to the next device</td><td>home node → device</td></tr>
           <tr><td><code>lk</code></td><td>32 bytes</td><td>the key <code>link</code> messages are sealed with</td><td>home node → device</td></tr>
           <tr><td><code>nh</code>, <code>nt</code></td><td>32 bytes; bytes ≤ 2,048</td><td>the operator's notice and its BLAKE3 hash</td><td>public node → stranger</td></tr>

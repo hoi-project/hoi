@@ -282,6 +282,15 @@ fn carry_messages_decode_as_committed() {
 }
 
 #[test]
+fn edition_04_hello_feature_limits() {
+    let fixture: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(vectors().join("hello-features.json")).unwrap()).unwrap();
+    let decode = |name: &str| hoi_sync::Msg::decode(&unhex(fixture[name].as_str().unwrap()));
+    let hoi_sync::Msg::Hello { features, .. } = decode("accept_32").unwrap() else { panic!("expected a hello") };
+    assert_eq!(features, (0..32).map(|i| format!("f{i}")).collect::<Vec<_>>());
+    assert!(decode("reject_33").is_err());
+}
+
+#[test]
 fn salted_hellos_match_only_known_keys() {
     let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(vectors().join("hello-salted.json")).unwrap()).unwrap();
     assert_eq!(v["context"].as_str().unwrap(), hoi_sync::COMMUNITY_HASH_CONTEXT);

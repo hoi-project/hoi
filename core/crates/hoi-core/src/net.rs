@@ -771,9 +771,8 @@ impl Node {
             hoi_sync::FEATURE_RANGE.to_string(),
         ];
         if self.scatter.pieces.as_ref().is_some_and(|store| store.durable_drops()) {
-            // Keep the capability inside the existing 16-feature limit. It is also signed
-            // in the holder key so a forwarding peer cannot upgrade a legacy holder.
-            fx.insert(0, hoi_sync::FEATURE_DROP_JOURNAL.to_string());
+            // The holder also signs this capability so a forwarding peer cannot invent it.
+            fx.push(hoi_sync::FEATURE_DROP_JOURNAL.to_string());
         }
         let plan = self.plan();
         if hoi_crypto::scatter::size::size(10, 0, plan.places() as u32).is_some_and(|s| plan.supports_puts(s.k, s.n)) {
@@ -804,17 +803,7 @@ impl Node {
         if self.takes_direct() {
             fx.push(hoi_sync::FEATURE_DIRECT.to_string());
         }
-        if fx.len() > hoi_sync::SEND_FEATURES {
-            // New clients use recoverable delegation; older clients safely deliver whole.
-            fx.retain(|feature| feature != hoi_sync::FEATURE_HOME_SCATTER);
-        }
-        if fx.len() > hoi_sync::SEND_FEATURES {
-            // Placement offload is optional; preserve protocol and durability features when
-            // a holder offers every service understood by older 16-feature readers.
-            fx.retain(|feature| feature != "scatter-store");
-        }
-        debug_assert!(fx.len() <= hoi_sync::SEND_FEATURES);
-        fx.truncate(hoi_sync::SEND_FEATURES);
+        debug_assert!(fx.len() <= hoi_sync::MAX_FEATURES);
         fx
     }
 
