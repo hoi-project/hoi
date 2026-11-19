@@ -2,7 +2,7 @@
 
 Issue: #144
 
-Status: proposed
+Status: accepted
 
 ## Summary
 
