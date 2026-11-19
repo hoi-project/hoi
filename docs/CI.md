@@ -1,7 +1,7 @@
 # Continuous integration
 
 Checks run by themselves in the public repository, **hoi-project/hoi**, where GitHub Actions are
-free: every pull request (forks included) and every push to `main`. No variable turns them on.
+free: every pull request (forks included), requested merge group and push to `main`. No variable turns them on.
 Each workflow has one small **Changes** job that checks `github.repository_owner == 'hoi-project'`
 and that the repository is not private; every other job needs it. So a private copy (a
 maintainer's workspace, or hoi-project/hoi before it went public) and a fork's own pushes start
@@ -23,12 +23,12 @@ switch, including all called validation suites, signing and uploads.
 ## Fast checks and complete code scanning
 
 The **Changes** job (`scripts/ci-changes.mjs`, seconds) reads the pull request's own changes, or
-the push's, and switches jobs on: Rust for `core/` and `vendor/`; Web for apps, packages,
+the push's. A merge group checks all changes between its base and the combined head. These paths switch jobs on: Rust for `core/` and `vendor/`; Web for apps, packages,
 tokens and the pnpm files; dependency audits for manifests and lockfiles; workflow linting for
 `.github/`. CodeQL always scans Rust, JavaScript/TypeScript and Actions: pull requests need the
 same analysis configurations as `main` for GitHub to compare their results. SonarCloud runs when
 Rust or web code, or `sonar-project.properties`, changes. A documentation pull request runs the
-quick checks and all CodeQL languages. A job skipped by the changes filter counts
+quick checks and all CodeQL languages. SonarCloud analyses the pull request and main rather than a temporary queue head. A job skipped by the changes filter counts
 as passed for required checks, which is why there are no
 workflow-level `paths:` filters (they would leave required checks pending). Manual and scheduled
 runs, and pushes whose base is unknown, check everything.
@@ -49,8 +49,8 @@ runs, and pushes whose base is unknown, check everything.
 
 | File / name | When | What |
 | --- | --- | --- |
-| `ci.yml` / CI | every pull request and push to `main`; by hand anywhere | **Changes**; **Quick checks** (`pnpm check:quick`, always); **Sign-off** (pull requests: every commit has its author's `Signed-off-by`, `scripts/check-signoff.mjs`); **Web** (site and API types, web unit tests); **Rust** (fmt, clippy `-D warnings`, `cargo llvm-cov nextest` over the workspace including the conformance vectors); **SonarCloud** (scan with the Rust coverage; `sonar-project.properties`; passes with a notice without `SONAR_TOKEN`) |
-| `security.yml` / Security | pull requests, `main`, daily; by hand anywhere | **Changes**; CodeQL for every language (Rust, JavaScript/TypeScript, Actions; `security-extended`; a private repository analyses without uploading); per Cargo graph the dependency regression gate's tests, cargo-deny and cargo-audit; cargo-vet; `pnpm audit`; GitHub dependency review (pull requests); zizmor and actionlint |
+| `ci.yml` / CI | pull requests, merge groups and pushes to `main`; by hand anywhere | **Changes**; **Quick checks** (`pnpm check:quick`, always); **Sign-off** (pull requests: every commit has its author's `Signed-off-by`, `scripts/check-signoff.mjs`); **Web** (site and API types, web unit tests); **Rust** (fmt, clippy `-D warnings`, `cargo llvm-cov nextest` over the workspace including the conformance vectors); **SonarCloud** (scan with the Rust coverage; `sonar-project.properties`; passes with a notice without `SONAR_TOKEN`) |
+| `security.yml` / Security | pull requests, merge groups, `main`, daily; by hand anywhere | **Changes**; CodeQL for every language (Rust, JavaScript/TypeScript, Actions; `security-extended`; a private repository analyses without uploading); per Cargo graph the dependency regression gate's tests, cargo-deny and cargo-audit; cargo-vet; `pnpm audit`; GitHub dependency review (pull requests); zizmor and actionlint |
 | `scorecard.yml` / Scorecard | `main`, weekly, branch-rule changes | OpenSSF Scorecard; results in the Security tab and the public badge (public repository only) |
 | `weekly.yml` / Weekly | Saturdays (public repository); by hand anywhere, `linux_only` by default | the full major suites on `main` |
 | `release-version.yml` / Release: version | version push to `main` (switch), or manual | validates versions, creates the tag and starts Release |
@@ -61,7 +61,11 @@ runs, and pushes whose base is unknown, check everything.
 
 Required checks for `main` (**Settings -> Rules**): *CI / Changes*, *CI / Quick checks*,
 *CI / Sign-off*, *CI / Web* and *CI / Rust*. Security, SonarCloud and Scorecard report but do not
-block.
+block. Require `Sign-off` for entry to the queue so each original author has certified their commits.
+GitHub generates the queue head itself. Its combined changes run Quick checks and the selected
+Web, Rust and Security jobs. After these workflows are on the default branch, enable the merge
+queue in the `main` ruleset with squash merges and verify the checks on the first queued change.
+Enable web commit sign-off in **Settings -> General** so browser commits prompt for certification.
 
 Pull requests are also reviewed by CodeRabbit (`.coderabbit.yaml`, against `AGENTS.md` and
 `.claude/rules/`); its comments are suggestions. Dependabot opens Actions updates and npm/Cargo

@@ -12,6 +12,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  merge_group:
+    types: [checks_requested]
   workflow_dispatch:
 
 permissions:
@@ -51,6 +53,7 @@ jobs:
         env:
           EVENT: ${{ github.event_name }}
           BEFORE: ${{ github.event.before }}
+          QUEUE_BASE: ${{ github.event.merge_group.base_sha }}
         run: node scripts/ci-changes.mjs
 
   quick:
@@ -163,7 +166,7 @@ jobs:
   sonarcloud:
     name: SonarCloud
     needs: [changes, rust]
-    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.sonar == 'true' && needs.rust.result != 'failure' }}
+    if: ${{ !cancelled() && github.event_name != 'merge_group' && needs.changes.result == 'success' && needs.changes.outputs.sonar == 'true' && needs.rust.result != 'failure' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
