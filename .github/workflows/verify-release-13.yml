@@ -1,0 +1,14 @@
+name: Verify release repairs
+on:
+  push:
+    branches: [ci/verify-release-13]
+permissions:
+  contents: read
+jobs:
+  suites:
+    uses: ./.github/workflows/release-major.yml
+    with:
+      ref: '07385f75cc7fb6848abd1eb70a615a205df017f5'
+      version: main
+      weekly: true
+      linux_only: false
