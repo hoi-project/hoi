@@ -8,5 +8,10 @@ fn main() {
             assert!(!value.is_empty() && !value.contains("OWNER") && !value.contains("placeholder"), "Configure publication.json before publication: {key}");
         }
     }
-    tauri_build::build()
+    tauri_build::build();
+    if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
+        // tauri-winres writes resource.lib here. The Windows library-test executable
+        // links it explicitly because Tauri attaches the resource only to binary targets.
+        println!("cargo:rustc-link-search=native={}", std::env::var("OUT_DIR").unwrap());
+    }
 }

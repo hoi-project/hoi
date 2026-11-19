@@ -28,6 +28,12 @@ mod os_unlock;
 mod release_verification;
 mod updates;
 
+// Tauri's mock app imports Common Controls v6 too. Embed the same activation
+// manifest as the desktop executable so Windows can load the unit-test harness.
+#[cfg(all(test, windows, target_env = "msvc"))]
+#[link(name = "resource", kind = "static", modifiers = "-bundle")]
+unsafe extern "C" {}
+
 /// Paired devices dial this port on the same machine.
 const HOME_PORT: u16 = 7842;
 /// Window sizes of the two faces: the companion (the default) and the full app.

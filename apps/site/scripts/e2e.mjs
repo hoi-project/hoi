@@ -119,7 +119,9 @@ async function checkTargets(page, where) {
       if (cs.visibility === 'hidden' || cs.display === 'none') continue;
       if (el.tagName === 'A' && cs.display === 'inline' && el.closest('p, li, td, dd, figcaption, .kv-h, .lead')) continue;
       const pad = el.classList.contains('sw') ? 18 : 0; // the switch has a larger pseudo-element hit area
-      if (r.height + pad < 44) out.push(`${el.tagName.toLowerCase()} "${(el.textContent || '').trim().slice(0, 24)}" ${Math.round(r.height)}px`);
+      const hitHeight = r.height + pad;
+      // Translation introduces DOMRect rounding noise. Keep the tolerance below Chromium's 1/64 px layout unit.
+      if (hitHeight + 0.001 < 44) out.push(`${el.tagName.toLowerCase()} "${(el.textContent || '').trim().slice(0, 24)}" ${hitHeight.toFixed(3)}px`);
     }
     return out;
   });
