@@ -22,7 +22,7 @@ for (const args of [
     'scripts/tauri-bundles.test.mjs', 'scripts/tauri-signing.test.mjs',
     'scripts/release-plan.test.mjs', 'scripts/release-manifest.test.mjs', 'scripts/build-all.test.mjs',
     'scripts/installer-art.test.mjs',
-    'scripts/static-boundaries.test.mjs', 'scripts/public-copy.test.mjs', 'scripts/wiki.test.mjs',
+    'scripts/picomatch.test.mjs', 'scripts/static-boundaries.test.mjs', 'scripts/public-copy.test.mjs', 'scripts/wiki.test.mjs',
     'scripts/labels.test.mjs', 'scripts/ci-changes.test.mjs', 'scripts/check-signoff.test.mjs',
     'scripts/serve-static.test.mjs'],
 ]) {
