@@ -49,3 +49,4 @@ merged.
 | [0005](0005-scatter-failure-validation.md) | Scatter failure validation | accepted |
 | [0006](0006-node-verification.md)    | Node declarations and verification | accepted |
 | [0007](0007-connection-address.md) | Connection source addresses | accepted |
+| [0008](0008-recoverable-home-scatter.md) | Recoverable home scatter | accepted |
