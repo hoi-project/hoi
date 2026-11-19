@@ -261,11 +261,15 @@ fn setup_node_files() -> Vec<NodeFile> {
 /// A hoi-node archive picked in a native dialog; refused unless its name is one.
 #[tauri::command]
 async fn setup_pick_node(app: AppHandle) -> Result<Option<NodeFile>, Value> {
-    let picked = app.dialog().file().set_title("hoi-node for the server (hoi-node_…_linux-gnu.tar.gz)").add_filter("hoi-node archive", &["gz"]).blocking_pick_file();
-    let Some(path) = picked.and_then(|p| p.into_path().ok()) else {
-        return Ok(None);
-    };
-    node_files::node_file(&path).map(Some).map_err(fail)
+    tauri::async_runtime::spawn_blocking(move || {
+        let picked = app.dialog().file().set_title("hoi-node for the server (hoi-node_…_linux-gnu.tar.gz)").add_filter("hoi-node archive", &["gz"]).blocking_pick_file();
+        let Some(path) = picked.and_then(|p| p.into_path().ok()) else {
+            return Ok(None);
+        };
+        node_files::node_file(&path).map(Some).map_err(fail)
+    })
+    .await
+    .map_err(fail)?
 }
 
 // ---------------------------------------------------------------- files and links
@@ -273,18 +277,26 @@ async fn setup_pick_node(app: AppHandle) -> Result<Option<NodeFile>, Value> {
 /// A key file, picked in a native dialog: the path only, read by the engine when connecting.
 #[tauri::command]
 async fn setup_pick_file(app: AppHandle) -> Result<Option<String>, Value> {
-    let picked = app.dialog().file().set_title("Your SSH key file").blocking_pick_file();
-    Ok(picked.and_then(|p| p.into_path().ok()).map(|p| p.to_string_lossy().into_owned()))
+    tauri::async_runtime::spawn_blocking(move || {
+        let picked = app.dialog().file().set_title("Your SSH key file").blocking_pick_file();
+        picked.and_then(|p| p.into_path().ok()).map(|p| p.to_string_lossy().into_owned())
+    })
+    .await
+    .map_err(fail)
 }
 
 #[tauri::command]
 async fn setup_save_file(app: AppHandle, name: String, text: String) -> Result<bool, Value> {
-    let Some(path) = app.dialog().file().set_file_name(&name).blocking_save_file() else {
-        return Ok(false);
-    };
-    let path = path.into_path().map_err(fail)?;
-    std::fs::write(&path, text).map_err(fail)?;
-    Ok(true)
+    tauri::async_runtime::spawn_blocking(move || {
+        let Some(path) = app.dialog().file().set_file_name(&name).blocking_save_file() else {
+            return Ok(false);
+        };
+        let path = path.into_path().map_err(fail)?;
+        std::fs::write(&path, text).map_err(fail)?;
+        Ok(true)
+    })
+    .await
+    .map_err(fail)?
 }
 
 /// Opens an https:// page in the person's browser: the node's link in hoi, hoi.sh. Nothing else.

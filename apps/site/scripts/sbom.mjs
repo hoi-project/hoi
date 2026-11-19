@@ -18,6 +18,8 @@ import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
+// Sort by the package key alone; the tuple's metadata is not part of its identifier.
+const byPackageKey = ([a], [b]) => a < b ? -1 : a > b ? 1 : 0;
 const OUT = join(repo, 'apps/site/wiki/sbom/sbom.json');
 
 const LINUX = ['x86_64-unknown-linux-gnu', 'aarch64-unknown-linux-gnu'];
@@ -339,7 +341,7 @@ function regenerate() {
           if (c.direct.has(id)) direct.add(k);
         }
       }
-      for (const [k, v] of [...merged].sort()) {
+      for (const [k, v] of [...merged].sort(byPackageKey)) {
         entry.cargo.push({ k, kind: v.kind, direct: direct.has(k), targets: v.targets.length === prog.cargo.targets.length ? null : v.targets });
         if (prog.cargo.lock === 'core') reached.core.add(k);
       }
@@ -352,7 +354,7 @@ function regenerate() {
         for (const [k, kind] of c.kinds) merged.set(k, merged.get(k) === 'prod' ? 'prod' : kind);
         c.direct.forEach((k) => direct.add(k));
       }
-      for (const [k, kind] of [...merged].sort()) entry.npm.push({ k, kind: kind === 'prod' ? 'run' : 'dev', direct: direct.has(k) });
+      for (const [k, kind] of [...merged].sort(byPackageKey)) entry.npm.push({ k, kind: kind === 'prod' ? 'run' : 'dev', direct: direct.has(k) });
     }
     if (prog.gradle) entry.other = gradle();
     if (prog.swift) entry.other = swift();
