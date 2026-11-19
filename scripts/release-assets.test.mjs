@@ -110,13 +110,14 @@ test('preview assets complete download, manifest generation, signing, verificati
   const version = env.TAG.slice(1);
   const key = signer(version);
   const names = [
-    `hoi_${version}_amd64.AppImage`, `hoi_${version}_amd64.deb`, `hoi-${version}-1.x86_64.rpm`,
+    `hoi_${version}_amd64.AppImage`, `hoi_${version}_amd64.AppImage.tar.gz`, `hoi_${version}_amd64.deb`, `hoi-${version}-1.x86_64.rpm`,
     `hoi_${version}_universal.app.tar.gz`, `hoi_${version}_universal.dmg`,
     `hoi_${version}_x64-setup.exe`, `hoi.Node.Setup_${version}_x64-setup.exe`,
     `hoi-node_${version}_aarch64-unknown-linux-gnu.tar.gz`,
   ];
   state.assets = names.map((name, i) => ({ id: i + 1, name, bytes: Buffer.from(`fixture: ${name}`) }));
-  for (const asset of [...state.assets].filter(asset => /AppImage$|app\.tar\.gz$|^hoi_.*-setup\.exe$/.test(asset.name))) {
+  // AppImages can ship raw and wrapped; both use the same installed format and one updater target.
+  for (const asset of [...state.assets].filter(asset => /AppImage$|\.deb$|\.rpm$|app\.tar\.gz$|^hoi_.*-setup\.exe$/.test(asset.name))) {
     state.assets.push({ id: state.assets.length + 1, name: `${asset.name}.sig`, bytes: Buffer.from(key.sign(asset.bytes)).toString('base64') });
   }
   await transferAssets('download', [dir], env, fetcher);
@@ -131,10 +132,26 @@ test('preview assets complete download, manifest generation, signing, verificati
   assert.equal(verified.latest, version);
   assert.equal(verified.releases[0].files.length, names.length);
   assert.equal(verified.updater.version, version);
-  assert.deepEqual(Object.keys(verified.updater.platforms).sort(), ['darwin-aarch64', 'darwin-x86_64', 'linux-x86_64', 'windows-x86_64-nsis']);
+  assert.deepEqual(Object.keys(verified.updater.platforms).sort(),
+    ['darwin-aarch64', 'darwin-x86_64', 'linux-x86_64', 'linux-x86_64-deb', 'linux-x86_64-rpm', 'windows-x86_64-nsis']);
   await transferAssets('upload', [join(dir, 'manifest.json'), join(dir, 'manifest.json.minisig')], env, fetcher);
   assert.deepEqual(state.uploaded.map(asset => asset.name), ['manifest.json', 'manifest.json.minisig']);
   assert.equal(JSON.parse(state.uploaded[0].bytes).latest, version);
+  function checkEditedManifest(edited) {
+    const bytes = Buffer.from(JSON.stringify(edited));
+    writeFileSync(join(dir, 'manifest.json'), bytes);
+    writeFileSync(join(dir, 'manifest.json.minisig'), key.sign(bytes));
+    return () => checkCandidate(dir, publication);
+  }
+  for (const suffix of ['', '-deb', '-rpm']) {
+    const target = `linux-x86_64${suffix}`;
+    const missing = structuredClone(manifest);
+    delete missing.updater.platforms[target];
+    assert.throws(checkEditedManifest(missing), /missing its signed updater package/);
+    const wrong = structuredClone(manifest);
+    wrong.updater.platforms[target] = manifest.updater.platforms[suffix ? 'linux-x86_64' : 'linux-x86_64-deb'];
+    assert.throws(checkEditedManifest(wrong), /Wrong updater product\/platform/);
+  }
 });
 
 test('node and manifest jobs pass the prepared draft ID to tooling from the workflow revision', () => {

@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { mkdir, readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
-import { chromium } from 'playwright';
+import { launch } from './e2e-browser.mjs';
 import { createServer } from '../apps/web/node_modules/vite/dist/node/index.js';
 import { TEST_PASSPHRASE, acceptNetworkNotice, consentAccepted, unlockBrowser } from './browser-vault.mjs';
 import { editStore, rawStore, storeHelpers } from './browser-store.mjs';
@@ -17,7 +17,7 @@ process.env.HOI_SANDBOX = '0';
 const server = await createServer({ root: resolve(root, 'apps/web'), logLevel: 'error', server: { host: '127.0.0.1', port: 0, hmr: false } });
 await server.listen();
 const origin = `http://127.0.0.1:${server.httpServer.address().port}`;
-const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH || undefined });
+const browser = await launch();
 const errors = [];
 const output = resolve(root, 'test-results/vault');
 const axePath = createRequire(import.meta.url).resolve('axe-core/axe.min.js');
@@ -303,6 +303,30 @@ try {
   assert.deepEqual(await where(legacy), { opfs: false, idb: true }, 'a store already in IndexedDB stays there');
   await legacy.reload(); await phase(legacy, 'locked'); await unlockBrowser(legacy); await phase(legacy, 'ready');
   assert.equal(await legacy.evaluate(async () => (await import('/src/lib/app.svelte.ts')).app.me.rootKey), legacyRoot);
+
+  // Deleting an active IndexedDB store invalidates the worker's connection. The person
+  // can keep pending changes in memory or explicitly discard them while locking.
+  await legacy.evaluate(() => new Promise((resolve, reject) => {
+    const request = indexedDB.deleteDatabase('hoi');
+    request.onsuccess = () => resolve();
+    request.onerror = () => reject(request.error);
+  }));
+  assert.match(await legacy.evaluate(async () => {
+    const { app } = await import('/src/lib/app.svelte.ts');
+    try { await app.core.setSettings({ motion: 'reduced' }); return ''; }
+    catch (error) { return error.message; }
+  }), /saved data.*sync is paused/);
+  const lockButton = legacy.getByRole('button', { name: 'Lock', exact: true });
+  const cancelled = legacy.waitForEvent('dialog').then(async dialog => {
+    assert.match(dialog.message(), /discard any unsaved changes/);
+    await dialog.dismiss();
+  });
+  await Promise.all([cancelled, lockButton.click()]);
+  await phase(legacy, 'ready');
+  const confirmed = legacy.waitForEvent('dialog').then(dialog => dialog.accept());
+  await Promise.all([confirmed, lockButton.click()]);
+  await legacy.getByRole('heading', { name: 'Protect this device', exact: true }).waitFor();
+  assert.deepEqual(await raw(legacy), { records: [], blobs: [] });
   await legacyContext.close();
 
   // Fail the first core save AFTER migration has installed passphrase A. The retry

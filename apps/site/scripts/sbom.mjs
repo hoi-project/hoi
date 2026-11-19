@@ -14,10 +14,12 @@
 // and repositories, and is rejected when a lockfile changes without it.
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
-import { dirname, join, relative, resolve } from 'node:path';
+import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
+// Sort by the package key alone; the tuple's metadata is not part of its identifier.
+const byPackageKey = ([a], [b]) => a < b ? -1 : a > b ? 1 : 0;
 const OUT = join(repo, 'apps/site/wiki/sbom/sbom.json');
 
 const LINUX = ['x86_64-unknown-linux-gnu', 'aarch64-unknown-linux-gnu'];
@@ -63,7 +65,7 @@ export function parseYaml(text) {
     if (!raw.trim() || raw.trimStart().startsWith('#')) continue;
     const indent = raw.length - raw.trimStart().length;
     const line = raw.trim();
-    const m = /^('(?:[^']|'')*'|"[^"]*"|[^:]+?):(?:\s+(.*))?$/.exec(line);
+    const m = /^('(?:[^']|'')*'|"[^"]*"|.+?):(?:\s+(.*))?$/.exec(line);
     if (!m) continue;
     let key = m[1];
     if (key.startsWith("'")) key = key.slice(1, -1).replace(/''/g, "'");
@@ -107,7 +109,7 @@ function npmClosure(pnpm, importer) {
   const direct = new Set();
   const snap = pnpm.snapshots ?? {};
   const visit = (name, ver, kind) => {
-    if (String(ver).startsWith('link:') || String(ver).startsWith('file:')) return;
+    if (String(ver).startsWith('link:')) return;
     const full = `${name}@${ver}`;
     const k = npmKey(name, baseVersion(ver));
     const had = kinds.get(k);
@@ -122,7 +124,7 @@ function npmClosure(pnpm, importer) {
   for (const [field, kind] of [['dependencies', 'prod'], ['optionalDependencies', 'prod'], ['devDependencies', 'dev']]) {
     for (const [n, spec] of Object.entries(imp[field] ?? {})) {
       const v = spec.version;
-      if (String(v).startsWith('link:') || String(v).startsWith('file:')) continue;
+      if (String(v).startsWith('link:')) continue;
       direct.add(npmKey(n, baseVersion(v)));
       visit(n, v, kind);
     }
@@ -267,7 +269,9 @@ function npmMeta(name, version) {
   const dir = readdirSync(store).find((d) => d === dirName || d.startsWith(dirName + '_'));
   const file = dir && join(store, dir, 'node_modules', name, 'package.json');
   let j;
-  if (file && existsSync(file)) j = JSON.parse(readFileSync(file, 'utf8'));
+  if (version === `file:vendor/${name}` && /^[a-z0-9][a-z0-9._-]*$/.test(name)) {
+    j = JSON.parse(readFileSync(join(repo, 'vendor', name, 'package.json'), 'utf8'));
+  } else if (file && existsSync(file)) j = JSON.parse(readFileSync(file, 'utf8'));
   else {
     // Not installed on this platform (an optional native binary): ask the registry once.
     const r = spawnSync('curl', ['-fsS', '--max-time', '20', `https://registry.npmjs.org/${name.replace('/', '%2F')}/${version}`], { encoding: 'utf8' });
@@ -276,6 +280,7 @@ function npmMeta(name, version) {
   }
   const repoUrl = typeof j.repository === 'string' ? j.repository : j.repository?.url;
   return {
+    version: j.version,
     license: typeof j.license === 'string' ? j.license : j.license?.type ?? (Array.isArray(j.licenses) ? j.licenses.map((l) => l.type).join(' OR ') : ''),
     description: j.description ?? '',
     repository: normalizeRepo(repoUrl) ?? httpUrl(j.homepage),
@@ -307,7 +312,7 @@ function regenerate() {
     full[lock] = cargoMetadata(lock);
     for (const p of full[lock].packages) {
       if (full[lock].workspace_members.includes(p.id)) continue;
-      const vendoredPath = p.source ? null : relative(repo, dirname(p.manifest_path));
+      const vendoredPath = p.source ? null : relative(repo, dirname(p.manifest_path)).split(sep).join('/');
       packages[cargoKey(p.name, p.version)] ??= {
         eco: 'cargo', name: p.name, version: p.version, license: clean(p.license) || (p.license_file ? 'see license file' : ''),
         description: clean(p.description), repository: normalizeRepo(p.repository) ?? httpUrl(p.homepage),
@@ -336,7 +341,7 @@ function regenerate() {
           if (c.direct.has(id)) direct.add(k);
         }
       }
-      for (const [k, v] of [...merged].sort()) {
+      for (const [k, v] of [...merged].sort(byPackageKey)) {
         entry.cargo.push({ k, kind: v.kind, direct: direct.has(k), targets: v.targets.length === prog.cargo.targets.length ? null : v.targets });
         if (prog.cargo.lock === 'core') reached.core.add(k);
       }
@@ -349,7 +354,7 @@ function regenerate() {
         for (const [k, kind] of c.kinds) merged.set(k, merged.get(k) === 'prod' ? 'prod' : kind);
         c.direct.forEach((k) => direct.add(k));
       }
-      for (const [k, kind] of [...merged].sort()) entry.npm.push({ k, kind: kind === 'prod' ? 'run' : 'dev', direct: direct.has(k) });
+      for (const [k, kind] of [...merged].sort(byPackageKey)) entry.npm.push({ k, kind: kind === 'prod' ? 'run' : 'dev', direct: direct.has(k) });
     }
     if (prog.gradle) entry.other = gradle();
     if (prog.swift) entry.other = swift();
@@ -379,7 +384,7 @@ function regenerate() {
   // npm package metadata.
   for (const [k, p] of npmPackages(pnpm)) {
     const m = npmMeta(p.name, p.version);
-    packages[k] = { eco: 'npm', name: p.name, version: p.version, license: m?.license ?? '', description: clean(m?.description), repository: m?.repository ?? null, integrity: p.integrity, platform: p.os || p.cpu ? [p.os, p.cpu].filter(Boolean).join(' ') : null };
+    packages[k] = { eco: 'npm', name: p.name, version: m?.version ?? p.version, ...(p.version.startsWith('file:vendor/') ? { vendored: p.version.slice(5) } : {}), license: m?.license ?? '', description: clean(m?.description), repository: m?.repository ?? null, integrity: p.integrity, platform: p.os || p.cpu ? [p.os, p.cpu].filter(Boolean).join(' ') : null };
   }
   const data = {
     $comment: 'Generated by apps/site/scripts/sbom.mjs from the lockfiles; checked by --check. Do not edit.',

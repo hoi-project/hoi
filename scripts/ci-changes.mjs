@@ -1,7 +1,8 @@
 // Which CI and Security jobs a run needs, from the files it changes (the `changes` job in ci.yml
 // and security.yml). A pull request compares its merge commit with the first parent (the base it
 // was merged into), so only the pull request's own changes count; a push compares `before` with
-// the pushed commit. Anything else (a manual or scheduled run, a new branch, a `before` that is
+// the pushed commit. A merge group compares its checked-out head with its advertised base so all
+// queued pull requests contribute paths. Anything else (a manual or scheduled run, a new branch, a `before` that is
 // gone) runs everything. Skipped jobs count as passed for required checks, which is why CI gates
 // jobs here instead of with workflow-level `paths:` filters (those leave required checks pending).
 //
@@ -36,9 +37,9 @@ function git(...args) {
 export function changedPaths(env = process.env) {
   try {
     if (env.EVENT === 'pull_request') return git('diff', '--name-only', 'HEAD^1', 'HEAD').split('\n').filter(Boolean);
-    if (env.EVENT === 'push' && env.BEFORE && !/^0+$/.test(env.BEFORE)) {
-      git('cat-file', '-e', `${env.BEFORE}^{commit}`);
-      return git('diff', '--name-only', env.BEFORE, 'HEAD').split('\n').filter(Boolean);
+    const base = env.EVENT === 'merge_group' ? env.QUEUE_BASE : env.EVENT === 'push' ? env.BEFORE : null;
+    if (base && /^[0-9a-f]{40}$/.test(base) && !/^0+$/.test(base)) {
+      return git('diff', '--no-renames', '--name-only', base, 'HEAD', '--').split('\n').filter(Boolean);
     }
   } catch {
     // history not available: check everything

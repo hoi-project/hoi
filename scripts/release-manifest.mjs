@@ -15,6 +15,20 @@ import { parseManifest } from './release-verify.mjs';
 
 const SETUP = /^hoi[ ._-]node[ ._-]setup_/i;
 
+// Tauri reads the installed bundle marker and tries its installer-specific target first.
+// Keep the original generic Linux entry for AppImages on older installations.
+export function updaterTargets(file) {
+  if (file.product) return [];
+  const os = { macos: 'darwin', linux: 'linux', windows: 'windows' }[file.platform];
+  const suffix = {
+    macos: { 'app.tar.gz': '' },
+    windows: { exe: '-nsis', msi: '-msi' },
+    linux: { AppImage: '', 'AppImage.tar.gz': '', deb: '-deb', rpm: '-rpm' },
+  }[file.platform]?.[file.kind];
+  if (!os || suffix === undefined) return [];
+  return (file.arch === 'universal' ? ['x86_64', 'aarch64'] : [file.arch]).map(arch => `${os}-${arch}${suffix}`);
+}
+
 export function classify(name) {
   const arch = /aarch64|arm64/i.test(name) ? 'aarch64' : /universal/i.test(name) ? 'universal' : 'x86_64';
   // The node setup app (apps/setup) ships beside the hoi app for the same platforms; `product`
@@ -71,14 +85,11 @@ const manifest = {
 };
 const platforms = {};
 for (const file of files) {
-  if (file.product === 'setup' || !existsSync(join(dir, `${file.name}.sig`))) continue;
-  const os = { macos: 'darwin', windows: 'windows', linux: 'linux' }[file.platform];
-  const installer = { 'app.tar.gz': '', exe: '-nsis', msi: '-msi', AppImage: '', 'AppImage.tar.gz': '' }[file.kind];
-  if (!os || installer === undefined) continue;
+  const targets = updaterTargets(file);
+  if (!targets.length || !existsSync(join(dir, `${file.name}.sig`))) continue;
   const signature = readFileSync(join(dir, `${file.name}.sig`), 'utf8').trim();
   if (!signature || signature.length > 8192) throw new Error(`Invalid updater signature: ${file.name}`);
-  for (const arch of file.arch === 'universal' ? ['aarch64', 'x86_64'] : [file.arch]) {
-    const target = `${os}-${arch}${installer}`;
+  for (const target of targets) {
     if (platforms[target]) throw new Error(`More than one updater artifact for ${target}.`);
     platforms[target] = { url: file.url, signature };
   }

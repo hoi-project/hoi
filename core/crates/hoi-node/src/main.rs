@@ -541,7 +541,7 @@ async fn main() {
     } else {
         CarryMode::Index
     });
-    if let Err(e) = std::fs::create_dir_all(&a.data) {
+    if let Err(e) = tokio::fs::create_dir_all(&a.data).await {
         eprintln!("hoi-node: can't create {}: {e}", a.data.display());
         std::process::exit(1);
     }
@@ -615,13 +615,16 @@ async fn main() {
     // What its declaration names (RFC-0006): this program, by version and by the BLAKE3 of its
     // file as started. Read from disk, so a replaced file is seen at the next start; a program
     // that changed itself in memory is not, which is why the declaration is no proof.
-    let digest = std::env::current_exe().and_then(std::fs::read).ok().map(|bytes| hoi_types::notice::hash_of(&bytes).hex());
+    let digest = tokio::task::spawn_blocking(|| std::env::current_exe().and_then(std::fs::read).ok().map(|bytes| hoi_types::notice::hash_of(&bytes).hex()))
+        .await
+        .ok()
+        .flatten();
     if node.set_software("hoi-node", env!("CARGO_PKG_VERSION"), digest.as_deref()).is_err() {
         eprintln!("hoi-node: cannot name this program in its declaration");
     }
     let mut notice_hash = None;
     if let Some(path) = &a.notice {
-        match load_notice(path).and_then(|n| node.set_notice(Some(n)).map_err(|e| e.message)) {
+        match load_notice(path).await.and_then(|n| node.set_notice(Some(n)).map_err(|e| e.message)) {
             Ok(hash) => notice_hash = hash,
             Err(e) => {
                 eprintln!("hoi-node: --notice {}: {e}", path.display());
@@ -775,7 +778,7 @@ async fn main() {
         println!("serving paired devices at {}", s.url);
         // The link carries the pairing token: it goes to a file only this user can read, and to
         // the terminal (and so to service logs) only when asked for.
-        match admin::write_private(&pairing_file, links.as_bytes()) {
+        match write_pairing_file(pairing_file.clone(), links.clone()).await {
             Ok(()) => println!("pairing link: written to {} (readable by this user only)", pairing_file.display()),
             Err(e) => eprintln!("hoi-node: could not write the pairing link to {}: {e}", pairing_file.display()),
         }
@@ -788,7 +791,7 @@ async fn main() {
         } else {
             println!("start with --show-pairing to print it here (it is a credential: keep it out of shared logs)");
         }
-    } else if std::fs::remove_file(&pairing_file).is_ok() {
+    } else if tokio::fs::remove_file(&pairing_file).await.is_ok() {
         // No pairing listener: a link left from an earlier run pairs with nothing and goes.
         println!("no pairing listener: removed {}", pairing_file.display());
     }
@@ -877,10 +880,10 @@ async fn main() {
             if let Some(d) = shared.with(|n| n.operator_declaration_hash()) {
                 println!("configuration declaration: hoi-node {} · {} · sent with the notice, signed by this node's key", env!("CARGO_PKG_VERSION"), &d[..12]);
             }
-            Some(tokio::spawn(refresh_notice(shared.clone(), path.clone(), notice_hash_file, hash)))
+            Some(tokio::spawn(refresh_notice(shared.clone(), path.clone(), notice_hash_file, hash, tokio::time::interval(NOTICE_POLL))))
         }
         _ => {
-            let _ = std::fs::remove_file(&notice_hash_file);
+            let _ = tokio::fs::remove_file(&notice_hash_file).await;
             None
         }
     };
@@ -1046,8 +1049,8 @@ fn pairing_text(st: &hoi_core::dto::NetStatus) -> Option<String> {
 
 /// Reads `--notice FILE`: JSON, as the installers and the app write it, checked the way the
 /// node checks it.
-fn load_notice(path: &std::path::Path) -> Result<hoi_types::NodeNotice, String> {
-    let text = std::fs::read_to_string(path).map_err(|e| format!("can't read it: {e}"))?;
+async fn load_notice(path: &std::path::Path) -> Result<hoi_types::NodeNotice, String> {
+    let text = tokio::fs::read_to_string(path).await.map_err(|e| format!("can't read it: {e}"))?;
     let notice: hoi_types::NodeNotice = serde_json::from_str(&text).map_err(|e| format!("not a notice file (JSON): {e}"))?;
     let problems = notice.validate();
     if !problems.is_empty() {
@@ -1059,32 +1062,25 @@ fn load_notice(path: &std::path::Path) -> Result<hoi_types::NodeNotice, String> 
 /// Keeps `DIR/notice-hash` on the hash of the notice this node carries, and takes a changed
 /// `--notice FILE` on: connected strangers hear the new words, links made from now on carry
 /// them. A file that no longer reads keeps the notice as it was, and says so once.
-async fn refresh_notice(shared: std::sync::Arc<Shared>, path: PathBuf, hash_file: PathBuf, hash: String) {
+async fn refresh_notice(shared: std::sync::Arc<Shared>, path: PathBuf, hash_file: PathBuf, hash: String, mut tick: tokio::time::Interval) {
     let mut written = None;
-    let mut modified = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+    let mut modified = tokio::fs::metadata(&path).await.and_then(|m| m.modified()).ok();
     let mut hash = hash;
     let mut complained = false;
-    let mut tick = tokio::time::interval(NOTICE_POLL);
     loop {
         if written.as_ref() != Some(&hash) {
-            match std::fs::write(
-                &hash_file,
-                format!(
-                    "{hash}
-"
-                ),
-            ) {
+            match tokio::fs::write(&hash_file, format!("{hash}\n")).await {
                 Ok(()) => written = Some(hash.clone()),
                 Err(e) => eprintln!("hoi-node: could not write the notice hash to {}: {e}", hash_file.display()),
             }
         }
         tick.tick().await;
-        let now = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+        let now = tokio::fs::metadata(&path).await.and_then(|m| m.modified()).ok();
         if now == modified {
             continue;
         }
         modified = now;
-        match load_notice(&path) {
+        match load_notice(&path).await {
             Ok(notice) => match shared.with(|n| n.set_notice(Some(notice))) {
                 Ok(Some(new)) => {
                     if new != hash {
@@ -1111,29 +1107,39 @@ async fn refresh_notice(shared: std::sync::Arc<Shared>, path: PathBuf, hash_file
 /// no strangers there is no link and no file.
 async fn refresh_node_link(shared: std::sync::Arc<Shared>, path: PathBuf) {
     let mut tick = tokio::time::interval(std::time::Duration::from_secs(2));
-    let mut written: Option<String> = None;
-    let mut first = true;
+    // None means the on-disk state is unknown, including after a failed first removal.
+    let mut written: Option<Option<String>> = None;
     loop {
         tick.tick().await;
         let link = shared.with(|n| n.net_status().node_link);
-        if link == written && !first {
-            continue;
-        }
-        first = false;
-        match &link {
-            Some(l) => match std::fs::write(&path, format!("{l}\n")) {
-                Ok(()) => println!(
-                    "node link (anyone who opens it finds the communities this node carries, and the next nodes along):\n\n  {l}\n\n  {}\n",
-                    link_holds(l)
-                ),
-                Err(e) => eprintln!("hoi-node: could not write the node link to {}: {e}", path.display()),
-            },
-            None => {
-                let _ = std::fs::remove_file(&path);
+        match sync_node_link(&path, &mut written, link.as_deref()).await {
+            Ok(true) => {
+                if let Some(l) = link {
+                    println!(
+                        "node link (anyone who opens it finds the communities this node carries, and the next nodes along):\n\n  {l}\n\n  {}\n",
+                        link_holds(&l)
+                    );
+                }
             }
+            Ok(false) => {}
+            Err(e) => eprintln!("hoi-node: could not update the node link at {}: {e}", path.display()),
         }
-        written = link;
     }
+}
+
+async fn sync_node_link(path: &std::path::Path, written: &mut Option<Option<String>>, link: Option<&str>) -> std::io::Result<bool> {
+    if written.as_ref().map(|last| last.as_deref()) == Some(link) {
+        return Ok(false);
+    }
+    if let Some(l) = link {
+        tokio::fs::write(path, format!("{l}\n")).await?;
+    } else if let Err(e) = tokio::fs::remove_file(path).await
+        && e.kind() != std::io::ErrorKind::NotFound
+    {
+        return Err(e);
+    }
+    *written = Some(link.map(str::to_owned));
+    Ok(true)
 }
 
 /// What a node link holds, in words: its addresses are packed into the code, out of sight.
@@ -1224,6 +1230,11 @@ fn addresses_text(exposure: &[hoi_core::dto::Exposure]) -> String {
     out
 }
 
+// Preserve the owner-only mode and atomic replacement while the fsync runs on the blocking pool.
+async fn write_pairing_file(path: PathBuf, links: String) -> std::io::Result<()> {
+    tokio::task::spawn_blocking(move || admin::write_private(&path, links.as_bytes())).await?
+}
+
 /// Each link pairs one device and is then spent: keeps `DIR/pairing-link`
 /// on the node's next link, so the file never offers a spent one. Says that it changed, never
 /// the link itself.
@@ -1235,7 +1246,7 @@ async fn refresh_pairing_file(shared: std::sync::Arc<Shared>, path: PathBuf, mut
         if links == written {
             continue;
         }
-        match admin::write_private(&path, links.as_bytes()) {
+        match write_pairing_file(path.clone(), links.clone()).await {
             Ok(()) => {
                 println!("a device paired; the next pairing link is in {}", path.display());
                 written = links;
@@ -1246,8 +1257,30 @@ async fn refresh_pairing_file(shared: std::sync::Arc<Shared>, path: PathBuf, mut
 }
 
 #[cfg(test)]
+#[path = "tests/node_files.rs"]
+mod node_file_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn node_link_retries_the_same_link_after_storage_recovers() {
+        let dir = std::env::temp_dir().join(format!("hoi-node-link-{}", std::process::id()));
+        let path = dir.join("node-link");
+        let mut written = None;
+        let link = Some("https://example.com/app/");
+        tokio::fs::create_dir(&dir).await.unwrap();
+        tokio::fs::create_dir(&path).await.unwrap();
+        assert!(sync_node_link(&path, &mut written, link).await.is_err());
+        tokio::fs::remove_dir(&path).await.unwrap();
+        assert!(sync_node_link(&path, &mut written, link).await.unwrap());
+        assert!(!sync_node_link(&path, &mut written, link).await.unwrap());
+        assert_eq!(tokio::fs::read_to_string(&path).await.unwrap(), "https://example.com/app/\n");
+        sync_node_link(&path, &mut written, None).await.unwrap();
+        assert!(!path.exists());
+        tokio::fs::remove_dir(dir).await.unwrap();
+    }
+
     #[test]
     fn the_operator_reads_which_address_goes_to_whom() {
         let e = |address: &str, scope: &str, from_router: bool, told: &[&str]| hoi_core::dto::Exposure {

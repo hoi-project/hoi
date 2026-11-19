@@ -25,13 +25,13 @@ try {
   assert.notEqual(proofs[0].community, proofs[1].community);
   const put = (proof) => fetch(url, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(proof) });
   const claims = await Promise.all(proofs.map(put));
-  assert.deepEqual(claims.map((r) => r.status).sort(), [200, 409]);
+  assert.deepEqual(claims.map((r) => r.status).sort((a, b) => a - b), [200, 409]);
   const winner = proofs[claims.findIndex((r) => r.status === 200)];
   assert.equal((await put(winner)).status, 200);
   assert.deepEqual(await (await fetch(`${url}?name=shared-name`)).json(), { name: winner.name, community: winner.community, proof: { version: 1, signature: winner.signature } });
   const publish = (proof) => fetch(url.replace('/v1/', '/v2/'), { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(proof) });
   const published = await Promise.all(publications.map(publish));
-  assert.deepEqual(published.map(r => r.status).sort(), [200, 409]);
+  assert.deepEqual(published.map(r => r.status).sort((a, b) => a - b), [200, 409]);
   const listing = await published[claims.findIndex(r => r.status === 200)].json();
   assert.equal(listing.community, winner.community);
   assert.equal(listing.compatible, true);

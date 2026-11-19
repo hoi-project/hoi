@@ -20,7 +20,7 @@ hoi-net.workspace = true
 iroh-relay = { version = "=1.4.1", default-features = false, features = ["server", "tls-ring"] }
 hoi-crypto.workspace = true
 hoi-types.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["fs"] }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

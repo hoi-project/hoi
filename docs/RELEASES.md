@@ -39,7 +39,11 @@ node scripts/release-check.mjs dist/release/v1.0.0-preview.1
 
 This checks the manifest signature, every listed file's size/hash, and every updater
 artifact's platform and signed version, and requires an updater package for each desktop
-platform included in the candidate. Node-only candidates remain supported. Upload workflows
+platform included in the candidate. Each Linux installation format in the release needs
+its own signed updater target. Debian installs select `linux-ARCH-deb`, RPM installs select
+`linux-ARCH-rpm`, and AppImages select `linux-ARCH`. Tauri signs the finished package bytes
+and their version with the updater key, independently of operating-system package signing.
+Node-only candidates remain supported. Upload workflows
 run this check before uploading the signed manifest.
 Host the manifest and signature together with CORS for the app/site when origins differ;
 serve metadata without a long cache lifetime. Keep old artifacts while clients finish updates.

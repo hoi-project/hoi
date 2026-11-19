@@ -3,7 +3,7 @@
 // Where the browser has sync access handles, the cells live in OPFS log files (opfs.ts);
 // elsewhere, and for a store that already lives there, in IndexedDB.
 
-import { LogStore, handleClosed, opfsHolds, opfsRoot, openOpfs, removeOpfs } from './opfs';
+import { LogStore, StoreLost, handleClosed, opfsHolds, opfsRoot, openOpfs, removeOpfs } from './opfs';
 
 const DB = 'hoi';
 const VERSION = 1;
@@ -177,10 +177,33 @@ export async function migrate(db: Db, saved: Snapshot, vault: VaultCipher): Prom
   await apply(db, changes, vault);
 }
 
+/** A connection invalidated by deletion or a version change must never open a new database
+ * under the same name and replay the old vault's journal into it. Reload inspects it afresh. */
+function writeTransaction(db: IDBDatabase, stores: string[]) {
+  try {
+    return db.transaction(stores, 'readwrite');
+  } catch (error) {
+    if (handleClosed(error)) throw new StoreLost('The database connection closed.', { cause: error });
+    throw error;
+  }
+}
+
+async function writeFrame(db: LogStore, batch: Change[]): Promise<void> {
+  try {
+    db.write(batch);
+  } catch (error) {
+    // A failed write hasn't advanced the in-memory log. Reacquire checks the durable end
+    // before replaying the frame and refuses to write into cleared or replaced files.
+    if (!handleClosed(error)) throw error;
+    await db.reacquire();
+    db.write(batch);
+  }
+}
+
 /** Saves a vault header that changed (a passkey added or removed); the cells stay. */
 export async function saveHeader(db: Db, vault: VaultCipher): Promise<void> {
-  if (db instanceof LogStore) return db.write([{ op: 'blob', key: 'vault', value: vault.header() }]);
-  const tx = db.transaction(['blobs'], 'readwrite');
+  if (db instanceof LogStore) return writeFrame(db, [{ op: 'blob', key: 'vault', value: vault.header() }]);
+  const tx = writeTransaction(db, ['blobs']);
   const finished = done(tx);
   tx.objectStore('blobs').put(vault.header(), 'vault');
   await finished;
@@ -216,20 +239,11 @@ export async function apply(db: Db, changes: Change[], vault: VaultCipher): Prom
       { op: 'blob', key: 'format', value: GUARD },
       { op: 'blob', key: 'vault-manifest', value: sealedManifest },
     ];
-    try {
-      db.write(batch);
-    } catch (e) {
-      // The browser closed the files behind the store's back. `write` moves the store's size and
-      // state only after its write and flush succeed, so the same frame can go again once the
-      // files are open again as the store left them; if they are not, `reacquire` throws StoreLost.
-      if (!handleClosed(e)) throw e;
-      await db.reacquire();
-      db.write(batch);
-    }
+    await writeFrame(db, batch);
     manifests.set(vault, manifest);
     return;
   }
-  const tx = db.transaction(['records', 'blobs'], 'readwrite');
+  const tx = writeTransaction(db, ['records', 'blobs']);
   const finished = done(tx);
   const records = tx.objectStore('records');
   const blobs = tx.objectStore('blobs');

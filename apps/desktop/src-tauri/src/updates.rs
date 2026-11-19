@@ -3,7 +3,7 @@ use crate::release_verification as verify;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use serde_json::{Value, json};
 use tauri::{AppHandle, Emitter, Manager, State};
-use tauri_plugin_updater::{Update, UpdaterExt};
+use tauri_plugin_updater::{Update, Updater, UpdaterBuilder, UpdaterExt};
 
 #[derive(Default)]
 pub struct Updates(pub tokio::sync::Mutex<Option<Pending>>);
@@ -18,7 +18,8 @@ fn config() -> Value {
     serde_json::from_str(include_str!("../../../../publication.json")).expect("publication config")
 }
 fn client() -> Result<reqwest::Client, String> {
-    reqwest::Client::builder()
+    hoi_net::public_http_client_builder()
+        .map_err(|_| "Could not initialize secure update downloads.")?
         .https_only(true)
         .timeout(std::time::Duration::from_secs(120))
         .redirect(reqwest::redirect::Policy::limited(5))
@@ -47,6 +48,28 @@ async fn fetch(url: &str, max: u64, progress: impl Fn(u64)) -> Result<Vec<u8>, S
     Ok(bytes)
 }
 
+#[cfg(test)]
+#[tokio::test]
+async fn manual_update_fetch_reports_a_failed_tls_handshake() {
+    use tokio::io::AsyncReadExt;
+
+    let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    let manifest = format!("https://{}/manifest.json", listener.local_addr().unwrap());
+    let receiver = async {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut header = [0; 1];
+        socket.read_exact(&mut header).await.unwrap();
+        assert_eq!(header[0], 0x16, "the manual check must initiate a TLS handshake");
+        // Closing before the handshake finishes stands in for an unreachable release service.
+    };
+    let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        tokio::join!(fetch(&manifest, verify::MAX_MANIFEST as u64, |_| {}), receiver)
+    })
+    .await
+    .expect("the manual update check should return");
+    assert_eq!(result.unwrap_err(), "Could not reach the release host. Check your connection and retry.");
+}
+
 #[tauri::command]
 pub async fn hoi_update_check(app: AppHandle, state: State<'_, Updates>) -> Result<Value, String> {
     let mut slot = state.0.lock().await;
@@ -60,7 +83,7 @@ pub async fn hoi_update_check(app: AppHandle, state: State<'_, Updates>) -> Resu
     }
     let installed = app.package_info().version.to_string();
     let path = app.path().app_data_dir().map_err(|_| "Local update settings are unavailable.")?.join("release-seen.json");
-    let seen: Value = std::fs::read(&path).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or(Value::Null);
+    let seen: Value = tokio::fs::read(&path).await.ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or(Value::Null);
     let build: Value = serde_json::from_str(include_str!("../../../../release.json")).expect("release config");
     let mut minimum = installed.clone();
     if let Some(v) = seen["version"].as_str() {
@@ -78,20 +101,18 @@ pub async fn hoi_update_check(app: AppHandle, state: State<'_, Updates>) -> Resu
     if build["channel"] == "stable" && manifest["release"]["channel"] != "stable" {
         return Err("A preview update was rejected by this stable build.".into());
     }
-    let updater = app
-        .updater_builder()
-        .pubkey(STANDARD.encode(format!("untrusted comment: hoi updater public key\n{updater_key}\n")))
-        .build()
-        .map_err(|_| "Updates are not supported by this installation. Use the verified download page.")?;
+    let updater = verified_feed_updater(app.updater_builder(), &url, updater_key)?;
     let update = updater.restore_update(manifest["updater"].clone()).map_err(|_| "This release has no compatible update for this installation.")?;
     if let Some(update) = update {
-        let (size, hash) = verify::artifact(&manifest, update.download_url.as_str(), std::env::consts::OS, std::env::consts::ARCH)?;
+        let (size, hash) =
+            verify::artifact(&manifest, update.download_url.as_str(), std::env::consts::OS, std::env::consts::ARCH, tauri::utils::platform::bundle_type())?;
         *slot = Some(Pending { update, size, hash, bytes: None });
     }
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|_| "Could not save update verification state.")?;
+        tokio::fs::create_dir_all(parent).await.map_err(|_| "Could not save update verification state.")?;
     }
-    std::fs::write(path, json!({"version":manifest["latest"],"revision":manifest["release"]["revision"]}).to_string())
+    tokio::fs::write(path, json!({"version":manifest["latest"],"revision":manifest["release"]["revision"]}).to_string())
+        .await
         .map_err(|_| "Could not save update verification state.")?;
     Ok(json!({"state":if slot.is_some() {"available"} else {"current"}, "version":manifest["latest"], "message":manifest["release"]["notice"]["message"]}))
 }
@@ -109,6 +130,38 @@ pub async fn hoi_update_download(app: AppHandle, state: State<'_, Updates>) -> R
     pending.update.verify(&bytes).map_err(|_| "The update package signature or signed version did not verify. Nothing was installed.")?;
     pending.bytes = Some(bytes);
     Ok(())
+}
+
+fn verified_feed_updater(builder: UpdaterBuilder, manifest_url: &str, key: &str) -> Result<Updater, String> {
+    let endpoint = reqwest::Url::parse(manifest_url).map_err(|_| "The release manifest address is invalid.")?;
+    if endpoint.scheme() != "https" {
+        return Err("The release manifest must use HTTPS.".into());
+    }
+    // The plugin requires an endpoint even for restore_update(), which performs no request.
+    // Reuse the manifest just fetched and authenticated by the manual command.
+    builder
+        .endpoints(vec![endpoint])
+        .map_err(|_| "The release manifest address is invalid.")?
+        .pubkey(STANDARD.encode(format!("untrusted comment: hoi updater public key\n{key}\n")))
+        .build()
+        .map_err(|_| "Updates are not supported by this installation. Use the verified download page.".into())
+}
+
+#[cfg(test)]
+#[test]
+fn authenticated_release_constructs_an_updater_without_another_request() {
+    let mut context = tauri::test::mock_context(tauri::test::noop_assets());
+    context.config_mut().plugins.0.insert("updater".to_string(), json!({ "pubkey": "" }));
+    let app = tauri::test::mock_builder().plugin(tauri_plugin_updater::Builder::new().build()).build(context).unwrap();
+    let fixture: Value = serde_json::from_str(include_str!("../../../../scripts/fixtures/release-signed.json")).unwrap();
+    let key = fixture["key"].as_str().unwrap();
+    let manifest = verify::verify(fixture["manifest"].as_str().unwrap().as_bytes(), fixture["signature"].as_str().unwrap(), key, "0.1.0", 1).unwrap();
+    let builder = app.updater_builder().target("linux-x86_64").configure_client(|_| panic!("the signed manifest was already fetched"));
+    let updater = verified_feed_updater(builder, "https://release.example/manifest.json", key).unwrap();
+    let update = updater.restore_update(manifest["updater"].clone()).unwrap().unwrap();
+    update.verify(fixture["artifact"].as_str().unwrap().as_bytes()).unwrap();
+    assert!(update.verify(b"altered package").is_err());
+    assert!(verified_feed_updater(app.updater_builder(), "http://release.example/manifest.json", key).is_err());
 }
 
 #[tauri::command]
@@ -134,4 +187,21 @@ pub async fn hoi_update_install(app: AppHandle, state: State<'_, Updates>, start
     }
     *slot = None;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn bundled_updater_config_initializes_without_automatic_requests() {
+        let config: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        // The plugin deserializes before our commands can supply the publication key.
+        // A missing entry is null and prevents the installed app from starting.
+        let updater: tauri_plugin_updater::Config = serde_json::from_value(config["plugins"]["updater"].clone()).expect("bundled updater config initializes");
+        assert!(updater.endpoints.is_empty(), "only an explicit check may contact the publication host");
+        assert!(updater.require_signed_version, "updates bind their announced version to the package signature");
+        assert!(!updater.allow_downgrades);
+        assert!(!updater.dangerous_insecure_transport_protocol);
+        assert!(!updater.dangerous_accept_invalid_certs);
+        assert!(!updater.dangerous_accept_invalid_hostnames);
+    }
 }
