@@ -22,6 +22,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { KEY_WORK_TIMEOUT, STAMP_TIMEOUT, launch, transportPage } from './e2e-browser.mjs';
 import { unlockBrowser } from './browser-vault.mjs';
+import { loadPublication } from './publication.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const args = process.argv.slice(2);
@@ -90,14 +91,15 @@ const lenas = await start(
   ['--data', lenaData, '--listen', '127.0.0.1:17862', '--rtc-port', '17864',
     '--rtc-advertise', '127.0.0.1:17864', '--name', "lena's pi", '--no-port-mapping', '--notice', noticeFile],
   {},
-  linkIn,
+  out => out.includes('configuration declaration:') && linkIn(out),
 ).catch((e) => fail(e.message));
 const lenaLink = lenas.match.query;
 if (!/a public node: passing on the public nodes/.test(lenas.out())) fail(`a plain hoi-node is not a public node:\n${lenas.out()}`);
 if (!/operator notice: by Lena · contact lena at example dot org · server in XX/.test(lenas.out())) fail(`the node did not take the notice:\n${lenas.out()}`);
 if (!lenas.match.notice) fail(`the node link carries no signed notice: ${lenaLink}`);
 if (!lenaLink.startsWith('code=') || /127\.0\.0\.1|@/.test(lenaLink)) fail(`the node link shows its addresses: ${lenaLink}`);
-if (!readFileSync(join(lenaData, 'notice-hash'), 'utf8').trim().match(/^[0-9a-f]{64}$/)) fail('no notice-hash file');
+const configuration = lenas.out().match(/configuration declaration: hoi-node \S+ · ([0-9a-f]{12}) ·/)?.[1];
+if (!configuration) fail('the node did not report its signed configuration');
 console.log("✓ lena's pi is up as a public node with no registry, relay or node configured, printed its node link with her signed notice in it");
 await start(process.execPath, [join(root, 'apps/web/node_modules/vite/bin/vite.js'), 'preview', '--host', '127.0.0.1', '--port', String(WEB_PORT), '--strictPort'], { cwd: join(root, 'apps/web') }, (out) => out.includes(String(WEB_PORT))).catch((e) => fail(e.message));
 const base = `http://127.0.0.1:${WEB_PORT}/`;
@@ -105,6 +107,7 @@ const nodeLink = `${base}#/node?${lenaLink}`;
 console.log(`✓ web app at ${base}, nothing configured in it`);
 
 const browser = await launch({ headless: !args.includes('--headed') });
+const { downloads } = loadPublication();
 const errors = [];
 const snap = async (page, name) => shots && page.screenshot({ path: join(shots, `${name}.png`), fullPage: true });
 
@@ -119,6 +122,11 @@ async function sayHoi(page, who, next) {
 
 /** Opens lena's node link with no key yet: make one, then connect to the node it names. */
 async function openNodeLink(page, who) {
+  // Keep the preview banner's release lookup local while the browser talks to the real node.
+  if (downloads) {
+    await page.route(`${downloads.replace(/\/+$/, '')}/manifest.json`, route =>
+      route.fulfill({ contentType: 'application/json', path: join(root, 'apps/site/public/releases/manifest.json') }));
+  }
   await page.goto(nodeLink);
   await unlockBrowser(page);
   await page.fill('input.input.big', who);
@@ -126,11 +134,21 @@ async function openNodeLink(page, who) {
   await sayHoi(page, who, 'Look at this node →');
   await page.getByRole('heading', { name: 'A public node.' }).waitFor();
   // Lena's notice, read from the link and checked against her node's key, before any dial.
+  const noticeHash = readFileSync(join(lenaData, 'notice-hash'), 'utf8').trim();
+  if (!/^[0-9a-f]{64}$/.test(noticeHash)) fail('no notice-hash file');
   await page.getByText("Join notice – lena's pi").waitFor();
   await page.getByText('This node is operated by Lena. Contact: lena at example dot org.').waitFor();
   await page.getByText('IP addresses are not logged.').waitFor();
   await page.getByRole('button', { name: 'Accept and connect' }).click();
   await page.waitForURL(/#\/communities/);
+  // The live hello adds signed roles and limits to the notice from the link. Each browser
+  // reviews that configuration before the node can serve the community.
+  const declaration = page.getByRole('article', { name: "Join notice – lena's pi", exact: true })
+    .filter({ hasText: `Notice version ${noticeHash.slice(0, 12)},` })
+    .filter({ hasText: `Configuration ${configuration}.` });
+  const consent = page.getByRole('dialog', { name: 'Before this node serves you' }).filter({ has: declaration });
+  await consent.getByText('Roles and limits.', { exact: true }).waitFor({ timeout: 60_000 });
+  await consent.getByRole('button', { name: 'Accept and join', exact: true }).click();
   await page.getByRole('status').filter({ hasText: /1 public node reached before, 1 connected now/ }).waitFor({ timeout: 60_000 });
 }
 
