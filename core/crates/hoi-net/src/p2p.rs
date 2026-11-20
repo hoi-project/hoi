@@ -574,7 +574,7 @@ mod tests {
         n.set_identity_bits(8);
         Shared::new(n, Box::new(|_| {}))
     }
-    fn native_voucher_fixture(holder: Id, holder_hello: &[u8]) -> Arc<Shared> {
+    fn native_voucher_fixture(identity: &hoi_crypto::Keypair, holder: Id, holder_hello: &[u8]) -> Arc<Shared> {
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
         let sightings = format!(
             r#"{{"holders":{{"{}":{{"first":{},"last":{},"checked":168.0,"present":168.0,"routes":["{}@192.0.2.90:7843"]}}}}}}"#,
@@ -583,7 +583,8 @@ mod tests {
             now,
             holder.hex()
         );
-        let initial = hoi_store::Loaded { records: vec![], blobs: vec![("scatter".into(), sightings.into_bytes())] };
+        let keys = format!(r#"{{"transport":"{}"}}"#, hoi_types::hex_encode(&identity.secret()));
+        let initial = hoi_store::Loaded { records: vec![], blobs: vec![("keys".into(), keys.into_bytes()), ("scatter".into(), sightings.into_bytes())] };
         let mut n = Node::open(Box::new(hoi_store::Journal::with_initial(initial)), "node", "https://example.com/app/", hoi_core::system_clock()).unwrap();
         n.set_settings(&hoi_core::dto::SettingsPatch { relay: Some(true), ..Default::default() }).unwrap();
         n.set_carry_policy(hoi_core::CarryPolicy::Any, 64);
@@ -611,14 +612,24 @@ mod tests {
             .find(|(_, b)| matches!(hoi_sync::Msg::decode(b), Ok(hoi_sync::Msg::Hello { holder: Some(_), .. })))
             .unwrap()
             .1;
-        let first = native_voucher_fixture(holder, &holder_hello);
-        let second = native_voucher_fixture(holder, &holder_hello);
-        let endpoint = |n: &Arc<Shared>| n.with(|n| hoi_crypto::Keypair::from_secret(&n.transport_secret().unwrap()).public());
-        let (low, high) = if endpoint(&first) < endpoint(&second) { (first, second) } else { (second, first) };
+        let mut identities = [hoi_crypto::Keypair::generate().unwrap(), hoi_crypto::Keypair::generate().unwrap()];
+        identities.sort_by_key(|key| key.public());
+        let [low, high] = identities;
+        let has_session = |n: &Arc<Shared>, incoming: bool| {
+            n.with(|n| {
+                let status = n.net_status();
+                let mut peers = status.connections.iter().filter(|c| c.peer.starts_with("peer-") && c.connected);
+                peers.next().is_some_and(|c| c.incoming == incoming) && peers.next().is_none()
+            })
+        };
         for (observer_high, selection) in [(true, "selected"), (false, "selected"), (true, "discovered"), (true, "wrong-identity")] {
             for observer_first in [true, false] {
-                let (observer, voucher) = if observer_high { (high.clone(), low.clone()) } else { (low.clone(), high.clone()) };
-                let voucher_id = endpoint(&voucher);
+                // Each row owns its node state. Previously learned public-node dial routes
+                // would otherwise let the supervisor establish an extra, uncontrolled session.
+                let (observer_key, voucher_key) = if observer_high { (&high, &low) } else { (&low, &high) };
+                let observer = native_voucher_fixture(observer_key, holder, &holder_hello);
+                let voucher = native_voucher_fixture(voucher_key, holder, &holder_hello);
+                let voucher_id = voucher_key.public();
                 let selected_peers = match selection {
                     "selected" => vec![voucher_id],
                     "wrong-identity" => vec![holder],
@@ -637,28 +648,28 @@ mod tests {
                     })
                 };
                 let first = if observer_first { dial(&a, &b, observer.clone()) } else { dial(&b, &a, voucher.clone()) };
-                until("the first authenticated native session opened", || {
-                    observer.with(|n| n.net_status().connections.iter().any(|c| c.peer.starts_with("peer-") && c.connected))
-                })
-                .await;
+                until("both ends completed hello on the first dial", || has_session(&observer, !observer_first) && has_session(&voucher, observer_first)).await;
                 let second = if observer_first { dial(&b, &a, voucher.clone()) } else { dial(&a, &b, observer.clone()) };
-                until("deduplication preserves selection while retaining physical direction", || {
-                    observer.with(|n| {
-                        let connections: Vec<_> = n.net_status().connections.into_iter().filter(|c| c.peer.starts_with("peer-") && c.connected).collect();
-                        connections.len() == 1
-                            && connections[0].incoming == observer_high
-                            && n.scatter_places() == usize::from(selection == "selected" || !observer_high)
-                    })
+                // The lower ID initiates the retained connection. Wait for the other dial to
+                // exit even when the preferred session was already the first one observed.
+                let (loser, winner) = if observer_first == observer_high { (first, second) } else { (second, first) };
+                tokio::time::timeout(Duration::from_secs(30), loser).await.expect("the duplicate authenticated dial closed").unwrap();
+                let expected_places = usize::from(selection == "selected" || !observer_high);
+                let case = format!("observer_high={observer_high}, observer_first={observer_first}, selection={selection}");
+                until(&format!("both ends retain the lower ID's dial: {case}"), || {
+                    has_session(&observer, observer_high) && has_session(&voucher, !observer_high)
                 })
                 .await;
+                until(&format!("deduplication preserves holder eligibility: {case}"), || observer.with(|n| n.scatter_places()) == expected_places).await;
                 // The normal path observer refreshes metadata every two seconds. Selection
                 // must stay bound to remote_id across that refresh as well as the handshake.
                 tokio::time::sleep(Duration::from_millis(2100)).await;
-                assert_eq!(observer.with(|n| n.scatter_places()), usize::from(selection == "selected" || !observer_high));
+                assert!(!winner.is_finished(), "the winning test dial must still be serving: {case}");
+                assert!(has_session(&observer, observer_high) && has_session(&voucher, !observer_high), "{case}");
+                assert_eq!(observer.with(|n| n.scatter_places()), expected_places, "{case}");
                 a.shutdown().await;
                 b.shutdown().await;
-                first.await.unwrap();
-                second.await.unwrap();
+                winner.await.unwrap();
             }
         }
     }
