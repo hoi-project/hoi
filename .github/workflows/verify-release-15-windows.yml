@@ -1,0 +1,45 @@
+name: Windows native peer regression
+on:
+  push:
+    branches: [ci/verify-release-15-candidate]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  CARGO_PROFILE_TEST_DEBUG: line-tables-only
+
+jobs:
+  windows:
+    name: Native peer deduplication and network suite
+    runs-on: windows-latest
+    timeout-minutes: 55
+    defaults:
+      run:
+        working-directory: core
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 42fad4061841bd8df1f4843c5ef16ad8cf33be0a
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca
+        with:
+          toolchain: "1.97.0"
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+        with:
+          workspaces: core
+      - name: Check the complete network library
+        run: cargo test --locked -p hoi-net --lib
+      - name: Repeat the peer test with fresh endpoints
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          failures=0
+          for pass in {1..12}; do
+            echo "Native peer test run $pass/12"
+            cargo test --locked -p hoi-net --lib p2p::tests::selected_native_vouches_survive_both_authenticated_dedup_orders -- --exact --nocapture || failures=$((failures + 1))
+          done
+          echo "$failures failed repetitions"
+          test "$failures" -eq 0
