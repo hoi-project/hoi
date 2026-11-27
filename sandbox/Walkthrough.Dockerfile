@@ -1,5 +1,5 @@
 # The observation package contains real clients and services; production builds never import it.
-FROM rust:1.99-slim-bookworm@sha256:f2c004e3d2d8b547e8cf7ffbc29205385f4e71d23e53e4e383065db5e9f822cd AS core
+FROM rust:1.100-slim-bookworm@sha256:7c7d4eb4d05b7781187a327809466cfddf29753f6defdc3d19a0e291951b7a37 AS core
 WORKDIR /src/core
 COPY core .
 COPY release.json /src/release.json
@@ -9,7 +9,7 @@ RUN rustup target add wasm32-unknown-unknown && cargo build --locked -p hoi-wasm
 RUN cargo install --locked wasm-bindgen-cli --version 0.2.129
 RUN wasm-bindgen --target web --out-dir /wasm --out-name hoi_wasm target/wasm32-unknown-unknown/wasm/hoi_wasm.wasm
 
-FROM node:25-bookworm-slim@sha256:81db02c4b671288a03915da9534dbd54f96d0e7c24d80ccc54f5b36b2e684370
+FROM node:26-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1
 WORKDIR /srv
 # Node 25 no longer bundles Corepack; install the workspace's pinned package manager.
 RUN npm install --global --ignore-scripts pnpm@10.28.0
