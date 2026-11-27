@@ -339,6 +339,7 @@ Service worker: activates, deletes older <code>hoi-*</code> caches; the page rel
       <li><code>public-copy.test.mjs</code>: no email address or deployment-configuration hint in any public page.</li>
       <li><code>e2e-deployment.mjs</code>: the assembled site, served with no headers at all, carries its policy in every page and needs no inline styles or scripts.</li>
     </ul>
+    <p>The app's IP country data is bundled too. <code>scripts/geo-assets.mjs</code> builds it from ip-location-db <code>user-country</code> (PDDL-1.0, checked against its published SHA-256 files), Natural Earth 5.1.2 and IANA tzdata 2026f (both public domain, pinned by SHA-256), using Node built-ins only. <code>src/lib/geo/data/manifest.json</code> records every source, licence, date and hash. The tables load from the app's own origin only after a check, and the service worker does not precache them.</p>
     <p>The website's <code>robots.txt</code> says it plainly: "hoi.sh is a static site with nothing to hide and nothing to track." Nothing in the site or app includes analytics or crash reporting. What the app does contact (nodes, a registry, relays) is described on <a href="/wiki/discovery/">Discovery</a> and <a href="/wiki/transports/">Transports</a>.</p>
   </section>
 

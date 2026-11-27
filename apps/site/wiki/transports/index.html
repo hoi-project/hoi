@@ -682,9 +682,10 @@ Browser -> Public node: <code>hello</code> {n, ch: salted community hashes, …}
       </table>
     </div>
     <h3 id="connection-ip">Read the address for an active connection</h3>
-    <p>In the app header, open <b>Connection IP → Details</b>. Each entry names its source. A directly connected node can report the address it sees, and WebRTC can report a source address from this browser's active path. A local or loopback address describes only that link. If a report is unavailable, the observer may still see the address. Opening the panel reads current reports already in memory.</p>
+    <p>In the app header, the status pill under the bar opens <b>Your connection IP</b>. Each entry names its source. A directly connected node can report the address it sees, and WebRTC can report a source address from this browser's active path. A local or loopback address describes only that link. If a report is unavailable, the observer may still see the address. Opening the panel reads current reports already in memory.</p>
     <p>With a home node, read <b>This device to its home node and other connections</b> and <b>Home node to other nodes</b> separately. A paired device can see the home node's reported onward addresses. A destination reached through a packet relay has no direct observation of the client's source IP on that route. The relay sees the address used to reach it.</p>
     <p>A working VPN can make a peer see the VPN exit address. The VPN interface address is local to the device, and peers on other paths can see different addresses. A report from one observer cannot verify the VPN for every connection. The listening addresses in <b>You</b> tell peers how to reach the device.</p>
+    <p>After <b>Check public IP</b>, <b>Check connection</b> or <b>Show country</b>, the app looks up the country each address is listed in, from tables built into the app, and compares it with the device's time zone. The pill then says <b>your time zone</b>, <b>not your time zone</b> or <b>Routes differ</b> when two observers see different countries. Nothing is sent anywhere for the lookup. A country is approximate and does not show whether a VPN is on.</p>
   </section>
 
   <section class="wk-sec" id="next">
