@@ -35,18 +35,6 @@ The two application workspaces intentionally use the same `[patch.crates-io]` en
   verifies the plugin resolves these exact patched bytes and exercises malicious
   keys as well as Svelte's array replacement and function options.
 
-- `picomatch` contains the MIT-licensed runtime from the [npm 4.0.7 archive](https://registry.npmjs.org/picomatch/-/picomatch-4.0.7.tgz).
-  The archive integrity is `sha512-qcJu88Q2IWqJsDD529JKMdwGm/dvInW4HvQnRwiH9JtihJvzGOscDtHE3x1pBKeUOTysQ8kVmLnJ2kJu7yhcGA==`.
-  Only `lib/parse.js` and the stripped-down package manifest differ in the included files. Its local parser
-  guards [GHSA-fc5q-39xc-vjpf](https://github.com/advisories/GHSA-fc5q-39xc-vjpf) in the
-  glob patterns used by the frontend build tools. Within repeated single-branch extglobs it
-  preserves ordinary ASCII filename characters and question marks, and simplifies branches
-  with one wildcard star to an equivalent optional or mandatory match. More complex
-  single branches use the upstream literal fallback unless an upstream safe rewrite applies.
-  This restricted build-time grammar applies to repository configuration. Replace the patch
-  after a compatible upstream fix passes the build, test discovery and advisory checks
-  tracked in [#127](https://github.com/hoi-project/hoi/issues/127).
-
 Replace these patches with compatible upstream fixes when available. Re-run
 `pnpm audit --audit-level low`, both Cargo policy checks, the desktop frontend
 build, and the iOS device/simulator builds when updating them.
