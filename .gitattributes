@@ -9,3 +9,5 @@
 
 # Installer artwork must reach the NSIS compiler byte for byte.
 *.bmp binary
+# Deflated IP country tables (scripts/geo-assets.mjs): any newline conversion corrupts them.
+*.bin binary
