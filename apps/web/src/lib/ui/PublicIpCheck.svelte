@@ -3,6 +3,7 @@
   import { BROWSER_EGRESS_PROVIDER, BROWSER_EGRESS_URL } from '../core/browser-egress';
   import { isDesktopShell, openInBrowser } from '../host';
   import { errorText } from '../toast.svelte';
+  import IpLocationCard from './IpLocationCard.svelte';
 
   const desktop = isDesktopShell();
   let openError = $state('');
@@ -22,7 +23,7 @@
     <p class="help">Open {BROWSER_EGRESS_PROVIDER} in your default browser to see the HTTPS exit IP it sees. hoi’s native connections can use a different route.</p>
     <button type="button" class="pill" onclick={openProvider}>Open public IP check in browser</button>
   {:else}
-    <p class="help">Checking contacts <strong>{BROWSER_EGRESS_PROVIDER}</strong> over HTTPS and shares your IP with that service. hoi sends no profile or invitation. Peer connections can use a different route.</p>
+    <p class="help">Checking contacts <strong>{BROWSER_EGRESS_PROVIDER}</strong> over HTTPS and shares your IP with that service. hoi sends no profile or invitation. hoi then finds the IP’s country on this device. Peer connections can use a different route.</p>
     <button type="button" class="pill" aria-disabled={browserIp.pending} onclick={checkBrowserIp}>{browserIp.pending ? 'Checking public IP…' : browserIp.sample ? 'Check public IP again' : 'Check public IP'}</button>
     {#if browserIp.sample}
       <div class="sample" role="status">
@@ -30,6 +31,7 @@
         <output>{browserIp.sample.address}</output>
         <span class="help">Seen by {BROWSER_EGRESS_PROVIDER} at {browserIp.sample.checkedAt.toLocaleTimeString()}. Check again after changing VPNs.</span>
       </div>
+      <IpLocationCard address={browserIp.sample.address} observer={BROWSER_EGRESS_PROVIDER} via="Browser HTTPS exit" checkedAt={browserIp.sample.checkedAt} />
     {/if}
     {#if browserIp.error}
       <p role="alert">{browserIp.error}</p>

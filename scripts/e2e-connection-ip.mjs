@@ -5,6 +5,18 @@ import { mkdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { chromium } from 'playwright';
 import { startComponentServer } from './e2e-component-server.mjs';
+import { buildWorldMap, encodeTable, parseRanges } from './geo-assets.mjs';
+
+// Country data fixtures replace the bundled tables, so results do not depend on real data. XC and XY are
+// ISO 3166-1 user-assigned codes without display names; the browser runs in UTC, which the fixture maps to XC.
+const square = (code, lon, lat, size) => ({ type: 'Feature', properties: { ISO_A2_EH: code, LABEL_X: lon + size / 2, LABEL_Y: lat + size / 2 },
+  geometry: { type: 'Polygon', coordinates: [[[lon, lat], [lon + size, lat], [lon + size, lat + size], [lon, lat + size], [lon, lat]]] } });
+const GEO = {
+  'ip-country-v4': { type: 'application/octet-stream', body: encodeTable(parseRanges('1.0.0.0,1.255.255.255,XC\n', 4), 4).bytes },
+  'ip-country-v6': { type: 'application/octet-stream', body: encodeTable(parseRanges('2606::,2606:ffff:ffff:ffff:ffff:ffff:ffff:ffff,XY\n', 6), 6).bytes },
+  'tz-country': { type: 'application/json', body: JSON.stringify({ UTC: 'XC' }) },
+  'world-map': { type: 'application/json', body: JSON.stringify(buildWorldMap({ features: [square('XC', -80, 0, 40), square('XY', 50, 10, 30)] })) },
+};
 
 process.env.VITE_HOI_BACKEND = 'mock';
 const route = 'wss://first.example.com/';
@@ -36,14 +48,21 @@ const { server, origin } = await startComponentServer('/connection-ip-test', `<!
 let browser;
 try {
   browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH || undefined });
-  const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, reducedMotion: 'reduce', serviceWorkers: 'block' });
-  const external = [], errors = [], lookups = [];
+  const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, reducedMotion: 'reduce', serviceWorkers: 'block', timezoneId: 'UTC' });
+  const external = [], errors = [], lookups = [], geo = [];
   const provider = 'https://api64.ipify.org/';
   // Well-known public resolver addresses stand in for the fixture's HTTPS reply.
   // The browser never connects to a public resolver or provider.
   let result = '1.1.1.1';
   await context.route('**/*', request => {
-    if (new URL(request.request().url()).origin === origin) return request.continue();
+    const url = new URL(request.request().url());
+    const data = url.origin === origin && request.request().resourceType() === 'fetch' && Object.keys(GEO).find(name => url.pathname.includes(`/${name}`));
+    if (data) {
+      geo.push(data);
+      assert.equal(request.request().headers().cookie, undefined, 'Country data requests carry no cookies');
+      return request.fulfill({ status: 200, contentType: GEO[data].type, body: GEO[data].body });
+    }
+    if (url.origin === origin) return request.continue();
     if (request.request().url() === provider) {
       lookups.push(request.request());
       return request.fulfill({
@@ -60,7 +79,7 @@ try {
   await check.getByText(/reveals your source IP to that node/).waitFor();
   assert.equal(await page.evaluate(() => window.ipFixture.calls.length), 0, 'Opening a join screen never initiates an IP check');
   await header.getByText('No active connection', { exact: true }).waitFor();
-  await header.getByRole('button', { name: 'Connection IP No active connection Details', exact: true }).waitFor();
+  await header.getByRole('button', { name: 'IP not checked. Details', exact: true }).waitFor();
   const profile = page.locator('a.me');
   const initials = (await profile.innerText()).trim();
   assert.ok(initials && (await profile.getAttribute('aria-label')).startsWith(initials), 'The profile link starts with its visible initials');
@@ -82,7 +101,8 @@ try {
   await header.getByText('2001:db8::25', { exact: true }).waitFor();
   assert.equal((await header.innerText()).includes('10.2.0.2'), false, 'A VPN interface IP is not shown as public egress');
   assert.equal((await header.innerText()).includes('198.51.100.90'), false, 'Listening hints are not shown as source evidence');
-  const readout = header.getByRole('button', { name: 'Your IP on peer connections 2001:db8::25 Details', exact: true });
+  // A documentation address is special-use: it has no country and loads no country data.
+  const readout = header.getByRole('button', { name: 'Local route, 2001:db8::25. Details', exact: true });
   await readout.focus();
   await page.keyboard.press('Enter');
   const details = page.getByRole('dialog', { name: 'Your connection IP' });
@@ -113,18 +133,24 @@ try {
   assert.equal(await page.evaluate(() => window.ipFixture.joinCalls), 0);
 
   assert.equal(lookups.length, 0, 'A failed peer check never contacts the public IP service');
+  assert.deepEqual(geo, [], 'Nothing loads country data before a public check');
   const publicIp = check.getByRole('region', { name: 'Browser public IP' });
   await publicIp.getByText('api64.ipify.org', { exact: true }).waitFor();
   await publicIp.getByRole('button', { name: 'Check public IP', exact: true }).click();
   await publicIp.locator('output').filter({ hasText: result }).waitFor();
-  const bothSources = `Browser public IP ${result} Your IP on peer connections 2001:db8::25 Details`;
-  await header.getByRole('button', { name: bothSources, exact: true }).waitFor();
+  const sameCountry = `XC, your time zone, ${result}. Details`;
+  await header.getByRole('button', { name: sameCountry, exact: true }).waitFor();
+  const card = publicIp.getByRole('region', { name: `Where ${result} is listed` });
+  await card.getByText('Same country as your time zone', { exact: true }).waitFor();
+  await card.getByRole('img', { name: /^World map\. XC highlighted/ }).waitFor();
+  assert.match(await card.innerText(), /This does not show whether a VPN is on\./);
+  assert.deepEqual([...geo].sort(), ['ip-country-v4', 'tz-country', 'world-map'], 'The first check loads the IPv4 table, zones and map once');
   await header.getByText('VPN route: wg0', { exact: true }).waitFor();
   await page.evaluate(address => {
     const { app } = window.ipFixture;
     app.net = { ...app.net, connections: app.net.connections.map(c => ({ ...c, observedAddress: address })) };
   }, result);
-  const browserOnly = header.getByRole('button', { name: `Browser public IP ${result} Details`, exact: true });
+  const browserOnly = header.getByRole('button', { name: sameCountry, exact: true });
   await browserOnly.waitFor(); // Two observations of the same address need only one headline.
   await page.evaluate(() => {
     const { app } = window.ipFixture;
@@ -142,17 +168,28 @@ try {
   assert.equal(headers.cookie, undefined);
   await page.evaluate(() => window.dispatchEvent(new Event('offline')));
   await publicIp.locator('output').waitFor({ state: 'detached' });
-  await header.getByRole('button', { name: 'Connection IP No peer address reported Details', exact: true }).waitFor();
+  await header.getByRole('button', { name: 'IP not checked. Details', exact: true }).waitFor();
+  await header.getByText('No peer address reported', { exact: true }).waitFor();
+  await card.waitFor({ state: 'detached' });
   assert.equal(lookups.length, 1, 'A route change clears the sample without a fresh lookup');
   result = '2606:4700:4700::1111';
   await publicIp.getByRole('button', { name: 'Check public IP', exact: true }).click();
   await publicIp.locator('output').filter({ hasText: result }).waitFor();
   assert.equal(lookups.length, 2);
+  const otherCountry = `XY, not your time zone, ${result}. Details`;
+  await header.getByRole('button', { name: otherCountry, exact: true }).waitFor();
+  assert.deepEqual([...geo].sort(), ['ip-country-v4', 'ip-country-v6', 'tz-country', 'world-map'], 'IPv6 loads only its own table');
+
+  // A pre-join result in another country than the browser's HTTPS exit says that the routes differ.
+  await page.evaluate(() => { window.ipFixture.error = false; window.ipFixture.result = '1.0.0.9'; });
+  await check.getByRole('button', { name: 'Check connection', exact: true }).click();
+  await check.getByRole('region', { name: 'Where 1.0.0.9 is listed' }).getByText('Routes differ', { exact: true }).waitFor();
+  assert.equal(geo.length, 4, 'Tables already loaded are not fetched again');
 
   for (const width of [1280, 320]) {
     await page.setViewportSize({ width, height: 900 });
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `Main IP and check fit ${width} px`);
-    assert.ok(await check.getByRole('button', { name: 'Check connection', exact: true }).isVisible());
+    assert.ok(await check.getByRole('button', { name: 'Check connection', exact: true }).first().isVisible());
     await mkdir(resolve(import.meta.dirname, '../test-results/ip-status'), { recursive: true });
     await page.screenshot({ path: resolve(import.meta.dirname, `../test-results/ip-status/${width}.png`) });
   }
@@ -160,7 +197,7 @@ try {
     const f = window.ipFixture;
     f.app.net = { ...f.app.net, connections: [], peers: 0, transport: { ...f.app.net.transport, peers: [] } };
   });
-  await header.getByRole('button', { name: `Browser public IP ${result} Details`, exact: true }).waitFor();
+  await header.getByRole('button', { name: otherCountry, exact: true }).waitFor();
   await page.evaluate(() => window.dispatchEvent(new Event('offline')));
   await header.getByText('No active connection', { exact: true }).waitFor();
   await check.getByRole('button', { name: 'Check connection unavailable' }).waitFor();
@@ -169,5 +206,31 @@ try {
   assert.deepEqual(external, [], 'No other external requests were made');
   assert.deepEqual(errors, []);
   await context.close();
-  console.log('PASS: visible source IP, named intended-node consent, no automatic check or join, stale cancellation, unknown/error and 320 px layout.');
+
+  // With motion on, the card animates and then rests: no pin or dot is left mid-way.
+  const moving = await browser.newContext({ viewport: { width: 1280, height: 900 }, reducedMotion: 'no-preference', serviceWorkers: 'block', timezoneId: 'UTC' });
+  await moving.route('**/*', request => {
+    const url = new URL(request.request().url());
+    const data = url.origin === origin && request.request().resourceType() === 'fetch' && Object.keys(GEO).find(name => url.pathname.includes(`/${name}`));
+    if (data) return request.fulfill({ status: 200, contentType: GEO[data].type, body: GEO[data].body });
+    if (url.origin === origin) return request.continue();
+    if (request.request().url() === provider) return request.fulfill({ status: 200, contentType: 'text/plain', headers: { 'Access-Control-Allow-Origin': '*' }, body: '1.1.1.1' });
+    return request.abort();
+  });
+  const animated = await moving.newPage();
+  animated.on('pageerror', error => errors.push(error.message));
+  await animated.goto(`${origin}/connection-ip-test?me=Example`);
+  await animated.getByRole('button', { name: 'Check public IP', exact: true }).click();
+  await animated.getByRole('img', { name: /^World map\. XC highlighted/ }).waitFor();
+  await animated.waitForTimeout(2500);
+  const rest = await animated.evaluate(() => ({
+    head: document.querySelector('.pin .head')?.getAttribute('style') ?? '',
+    radii: [...document.querySelectorAll('.lit circle')].map(c => c.getAttribute('r')),
+  }));
+  assert.equal(rest.head.includes('transform') || rest.head.includes('opacity'), false, 'The pin rests in place');
+  assert.ok(rest.radii.length > 0 && rest.radii.every(r => r === rest.radii[0] && Number(r) > 0), 'Every country dot is drawn');
+  await animated.screenshot({ path: resolve(import.meta.dirname, '../test-results/ip-status/motion.png') });
+  assert.deepEqual(errors, []);
+  await moving.close();
+  console.log('PASS: visible source IP and country, named intended-node consent, no automatic check or join, country data only after a check, stale cancellation, unknown/error, motion at rest and 320 px layout.');
 } finally { await browser?.close(); await server.close(); }

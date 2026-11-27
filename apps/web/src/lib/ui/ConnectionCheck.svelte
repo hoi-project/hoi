@@ -3,8 +3,12 @@
   import { onDestroy, onMount } from 'svelte';
   import { app } from '../app.svelte';
   import { canCheckRoute, checkConnection } from '../core/connection-check';
+  import { browserIp } from '../browser-ip.svelte';
+  import { BROWSER_EGRESS_PROVIDER } from '../core/browser-egress';
   import { addressScope, connectionTarget } from '../connection-ip';
+  import { locate, observation } from '../ip-location.svelte';
   import { errorText } from '../toast.svelte';
+  import IpLocationCard from './IpLocationCard.svelte';
 
   let { routes, check = checkConnection }: { routes: string[]; check?: typeof checkConnection } = $props();
   const targets = $derived([...new Set(routes)].filter(canCheckRoute));
@@ -47,7 +51,11 @@
     busy = true; result = null; error = '';
     try {
       const next = await check(route, controller.signal);
-      if (current === generation) result = next;
+      if (current === generation) {
+        result = next;
+        // The person asked for this check; find the address's country on this device.
+        void locate(next.address);
+      }
     } catch (e) {
       if (current === generation) error = errorText(e);
     } finally { if (current === generation) busy = false; }
@@ -69,6 +77,8 @@
         {#if result.transport === 'udp'}UDP confirms the route to the invited socket. The node’s identity is unverified.
         {:else if result.transport === 'quic'}The QUIC handshake verified the node key in this invitation.
         {/if} Other connections and your home node’s onward traffic can use different addresses.</p></div>
+      <IpLocationCard compact address={result.address} observer={connectionTarget(target)} via={result.transport}
+        also={browserIp.sample ? [observation(browserIp.sample.address, BROWSER_EGRESS_PROVIDER)] : []} />
       <p class="help">Change your VPN or network? Check again before deciding to join. No membership was changed.</p>
     {/if}
     {#if error}<p role="alert">Peer IP check failed. {error} You can retry or leave without joining.</p>{/if}

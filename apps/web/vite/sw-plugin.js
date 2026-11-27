@@ -11,6 +11,9 @@ import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const SKIP = new Set(['_headers', 'sw.js', 'release.json']);
+// The IP country data (src/lib/geo/data) loads only after a person checks an address. Precaching it would
+// download about 700 KB on every install and update, for a feature many people never use.
+const LAZY = /^assets\/(?:ip-country-v[46]|tz-country|world-map)-[\w-]+\.(?:bin|json)$/;
 
 /** @param {string | Uint8Array} data */
 const sha = (data) => createHash('sha256').update(data).digest('hex');
@@ -41,7 +44,7 @@ export default function serviceWorker() {
       /** @type {Map<string, string>} */
       const files = new Map();
       for (const [fileName, item] of Object.entries(bundle)) {
-        if (SKIP.has(fileName) || fileName.endsWith('.map')) continue;
+        if (SKIP.has(fileName) || fileName.endsWith('.map') || LAZY.test(fileName)) continue;
         files.set(fileName, sha(item.type === 'chunk' ? item.code : item.source));
       }
       if (publicDir) {
