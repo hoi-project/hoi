@@ -2,7 +2,7 @@
 // site can read them too. Bump a version when the words change in substance: the client shows
 // that notice again before it continues.
 export const NETWORK_NOTICE_VERSION = '1.3';
-export const PRIVACY_NOTICE_VERSION = '1.3';
-export const PRIVACY_NOTICE_DATE = '2026-11-18';
+export const PRIVACY_NOTICE_VERSION = '1.4';
+export const PRIVACY_NOTICE_DATE = '2026-11-27';
 /** localStorage key of the Network & Safety acknowledgement: `{"version":"1.3","date":"2026-11-18"}`. */
 export const CONSENT_KEY = 'hoi:consent:network';

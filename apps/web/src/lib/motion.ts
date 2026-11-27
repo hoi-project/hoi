@@ -1,6 +1,6 @@
 // Motion helpers on Anime.js 4 (tokens.motion). Every animation teaches something;
 // the UI is complete at rest, so with reduced motion nothing here runs and nothing stays hidden.
-import { animate, createSpring, createTimeline, stagger, utils } from 'animejs';
+import { animate, createSpring, createTimeline, stagger, svg, utils } from 'animejs';
 import type { Action } from 'svelte/action';
 
 export const DUR = { micro: 300, ui: 420, enter: 520, hero: 900 } as const;
@@ -28,7 +28,7 @@ type AnimParams = Parameters<typeof animate>[1];
  * inline styles are cleared on completion, on a fallback timer (Anime's engine pauses in hidden tabs,
  * a screenshot or re-render may land mid-flight) and on destroy. Nothing can be left at opacity 0.
  */
-function appear(targets: HTMLElement[], params: AnimParams, budgetMs: number): () => void {
+function appear(targets: (HTMLElement | SVGElement)[], params: AnimParams, budgetMs: number): () => void {
   if (targets.length === 0) return () => {};
   let done = false;
   const clear = () => {
@@ -227,3 +227,33 @@ export function rise(el: HTMLElement | null): void {
   if (!el || reduced()) return;
   appear([el], { opacity: [0, 1], translateY: [20, 0], duration: 350, ease: 'outBack(2)' }, 350);
 }
+
+/** A map pin lands on its place, then its ring pulses (the IP location card). The pin is complete at rest. */
+export const dropPin: Action<HTMLElement> = (node) => {
+  if (reduced()) return;
+  const head = node.querySelector<HTMLElement>('.head');
+  const ring = node.querySelector<HTMLElement>('.ring');
+  const stop = head ? appear([head], { translateY: [-28, 0], scale: [0.6, 1], delay: 120, duration: 620, ease: EASE.pop }, 760) : () => {};
+  const loop = ring ? animate(ring, { scale: [1, 3], opacity: [0.7, 0], delay: 700, duration: 2000, loop: true, ease: 'outQuad' }) : null;
+  return { destroy: () => { stop(); loop?.revert(); } };
+};
+
+/** A country's map dots light up outward from its middle. Every dot ends at radius r. */
+export function lightDots(dots: SVGCircleElement[], r: number, from: [number, number]): () => void {
+  const rest = () => dots.forEach((d) => d.setAttribute('r', String(r)));
+  if (!dots.length || reduced()) return () => {};
+  const distance = (el: SVGCircleElement) => Math.hypot(Number(el.getAttribute('cx')) - from[0], Number(el.getAttribute('cy')) - from[1]);
+  const a = animate(dots, { r: [0, r], delay: (el: unknown) => 200 + distance(el as SVGCircleElement) * 2.2, duration: 420, ease: 'outBack(3)', onComplete: rest });
+  const t = setTimeout(() => { a.pause(); rest(); }, 1800);
+  return () => { clearTimeout(t); a.pause(); rest(); };
+}
+
+/** An arc draws itself from one end to the other, then is left as a plain path. */
+export function drawArc(path: SVGPathElement | null): () => void {
+  if (!path || reduced()) return () => {};
+  const [line] = svg.createDrawable(path);
+  const a = animate(line, { draw: ['0 0', '0 1'], delay: 250, duration: 1000, ease: 'inOutQuad', onComplete: () => a.revert() });
+  const t = setTimeout(() => a.revert(), 1600);
+  return () => { clearTimeout(t); a.revert(); };
+}
+

@@ -73,15 +73,25 @@ node ../../scripts/e2e-rtc.mjs --shots <dir>       # a phone pairs and links ove
 
 ## Connection IP and checking before joining
 
-After a successful HTTPS check the header shows **Browser public IP**. If a peer observes a
-different address, the header also shows **Your IP on peer connections**. Matching addresses
-appear once. **Details** names each observer and shows what current nodes and the browser's
-selected WebRTC path report. A missing peer report appears in the peer status.
+The header shows a status pill for the IP that others see. After a check it names the country
+the address is listed in and compares it with the device's time zone: **your time zone**, **not
+your time zone**, **Routes differ** (the HTTPS exit and a peer report are in different countries),
+**Local route**, **Country unknown** or **Country unavailable**. The pill opens the details, which
+name each observer and show what current nodes and the browser's selected WebRTC path report. A
+missing peer report appears in the peer status.
+
+The country comes from tables built into the app (`src/lib/geo/data`, made by
+`scripts/geo-assets.mjs` from ip-location-db `user-country`, Natural Earth and IANA tzdata; sources,
+licences and hashes are in `manifest.json`). They load from the app's own site only after **Check
+public IP**, **Check connection** or **Show country**, and the service worker does not precache
+them. No address is sent anywhere for the lookup, and the time zone is read on the device. A
+country is approximate and never shows whether a VPN is on.
 
 Listening routes, router forwards and VPN interface addresses describe other parts of the
 connection. An observed IP alone cannot verify VPN use or anonymity. A home node's onward
 traffic is a separate path. Reports stay in memory and opening the panel makes no lookup or
-new connection.
+new connection. To refresh the country data, run `node scripts/geo-assets.mjs --fetch <dir>` and
+then `--input <dir>`, and commit the result.
 
 Invite and public-join screens offer **Check connection** for supported routes. Before the
 click they name the intended destination and explain that contacting it exposes the source IP.

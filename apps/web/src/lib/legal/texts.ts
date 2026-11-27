@@ -112,7 +112,7 @@ export const PRIVACY_NOTICE = {
     },
     {
       title: 'No tracking.',
-      text: 'The client contains no analytics or advertising. If you choose Check public IP, your browser contacts api64.ipify.org (ipify). The service sees the HTTPS source address and normal browser request headers. hoi sends no profile, invite, cookies or referrer with the in-app lookup. The result is held briefly in memory. On desktop you can choose to open the service in your own browser. The release notice at the top of the app comes from the site that served it. Where whoever hosts a build configured a public registry (for community names) or a relay for private communities, the client contacts them only after you accepted the Network & Safety notice; that host names them in its own privacy policy.',
+      text: 'The client contains no analytics or advertising. If you choose Check public IP, your browser contacts api64.ipify.org (ipify). The service sees the HTTPS source address and normal browser request headers. hoi sends no profile, invite, cookies or referrer with the in-app lookup. The result is held briefly in memory. hoi then looks up the country of a checked address in a table built into the app, on your device: no one else learns the address from it, and the result is held only with the address. On desktop you can choose to open the service in your own browser. The release notice at the top of the app comes from the site that served it. Where whoever hosts a build configured a public registry (for community names) or a relay for private communities, the client contacts them only after you accepted the Network & Safety notice; that host names them in its own privacy policy.',
     },
     {
       title: 'Your protection.',
