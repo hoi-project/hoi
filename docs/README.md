@@ -6,6 +6,8 @@
 - [CI](CI.md): opt-in workflows and release test tiers.
 - [Dependencies](DEPENDENCIES.md): how dependencies are chosen, pinned, checked and updated.
 - [Releases](RELEASES.md): versioning, signed artifacts and release notices.
+- [Field testing](FIELD-TESTING.md): running hoi across real networks for days, and reporting
+  what happened without exposing addresses or credentials.
 - [Static hosting](../deploy/static/README.md), [installation](../deploy/install/README.md),
   [home nodes](../deploy/home/README.md) and [server nodes](../deploy/server/README.md).
 - [Node setup app](../apps/setup/README.md): installs and manages a public node on a server over SSH, with a wizard.
