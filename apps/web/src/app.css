@@ -317,7 +317,10 @@ a[href]:not(:where(p a, li a, td a, .help a, .prose a, .md a)) {
 }
 @media (max-width: 640px), (pointer: coarse) {
   a[href]:not(:where(p a, li a, td a, .help a, .prose a, .md a)),
-  button:not(:where(p button, .help button)), summary {
+  button:not(:where(p button, .help button, .sw)), summary {
     min-height: 44px; min-width: 44px;
   }
+  /* A switch keeps its 28 px pill (a taller one turns into a circle with the knob in a corner);
+     an invisible area around it makes the 44 px target. */
+  .sw::after { content: ''; position: absolute; inset: -10px -2px; }
 }
