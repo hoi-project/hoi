@@ -74,6 +74,23 @@ try {
     });
     assert(Math.abs(hLeft - vLeft) <= 1, `${config.name} labelers sit at ${vLeft}px, their description at ${hLeft}px`);
     assert(vWidth >= 220, `${config.name} labelers were squeezed to ${vWidth}px`);
+    // A switch keeps its 48×28 pill with the knob centred at every width; on phones an invisible
+    // area around it makes the 44 px touch target (the design rule), elsewhere the pill is enough.
+    const moderate = page.getByRole('switch', { name: 'Keep what I moderate', exact: true });
+    await moderate.scrollIntoViewIfNeeded();
+    const sw = await moderate.evaluate(el => {
+      const r = el.getBoundingClientRect(), k = el.querySelector('i').getBoundingClientRect();
+      const x = r.left + r.width / 2, mid = r.top + r.height / 2;
+      const hits = y => el.contains(document.elementFromPoint(x, y));
+      let up = 0, down = 0;
+      while (up < 60 && hits(mid - up - 1)) up++;
+      while (down < 60 && hits(mid + down + 1)) down++;
+      return { width: r.width, height: r.height, knobOffset: Math.abs(k.top + k.height / 2 - mid), target: up + down + 1 };
+    });
+    assert.deepEqual([sw.width, sw.height], [48, 28], `${config.name} switch is ${sw.width}×${sw.height}px`);
+    assert(sw.knobOffset <= 0.5, `${config.name} switch knob is ${sw.knobOffset}px off centre`);
+    const minTarget = config.width <= 640 ? 44 : 24;
+    assert(sw.target >= minTarget, `${config.name} switch target is ${sw.target}px tall, under ${minTarget}px`);
     await page.screenshot({ path: resolve(shots, `${config.name}-settings.png`), fullPage: true });
 
     // Generate a wide input locally: cropping must fill the circular preview without stretching.
