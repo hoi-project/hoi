@@ -5,7 +5,8 @@ export const BROWSER_EGRESS_URL = `https://${BROWSER_EGRESS_PROVIDER}/`;
 const MAX_BYTES = 64;
 const TIMEOUT_MS = 8_000;
 
-function publicAddress(text: string): string | undefined {
+/** The address if it is a numeric public unicast IP. The country lookup (geo/ip-table.ts) uses the same rule. */
+export function publicAddress(text: string): string | undefined {
   if (!numericAddress(text)) return;
   if (text.includes(':')) {
     const ip = new URL(`http://[${text}]/`).hostname.slice(1, -1);

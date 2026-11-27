@@ -51,6 +51,8 @@ const TZ_FILES = ['zone.tab', 'backward', 'africa', 'antarctica', 'asia', 'austr
 export const MAGIC = 'HOIC';
 export const FORMAT_VERSION = 1;
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
+/** The bytes of a committed output file (used by the web app's tests). */
+export const readOutput = (name) => new Uint8Array(readFileSync(join(OUT_DIR, name)));
 
 // ---------------------------------------------------------------- addresses
 

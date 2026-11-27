@@ -1,5 +1,6 @@
 // This is a browser HTTPS observation. Peer, relay and native VPN observations live separately.
 import { fetchBrowserEgress } from './core/browser-egress';
+import { locate } from './ip-location.svelte';
 
 type Sample = { address: string; checkedAt: Date };
 export const browserIp = $state<{ sample: Sample | null; pending: boolean; error: string }>({
@@ -31,6 +32,8 @@ export async function checkBrowserIp() {
     browserIp.sample = { address, checkedAt: new Date() };
     // Browsers do not reliably announce VPN route changes. Limit the life of each sample.
     expires = setTimeout(clearBrowserIp, 120_000);
+    // The person asked for this check, so look up its country with the tables built into the app.
+    void locate(address);
   } catch (error) {
     if (request === current) browserIp.error = error instanceof Error ? error.message : 'The public IP check failed. Try again.';
   } finally {
