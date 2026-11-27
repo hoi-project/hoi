@@ -21,8 +21,13 @@
     return `M${x1} ${y1}Q${(x1 + x2) / 2} ${Math.min(y1, y2) - lift} ${x2} ${y2}`;
   });
   const stickers = $derived(shown.filter(code => map.countries[code].d && map.countries[code].b));
-  // Stickers sit over the ocean on the side away from the first pin.
-  const east = $derived(pins.length > 0 && pins[0].at[0] < map.w * 0.45);
+  // Stickers sit in a lower corner; pick the one with fewer pins or zone markers in it.
+  const east = $derived.by(() => {
+    const marks = [...pins.map(p => p.at), ...(zonePoint ? [zonePoint] : [])];
+    const low = marks.filter(([, y]) => y > map.h * 0.4);
+    const left = low.filter(([x]) => x < map.w / 2).length, right = low.length - left;
+    return left > right || (left === right && marks.some(([x]) => x < map.w * 0.45));
+  });
   const pct = (n: number, of: number) => `${(n / of) * 100}%`;
   const label = $derived(shown.length
     ? `World map. ${shown.map(code => regionName(code)).join(' and ')} highlighted, with a pin at the middle of the country.${zonePoint ? ' A line joins it to your device’s time zone.' : ''}`
