@@ -51,6 +51,8 @@ const TZ_FILES = ['zone.tab', 'backward', 'africa', 'antarctica', 'asia', 'austr
 export const MAGIC = 'HOIC';
 export const FORMAT_VERSION = 1;
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
+/** Sorts strings by UTF-16 code units, the same order on every machine and locale. */
+const byCodeUnit = (a, b) => Number(a > b) - Number(a < b);
 /** The bytes of a committed output file (used by the web app's tests). */
 export const readOutput = (name) => new Uint8Array(readFileSync(join(OUT_DIR, name)));
 
@@ -70,16 +72,16 @@ function v6ToBig(text) {
   const fill = tail === undefined ? 0 : 8 - left.length - right.length;
   const words = [...left, ...Array(fill).fill('0'), ...right];
   if (words.length !== 8 || fill < 0 || words.some(w => !/^[0-9a-f]{1,4}$/i.test(w))) throw new Error(`Invalid IPv6 address: ${text}`);
-  return words.reduce((n, w) => (n << 16n) | BigInt(parseInt(w, 16)), 0n);
+  return words.reduce((n, w) => (n << 16n) | BigInt(Number.parseInt(w, 16)), 0n);
 }
 
-// IANA special-purpose ranges, as refused by publicAddress() in apps/web/src/lib/geo/public-address.ts. A table
-// never assigns them a country, even if upstream data lists one.
+// IANA special-purpose ranges, as refused by publicAddress() in apps/web/src/lib/core/browser-egress.ts. A table
+// never assigns them a country, even if upstream data lists one. Octets and prefix length, as numbers like there.
 const SPECIAL_V4 = [
-  ['0.0.0.0', 8], ['10.0.0.0', 8], ['100.64.0.0', 10], ['127.0.0.0', 8], ['169.254.0.0', 16], ['172.16.0.0', 12],
-  ['192.0.0.0', 24], ['192.0.2.0', 24], ['192.88.99.0', 24], ['192.168.0.0', 16], ['198.18.0.0', 15],
-  ['198.51.100.0', 24], ['203.0.113.0', 24], ['224.0.0.0', 3],
-].map(([a, bits]) => { const s = v4ToInt(a); return [s, s + 2 ** (32 - bits) - 1]; });
+  [[0, 0, 0, 0], 8], [[10, 0, 0, 0], 8], [[100, 64, 0, 0], 10], [[127, 0, 0, 0], 8], [[169, 254, 0, 0], 16],
+  [[172, 16, 0, 0], 12], [[192, 0, 0, 0], 24], [[192, 0, 2, 0], 24], [[192, 88, 99, 0], 24], [[192, 168, 0, 0], 16],
+  [[198, 18, 0, 0], 15], [[198, 51, 100, 0], 24], [[203, 0, 113, 0], 24], [[224, 0, 0, 0], 3],
+].map(([octets, bits]) => { const s = octets.reduce((n, o) => n * 256 + o, 0); return [s, s + 2 ** (32 - bits) - 1]; });
 // IPv6 in /64 prefix units: only 2000::/3 is global unicast, minus protocol assignments (2001::/23),
 // documentation (2001:db8::/32, 3fff::/20) and 6to4 (2002::/16).
 const P = (hex) => BigInt(`0x${hex}`) << 48n;
@@ -161,7 +163,7 @@ function leb128(value, bytes) {
 export function encodeTable(rows, family) {
   if (family !== 4 && family !== 6) throw new Error('family must be 4 or 6');
   const segs = segments(rows, family);
-  const codes = [...new Set(segs.map(([, c]) => c).filter(Boolean))].sort();
+  const codes = [...new Set(segs.map(([, c]) => c).filter(Boolean))].sort(byCodeUnit);
   if (codes.length > 255) throw new Error('A table holds at most 255 codes');
   const index = new Map(codes.map((c, i) => [c, i + 1]));
   const header = Buffer.alloc(12);
@@ -179,13 +181,16 @@ export function encodeTable(rows, family) {
 
 // ---------------------------------------------------------------- time zones
 
+/** A NUL-terminated header field without its terminator and padding. */
+const beforeNul = (text) => { const end = text.indexOf('\0'); return end < 0 ? text : text.slice(0, end); };
+
 /** Reads members of an uncompressed ustar archive. */
 export function untar(buffer, wanted) {
   const files = {};
   for (let at = 0; at + 512 <= buffer.length;) {
-    const name = buffer.toString('ascii', at, at + 100).replace(/\0.*$/s, '');
+    const name = beforeNul(buffer.toString('ascii', at, at + 100));
     if (!name) break;
-    const size = parseInt(buffer.toString('ascii', at + 124, at + 136).replace(/\0.*$/s, '').trim() || '0', 8);
+    const size = Number.parseInt(beforeNul(buffer.toString('ascii', at + 124, at + 136)).trim() || '0', 8);
     if (wanted.includes(name)) files[name] = buffer.toString('utf8', at + 512, at + 512 + size);
     at += 512 + Math.ceil(size / 512) * 512;
   }
@@ -274,7 +279,7 @@ const SOUTH_LIMIT = -60;
  * Projects countries into a 1000-unit-wide Equal Earth frame and samples land dots on a grid. Each country
  * gets its shape, the box of its largest polygon (for a close-up) and a label point.
  */
-export function buildWorldMap(shapes, labels = { features: [] }, { width = 1000, step = 6, margin = 4 } = {}) {
+export function buildWorldMap(shapes, labels, { width = 1000, step = 6, margin = 4 } = {}) {
   const [xMax] = equalEarth(180, 0);
   const scale = (width / 2) / xMax;
   const raw = (lon, lat) => { const [x, y] = equalEarth(lon, lat); return [width / 2 + x * scale, -y * scale]; };
@@ -334,7 +339,7 @@ export function buildWorldMap(shapes, labels = { features: [] }, { width = 1000,
     out[c.code] = { p: point(...c.label), b: box, d: pathOf(c.polygons) };
   }
   // States too small for the shape file get a label point only.
-  for (const f of labels.features) {
+  for (const f of labels?.features ?? []) {
     const code = codeOf(f.properties);
     if (!code || out[code] || typeof f.properties.LABEL_X !== 'number' || f.properties.LABEL_Y <= SOUTH_LIMIT) continue;
     out[code] = { p: point(f.properties.LABEL_X, f.properties.LABEL_Y) };
@@ -395,7 +400,7 @@ function writeOutputs(dir, out = OUT_DIR) {
   const map = buildWorldMap(JSON.parse(read('ne_110m_admin_0_countries.geojson')), JSON.parse(read('ne_50m_admin_0_countries.geojson')));
   save('world-map.json', Buffer.from(`${JSON.stringify(map)}\n`), { dots: map.dots.length, countries: Object.keys(map.countries).length });
 
-  const dates = Object.values(fetched.userCountry).map(f => f.modified).filter(Boolean).sort();
+  const dates = Object.values(fetched.userCountry).map(f => f.modified).filter(Boolean).sort(byCodeUnit);
   const manifest = {
     format: FORMAT_VERSION,
     date: dates[dates.length - 1] || null,

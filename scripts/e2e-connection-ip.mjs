@@ -54,6 +54,7 @@ try {
   // Well-known public resolver addresses stand in for the fixture's HTTPS reply.
   // The browser never connects to a public resolver or provider.
   let result = '1.1.1.1';
+  const publicV4 = result; // In the fixture table's XC range.
   await context.route('**/*', request => {
     const url = new URL(request.request().url());
     const data = url.origin === origin && request.request().resourceType() === 'fetch' && Object.keys(GEO).find(name => url.pathname.includes(`/${name}`));
@@ -144,7 +145,7 @@ try {
   await card.getByText('Same country as your time zone', { exact: true }).waitFor();
   await card.getByRole('img', { name: /^World map\. XC highlighted/ }).waitFor();
   assert.match(await card.innerText(), /This does not show whether a VPN is on\./);
-  assert.deepEqual([...geo].sort(), ['ip-country-v4', 'tz-country', 'world-map'], 'The first check loads the IPv4 table, zones and map once');
+  assert.deepEqual([...geo].sort((a, b) => a.localeCompare(b)), ['ip-country-v4', 'tz-country', 'world-map'], 'The first check loads the IPv4 table, zones and map once');
   await header.getByText('VPN route: wg0', { exact: true }).waitFor();
   await page.evaluate(address => {
     const { app } = window.ipFixture;
@@ -178,12 +179,12 @@ try {
   assert.equal(lookups.length, 2);
   const otherCountry = `XY, not your time zone, ${result}. Details`;
   await header.getByRole('button', { name: otherCountry, exact: true }).waitFor();
-  assert.deepEqual([...geo].sort(), ['ip-country-v4', 'ip-country-v6', 'tz-country', 'world-map'], 'IPv6 loads only its own table');
+  assert.deepEqual([...geo].sort((a, b) => a.localeCompare(b)), ['ip-country-v4', 'ip-country-v6', 'tz-country', 'world-map'], 'IPv6 loads only its own table');
 
   // A pre-join result in another country than the browser's HTTPS exit says that the routes differ.
-  await page.evaluate(() => { window.ipFixture.error = false; window.ipFixture.result = '1.0.0.9'; });
+  await page.evaluate(address => { window.ipFixture.error = false; window.ipFixture.result = address; }, publicV4);
   await check.getByRole('button', { name: 'Check connection', exact: true }).click();
-  await check.getByRole('region', { name: 'Where 1.0.0.9 is listed' }).getByText('Routes differ', { exact: true }).waitFor();
+  await check.getByRole('region', { name: `Where ${publicV4} is listed` }).getByText('Routes differ', { exact: true }).waitFor();
   assert.equal(geo.length, 4, 'Tables already loaded are not fetched again');
 
   for (const width of [1280, 320]) {
@@ -214,7 +215,7 @@ try {
     const data = url.origin === origin && request.request().resourceType() === 'fetch' && Object.keys(GEO).find(name => url.pathname.includes(`/${name}`));
     if (data) return request.fulfill({ status: 200, contentType: GEO[data].type, body: GEO[data].body });
     if (url.origin === origin) return request.continue();
-    if (request.request().url() === provider) return request.fulfill({ status: 200, contentType: 'text/plain', headers: { 'Access-Control-Allow-Origin': '*' }, body: '1.1.1.1' });
+    if (request.request().url() === provider) return request.fulfill({ status: 200, contentType: 'text/plain', headers: { 'Access-Control-Allow-Origin': '*' }, body: publicV4 });
     return request.abort();
   });
   const animated = await moving.newPage();

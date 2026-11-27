@@ -76,7 +76,7 @@ export function addressKey(address: string): AddressKey | null {
     catch { return null; }
     const mapped = /^::ffff:([a-f0-9]{1,4}):([a-f0-9]{1,4})$/.exec(ip);
     if (mapped) {
-      const high = parseInt(mapped[1], 16), low = parseInt(mapped[2], 16);
+      const high = Number.parseInt(mapped[1], 16), low = Number.parseInt(mapped[2], 16);
       ip = [high >> 8, high & 255, low >> 8, low & 255].join('.');
     }
   }
@@ -88,7 +88,7 @@ export function addressKey(address: string): AddressKey | null {
   const [head, tail] = normal.includes('::') ? normal.split('::') : [normal, ''];
   const left = head ? head.split(':') : [];
   const right = tail ? tail.split(':') : [];
-  const words = [...left, ...Array(8 - left.length - right.length).fill('0'), ...right].map(w => parseInt(w, 16));
+  const words = [...left, ...Array(8 - left.length - right.length).fill('0'), ...right].map(w => Number.parseInt(w, 16));
   return { family: 6, hi: words[0] * 65536 + words[1], lo: words[2] * 65536 + words[3] };
 }
 
